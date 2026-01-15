@@ -1,0 +1,317 @@
+{
+  "name": "ssh-lite",
+  "displayName": "SSH Lite",
+  "description": "Lightweight SSH client for VS Code - file browsing, terminals, and port forwarding without installing anything on remote servers",
+  "version": "0.1.0",
+  "publisher": "your-publisher-name",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "ssh",
+    "sftp",
+    "remote",
+    "terminal",
+    "file transfer"
+  ],
+  "activationEvents": [
+    "onView:sshLite.hosts",
+    "onCommand:sshLite.connect"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "sshLite",
+          "title": "SSH Lite",
+          "icon": "$(remote)"
+        }
+      ]
+    },
+    "views": {
+      "sshLite": [
+        {
+          "id": "sshLite.hosts",
+          "name": "SSH Hosts"
+        },
+        {
+          "id": "sshLite.fileExplorer",
+          "name": "Remote Files",
+          "when": "sshLite.hasConnections"
+        },
+        {
+          "id": "sshLite.portForwards",
+          "name": "Port Forwards",
+          "when": "sshLite.hasConnections"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "sshLite.connect",
+        "title": "Connect to Host",
+        "category": "SSH Lite",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "sshLite.disconnect",
+        "title": "Disconnect",
+        "category": "SSH Lite",
+        "icon": "$(debug-disconnect)"
+      },
+      {
+        "command": "sshLite.addHost",
+        "title": "Add SSH Host",
+        "category": "SSH Lite",
+        "icon": "$(add)"
+      },
+      {
+        "command": "sshLite.editHost",
+        "title": "Edit Host",
+        "category": "SSH Lite",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "sshLite.removeHost",
+        "title": "Remove Host",
+        "category": "SSH Lite",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "sshLite.refreshHosts",
+        "title": "Refresh Hosts",
+        "category": "SSH Lite",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "sshLite.openFile",
+        "title": "Open File",
+        "category": "SSH Lite",
+        "icon": "$(file)"
+      },
+      {
+        "command": "sshLite.downloadFile",
+        "title": "Download File",
+        "category": "SSH Lite",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "sshLite.uploadFile",
+        "title": "Upload File",
+        "category": "SSH Lite",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "sshLite.deleteRemote",
+        "title": "Delete",
+        "category": "SSH Lite",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "sshLite.createFolder",
+        "title": "New Folder",
+        "category": "SSH Lite",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "sshLite.refreshFiles",
+        "title": "Refresh Files",
+        "category": "SSH Lite",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "sshLite.openTerminal",
+        "title": "Open Terminal",
+        "category": "SSH Lite",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "sshLite.forwardPort",
+        "title": "Forward Port",
+        "category": "SSH Lite",
+        "icon": "$(arrow-right)"
+      },
+      {
+        "command": "sshLite.stopForward",
+        "title": "Stop Forward",
+        "category": "SSH Lite",
+        "icon": "$(close)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "sshLite.addHost",
+          "when": "view == sshLite.hosts",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sshLite.refreshHosts",
+          "when": "view == sshLite.hosts",
+          "group": "navigation@2"
+        },
+        {
+          "command": "sshLite.refreshFiles",
+          "when": "view == sshLite.fileExplorer",
+          "group": "navigation"
+        },
+        {
+          "command": "sshLite.forwardPort",
+          "when": "view == sshLite.portForwards",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "sshLite.connect",
+          "when": "view == sshLite.hosts && viewItem == host",
+          "group": "inline@1"
+        },
+        {
+          "command": "sshLite.editHost",
+          "when": "view == sshLite.hosts && viewItem == savedHost",
+          "group": "1_modify@1"
+        },
+        {
+          "command": "sshLite.removeHost",
+          "when": "view == sshLite.hosts && viewItem == savedHost",
+          "group": "1_modify@2"
+        },
+        {
+          "command": "sshLite.disconnect",
+          "when": "view == sshLite.hosts && viewItem == connectedHost",
+          "group": "inline@1"
+        },
+        {
+          "command": "sshLite.openTerminal",
+          "when": "view == sshLite.hosts && viewItem == connectedHost",
+          "group": "inline@2"
+        },
+        {
+          "command": "sshLite.openFile",
+          "when": "view == sshLite.fileExplorer && viewItem == file",
+          "group": "inline@1"
+        },
+        {
+          "command": "sshLite.downloadFile",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^(file|folder)$/",
+          "group": "1_actions@1"
+        },
+        {
+          "command": "sshLite.uploadFile",
+          "when": "view == sshLite.fileExplorer && viewItem == folder",
+          "group": "1_actions@2"
+        },
+        {
+          "command": "sshLite.createFolder",
+          "when": "view == sshLite.fileExplorer && viewItem == folder",
+          "group": "1_actions@3"
+        },
+        {
+          "command": "sshLite.deleteRemote",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^(file|folder)$/",
+          "group": "2_modify@1"
+        },
+        {
+          "command": "sshLite.stopForward",
+          "when": "view == sshLite.portForwards && viewItem == forward",
+          "group": "inline"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "SSH Lite",
+      "properties": {
+        "sshLite.hosts": {
+          "type": "array",
+          "default": [],
+          "description": "Saved SSH hosts",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Display name"
+              },
+              "host": {
+                "type": "string",
+                "description": "Hostname or IP"
+              },
+              "port": {
+                "type": "number",
+                "default": 22,
+                "description": "SSH port"
+              },
+              "username": {
+                "type": "string",
+                "description": "Username"
+              },
+              "privateKeyPath": {
+                "type": "string",
+                "description": "Path to private key"
+              }
+            },
+            "required": [
+              "name",
+              "host",
+              "username"
+            ]
+          }
+        },
+        "sshLite.sshConfigPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to SSH config file (leave empty for default ~/.ssh/config)"
+        },
+        "sshLite.defaultRemotePath": {
+          "type": "string",
+          "default": "~",
+          "description": "Default remote path when connecting"
+        },
+        "sshLite.autoUploadOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically upload files when saved"
+        },
+        "sshLite.uploadDebounceMs": {
+          "type": "number",
+          "default": 500,
+          "description": "Debounce time for auto-upload (ms)"
+        },
+        "sshLite.connectionTimeout": {
+          "type": "number",
+          "default": 10000,
+          "description": "Connection timeout (ms)"
+        },
+        "sshLite.keepaliveInterval": {
+          "type": "number",
+          "default": 30000,
+          "description": "Keepalive interval (ms)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "dependencies": {
+    "ssh2": "^1.16.0",
+    "ssh-config": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/ssh2": "^1.15.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.56.0"
+  }
+}
