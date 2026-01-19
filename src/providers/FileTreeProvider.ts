@@ -9,13 +9,45 @@ import { formatFileSize } from '../utils/helpers';
  * Tree item representing a connection root
  */
 export class ConnectionTreeItem extends vscode.TreeItem {
-  constructor(public readonly connection: SSHConnection) {
+  constructor(
+    public readonly connection: SSHConnection,
+    public readonly currentPath: string = '~'
+  ) {
     super(connection.host.name, vscode.TreeItemCollapsibleState.Expanded);
 
-    this.description = `${connection.host.username}@${connection.host.host}`;
+    this.description = `${connection.host.username}@${connection.host.host} - ${currentPath}`;
     this.contextValue = 'connection';
     this.iconPath = new vscode.ThemeIcon('vm-active', new vscode.ThemeColor('charts.green'));
   }
+}
+
+/**
+ * Tree item for navigating to parent directory
+ */
+export class ParentFolderTreeItem extends vscode.TreeItem {
+  constructor(
+    public readonly connection: SSHConnection,
+    public readonly parentPath: string
+  ) {
+    super('..', vscode.TreeItemCollapsibleState.None);
+
+    this.description = 'Go to parent folder';
+    this.contextValue = 'parentFolder';
+    this.iconPath = new vscode.ThemeIcon('folder-opened');
+    this.command = {
+      command: 'sshLite.goToPath',
+      title: 'Go to Parent',
+      arguments: [connection, parentPath],
+    };
+  }
+}
+
+/**
+ * Get the auto-refresh interval from configuration
+ */
+function getRefreshInterval(): number {
+  const config = vscode.workspace.getConfiguration('sshLite');
+  return config.get<number>('treeRefreshIntervalSeconds', 0);
 }
 
 /**
@@ -66,7 +98,7 @@ export class FileTreeItem extends vscode.TreeItem {
   }
 }
 
-type TreeItem = ConnectionTreeItem | FileTreeItem;
+type TreeItem = ConnectionTreeItem | FileTreeItem | ParentFolderTreeItem;
 
 /**
  * Tree data provider for remote file explorer
@@ -76,7 +108,9 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem> {
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
   private connectionManager: ConnectionManager;
-  private expandedPaths: Map<string, string> = new Map(); // connectionId -> current path
+  private currentPaths: Map<string, string> = new Map(); // connectionId -> current path
+  private refreshTimer: ReturnType<typeof setInterval> | null = null;
+  private configChangeListener: vscode.Disposable;
 
   constructor() {
     this.connectionManager = ConnectionManager.getInstance();
@@ -85,6 +119,65 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem> {
     this.connectionManager.onDidChangeConnections(() => {
       this.refresh();
     });
+
+    // Start auto-refresh timer if configured
+    this.startAutoRefresh();
+
+    // Listen for configuration changes
+    this.configChangeListener = vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('sshLite.treeRefreshIntervalSeconds')) {
+        this.restartAutoRefresh();
+      }
+    });
+  }
+
+  /**
+   * Get current path for a connection
+   */
+  getCurrentPath(connectionId: string): string {
+    return this.currentPaths.get(connectionId) || '~';
+  }
+
+  /**
+   * Set current path for a connection and refresh
+   */
+  setCurrentPath(connectionId: string, newPath: string): void {
+    this.currentPaths.set(connectionId, newPath);
+    this.refresh();
+  }
+
+  /**
+   * Start the auto-refresh timer based on configuration
+   */
+  private startAutoRefresh(): void {
+    const intervalSeconds = getRefreshInterval();
+    if (intervalSeconds > 0) {
+      const intervalMs = intervalSeconds * 1000;
+      this.refreshTimer = setInterval(() => {
+        // Only refresh if there are active connections
+        if (this.connectionManager.getAllConnections().length > 0) {
+          this.refresh();
+        }
+      }, intervalMs);
+    }
+  }
+
+  /**
+   * Stop the auto-refresh timer
+   */
+  private stopAutoRefresh(): void {
+    if (this.refreshTimer) {
+      clearInterval(this.refreshTimer);
+      this.refreshTimer = null;
+    }
+  }
+
+  /**
+   * Restart the auto-refresh timer (called when config changes)
+   */
+  private restartAutoRefresh(): void {
+    this.stopAutoRefresh();
+    this.startAutoRefresh();
   }
 
   /**
@@ -115,17 +208,32 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem> {
     // Root level: show all connections
     if (!element) {
       const connections = this.connectionManager.getAllConnections();
-      return connections.map((conn) => new ConnectionTreeItem(conn));
+      return connections.map((conn) => {
+        const currentPath = this.getCurrentPath(conn.id);
+        return new ConnectionTreeItem(conn, currentPath);
+      });
     }
 
-    // Connection level: show root directory files
+    // Connection level: show current directory files
     if (element instanceof ConnectionTreeItem) {
-      const config = vscode.workspace.getConfiguration('sshLite');
-      const defaultPath = config.get<string>('defaultRemotePath', '~');
+      const currentPath = this.getCurrentPath(element.connection.id);
 
       try {
-        const files = await element.connection.listFiles(defaultPath);
-        return files.map((file) => new FileTreeItem(file, element.connection));
+        const files = await element.connection.listFiles(currentPath);
+        const items: TreeItem[] = [];
+
+        // Add parent folder navigation if not at root
+        if (currentPath !== '/' && currentPath !== '~') {
+          const parentPath = path.posix.dirname(currentPath);
+          items.push(new ParentFolderTreeItem(element.connection, parentPath || '/'));
+        } else if (currentPath === '~') {
+          // Allow going to root from home
+          items.push(new ParentFolderTreeItem(element.connection, '/'));
+        }
+
+        // Add files
+        items.push(...files.map((file) => new FileTreeItem(file, element.connection)));
+        return items;
       } catch (error) {
         vscode.window.showErrorMessage(`Failed to list files: ${(error as Error).message}`);
         return [];
@@ -166,6 +274,8 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem> {
    * Dispose of resources
    */
   dispose(): void {
+    this.stopAutoRefresh();
+    this.configChangeListener.dispose();
     this._onDidChangeTreeData.dispose();
   }
 }

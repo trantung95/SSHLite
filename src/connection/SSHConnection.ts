@@ -12,6 +12,7 @@ import {
   SFTPError,
 } from '../types';
 import { expandPath } from '../utils/helpers';
+import { CredentialService } from '../services/CredentialService';
 
 /**
  * SSH Connection implementation using ssh2 library
@@ -64,8 +65,11 @@ export class SSHConnection implements ISSHConnection {
 
         this._client!.on('error', (err) => {
           clearTimeout(timeoutId);
-          if (err.message.includes('authentication') || err.message.includes('auth')) {
-            reject(new AuthenticationError(`Authentication failed: ${err.message}`, err));
+          const msg = err.message.toLowerCase();
+          if (msg.includes('authentication') || msg.includes('auth') || msg.includes('permission denied') || msg.includes('publickey')) {
+            // Clear saved credentials on auth failure so user can retry
+            CredentialService.getInstance().deleteAll(this.id);
+            reject(new AuthenticationError(`Authentication failed: ${err.message}. Saved credentials cleared - please try again.`, err));
           } else {
             reject(new ConnectionError(`Connection error: ${err.message}`, err));
           }
@@ -73,6 +77,13 @@ export class SSHConnection implements ISSHConnection {
 
         this._client!.on('close', () => {
           this.handleDisconnect();
+        });
+
+        // Handle keyboard-interactive authentication
+        this._client!.on('keyboard-interactive', (_name, _instructions, _instructionsLang, prompts, finish) => {
+          // Use saved password for keyboard-interactive prompts
+          const responses = prompts.map(() => authConfig.password as string || '');
+          finish(responses);
         });
 
         this._client!.connect({
@@ -96,73 +107,70 @@ export class SSHConnection implements ISSHConnection {
 
   /**
    * Build authentication configuration
+   * Uses keyboard-interactive to let ssh2 try multiple auth methods
    */
   private async buildAuthConfig(): Promise<Record<string, unknown>> {
-    // Try private key first
+    const creds = CredentialService.getInstance();
+    const authMethods: Record<string, unknown> = {};
+
+    // Collect all available private keys
+    const privateKeys: Buffer[] = [];
+    const passphrases: string[] = [];
+
+    // Check configured private key
     if (this.host.privateKeyPath) {
       const keyPath = expandPath(this.host.privateKeyPath);
       if (fs.existsSync(keyPath)) {
         const privateKey = fs.readFileSync(keyPath);
-        // Check if key is encrypted
-        const keyContent = privateKey.toString();
-        if (keyContent.includes('ENCRYPTED')) {
-          const passphrase = await vscode.window.showInputBox({
-            prompt: `Enter passphrase for key ${this.host.privateKeyPath}`,
-            password: true,
-            ignoreFocusOut: true,
-          });
-          return { privateKey, passphrase };
-        }
-        return { privateKey };
-      }
-    }
-
-    // Try default key locations
-    const defaultKeys = [
-      '~/.ssh/id_rsa',
-      '~/.ssh/id_ed25519',
-      '~/.ssh/id_ecdsa',
-      '~/.ssh/id_dsa',
-    ];
-
-    for (const keyPath of defaultKeys) {
-      const expandedKeyPath = expandPath(keyPath);
-      if (fs.existsSync(expandedKeyPath)) {
-        const privateKey = fs.readFileSync(expandedKeyPath);
-        const keyContent = privateKey.toString();
-        if (keyContent.includes('ENCRYPTED')) {
-          const passphrase = await vscode.window.showInputBox({
-            prompt: `Enter passphrase for key ${keyPath}`,
-            password: true,
-            ignoreFocusOut: true,
-          });
-          if (passphrase !== undefined) {
-            return { privateKey, passphrase };
-          }
-        } else {
-          return { privateKey };
+        privateKeys.push(privateKey);
+        if (privateKey.toString().includes('ENCRYPTED')) {
+          const passphrase = await creds.getOrPrompt(this.id, 'passphrase', `Passphrase for ${this.host.privateKeyPath}`);
+          if (passphrase) passphrases.push(passphrase);
         }
       }
     }
 
-    // Try SSH agent
-    const agentSocket = process.env.SSH_AUTH_SOCK;
-    if (agentSocket) {
-      return { agent: agentSocket };
+    // Check default key locations
+    for (const keyPath of ['~/.ssh/id_rsa', '~/.ssh/id_ed25519', '~/.ssh/id_ecdsa']) {
+      const expanded = expandPath(keyPath);
+      if (fs.existsSync(expanded)) {
+        const privateKey = fs.readFileSync(expanded);
+        privateKeys.push(privateKey);
+        if (privateKey.toString().includes('ENCRYPTED')) {
+          const passphrase = await creds.getOrPrompt(this.id, 'passphrase', `Passphrase for ${keyPath}`);
+          if (passphrase) passphrases.push(passphrase);
+        }
+      }
     }
 
-    // Fall back to password
-    const password = await vscode.window.showInputBox({
-      prompt: `Enter password for ${this.host.username}@${this.host.host}`,
-      password: true,
-      ignoreFocusOut: true,
-    });
-
-    if (!password) {
-      throw new AuthenticationError('Password not provided');
+    // Add keys if found
+    if (privateKeys.length > 0) {
+      authMethods.privateKey = privateKeys[0]; // ssh2 uses first key
+      if (passphrases.length > 0) {
+        authMethods.passphrase = passphrases[0];
+      }
     }
 
-    return { password };
+    // Add SSH agent if available
+    if (process.env.SSH_AUTH_SOCK) {
+      authMethods.agent = process.env.SSH_AUTH_SOCK;
+    }
+
+    // Get password (saved or prompt) - always include for fallback
+    const password = await creds.getOrPrompt(this.id, 'password', `Password for ${this.host.username}@${this.host.host}`);
+    if (password) {
+      authMethods.password = password;
+    }
+
+    // If no auth methods available, throw error
+    if (Object.keys(authMethods).length === 0) {
+      throw new AuthenticationError('No authentication method available');
+    }
+
+    // Enable trying all auth methods
+    authMethods.tryKeyboard = true;
+
+    return authMethods;
   }
 
   /**

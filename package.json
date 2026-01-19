@@ -8,15 +8,82 @@
     "vscode": "^1.85.0"
   },
   "categories": [
-    "Other"
+    "Other",
+    "Programming Languages",
+    "Snippets"
   ],
   "keywords": [
     "ssh",
     "sftp",
     "remote",
     "terminal",
-    "file transfer"
+    "file transfer",
+    "ssh client",
+    "remote file",
+    "file browser",
+    "ssh terminal",
+    "port forwarding",
+    "ssh tunnel",
+    "remote development",
+    "remote server",
+    "linux server",
+    "vps",
+    "virtual server",
+    "cloud server",
+    "aws ssh",
+    "azure ssh",
+    "gcp ssh",
+    "digitalocean",
+    "linode",
+    "vultr",
+    "ssh connection",
+    "ssh key",
+    "ssh password",
+    "ssh config",
+    "putty alternative",
+    "remote access",
+    "server management",
+    "devops",
+    "sysadmin",
+    "system administration",
+    "remote file editing",
+    "remote file browser",
+    "ssh file transfer",
+    "secure shell",
+    "openssh",
+    "remote terminal",
+    "ssh extension",
+    "vscode ssh",
+    "vs code ssh",
+    "visual studio code ssh",
+    "lightweight ssh",
+    "simple ssh",
+    "easy ssh",
+    "fast ssh",
+    "no install ssh",
+    "serverless ssh",
+    "agentless ssh",
+    "remote coding",
+    "remote editing",
+    "server monitoring",
+    "linux monitoring",
+    "server status",
+    "server diagnostics"
   ],
+  "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#1e1e1e",
+    "theme": "dark"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/ssh-lite"
+  },
+  "bugs": {
+    "url": "https://github.com/your-username/ssh-lite/issues"
+  },
+  "homepage": "https://github.com/your-username/ssh-lite#readme",
+  "license": "Apache-2.0",
   "activationEvents": [
     "onView:sshLite.hosts",
     "onCommand:sshLite.connect"
@@ -88,6 +155,30 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "sshLite.goToPath",
+        "title": "Go to Path...",
+        "category": "SSH Lite",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "sshLite.goToParent",
+        "title": "Go to Parent Folder",
+        "category": "SSH Lite",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "sshLite.goToHome",
+        "title": "Go to Home (~)",
+        "category": "SSH Lite",
+        "icon": "$(home)"
+      },
+      {
+        "command": "sshLite.goToRoot",
+        "title": "Go to Root (/)",
+        "category": "SSH Lite",
+        "icon": "$(root-folder)"
+      },
+      {
         "command": "sshLite.openFile",
         "title": "Open File",
         "category": "SSH Lite",
@@ -140,6 +231,48 @@
         "title": "Stop Forward",
         "category": "SSH Lite",
         "icon": "$(close)"
+      },
+      {
+        "command": "sshLite.showAuditLog",
+        "title": "Show Audit Log",
+        "category": "SSH Lite",
+        "icon": "$(output)"
+      },
+      {
+        "command": "sshLite.exportAuditLog",
+        "title": "Export Audit Log",
+        "category": "SSH Lite",
+        "icon": "$(export)"
+      },
+      {
+        "command": "sshLite.clearAuditLog",
+        "title": "Clear Audit Log",
+        "category": "SSH Lite",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "sshLite.monitor",
+        "title": "Monitor Server",
+        "category": "SSH Lite",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "sshLite.quickStatus",
+        "title": "Quick Status",
+        "category": "SSH Lite",
+        "icon": "$(dashboard)"
+      },
+      {
+        "command": "sshLite.diagnoseSlowness",
+        "title": "Diagnose Slowness",
+        "category": "SSH Lite",
+        "icon": "$(bug)"
+      },
+      {
+        "command": "sshLite.clearCredentials",
+        "title": "Clear Saved Credentials",
+        "category": "SSH Lite",
+        "icon": "$(trash)"
       }
     ],
     "menus": {
@@ -155,9 +288,29 @@
           "group": "navigation@2"
         },
         {
+          "command": "sshLite.goToPath",
+          "when": "view == sshLite.fileExplorer",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sshLite.goToParent",
+          "when": "view == sshLite.fileExplorer",
+          "group": "navigation@2"
+        },
+        {
+          "command": "sshLite.goToHome",
+          "when": "view == sshLite.fileExplorer",
+          "group": "navigation@3"
+        },
+        {
+          "command": "sshLite.goToRoot",
+          "when": "view == sshLite.fileExplorer",
+          "group": "navigation@4"
+        },
+        {
           "command": "sshLite.refreshFiles",
           "when": "view == sshLite.fileExplorer",
-          "group": "navigation"
+          "group": "navigation@5"
         },
         {
           "command": "sshLite.forwardPort",
@@ -182,6 +335,11 @@
           "group": "1_modify@2"
         },
         {
+          "command": "sshLite.clearCredentials",
+          "when": "view == sshLite.hosts && viewItem =~ /^(host|savedHost|connectedHost)$/",
+          "group": "2_credentials@1"
+        },
+        {
           "command": "sshLite.disconnect",
           "when": "view == sshLite.hosts && viewItem == connectedHost",
           "group": "inline@1"
@@ -190,6 +348,11 @@
           "command": "sshLite.openTerminal",
           "when": "view == sshLite.hosts && viewItem == connectedHost",
           "group": "inline@2"
+        },
+        {
+          "command": "sshLite.monitor",
+          "when": "view == sshLite.hosts && viewItem == connectedHost",
+          "group": "inline@3"
         },
         {
           "command": "sshLite.openFile",
@@ -284,13 +447,35 @@
         },
         "sshLite.connectionTimeout": {
           "type": "number",
-          "default": 10000,
+          "default": 30000,
           "description": "Connection timeout (ms)"
         },
         "sshLite.keepaliveInterval": {
           "type": "number",
           "default": 30000,
           "description": "Keepalive interval (ms)"
+        },
+        "sshLite.treeRefreshIntervalSeconds": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Auto-refresh file tree interval in seconds (0 to disable)"
+        },
+        "sshLite.fileRefreshIntervalSeconds": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Auto-refresh opened files interval in seconds (0 to disable)"
+        },
+        "sshLite.largeFileSizeThreshold": {
+          "type": "number",
+          "default": 104857600,
+          "description": "File size threshold in bytes for large file handling (default: 100MB)"
+        },
+        "sshLite.auditLogPath": {
+          "type": "string",
+          "default": "",
+          "description": "Custom path for audit log file (leave empty for default location)"
         }
       }
     }
@@ -299,7 +484,8 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "lint": "eslint src --ext ts"
+    "lint": "eslint src --ext ts",
+    "clean": "node -e \"const fs=require('fs');const rm=p=>{if(fs.existsSync(p)){fs.rmSync(p,{recursive:true,force:true});console.log('Deleted:',p)}};rm('out');rm('node_modules');rm('*.vsix');\""
   },
   "dependencies": {
     "ssh2": "^1.16.0",
