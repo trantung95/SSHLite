@@ -375,6 +375,18 @@
         "title": "Open Terminal Here",
         "category": "SSH Lite",
         "icon": "$(terminal)"
+      },
+      {
+        "command": "sshLite.refreshItem",
+        "title": "Refresh",
+        "category": "SSH Lite",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "sshLite.clearCache",
+        "title": "Clear Cache (Factory Reset)",
+        "category": "SSH Lite",
+        "icon": "$(clear-all)"
       }
     ],
     "menus": {
@@ -423,6 +435,11 @@
           "command": "sshLite.openTempFolder",
           "when": "view == sshLite.fileExplorer",
           "group": "2_cleanup@2"
+        },
+        {
+          "command": "sshLite.clearCache",
+          "when": "view == sshLite.fileExplorer",
+          "group": "2_cleanup@3"
         },
         {
           "command": "sshLite.forwardPort",
@@ -497,6 +514,26 @@
           "group": "inline@3"
         },
         {
+          "command": "sshLite.disconnect",
+          "when": "view == sshLite.fileExplorer && viewItem == connection",
+          "group": "inline@1"
+        },
+        {
+          "command": "sshLite.openTerminal",
+          "when": "view == sshLite.fileExplorer && viewItem == connection",
+          "group": "inline@2"
+        },
+        {
+          "command": "sshLite.clearTempFilesForConnection",
+          "when": "view == sshLite.fileExplorer && viewItem == connection",
+          "group": "1_cleanup@1"
+        },
+        {
+          "command": "sshLite.openServerBackupFolder",
+          "when": "view == sshLite.fileExplorer && viewItem == connection",
+          "group": "1_cleanup@2"
+        },
+        {
           "command": "sshLite.openFile",
           "when": "view == sshLite.fileExplorer && viewItem == file",
           "group": "inline@1"
@@ -507,9 +544,19 @@
           "group": "inline@2"
         },
         {
+          "command": "sshLite.refreshItem",
+          "when": "view == sshLite.fileExplorer && viewItem == file",
+          "group": "inline@3"
+        },
+        {
           "command": "sshLite.openTerminalHere",
           "when": "view == sshLite.fileExplorer && viewItem == folder",
           "group": "inline@1"
+        },
+        {
+          "command": "sshLite.refreshItem",
+          "when": "view == sshLite.fileExplorer && viewItem == folder",
+          "group": "inline@2"
         },
         {
           "command": "sshLite.downloadFile",
@@ -550,6 +597,11 @@
           "command": "sshLite.openTerminalHere",
           "when": "view == sshLite.fileExplorer && viewItem =~ /^(file|folder)$/",
           "group": "1_actions@8"
+        },
+        {
+          "command": "sshLite.refreshItem",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^(file|folder)$/",
+          "group": "1_actions@9"
         },
         {
           "command": "sshLite.deleteRemote",

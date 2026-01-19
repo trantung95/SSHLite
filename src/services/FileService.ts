@@ -56,7 +56,7 @@ export class FileService {
   private configChangeListener: vscode.Disposable | null = null;
   private debounceTimers: Map<string, NodeJS.Timeout> = new Map();
   private globalRefreshTimer: NodeJS.Timeout | null = null;
-  private isRefreshing: boolean = false;
+  private refreshingConnections: Set<string> = new Set(); // Track which connections are currently refreshing
   private auditService: AuditService;
   private skipNextSave: Set<string> = new Set(); // Paths to skip upload on next save
 
@@ -372,6 +372,13 @@ export class FileService {
   getBackupHistory(connectionId: string, remotePath: string): BackupEntry[] {
     const key = this.getBackupKey(connectionId, remotePath);
     return this.backupHistory.get(key) || [];
+  }
+
+  /**
+   * Clear all backup history (for factory reset)
+   */
+  clearBackupHistory(): void {
+    this.backupHistory.clear();
   }
 
   /**
@@ -1127,40 +1134,63 @@ export class FileService {
 
   /**
    * Refresh all opened files - focused file first, then others
+   * Uses per-connection tracking to allow parallel refresh of different connections
    */
   private async refreshOpenedFiles(): Promise<void> {
-    if (this.isRefreshing || this.fileMappings.size === 0) {
+    if (this.fileMappings.size === 0) {
       return;
     }
 
-    this.isRefreshing = true;
+    const activeEditor = vscode.window.activeTextEditor;
+    const focusedPath = activeEditor?.document.uri.fsPath;
 
-    try {
-      const activeEditor = vscode.window.activeTextEditor;
-      const focusedPath = activeEditor?.document.uri.fsPath;
-
-      // Get all file mappings as array
-      const mappings = Array.from(this.fileMappings.entries());
-
-      // Find focused file mapping
-      const focusedMapping = focusedPath ? mappings.find(([lp]) => lp === focusedPath) : null;
-
-      // Show refresh indicator for focused file
-      if (focusedMapping) {
-        const fileName = path.basename(focusedMapping[1].remotePath);
-        vscode.window.setStatusBarMessage(`$(sync~spin) Refreshing ${fileName}...`, 2000);
-        await this.refreshSingleFile(focusedMapping[0], focusedMapping[1], true);
-      }
-
-      // Refresh other non-focused files
-      for (const [localPath, mapping] of mappings) {
-        if (localPath !== focusedPath) {
-          await this.refreshSingleFile(localPath, mapping, false);
-        }
-      }
-    } finally {
-      this.isRefreshing = false;
+    // Group mappings by connectionId for parallel refresh
+    const mappingsByConnection = new Map<string, Array<[string, FileMapping]>>();
+    for (const [localPath, mapping] of this.fileMappings.entries()) {
+      const group = mappingsByConnection.get(mapping.connectionId) || [];
+      group.push([localPath, mapping]);
+      mappingsByConnection.set(mapping.connectionId, group);
     }
+
+    // Refresh each connection's files in parallel (but files within each connection sequentially)
+    const refreshPromises: Promise<void>[] = [];
+
+    for (const [connectionId, mappings] of mappingsByConnection) {
+      // Skip if this connection is already refreshing
+      if (this.refreshingConnections.has(connectionId)) {
+        continue;
+      }
+
+      this.refreshingConnections.add(connectionId);
+
+      const refreshConnection = async () => {
+        try {
+          // Find focused file for this connection
+          const focusedMapping = focusedPath ? mappings.find(([lp]) => lp === focusedPath) : null;
+
+          // Refresh focused file first if it belongs to this connection
+          if (focusedMapping) {
+            const fileName = path.basename(focusedMapping[1].remotePath);
+            vscode.window.setStatusBarMessage(`$(sync~spin) Refreshing ${fileName}...`, 2000);
+            await this.refreshSingleFile(focusedMapping[0], focusedMapping[1], true);
+          }
+
+          // Refresh other non-focused files in this connection
+          for (const [localPath, mapping] of mappings) {
+            if (localPath !== focusedPath) {
+              await this.refreshSingleFile(localPath, mapping, false);
+            }
+          }
+        } finally {
+          this.refreshingConnections.delete(connectionId);
+        }
+      };
+
+      refreshPromises.push(refreshConnection());
+    }
+
+    // Wait for all connections to finish refreshing
+    await Promise.all(refreshPromises);
   }
 
   /**
@@ -1172,6 +1202,19 @@ export class FileService {
 
     if (!connection) {
       return;
+    }
+
+    // Check if local file still exists - if not, clean up the mapping
+    if (!fs.existsSync(localPath)) {
+      // Check if the document is still open in VS Code
+      const document = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === localPath);
+      if (!document) {
+        // File deleted and not open - remove mapping
+        this.fileMappings.delete(localPath);
+        return;
+      }
+      // Document is open but file deleted - recreate temp directory and file
+      this.ensureTempDir();
     }
 
     try {
@@ -1195,6 +1238,9 @@ export class FileService {
 
           // Skip the upload on save - we're syncing FROM remote, not TO remote
           this.skipNextSave.add(localPath);
+
+          // Ensure temp directory exists before save
+          this.ensureTempDir();
           await document.save();
 
           // Update mapping after successful save
@@ -1217,6 +1263,7 @@ export class FileService {
           });
         } else if (!document) {
           // Document not open in editor - just update the file on disk
+          this.ensureTempDir();
           fs.writeFileSync(localPath, content);
           mapping.originalContent = newContent;
           mapping.lastSyncTime = Date.now();
@@ -1224,6 +1271,76 @@ export class FileService {
       }
     } catch {
       // Ignore errors during refresh
+    }
+  }
+
+  /**
+   * Refresh a single open file from the remote server
+   * Used by the inline refresh button
+   */
+  async refreshOpenFile(connection: SSHConnection, remotePath: string): Promise<void> {
+    // Find the local path for this remote file
+    const localPath = this.findLocalPath(connection.id, remotePath);
+    if (!localPath) {
+      vscode.window.showWarningMessage('File is not currently open for editing');
+      return;
+    }
+
+    const mapping = this.fileMappings.get(localPath);
+    if (!mapping) {
+      return;
+    }
+
+    try {
+      vscode.window.setStatusBarMessage(`$(sync~spin) Refreshing ${path.basename(remotePath)}...`, 5000);
+
+      // Ensure temp directory exists
+      this.ensureTempDir();
+
+      const content = await connection.readFile(remotePath);
+      const newContent = content.toString('utf-8');
+
+      // Find if document is open in VS Code
+      const document = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === localPath);
+
+      if (document) {
+        if (document.isDirty) {
+          // Document has unsaved changes - ask user
+          const action = await vscode.window.showWarningMessage(
+            `File "${path.basename(remotePath)}" has unsaved local changes. Reload from server?`,
+            'Reload (lose changes)',
+            'Cancel'
+          );
+
+          if (action !== 'Reload (lose changes)') {
+            return;
+          }
+        }
+
+        // Update editor content
+        const edit = new vscode.WorkspaceEdit();
+        const fullRange = new vscode.Range(
+          document.positionAt(0),
+          document.positionAt(document.getText().length)
+        );
+        edit.replace(document.uri, fullRange, newContent);
+        await vscode.workspace.applyEdit(edit);
+
+        // Skip the upload on save - we're syncing FROM remote
+        this.skipNextSave.add(localPath);
+        await document.save();
+      } else {
+        // Document not open in editor - just update the file on disk
+        fs.writeFileSync(localPath, content);
+      }
+
+      // Update mapping
+      mapping.originalContent = newContent;
+      mapping.lastSyncTime = Date.now();
+
+      vscode.window.setStatusBarMessage(`$(check) Refreshed ${path.basename(remotePath)}`, 3000);
+    } catch (error) {
+      vscode.window.showErrorMessage(`Failed to refresh file: ${(error as Error).message}`);
     }
   }
 
@@ -1238,6 +1355,9 @@ export class FileService {
     try {
       const content = await connection.readFile(mapping.remotePath);
       const contentStr = content.toString('utf-8');
+
+      // Ensure temp directory exists
+      this.ensureTempDir();
 
       // Refresh the document in VS Code first
       const document = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === localPath);
@@ -1318,12 +1438,18 @@ export class FileService {
     const baseName = path.basename(remoteFile.name, ext);
     const localPath = path.join(this.tempDir, `${baseName}-${hash}${ext}`);
 
-    // Check if already open - just show the existing file
+    // Check if document is already open in VS Code editor
     const existingMapping = this.fileMappings.get(localPath);
     if (existingMapping && fs.existsSync(localPath)) {
-      const document = await vscode.workspace.openTextDocument(localPath);
-      await vscode.window.showTextDocument(document);
-      return;
+      // Check if the document is currently open in VS Code
+      const existingDoc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === localPath);
+      if (existingDoc) {
+        // Document is open - just show it (user might have unsaved changes)
+        await vscode.window.showTextDocument(existingDoc);
+        return;
+      }
+      // Document was closed - remove stale mapping and re-download fresh from server
+      this.fileMappings.delete(localPath);
     }
 
     try {

@@ -111,15 +111,25 @@ export class FileTreeItem extends vscode.TreeItem {
 type TreeItem = ConnectionTreeItem | FileTreeItem | ParentFolderTreeItem;
 
 /**
- * Tree data provider for remote file explorer
+ * MIME type for drag and drop of connections
  */
-export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem> {
+const CONNECTION_MIME_TYPE = 'application/vnd.code.tree.sshlite.connection';
+
+/**
+ * Tree data provider for remote file explorer with drag-drop support
+ */
+export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vscode.TreeDragAndDropController<TreeItem> {
   private readonly _onDidChangeTreeData = new vscode.EventEmitter<TreeItem | undefined | void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+
+  // Drag and drop configuration
+  readonly dropMimeTypes = [CONNECTION_MIME_TYPE];
+  readonly dragMimeTypes = [CONNECTION_MIME_TYPE];
 
   private connectionManager: ConnectionManager;
   private folderHistoryService: FolderHistoryService;
   private currentPaths: Map<string, string> = new Map(); // connectionId -> current path
+  private connectionOrder: string[] = []; // Custom order of connection IDs
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
   private configChangeListener: vscode.Disposable;
 
@@ -395,6 +405,19 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem> {
   }
 
   /**
+   * Refresh a specific folder by path
+   * Clears cache and triggers tree refresh
+   */
+  refreshFolder(connectionId: string, folderPath: string): void {
+    // Clear cache for this folder
+    const key = this.getCacheKey(connectionId, folderPath);
+    this.directoryCache.delete(key);
+
+    // Trigger full refresh since we need to update the tree
+    this._onDidChangeTreeData.fire();
+  }
+
+  /**
    * Get tree item representation
    */
   getTreeItem(element: TreeItem): vscode.TreeItem {
@@ -405,9 +428,9 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem> {
    * Get children
    */
   async getChildren(element?: TreeItem): Promise<TreeItem[]> {
-    // Root level: show all connections
+    // Root level: show all connections in custom order
     if (!element) {
-      const connections = this.connectionManager.getAllConnections();
+      const connections = this.getOrderedConnections();
 
       // Preload current directory for all connections in parallel
       this.preloadConnectionDirectories(connections);
@@ -573,6 +596,128 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem> {
       return undefined;
     }
     return undefined;
+  }
+
+  /**
+   * Handle drag start - only allow dragging connection items
+   */
+  handleDrag(
+    source: readonly TreeItem[],
+    dataTransfer: vscode.DataTransfer,
+    _token: vscode.CancellationToken
+  ): void | Thenable<void> {
+    // Only allow dragging connection items
+    const connectionItems = source.filter((item) => item instanceof ConnectionTreeItem);
+    if (connectionItems.length === 0) {
+      return;
+    }
+
+    // Store connection IDs in the data transfer
+    const connectionIds = connectionItems.map((item) => (item as ConnectionTreeItem).connection.id);
+    dataTransfer.set(CONNECTION_MIME_TYPE, new vscode.DataTransferItem(connectionIds));
+  }
+
+  /**
+   * Handle drop - reorder connections
+   */
+  handleDrop(
+    target: TreeItem | undefined,
+    dataTransfer: vscode.DataTransfer,
+    _token: vscode.CancellationToken
+  ): void | Thenable<void> {
+    const transferItem = dataTransfer.get(CONNECTION_MIME_TYPE);
+    if (!transferItem) {
+      return;
+    }
+
+    const draggedConnectionIds: string[] = transferItem.value;
+    if (!draggedConnectionIds || draggedConnectionIds.length === 0) {
+      return;
+    }
+
+    // Get current connections to build order
+    const connections = this.connectionManager.getAllConnections();
+    const currentIds = connections.map((c) => c.id);
+
+    // Determine target position
+    let targetIndex: number;
+    if (!target) {
+      // Dropped on empty space - move to end
+      targetIndex = currentIds.length;
+    } else if (target instanceof ConnectionTreeItem) {
+      // Dropped on another connection - insert before it
+      targetIndex = this.connectionOrder.indexOf(target.connection.id);
+      if (targetIndex === -1) {
+        targetIndex = currentIds.indexOf(target.connection.id);
+      }
+    } else {
+      // Dropped on a file/folder - find parent connection
+      if (target instanceof FileTreeItem || target instanceof ParentFolderTreeItem) {
+        const parentConnectionId = target.connection.id;
+        targetIndex = this.connectionOrder.indexOf(parentConnectionId);
+        if (targetIndex === -1) {
+          targetIndex = currentIds.indexOf(parentConnectionId);
+        }
+      } else {
+        return;
+      }
+    }
+
+    // Build new order
+    // First, ensure connectionOrder has all current connections
+    this.syncConnectionOrder();
+
+    // Remove dragged items from current order
+    const newOrder = this.connectionOrder.filter((id) => !draggedConnectionIds.includes(id));
+
+    // Adjust target index if items were removed before it
+    let adjustedIndex = targetIndex;
+    for (const draggedId of draggedConnectionIds) {
+      const originalIndex = this.connectionOrder.indexOf(draggedId);
+      if (originalIndex !== -1 && originalIndex < targetIndex) {
+        adjustedIndex--;
+      }
+    }
+
+    // Insert dragged items at new position
+    newOrder.splice(Math.max(0, adjustedIndex), 0, ...draggedConnectionIds);
+
+    // Update order and refresh
+    this.connectionOrder = newOrder;
+    this.refresh();
+  }
+
+  /**
+   * Sync connection order with actual connections
+   * Adds new connections and removes disconnected ones
+   */
+  private syncConnectionOrder(): void {
+    const connections = this.connectionManager.getAllConnections();
+    const currentIds = new Set(connections.map((c) => c.id));
+
+    // Remove disconnected connections from order
+    this.connectionOrder = this.connectionOrder.filter((id) => currentIds.has(id));
+
+    // Add new connections that aren't in order yet (at the end)
+    for (const conn of connections) {
+      if (!this.connectionOrder.includes(conn.id)) {
+        this.connectionOrder.push(conn.id);
+      }
+    }
+  }
+
+  /**
+   * Get connections in custom order
+   */
+  private getOrderedConnections(): SSHConnection[] {
+    this.syncConnectionOrder();
+    const connections = this.connectionManager.getAllConnections();
+    const connectionMap = new Map(connections.map((c) => [c.id, c]));
+
+    // Return connections in custom order
+    return this.connectionOrder
+      .map((id) => connectionMap.get(id))
+      .filter((c): c is SSHConnection => c !== undefined);
   }
 
   /**
