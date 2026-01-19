@@ -12,7 +12,7 @@ import {
   SFTPError,
 } from '../types';
 import { expandPath } from '../utils/helpers';
-import { CredentialService } from '../services/CredentialService';
+import { CredentialService, SavedCredential } from '../services/CredentialService';
 
 /**
  * SSH Connection implementation using ssh2 library
@@ -23,12 +23,14 @@ export class SSHConnection implements ISSHConnection {
   private _client: Client | null = null;
   private _sftp: SFTPWrapper | null = null;
   private _portForwards: Map<number, net.Server> = new Map();
+  private _credential: SavedCredential | undefined;
 
   private readonly _onStateChange = new vscode.EventEmitter<ConnectionState>();
   public readonly onStateChange = this._onStateChange.event;
 
-  constructor(public readonly host: IHostConfig) {
+  constructor(public readonly host: IHostConfig, credential?: SavedCredential) {
     this.id = `${host.host}:${host.port}:${host.username}`;
+    this._credential = credential;
   }
 
   get client(): Client | null {
@@ -107,12 +109,43 @@ export class SSHConnection implements ISSHConnection {
 
   /**
    * Build authentication configuration
-   * Uses keyboard-interactive to let ssh2 try multiple auth methods
+   * Uses specific credential if provided, otherwise tries multiple methods
    */
   private async buildAuthConfig(): Promise<Record<string, unknown>> {
     const creds = CredentialService.getInstance();
     const authMethods: Record<string, unknown> = {};
 
+    // If a specific credential was provided, use only that
+    if (this._credential) {
+      if (this._credential.type === 'password') {
+        // Get password from credential storage
+        const password = await creds.getCredentialSecret(this.id, this._credential.id);
+        if (password) {
+          authMethods.password = password;
+        } else {
+          throw new AuthenticationError('Credential password not found');
+        }
+      } else if (this._credential.type === 'privateKey' && this._credential.privateKeyPath) {
+        // Use private key from credential
+        const keyPath = expandPath(this._credential.privateKeyPath);
+        if (fs.existsSync(keyPath)) {
+          authMethods.privateKey = fs.readFileSync(keyPath);
+          // Get passphrase if stored
+          const passphrase = await creds.getCredentialSecret(this.id, this._credential.id);
+          if (passphrase) {
+            authMethods.passphrase = passphrase;
+          }
+        } else {
+          throw new AuthenticationError(`Private key not found: ${keyPath}`);
+        }
+      }
+
+      // Enable keyboard-interactive as fallback
+      authMethods.tryKeyboard = true;
+      return authMethods;
+    }
+
+    // No specific credential - try multiple auth methods (legacy behavior)
     // Collect all available private keys
     const privateKeys: Buffer[] = [];
     const passphrases: string[] = [];

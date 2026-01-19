@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { SSHConnection } from './SSHConnection';
 import { IHostConfig, ConnectionState } from '../types';
+import { SavedCredential } from '../services/CredentialService';
 
 /**
  * Manages multiple SSH connections
@@ -44,6 +45,52 @@ export class ConnectionManager {
 
     // Create new connection
     const connection = new SSHConnection(host);
+
+    // Listen to state changes
+    connection.onStateChange((state) => {
+      this._onConnectionStateChange.fire({ connection, state });
+      this._onDidChangeConnections.fire();
+
+      // Remove connection on disconnect
+      if (state === ConnectionState.Disconnected) {
+        this._connections.delete(connectionId);
+      }
+    });
+
+    // Store and connect
+    this._connections.set(connectionId, connection);
+    this._onDidChangeConnections.fire();
+
+    try {
+      await connection.connect();
+      // Update context for VS Code when clauses
+      await vscode.commands.executeCommand(
+        'setContext',
+        'sshLite.hasConnections',
+        this._connections.size > 0
+      );
+      return connection;
+    } catch (error) {
+      this._connections.delete(connectionId);
+      this._onDidChangeConnections.fire();
+      throw error;
+    }
+  }
+
+  /**
+   * Connect to a host with a specific credential
+   */
+  async connectWithCredential(host: IHostConfig, credential: SavedCredential): Promise<SSHConnection> {
+    const connectionId = `${host.host}:${host.port}:${host.username}`;
+
+    // Return existing connection if already connected
+    const existing = this._connections.get(connectionId);
+    if (existing && existing.state === ConnectionState.Connected) {
+      return existing;
+    }
+
+    // Create new connection with credential
+    const connection = new SSHConnection(host, credential);
 
     // Listen to state changes
     connection.onStateChange((state) => {

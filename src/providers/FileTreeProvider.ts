@@ -4,6 +4,15 @@ import { ConnectionManager } from '../connection/ConnectionManager';
 import { SSHConnection } from '../connection/SSHConnection';
 import { IRemoteFile } from '../types';
 import { formatFileSize } from '../utils/helpers';
+import { FolderHistoryService } from '../services/FolderHistoryService';
+
+/**
+ * Cache entry for directory listing
+ */
+interface CacheEntry {
+  files: IRemoteFile[];
+  timestamp: number;
+}
 
 /**
  * Tree item representing a connection root
@@ -68,6 +77,7 @@ export class FileTreeItem extends vscode.TreeItem {
     this.resourceUri = vscode.Uri.parse(`ssh://${connection.id}${file.path}`);
     this.contextValue = file.isDirectory ? 'folder' : 'file';
 
+    // Set icon based on type
     if (file.isDirectory) {
       this.iconPath = vscode.ThemeIcon.Folder;
     } else {
@@ -108,12 +118,31 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem> {
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
   private connectionManager: ConnectionManager;
+  private folderHistoryService: FolderHistoryService;
   private currentPaths: Map<string, string> = new Map(); // connectionId -> current path
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
   private configChangeListener: vscode.Disposable;
 
+  // Custom status bar item for loading indicator
+  private loadingStatusBar: vscode.StatusBarItem;
+
+  // Directory cache: connectionId:path -> CacheEntry
+  private directoryCache: Map<string, CacheEntry> = new Map();
+  private readonly CACHE_TTL_MS = 30000; // 30 seconds cache TTL
+
+  // Track active loading operations to avoid duplicates
+  private activeLoads: Map<string, Promise<IRemoteFile[]>> = new Map();
+
+  // Track pending preload operations
+  private preloadQueue: Set<string> = new Set();
+
   constructor() {
     this.connectionManager = ConnectionManager.getInstance();
+    this.folderHistoryService = FolderHistoryService.getInstance();
+
+    // Create custom status bar item (priority 100 = high, aligned left)
+    this.loadingStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    this.loadingStatusBar.name = 'SSH Lite Loading';
 
     // Refresh when connections change
     this.connectionManager.onDidChangeConnections(() => {
@@ -132,6 +161,152 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem> {
   }
 
   /**
+   * Show loading indicator in status bar
+   */
+  private showLoading(message: string): void {
+    this.loadingStatusBar.text = `$(sync~spin) ${message}`;
+    this.loadingStatusBar.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+    this.loadingStatusBar.tooltip = `SSH Lite: ${message}`;
+    this.loadingStatusBar.show();
+  }
+
+  /**
+   * Show success indicator in status bar (briefly)
+   */
+  private showSuccess(message: string): void {
+    this.loadingStatusBar.text = `$(check) ${message}`;
+    this.loadingStatusBar.backgroundColor = undefined;
+    this.loadingStatusBar.tooltip = `SSH Lite: ${message}`;
+    this.loadingStatusBar.show();
+
+    // Hide after 2 seconds
+    setTimeout(() => {
+      this.loadingStatusBar.hide();
+    }, 2000);
+  }
+
+  /**
+   * Hide loading indicator
+   */
+  private hideLoading(): void {
+    this.loadingStatusBar.hide();
+  }
+
+  /**
+   * Get cache key for a connection and path
+   */
+  private getCacheKey(connectionId: string, remotePath: string): string {
+    return `${connectionId}:${remotePath}`;
+  }
+
+  /**
+   * Get cached directory listing if valid
+   */
+  private getCached(connectionId: string, remotePath: string): IRemoteFile[] | null {
+    const key = this.getCacheKey(connectionId, remotePath);
+    const entry = this.directoryCache.get(key);
+    if (entry && Date.now() - entry.timestamp < this.CACHE_TTL_MS) {
+      return entry.files;
+    }
+    return null;
+  }
+
+  /**
+   * Store directory listing in cache
+   */
+  private setCache(connectionId: string, remotePath: string, files: IRemoteFile[]): void {
+    const key = this.getCacheKey(connectionId, remotePath);
+    this.directoryCache.set(key, { files, timestamp: Date.now() });
+  }
+
+  /**
+   * Clear cache for a specific connection or all
+   */
+  clearCache(connectionId?: string): void {
+    if (connectionId) {
+      const prefix = `${connectionId}:`;
+      for (const key of this.directoryCache.keys()) {
+        if (key.startsWith(prefix)) {
+          this.directoryCache.delete(key);
+        }
+      }
+    } else {
+      this.directoryCache.clear();
+    }
+  }
+
+  /**
+   * Load directory with deduplication and caching
+   */
+  private async loadDirectory(
+    connection: SSHConnection,
+    remotePath: string,
+    useCache: boolean = true
+  ): Promise<IRemoteFile[]> {
+    const cacheKey = this.getCacheKey(connection.id, remotePath);
+
+    // Return cached if valid
+    if (useCache) {
+      const cached = this.getCached(connection.id, remotePath);
+      if (cached) {
+        return cached;
+      }
+    }
+
+    // Check if already loading this directory
+    const existingLoad = this.activeLoads.get(cacheKey);
+    if (existingLoad) {
+      return existingLoad;
+    }
+
+    // Start new load
+    const loadPromise = connection.listFiles(remotePath).then((files) => {
+      this.setCache(connection.id, remotePath, files);
+      this.activeLoads.delete(cacheKey);
+      return files;
+    }).catch((error) => {
+      this.activeLoads.delete(cacheKey);
+      throw error;
+    });
+
+    this.activeLoads.set(cacheKey, loadPromise);
+    return loadPromise;
+  }
+
+  /**
+   * Preload subdirectories in background (non-blocking)
+   */
+  private preloadSubdirectories(connection: SSHConnection, files: IRemoteFile[]): void {
+    // Get directories to preload (limit to first 5 to avoid overload)
+    const directories = files
+      .filter((f) => f.isDirectory)
+      .slice(0, 5);
+
+    if (directories.length === 0) return;
+
+    // Preload in parallel, silently in background
+    for (const dir of directories) {
+      const cacheKey = this.getCacheKey(connection.id, dir.path);
+
+      // Skip if already cached or being loaded or in preload queue
+      if (this.getCached(connection.id, dir.path) ||
+          this.activeLoads.has(cacheKey) ||
+          this.preloadQueue.has(cacheKey)) {
+        continue;
+      }
+
+      this.preloadQueue.add(cacheKey);
+
+      // Load in background without blocking
+      this.loadDirectory(connection, dir.path, true)
+        .catch(() => { /* Silently ignore preload errors */ })
+        .finally(() => {
+          this.preloadQueue.delete(cacheKey);
+        });
+    }
+  }
+
+  /**
    * Get current path for a connection
    */
   getCurrentPath(connectionId: string): string {
@@ -143,6 +318,18 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem> {
    */
   setCurrentPath(connectionId: string, newPath: string): void {
     this.currentPaths.set(connectionId, newPath);
+
+    // Record folder visit for smart preloading
+    this.folderHistoryService.recordVisit(connectionId, newPath);
+
+    // Preload the new path immediately for faster rendering
+    const connection = this.connectionManager.getConnection(connectionId);
+    if (connection && !this.getCached(connectionId, newPath)) {
+      this.loadDirectory(connection, newPath, true).catch(() => {
+        /* Ignore preload errors */
+      });
+    }
+
     this.refresh();
   }
 
@@ -182,15 +369,28 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem> {
 
   /**
    * Refresh the tree view
+   * @param clearCache - Whether to clear the cache before refreshing (default: false)
    */
-  refresh(): void {
+  refresh(clearCache: boolean = false): void {
+    if (clearCache) {
+      this.directoryCache.clear();
+    }
     this._onDidChangeTreeData.fire();
   }
 
   /**
    * Refresh a specific item
+   * @param clearCache - Whether to clear cache for this item's path
    */
-  refreshItem(item: TreeItem): void {
+  refreshItem(item: TreeItem, clearCache: boolean = false): void {
+    if (clearCache) {
+      if (item instanceof ConnectionTreeItem) {
+        this.clearCache(item.connection.id);
+      } else if (item instanceof FileTreeItem) {
+        const key = this.getCacheKey(item.connection.id, item.file.path);
+        this.directoryCache.delete(key);
+      }
+    }
     this._onDidChangeTreeData.fire(item);
   }
 
@@ -208,6 +408,10 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem> {
     // Root level: show all connections
     if (!element) {
       const connections = this.connectionManager.getAllConnections();
+
+      // Preload current directory for all connections in parallel
+      this.preloadConnectionDirectories(connections);
+
       return connections.map((conn) => {
         const currentPath = this.getCurrentPath(conn.id);
         return new ConnectionTreeItem(conn, currentPath);
@@ -218,23 +422,29 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem> {
     if (element instanceof ConnectionTreeItem) {
       const currentPath = this.getCurrentPath(element.connection.id);
 
+      // Check cache first - if cached, no loading indicator needed
+      const cached = this.getCached(element.connection.id, currentPath);
+      if (cached) {
+        const items = this.buildDirectoryItems(element.connection, currentPath, cached);
+        // Preload subdirectories in background
+        this.preloadSubdirectories(element.connection, cached);
+        return items;
+      }
+
+      // Show loading indicator (use setTimeout to avoid blocking tree render)
+      setTimeout(() => this.showLoading(`Loading ${currentPath}...`), 0);
+
       try {
-        const files = await element.connection.listFiles(currentPath);
-        const items: TreeItem[] = [];
+        const files = await this.loadDirectory(element.connection, currentPath, false);
+        const items = this.buildDirectoryItems(element.connection, currentPath, files);
 
-        // Add parent folder navigation if not at root
-        if (currentPath !== '/' && currentPath !== '~') {
-          const parentPath = path.posix.dirname(currentPath);
-          items.push(new ParentFolderTreeItem(element.connection, parentPath || '/'));
-        } else if (currentPath === '~') {
-          // Allow going to root from home
-          items.push(new ParentFolderTreeItem(element.connection, '/'));
-        }
+        // Preload subdirectories in background
+        this.preloadSubdirectories(element.connection, files);
 
-        // Add files
-        items.push(...files.map((file) => new FileTreeItem(file, element.connection)));
+        this.showSuccess(`Loaded ${currentPath}`);
         return items;
       } catch (error) {
+        this.hideLoading();
         vscode.window.showErrorMessage(`Failed to list files: ${(error as Error).message}`);
         return [];
       }
@@ -242,16 +452,111 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem> {
 
     // File level: show directory contents
     if (element instanceof FileTreeItem && element.file.isDirectory) {
+      // Check cache first
+      const cached = this.getCached(element.connection.id, element.file.path);
+      if (cached) {
+        const items = cached.map((file) => new FileTreeItem(file, element.connection));
+        // Preload subdirectories in background
+        this.preloadSubdirectories(element.connection, cached);
+        return items;
+      }
+
+      // Show loading indicator (use setTimeout to avoid blocking tree render)
+      setTimeout(() => this.showLoading(`Loading ${element.file.name}...`), 0);
+
       try {
-        const files = await element.connection.listFiles(element.file.path);
-        return files.map((file) => new FileTreeItem(file, element.connection));
+        const files = await this.loadDirectory(element.connection, element.file.path, false);
+        const items = files.map((file) => new FileTreeItem(file, element.connection));
+
+        // Preload subdirectories in background
+        this.preloadSubdirectories(element.connection, files);
+
+        this.showSuccess(`Loaded ${element.file.name}`);
+        return items;
       } catch (error) {
+        this.hideLoading();
         vscode.window.showErrorMessage(`Failed to list directory: ${(error as Error).message}`);
         return [];
       }
     }
 
     return [];
+  }
+
+  /**
+   * Build tree items for a directory listing
+   */
+  private buildDirectoryItems(
+    connection: SSHConnection,
+    currentPath: string,
+    files: IRemoteFile[]
+  ): TreeItem[] {
+    const items: TreeItem[] = [];
+
+    // Add parent folder navigation if not at root
+    if (currentPath !== '/' && currentPath !== '~') {
+      const parentPath = path.posix.dirname(currentPath);
+      items.push(new ParentFolderTreeItem(connection, parentPath || '/'));
+    } else if (currentPath === '~') {
+      // Allow going to root from home
+      items.push(new ParentFolderTreeItem(connection, '/'));
+    }
+
+    // Add files
+    items.push(...files.map((file) => new FileTreeItem(file, connection)));
+
+    return items;
+  }
+
+  /**
+   * Preload current directories for all connections in parallel
+   * Also preloads frequently used folders from history
+   */
+  private preloadConnectionDirectories(connections: SSHConnection[]): void {
+    for (const conn of connections) {
+      const currentPath = this.getCurrentPath(conn.id);
+
+      // Only preload if not already cached
+      if (!this.getCached(conn.id, currentPath)) {
+        this.loadDirectory(conn, currentPath, true).catch(() => {
+          /* Silently ignore preload errors */
+        });
+      }
+
+      // Preload frequently used folders from history (top 5)
+      this.preloadFrequentFolders(conn);
+    }
+  }
+
+  /**
+   * Preload frequently used folders from history
+   */
+  private preloadFrequentFolders(connection: SSHConnection): void {
+    const frequentFolders = this.folderHistoryService.getFrequentFolders(connection.id, 5);
+
+    for (const folderPath of frequentFolders) {
+      const cacheKey = this.getCacheKey(connection.id, folderPath);
+
+      // Skip if already cached, loading, or in preload queue
+      if (
+        this.getCached(connection.id, folderPath) ||
+        this.activeLoads.has(cacheKey) ||
+        this.preloadQueue.has(cacheKey)
+      ) {
+        continue;
+      }
+
+      this.preloadQueue.add(cacheKey);
+
+      // Load in background without blocking
+      this.loadDirectory(connection, folderPath, true)
+        .catch(() => {
+          /* Silently ignore preload errors */
+        })
+        .finally(() => {
+          this.preloadQueue.delete(cacheKey);
+        });
+    }
   }
 
   /**
@@ -277,5 +582,9 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem> {
     this.stopAutoRefresh();
     this.configChangeListener.dispose();
     this._onDidChangeTreeData.dispose();
+    this.loadingStatusBar.dispose();
+    this.directoryCache.clear();
+    this.activeLoads.clear();
+    this.preloadQueue.clear();
   }
 }

@@ -3,11 +3,40 @@ import * as vscode from 'vscode';
 /**
  * Credential types
  */
-export type CredentialType = 'password' | 'passphrase';
+export type CredentialType = 'password' | 'privateKey';
 
 /**
- * Simple credential service - stores credentials automatically
- * No prompts, no profiles, just works.
+ * Pinned folder info
+ */
+export interface PinnedFolder {
+  id: string;
+  name: string;
+  remotePath: string;
+}
+
+/**
+ * Saved credential info
+ */
+export interface SavedCredential {
+  id: string;
+  label: string;
+  type: CredentialType;
+  // For privateKey type, this stores the path
+  privateKeyPath?: string;
+  // Pinned folders for this credential
+  pinnedFolders?: PinnedFolder[];
+}
+
+/**
+ * Credential index stored in settings (list of saved credentials per host)
+ */
+interface CredentialIndex {
+  [hostId: string]: SavedCredential[];
+}
+
+/**
+ * Credential service - manages multiple credentials per host
+ * Supports password and private key authentication
  */
 export class CredentialService {
   private static _instance: CredentialService;
@@ -31,53 +60,111 @@ export class CredentialService {
   }
 
   /**
-   * Get storage key
+   * Get storage key for secret value
    */
-  private getKey(hostId: string, type: CredentialType): string {
-    return `sshLite:${hostId}:${type}`;
+  private getSecretKey(hostId: string, credentialId: string): string {
+    return `sshLite:${hostId}:${credentialId}`;
   }
 
   /**
-   * Get saved credential (returns immediately if saved, otherwise undefined)
+   * Get credential index from settings
    */
-  async get(hostId: string, type: CredentialType): Promise<string | undefined> {
-    const key = this.getKey(hostId, type);
+  private getCredentialIndex(): CredentialIndex {
+    const config = vscode.workspace.getConfiguration('sshLite');
+    return config.get<CredentialIndex>('credentialIndex', {});
+  }
+
+  /**
+   * Save credential index to settings
+   */
+  private async saveCredentialIndex(index: CredentialIndex): Promise<void> {
+    const config = vscode.workspace.getConfiguration('sshLite');
+    await config.update('credentialIndex', index, vscode.ConfigurationTarget.Global);
+  }
+
+  /**
+   * List all credentials for a host
+   */
+  async listCredentials(hostId: string): Promise<SavedCredential[]> {
+    const index = this.getCredentialIndex();
+    return index[hostId] || [];
+  }
+
+  /**
+   * Add a new credential for a host
+   */
+  async addCredential(
+    hostId: string,
+    label: string,
+    type: CredentialType,
+    value: string,
+    privateKeyPath?: string
+  ): Promise<SavedCredential> {
+    const index = this.getCredentialIndex();
+    if (!index[hostId]) {
+      index[hostId] = [];
+    }
+
+    // Generate unique ID
+    const id = `cred_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+    const credential: SavedCredential = {
+      id,
+      label,
+      type,
+      privateKeyPath,
+    };
+
+    // Store the secret value (password or passphrase)
+    const secretKey = this.getSecretKey(hostId, id);
+    if (this.secretStorage) {
+      await this.secretStorage.store(secretKey, value);
+    }
+    this.sessionCredentials.set(secretKey, value);
+
+    // Add to index
+    index[hostId].push(credential);
+    await this.saveCredentialIndex(index);
+
+    return credential;
+  }
+
+  /**
+   * Get secret value for a credential
+   */
+  async getCredentialSecret(hostId: string, credentialId: string): Promise<string | undefined> {
+    const secretKey = this.getSecretKey(hostId, credentialId);
 
     // Check session first
-    const session = this.sessionCredentials.get(key);
+    const session = this.sessionCredentials.get(secretKey);
     if (session) return session;
 
     // Check persistent storage
     if (this.secretStorage) {
-      return await this.secretStorage.get(key);
+      return await this.secretStorage.get(secretKey);
     }
 
     return undefined;
   }
 
   /**
-   * Save credential (always saves persistently for convenience)
+   * Delete a specific credential
    */
-  async save(hostId: string, type: CredentialType, value: string): Promise<void> {
-    const key = this.getKey(hostId, type);
-
-    // Save to session
-    this.sessionCredentials.set(key, value);
-
-    // Save persistently
-    if (this.secretStorage) {
-      await this.secretStorage.store(key, value);
+  async deleteCredential(hostId: string, credentialId: string): Promise<void> {
+    const index = this.getCredentialIndex();
+    if (index[hostId]) {
+      index[hostId] = index[hostId].filter((c) => c.id !== credentialId);
+      if (index[hostId].length === 0) {
+        delete index[hostId];
+      }
+      await this.saveCredentialIndex(index);
     }
-  }
 
-  /**
-   * Delete credential
-   */
-  async delete(hostId: string, type: CredentialType): Promise<void> {
-    const key = this.getKey(hostId, type);
-    this.sessionCredentials.delete(key);
+    // Delete secret
+    const secretKey = this.getSecretKey(hostId, credentialId);
+    this.sessionCredentials.delete(secretKey);
     if (this.secretStorage) {
-      await this.secretStorage.delete(key);
+      await this.secretStorage.delete(secretKey);
     }
   }
 
@@ -85,17 +172,53 @@ export class CredentialService {
    * Delete all credentials for a host
    */
   async deleteAll(hostId: string): Promise<void> {
-    await this.delete(hostId, 'password');
-    await this.delete(hostId, 'passphrase');
+    const credentials = await this.listCredentials(hostId);
+    for (const cred of credentials) {
+      await this.deleteCredential(hostId, cred.id);
+    }
+  }
+
+  /**
+   * Get saved credential (legacy - returns first password credential)
+   * For backward compatibility with existing auth flow
+   */
+  async get(hostId: string, type: 'password' | 'passphrase'): Promise<string | undefined> {
+    const credentials = await this.listCredentials(hostId);
+    const cred = credentials.find((c) => c.type === 'password');
+    if (cred) {
+      return await this.getCredentialSecret(hostId, cred.id);
+    }
+    return undefined;
+  }
+
+  /**
+   * Save credential (legacy - creates/updates default password credential)
+   * For backward compatibility
+   */
+  async save(hostId: string, type: 'password' | 'passphrase', value: string): Promise<void> {
+    const credentials = await this.listCredentials(hostId);
+    const existing = credentials.find((c) => c.type === 'password' && c.label === 'Default');
+
+    if (existing) {
+      // Update existing
+      const secretKey = this.getSecretKey(hostId, existing.id);
+      if (this.secretStorage) {
+        await this.secretStorage.store(secretKey, value);
+      }
+      this.sessionCredentials.set(secretKey, value);
+    } else {
+      // Create new default credential
+      await this.addCredential(hostId, 'Default', 'password', value);
+    }
   }
 
   /**
    * Get credential - returns saved one or prompts user
-   * Automatically saves for next time
+   * Automatically saves for next time (legacy compatibility)
    */
   async getOrPrompt(
     hostId: string,
-    type: CredentialType,
+    type: 'password' | 'passphrase',
     prompt: string
   ): Promise<string | undefined> {
     // Try to get saved credential
@@ -115,6 +238,93 @@ export class CredentialService {
     }
 
     return value;
+  }
+
+  /**
+   * Add a pinned folder to a credential
+   */
+  async addPinnedFolder(
+    hostId: string,
+    credentialId: string,
+    name: string,
+    remotePath: string
+  ): Promise<PinnedFolder> {
+    const index = this.getCredentialIndex();
+    const credentials = index[hostId];
+    if (!credentials) {
+      throw new Error('Host not found');
+    }
+
+    const credential = credentials.find((c) => c.id === credentialId);
+    if (!credential) {
+      throw new Error('Credential not found');
+    }
+
+    // Initialize pinned folders array if needed
+    if (!credential.pinnedFolders) {
+      credential.pinnedFolders = [];
+    }
+
+    // Generate unique ID
+    const id = `pin_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+    const pinnedFolder: PinnedFolder = {
+      id,
+      name,
+      remotePath,
+    };
+
+    credential.pinnedFolders.push(pinnedFolder);
+    await this.saveCredentialIndex(index);
+
+    return pinnedFolder;
+  }
+
+  /**
+   * Delete a pinned folder from a credential
+   */
+  async deletePinnedFolder(hostId: string, credentialId: string, folderId: string): Promise<void> {
+    const index = this.getCredentialIndex();
+    const credentials = index[hostId];
+    if (!credentials) return;
+
+    const credential = credentials.find((c) => c.id === credentialId);
+    if (!credential || !credential.pinnedFolders) return;
+
+    credential.pinnedFolders = credential.pinnedFolders.filter((f) => f.id !== folderId);
+    await this.saveCredentialIndex(index);
+  }
+
+  /**
+   * Rename a pinned folder
+   */
+  async renamePinnedFolder(
+    hostId: string,
+    credentialId: string,
+    folderId: string,
+    newName: string
+  ): Promise<void> {
+    const index = this.getCredentialIndex();
+    const credentials = index[hostId];
+    if (!credentials) return;
+
+    const credential = credentials.find((c) => c.id === credentialId);
+    if (!credential || !credential.pinnedFolders) return;
+
+    const folder = credential.pinnedFolders.find((f) => f.id === folderId);
+    if (folder) {
+      folder.name = newName;
+      await this.saveCredentialIndex(index);
+    }
+  }
+
+  /**
+   * Get pinned folders for a credential
+   */
+  async getPinnedFolders(hostId: string, credentialId: string): Promise<PinnedFolder[]> {
+    const credentials = await this.listCredentials(hostId);
+    const credential = credentials.find((c) => c.id === credentialId);
+    return credential?.pinnedFolders || [];
   }
 
   /**

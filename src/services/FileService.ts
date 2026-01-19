@@ -24,6 +24,23 @@ interface FileMapping {
   lastSyncTime: number;
   lastRemoteModTime?: number;
   originalContent?: string; // For diff tracking
+  serverBackupPath?: string; // Path to backup on remote server
+}
+
+/**
+ * Server-side backup folder name
+ */
+const SERVER_BACKUP_FOLDER = '/tmp/.ssh-lite-backups';
+
+/**
+ * Backup entry for file revert
+ */
+interface BackupEntry {
+  connectionId: string;
+  remotePath: string;
+  content: string;
+  timestamp: number;
+  hostName: string;
 }
 
 /**
@@ -33,6 +50,7 @@ export class FileService {
   private static _instance: FileService;
 
   private tempDir: string;
+  private backupDir: string;
   private fileMappings: Map<string, FileMapping> = new Map(); // localPath -> mapping
   private saveListenerDisposable: vscode.Disposable | null = null;
   private configChangeListener: vscode.Disposable | null = null;
@@ -40,14 +58,24 @@ export class FileService {
   private globalRefreshTimer: NodeJS.Timeout | null = null;
   private isRefreshing: boolean = false;
   private auditService: AuditService;
+  private skipNextSave: Set<string> = new Set(); // Paths to skip upload on next save
+
+  private autoCleanupTimer: NodeJS.Timeout | null = null;
+
+  // Backup storage for file revert (connectionId:remotePath -> BackupEntry[])
+  private backupHistory: Map<string, BackupEntry[]> = new Map();
+  private readonly MAX_BACKUPS_PER_FILE = 10;
 
   private constructor() {
     this.tempDir = path.join(os.tmpdir(), 'ssh-lite');
+    this.backupDir = path.join(this.tempDir, 'backups');
     this.ensureTempDir();
+    this.ensureBackupDir();
     this.setupSaveListener();
     this.setupConfigListener();
     this.auditService = AuditService.getInstance();
     this.startGlobalRefreshTimer();
+    this.startAutoCleanupTimer();
   }
 
   /**
@@ -58,7 +86,194 @@ export class FileService {
       if (e.affectsConfiguration('sshLite.fileRefreshIntervalSeconds')) {
         this.restartGlobalRefreshTimer();
       }
+      if (e.affectsConfiguration('sshLite.tempFileRetentionHours')) {
+        this.restartAutoCleanupTimer();
+      }
     });
+  }
+
+  /**
+   * Start auto-cleanup timer for old temp files
+   */
+  private startAutoCleanupTimer(): void {
+    const config = vscode.workspace.getConfiguration('sshLite');
+    const retentionHours = config.get<number>('tempFileRetentionHours', 0);
+
+    if (retentionHours <= 0) {
+      return; // Disabled
+    }
+
+    // Run cleanup every hour
+    this.autoCleanupTimer = setInterval(() => {
+      this.cleanupOldTempFiles();
+    }, 60 * 60 * 1000); // 1 hour
+
+    // Also run immediately on startup
+    this.cleanupOldTempFiles();
+  }
+
+  /**
+   * Stop auto-cleanup timer
+   */
+  private stopAutoCleanupTimer(): void {
+    if (this.autoCleanupTimer) {
+      clearInterval(this.autoCleanupTimer);
+      this.autoCleanupTimer = null;
+    }
+  }
+
+  /**
+   * Restart auto-cleanup timer (when config changes)
+   */
+  private restartAutoCleanupTimer(): void {
+    this.stopAutoCleanupTimer();
+    this.startAutoCleanupTimer();
+  }
+
+  /**
+   * Clean up temp files older than retention period
+   */
+  cleanupOldTempFiles(connectionId?: string): number {
+    const config = vscode.workspace.getConfiguration('sshLite');
+    const retentionHours = config.get<number>('tempFileRetentionHours', 24);
+
+    if (retentionHours <= 0) {
+      return 0; // Cleanup disabled
+    }
+
+    const now = Date.now();
+    const maxAge = retentionHours * 60 * 60 * 1000; // Convert hours to milliseconds
+    let cleanedCount = 0;
+
+    // Clean files in our mappings
+    for (const [localPath, mapping] of this.fileMappings) {
+      // Skip if filtering by connection and this doesn't match
+      if (connectionId && mapping.connectionId !== connectionId) {
+        continue;
+      }
+
+      const fileAge = now - mapping.lastSyncTime;
+      if (fileAge > maxAge) {
+        // Clear any pending debounce timer
+        const timer = this.debounceTimers.get(localPath);
+        if (timer) {
+          clearTimeout(timer);
+          this.debounceTimers.delete(localPath);
+        }
+
+        // Delete the temp file
+        try {
+          if (fs.existsSync(localPath)) {
+            fs.unlinkSync(localPath);
+            cleanedCount++;
+          }
+        } catch {
+          // Ignore errors during cleanup
+        }
+        this.fileMappings.delete(localPath);
+      }
+    }
+
+    // Also clean orphan files in temp directory that aren't in our mappings
+    try {
+      const files = fs.readdirSync(this.tempDir);
+      for (const file of files) {
+        const filePath = path.join(this.tempDir, file);
+
+        // Skip if this file is in our active mappings
+        if (this.fileMappings.has(filePath)) {
+          continue;
+        }
+
+        try {
+          const stats = fs.statSync(filePath);
+          const fileAge = now - stats.mtimeMs;
+          if (fileAge > maxAge) {
+            fs.unlinkSync(filePath);
+            cleanedCount++;
+          }
+        } catch {
+          // Ignore errors for individual files
+        }
+      }
+    } catch {
+      // Ignore errors reading directory
+    }
+
+    return cleanedCount;
+  }
+
+  /**
+   * Clear all temp files for all servers
+   */
+  clearAllTempFiles(): number {
+    let cleanedCount = 0;
+
+    // Clear all mappings
+    for (const [localPath] of this.fileMappings) {
+      const timer = this.debounceTimers.get(localPath);
+      if (timer) {
+        clearTimeout(timer);
+        this.debounceTimers.delete(localPath);
+      }
+
+      try {
+        if (fs.existsSync(localPath)) {
+          fs.unlinkSync(localPath);
+          cleanedCount++;
+        }
+      } catch {
+        // Ignore errors
+      }
+    }
+    this.fileMappings.clear();
+
+    // Also clean any orphan files in temp directory
+    try {
+      const files = fs.readdirSync(this.tempDir);
+      for (const file of files) {
+        const filePath = path.join(this.tempDir, file);
+        try {
+          fs.unlinkSync(filePath);
+          cleanedCount++;
+        } catch {
+          // Ignore errors
+        }
+      }
+    } catch {
+      // Ignore errors
+    }
+
+    return cleanedCount;
+  }
+
+  /**
+   * Clear all temp files for a specific server
+   */
+  clearTempFilesForConnection(connectionId: string): number {
+    let cleanedCount = 0;
+
+    for (const [localPath, mapping] of this.fileMappings) {
+      if (mapping.connectionId === connectionId) {
+        const timer = this.debounceTimers.get(localPath);
+        if (timer) {
+          clearTimeout(timer);
+          this.debounceTimers.delete(localPath);
+        }
+
+        try {
+          if (fs.existsSync(localPath)) {
+            fs.unlinkSync(localPath);
+            cleanedCount++;
+          }
+        } catch {
+          // Ignore errors
+        }
+        this.fileMappings.delete(localPath);
+      }
+    }
+
+    return cleanedCount;
   }
 
   /**
@@ -89,6 +304,552 @@ export class FileService {
   }
 
   /**
+   * Ensure backup directory exists
+   */
+  private ensureBackupDir(): void {
+    if (!fs.existsSync(this.backupDir)) {
+      fs.mkdirSync(this.backupDir, { recursive: true });
+    }
+  }
+
+  /**
+   * Get backup key for a file
+   */
+  private getBackupKey(connectionId: string, remotePath: string): string {
+    return `${connectionId}:${remotePath}`;
+  }
+
+  /**
+   * Save a backup of file content before upload
+   */
+  private saveBackup(connectionId: string, remotePath: string, content: string, hostName: string): void {
+    const key = this.getBackupKey(connectionId, remotePath);
+    let backups = this.backupHistory.get(key) || [];
+
+    // Add new backup
+    backups.unshift({
+      connectionId,
+      remotePath,
+      content,
+      timestamp: Date.now(),
+      hostName,
+    });
+
+    // Keep only last N backups
+    if (backups.length > this.MAX_BACKUPS_PER_FILE) {
+      backups = backups.slice(0, this.MAX_BACKUPS_PER_FILE);
+    }
+
+    this.backupHistory.set(key, backups);
+
+    // Also save to disk for persistence
+    this.saveBackupToDisk(connectionId, remotePath, content);
+  }
+
+  /**
+   * Save backup to disk file
+   */
+  private saveBackupToDisk(connectionId: string, remotePath: string, content: string): void {
+    try {
+      const hash = crypto
+        .createHash('md5')
+        .update(`${connectionId}:${remotePath}`)
+        .digest('hex')
+        .substring(0, 8);
+      const timestamp = Date.now();
+      const ext = path.extname(remotePath);
+      const baseName = path.basename(remotePath, ext);
+      const backupPath = path.join(this.backupDir, `${baseName}-${hash}-${timestamp}${ext}`);
+      fs.writeFileSync(backupPath, content);
+    } catch {
+      // Ignore backup disk errors
+    }
+  }
+
+  /**
+   * Get backup history for a file
+   */
+  getBackupHistory(connectionId: string, remotePath: string): BackupEntry[] {
+    const key = this.getBackupKey(connectionId, remotePath);
+    return this.backupHistory.get(key) || [];
+  }
+
+  /**
+   * Revert a file to a previous backup
+   */
+  async revertToBackup(
+    connection: SSHConnection,
+    remotePath: string,
+    backup: BackupEntry
+  ): Promise<boolean> {
+    try {
+      const content = Buffer.from(backup.content, 'utf-8');
+      await connection.writeFile(remotePath, content);
+
+      // Update local file if open
+      const localPath = this.findLocalPath(connection.id, remotePath);
+      if (localPath) {
+        const mapping = this.fileMappings.get(localPath);
+        if (mapping) {
+          // Update editor content
+          const document = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === localPath);
+          if (document) {
+            const edit = new vscode.WorkspaceEdit();
+            const fullRange = new vscode.Range(
+              document.positionAt(0),
+              document.positionAt(document.getText().length)
+            );
+            edit.replace(document.uri, fullRange, backup.content);
+            await vscode.workspace.applyEdit(edit);
+
+            this.skipNextSave.add(localPath);
+            await document.save();
+          } else {
+            fs.writeFileSync(localPath, backup.content);
+          }
+          mapping.originalContent = backup.content;
+          mapping.lastSyncTime = Date.now();
+        }
+      }
+
+      vscode.window.showInformationMessage(
+        `Reverted ${path.basename(remotePath)} to backup from ${new Date(backup.timestamp).toLocaleString()}`
+      );
+      return true;
+    } catch (error) {
+      vscode.window.showErrorMessage(`Failed to revert: ${(error as Error).message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Find local path for a remote file
+   */
+  private findLocalPath(connectionId: string, remotePath: string): string | undefined {
+    for (const [localPath, mapping] of this.fileMappings) {
+      if (mapping.connectionId === connectionId && mapping.remotePath === remotePath) {
+        return localPath;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Create a backup of the original file on the remote server
+   * Called when a file is first opened for editing
+   */
+  async createServerBackup(connection: SSHConnection, remotePath: string): Promise<string | undefined> {
+    try {
+      // Generate backup filename with timestamp
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const ext = path.extname(remotePath);
+      const baseName = path.basename(remotePath, ext);
+      const backupFileName = `${baseName}_${timestamp}${ext}`;
+      const backupPath = `${SERVER_BACKUP_FOLDER}/${backupFileName}`;
+
+      // Ensure backup folder exists and copy file in one command (more reliable)
+      // Use || true to prevent errors from propagating
+      await connection.exec(
+        `mkdir -p ${SERVER_BACKUP_FOLDER} 2>/dev/null; cp "${remotePath}" "${backupPath}" 2>/dev/null || true`
+      );
+
+      // Verify backup was created
+      const verifyResult = await connection.exec(`test -f "${backupPath}" && echo "ok" || echo "fail"`).catch(() => 'fail');
+      if (verifyResult.trim() === 'ok') {
+        vscode.window.setStatusBarMessage(`$(archive) Server backup: ${backupFileName}`, 2000);
+        return backupPath;
+      }
+
+      // Backup failed silently - no error shown to user
+      return undefined;
+    } catch {
+      // Silently fail - backup is optional and shouldn't interrupt workflow
+      return undefined;
+    }
+  }
+
+  /**
+   * List all server backups for a remote file
+   */
+  async listServerBackups(connection: SSHConnection, remotePath: string): Promise<{name: string, path: string, timestamp: Date}[]> {
+    try {
+      const baseName = path.basename(remotePath, path.extname(remotePath));
+      const ext = path.extname(remotePath);
+
+      // List files matching the pattern
+      const result = await connection.exec(`ls -1t ${SERVER_BACKUP_FOLDER}/${baseName}_*${ext} 2>/dev/null || true`);
+      const files = result.trim().split('\n').filter((f) => f.length > 0);
+
+      return files.map((filePath) => {
+        const fileName = path.basename(filePath);
+        // Extract timestamp from filename: baseName_2026-01-19T12-30-45-123Z.ext
+        const match = fileName.match(/_(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)/);
+        const timestamp = match ? new Date(match[1].replace(/-/g, (m, i) => i > 9 ? (i === 13 || i === 16 ? ':' : '.') : '-')) : new Date();
+
+        return {
+          name: fileName,
+          path: filePath,
+          timestamp,
+        };
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Show diff between current server file and a server backup
+   */
+  async showServerBackupDiff(connection: SSHConnection, remotePath: string, backupPath: string): Promise<void> {
+    try {
+      // Download both files to temp for diff
+      const currentContent = await connection.readFile(remotePath);
+      const backupContent = await connection.readFile(backupPath);
+
+      const currentTempPath = path.join(this.tempDir, `current-${path.basename(remotePath)}`);
+      const backupTempPath = path.join(this.tempDir, `backup-${path.basename(backupPath)}`);
+
+      fs.writeFileSync(currentTempPath, currentContent);
+      fs.writeFileSync(backupTempPath, backupContent);
+
+      const currentUri = vscode.Uri.file(currentTempPath);
+      const backupUri = vscode.Uri.file(backupTempPath);
+
+      await vscode.commands.executeCommand(
+        'vscode.diff',
+        backupUri,
+        currentUri,
+        `${path.basename(remotePath)} (Backup ↔ Current)`
+      );
+    } catch (error) {
+      vscode.window.showErrorMessage(`Failed to show diff: ${(error as Error).message}`);
+    }
+  }
+
+  /**
+   * Restore a file from server backup
+   */
+  async restoreFromServerBackup(connection: SSHConnection, remotePath: string, backupPath: string): Promise<boolean> {
+    try {
+      // Create backup of current version before restoring
+      await this.createServerBackup(connection, remotePath);
+
+      // Restore from backup
+      await connection.exec(`cp "${backupPath}" "${remotePath}"`);
+
+      // Update local file if open
+      const localPath = this.findLocalPath(connection.id, remotePath);
+      if (localPath) {
+        const mapping = this.fileMappings.get(localPath);
+        if (mapping) {
+          const content = await connection.readFile(remotePath);
+          const contentStr = content.toString('utf-8');
+
+          const document = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === localPath);
+          if (document) {
+            const edit = new vscode.WorkspaceEdit();
+            const fullRange = new vscode.Range(
+              document.positionAt(0),
+              document.positionAt(document.getText().length)
+            );
+            edit.replace(document.uri, fullRange, contentStr);
+            await vscode.workspace.applyEdit(edit);
+
+            this.skipNextSave.add(localPath);
+            await document.save();
+          } else {
+            fs.writeFileSync(localPath, content);
+          }
+          mapping.originalContent = contentStr;
+          mapping.lastSyncTime = Date.now();
+        }
+      }
+
+      vscode.window.showInformationMessage(`Restored ${path.basename(remotePath)} from server backup`);
+      return true;
+    } catch (error) {
+      vscode.window.showErrorMessage(`Failed to restore: ${(error as Error).message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Show picker to select and restore from server backup
+   */
+  async showServerBackupPicker(connection: SSHConnection, remotePath: string): Promise<void> {
+    const backups = await this.listServerBackups(connection, remotePath);
+
+    if (backups.length === 0) {
+      vscode.window.showInformationMessage(`No server backups found for ${path.basename(remotePath)}`);
+      return;
+    }
+
+    const items = backups.map((backup, index) => ({
+      label: `$(history) ${backup.timestamp.toLocaleString()}`,
+      description: index === 0 ? '(Most Recent)' : '',
+      detail: backup.name,
+      backup,
+    }));
+
+    const selected = await vscode.window.showQuickPick(items, {
+      placeHolder: `Select server backup for ${path.basename(remotePath)}`,
+      ignoreFocusOut: true,
+    });
+
+    if (!selected) return;
+
+    const action = await vscode.window.showQuickPick(
+      [
+        { label: '$(eye) View Diff', description: 'Compare backup with current version', value: 'diff' },
+        { label: '$(history) Restore', description: 'Restore this backup to server', value: 'restore' },
+      ],
+      { placeHolder: 'What do you want to do?' }
+    );
+
+    if (!action) return;
+
+    if (action.value === 'diff') {
+      await this.showServerBackupDiff(connection, remotePath, selected.backup.path);
+    } else if (action.value === 'restore') {
+      const confirm = await vscode.window.showWarningMessage(
+        `Restore "${path.basename(remotePath)}" from backup ${selected.backup.timestamp.toLocaleString()}?`,
+        { modal: true },
+        'Restore'
+      );
+
+      if (confirm === 'Restore') {
+        await this.restoreFromServerBackup(connection, remotePath, selected.backup.path);
+      }
+    }
+  }
+
+  /**
+   * Show combined backup logs (both local and server-side backups)
+   */
+  async showBackupLogs(connection: SSHConnection, remotePath: string): Promise<void> {
+    const fileName = path.basename(remotePath);
+
+    // Gather both local and server backups
+    const localBackups = this.getBackupHistory(connection.id, remotePath);
+    const serverBackups = await this.listServerBackups(connection, remotePath);
+
+    if (localBackups.length === 0 && serverBackups.length === 0) {
+      vscode.window.showInformationMessage(`No backups found for ${fileName}`);
+      return;
+    }
+
+    // Build combined list of backup items
+    interface BackupItem {
+      label: string;
+      description: string;
+      detail: string;
+      type: 'local' | 'server';
+      localBackup?: BackupEntry;
+      serverBackup?: { name: string; path: string; timestamp: Date };
+    }
+
+    const items: BackupItem[] = [];
+
+    // Add local backups
+    for (const backup of localBackups) {
+      items.push({
+        label: `$(file) ${new Date(backup.timestamp).toLocaleString()}`,
+        description: 'Local backup',
+        detail: `Size: ${formatFileSize(backup.content.length)} - Host: ${backup.hostName}`,
+        type: 'local',
+        localBackup: backup,
+      });
+    }
+
+    // Add server backups
+    for (const backup of serverBackups) {
+      items.push({
+        label: `$(server) ${backup.timestamp.toLocaleString()}`,
+        description: 'Server backup',
+        detail: backup.name,
+        type: 'server',
+        serverBackup: backup,
+      });
+    }
+
+    // Sort by timestamp (newest first)
+    items.sort((a, b) => {
+      const timeA = a.type === 'local' ? a.localBackup!.timestamp : a.serverBackup!.timestamp.getTime();
+      const timeB = b.type === 'local' ? b.localBackup!.timestamp : b.serverBackup!.timestamp.getTime();
+      return timeB - timeA;
+    });
+
+    const selected = await vscode.window.showQuickPick(items, {
+      placeHolder: `Backup history for ${fileName} (${items.length} backup${items.length > 1 ? 's' : ''})`,
+      ignoreFocusOut: true,
+    });
+
+    if (!selected) return;
+
+    // Show action menu
+    const action = await vscode.window.showQuickPick(
+      [
+        { label: '$(eye) View Diff', description: 'Compare with current version', value: 'diff' },
+        { label: '$(history) Restore', description: 'Restore this backup', value: 'restore' },
+      ],
+      { placeHolder: 'What do you want to do?' }
+    );
+
+    if (!action) return;
+
+    if (selected.type === 'local') {
+      if (action.value === 'diff') {
+        // Show diff for local backup
+        await this.showLocalBackupDiff(connection, remotePath, selected.localBackup!);
+      } else {
+        const confirm = await vscode.window.showWarningMessage(
+          `Restore "${fileName}" from local backup ${new Date(selected.localBackup!.timestamp).toLocaleString()}?`,
+          { modal: true },
+          'Restore'
+        );
+        if (confirm === 'Restore') {
+          await this.revertToBackup(connection, remotePath, selected.localBackup!);
+        }
+      }
+    } else {
+      if (action.value === 'diff') {
+        await this.showServerBackupDiff(connection, remotePath, selected.serverBackup!.path);
+      } else {
+        const confirm = await vscode.window.showWarningMessage(
+          `Restore "${fileName}" from server backup ${selected.serverBackup!.timestamp.toLocaleString()}?`,
+          { modal: true },
+          'Restore'
+        );
+        if (confirm === 'Restore') {
+          await this.restoreFromServerBackup(connection, remotePath, selected.serverBackup!.path);
+        }
+      }
+    }
+  }
+
+  /**
+   * Show diff between current file and a local backup
+   */
+  private async showLocalBackupDiff(connection: SSHConnection, remotePath: string, backup: BackupEntry): Promise<void> {
+    try {
+      // Get current content from server
+      const currentContent = await connection.readFile(remotePath);
+
+      const currentTempPath = path.join(this.tempDir, `current-${path.basename(remotePath)}`);
+      const backupTempPath = path.join(this.tempDir, `local-backup-${path.basename(remotePath)}`);
+
+      fs.writeFileSync(currentTempPath, currentContent);
+      fs.writeFileSync(backupTempPath, backup.content);
+
+      const currentUri = vscode.Uri.file(currentTempPath);
+      const backupUri = vscode.Uri.file(backupTempPath);
+
+      await vscode.commands.executeCommand(
+        'vscode.diff',
+        backupUri,
+        currentUri,
+        `${path.basename(remotePath)} (Local Backup ↔ Current)`
+      );
+    } catch (error) {
+      vscode.window.showErrorMessage(`Failed to show diff: ${(error as Error).message}`);
+    }
+  }
+
+  /**
+   * Open server backup folder in terminal or show listing
+   */
+  async openServerBackupFolder(connection: SSHConnection): Promise<void> {
+    try {
+      // List all files in the backup folder
+      const result = await connection.exec(`ls -lh ${SERVER_BACKUP_FOLDER} 2>/dev/null || echo "No backups found"`);
+
+      if (result.includes('No backups found') || result.trim() === '') {
+        vscode.window.showInformationMessage(`No server backups found on ${connection.host.name}`);
+        return;
+      }
+
+      // Show in output panel
+      const outputChannel = vscode.window.createOutputChannel(`SSH Lite - Server Backups (${connection.host.name})`);
+      outputChannel.clear();
+      outputChannel.appendLine(`=== Server Backup Folder: ${SERVER_BACKUP_FOLDER} ===`);
+      outputChannel.appendLine(`=== Host: ${connection.host.name} (${connection.host.username}@${connection.host.host}) ===`);
+      outputChannel.appendLine('');
+      outputChannel.appendLine(result);
+      outputChannel.show();
+
+      // Also offer to open terminal at that location
+      const action = await vscode.window.showInformationMessage(
+        `Server backups listed in output panel`,
+        'Open Terminal Here',
+        'Clear All Backups'
+      );
+
+      if (action === 'Open Terminal Here') {
+        // Import TerminalService and open terminal with cd command
+        const { TerminalService } = await import('./TerminalService');
+        const terminalService = TerminalService.getInstance();
+        const terminal = await terminalService.createTerminal(connection);
+        if (terminal) {
+          terminal.sendText(`cd ${SERVER_BACKUP_FOLDER}`);
+        }
+      } else if (action === 'Clear All Backups') {
+        const confirm = await vscode.window.showWarningMessage(
+          `Clear all server backups on ${connection.host.name}?`,
+          { modal: true },
+          'Clear'
+        );
+        if (confirm === 'Clear') {
+          const count = await this.clearServerBackups(connection);
+          vscode.window.showInformationMessage(`Cleared ${count} backup(s)`);
+        }
+      }
+    } catch (error) {
+      vscode.window.showErrorMessage(`Failed to access server backup folder: ${(error as Error).message}`);
+    }
+  }
+
+  /**
+   * Clean up old server backups based on retention settings
+   */
+  async cleanupServerBackups(connection: SSHConnection): Promise<number> {
+    const config = vscode.workspace.getConfiguration('sshLite');
+    const retentionHours = config.get<number>('tempFileRetentionHours', 504);
+
+    if (retentionHours <= 0) {
+      return 0;
+    }
+
+    try {
+      // Delete files older than retention period
+      const retentionMinutes = retentionHours * 60;
+      const result = await connection.exec(
+        `find ${SERVER_BACKUP_FOLDER} -type f -mmin +${retentionMinutes} -delete 2>/dev/null; ` +
+        `find ${SERVER_BACKUP_FOLDER} -type f -mmin +${retentionMinutes} 2>/dev/null | wc -l || echo 0`
+      );
+
+      const deletedCount = parseInt(result.trim(), 10) || 0;
+      return deletedCount;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Delete all server backups for a connection
+   */
+  async clearServerBackups(connection: SSHConnection): Promise<number> {
+    try {
+      const result = await connection.exec(
+        `ls -1 ${SERVER_BACKUP_FOLDER} 2>/dev/null | wc -l; rm -rf ${SERVER_BACKUP_FOLDER}/* 2>/dev/null || true`
+      );
+      const count = parseInt(result.split('\n')[0].trim(), 10) || 0;
+      return count;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
    * Setup listener for file saves
    */
   private setupSaveListener(): void {
@@ -101,6 +862,14 @@ export class FileService {
    * Handle file save event
    */
   private handleFileSave(document: vscode.TextDocument): void {
+    const localPath = document.uri.fsPath;
+
+    // Check if we should skip this save (used after loading to clear dirty state)
+    if (this.skipNextSave.has(localPath)) {
+      this.skipNextSave.delete(localPath);
+      return;
+    }
+
     const config = vscode.workspace.getConfiguration('sshLite');
     const autoUpload = config.get<boolean>('autoUploadOnSave', true);
 
@@ -108,7 +877,6 @@ export class FileService {
       return;
     }
 
-    const localPath = document.uri.fsPath;
     const mapping = this.fileMappings.get(localPath);
 
     if (!mapping) {
@@ -145,12 +913,73 @@ export class FileService {
       return;
     }
 
+    // Check if upload confirmation is enabled
+    const config = vscode.workspace.getConfiguration('sshLite');
+    const confirmUpload = config.get<boolean>('confirmUpload', false);
+
+    if (confirmUpload) {
+      const fileName = path.basename(mapping.remotePath);
+      const fileSize = Buffer.byteLength(newContent, 'utf-8');
+      const oldSize = mapping.originalContent ? Buffer.byteLength(mapping.originalContent, 'utf-8') : 0;
+      const sizeDiff = fileSize - oldSize;
+      const sizeDiffStr = sizeDiff >= 0 ? `+${formatFileSize(sizeDiff)}` : `-${formatFileSize(Math.abs(sizeDiff))}`;
+
+      // Show detailed confirmation with file info
+      const items = [
+        {
+          label: '$(cloud-upload) Upload',
+          description: 'Upload file to server',
+          detail: `${fileName} → ${connection.host.name}:${mapping.remotePath}`,
+          value: 'upload',
+        },
+        {
+          label: '$(eye) View Changes',
+          description: 'Compare local changes with server version',
+          detail: `Size: ${formatFileSize(fileSize)} (${sizeDiffStr})`,
+          value: 'diff',
+        },
+        {
+          label: '$(x) Cancel',
+          description: 'Cancel upload',
+          detail: 'Changes will remain in local editor only',
+          value: 'cancel',
+        },
+      ];
+
+      const selected = await vscode.window.showQuickPick(items, {
+        placeHolder: `Upload "${fileName}" to ${connection.host.name}?`,
+        title: 'Confirm File Upload',
+        ignoreFocusOut: true,
+      });
+
+      if (!selected || selected.value === 'cancel') {
+        vscode.window.setStatusBarMessage(`$(x) Upload cancelled`, 2000);
+        return;
+      }
+
+      if (selected.value === 'diff') {
+        // Show diff before upload
+        await this.showUploadDiff(mapping, newContent);
+        return; // User can save again after reviewing
+      }
+    }
+
+    // Save backup of old content before upload
+    const oldContent = mapping.originalContent || '';
+    if (oldContent) {
+      this.saveBackup(
+        connection.id,
+        mapping.remotePath,
+        oldContent,
+        connection.host.name
+      );
+    }
+
     try {
       const content = Buffer.from(newContent, 'utf-8');
       await connection.writeFile(mapping.remotePath, content);
 
       // Log to audit trail with diff
-      const oldContent = mapping.originalContent || '';
       this.auditService.logEdit(
         connection.id,
         connection.host.name,
@@ -166,11 +995,23 @@ export class FileService {
       mapping.originalContent = newContent;
       mapping.lastSyncTime = Date.now();
 
-      // Show status bar message
-      vscode.window.setStatusBarMessage(
-        `$(cloud-upload) Uploaded to ${path.basename(mapping.remotePath)}`,
-        3000
-      );
+      // Show info notification with revert option
+      const backups = this.getBackupHistory(connection.id, mapping.remotePath);
+      if (backups.length > 0) {
+        vscode.window.showInformationMessage(
+          `$(cloud-upload) Uploaded ${path.basename(mapping.remotePath)} to ${connection.host.name}`,
+          'Revert'
+        ).then((action) => {
+          if (action === 'Revert') {
+            this.showRevertPicker(connection, mapping.remotePath);
+          }
+        });
+      } else {
+        vscode.window.setStatusBarMessage(
+          `$(cloud-upload) Uploaded to ${path.basename(mapping.remotePath)}`,
+          3000
+        );
+      }
     } catch (error) {
       // Log failed upload
       this.auditService.logEdit(
@@ -179,12 +1020,76 @@ export class FileService {
         connection.host.username,
         mapping.remotePath,
         mapping.localPath,
-        mapping.originalContent || '',
+        oldContent,
         newContent,
         false,
         (error as Error).message
       );
       vscode.window.showErrorMessage(`Failed to upload file: ${(error as Error).message}`);
+    }
+  }
+
+  /**
+   * Show diff between local changes and original content
+   */
+  private async showUploadDiff(mapping: FileMapping, newContent: string): Promise<void> {
+    try {
+      const oldContent = mapping.originalContent || '';
+
+      // Create temp files for diff
+      const oldTempPath = path.join(this.tempDir, `diff-old-${path.basename(mapping.remotePath)}`);
+      const newTempPath = path.join(this.tempDir, `diff-new-${path.basename(mapping.remotePath)}`);
+
+      fs.writeFileSync(oldTempPath, oldContent);
+      fs.writeFileSync(newTempPath, newContent);
+
+      const oldUri = vscode.Uri.file(oldTempPath);
+      const newUri = vscode.Uri.file(newTempPath);
+
+      await vscode.commands.executeCommand(
+        'vscode.diff',
+        oldUri,
+        newUri,
+        `${path.basename(mapping.remotePath)} (Server ↔ Your Changes)`
+      );
+    } catch (error) {
+      vscode.window.showErrorMessage(`Failed to show diff: ${(error as Error).message}`);
+    }
+  }
+
+  /**
+   * Show picker for selecting backup to revert to
+   */
+  async showRevertPicker(connection: SSHConnection, remotePath: string): Promise<void> {
+    const backups = this.getBackupHistory(connection.id, remotePath);
+
+    if (backups.length === 0) {
+      vscode.window.showInformationMessage('No backups available for this file');
+      return;
+    }
+
+    const items = backups.map((backup, index) => ({
+      label: `$(history) ${new Date(backup.timestamp).toLocaleString()}`,
+      description: index === 0 ? '(Most Recent)' : '',
+      detail: `${formatFileSize(backup.content.length)} - ${backup.hostName}`,
+      backup,
+    }));
+
+    const selected = await vscode.window.showQuickPick(items, {
+      placeHolder: `Select backup to revert ${path.basename(remotePath)}`,
+      ignoreFocusOut: true,
+    });
+
+    if (selected) {
+      const confirm = await vscode.window.showWarningMessage(
+        `Revert "${path.basename(remotePath)}" to backup from ${new Date(selected.backup.timestamp).toLocaleString()}?`,
+        { modal: true },
+        'Revert'
+      );
+
+      if (confirm === 'Revert') {
+        await this.revertToBackup(connection, remotePath, selected.backup);
+      }
     }
   }
 
@@ -240,8 +1145,10 @@ export class FileService {
       // Find focused file mapping
       const focusedMapping = focusedPath ? mappings.find(([lp]) => lp === focusedPath) : null;
 
-      // Refresh focused file first (high priority)
+      // Show refresh indicator for focused file
       if (focusedMapping) {
+        const fileName = path.basename(focusedMapping[1].remotePath);
+        vscode.window.setStatusBarMessage(`$(sync~spin) Refreshing ${fileName}...`, 2000);
         await this.refreshSingleFile(focusedMapping[0], focusedMapping[1], true);
       }
 
@@ -273,14 +1180,11 @@ export class FileService {
 
       // Check if content actually changed
       if (newContent !== mapping.originalContent) {
-        // Update local file
-        fs.writeFileSync(localPath, content);
-        mapping.originalContent = newContent;
-        mapping.lastSyncTime = Date.now();
-
-        // Refresh the document if it's open in VS Code
+        // Find if document is open in VS Code
         const document = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === localPath);
+
         if (document && !document.isDirty) {
+          // Document is open and clean - update editor content first, then save to disk
           const edit = new vscode.WorkspaceEdit();
           const fullRange = new vscode.Range(
             document.positionAt(0),
@@ -288,6 +1192,14 @@ export class FileService {
           );
           edit.replace(document.uri, fullRange, newContent);
           await vscode.workspace.applyEdit(edit);
+
+          // Skip the upload on save - we're syncing FROM remote, not TO remote
+          this.skipNextSave.add(localPath);
+          await document.save();
+
+          // Update mapping after successful save
+          mapping.originalContent = newContent;
+          mapping.lastSyncTime = Date.now();
 
           if (isFocused) {
             vscode.window.setStatusBarMessage(`$(sync) Auto-refreshed ${path.basename(mapping.remotePath)}`, 2000);
@@ -303,6 +1215,11 @@ export class FileService {
               await this.reloadRemoteFile(localPath, mapping, connection);
             }
           });
+        } else if (!document) {
+          // Document not open in editor - just update the file on disk
+          fs.writeFileSync(localPath, content);
+          mapping.originalContent = newContent;
+          mapping.lastSyncTime = Date.now();
         }
       }
     } catch {
@@ -320,11 +1237,9 @@ export class FileService {
   ): Promise<void> {
     try {
       const content = await connection.readFile(mapping.remotePath);
-      fs.writeFileSync(localPath, content);
-      mapping.originalContent = content.toString('utf-8');
-      mapping.lastSyncTime = Date.now();
+      const contentStr = content.toString('utf-8');
 
-      // Refresh the document in VS Code
+      // Refresh the document in VS Code first
       const document = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === localPath);
       if (document) {
         const edit = new vscode.WorkspaceEdit();
@@ -332,9 +1247,19 @@ export class FileService {
           document.positionAt(0),
           document.positionAt(document.getText().length)
         );
-        edit.replace(document.uri, fullRange, content.toString('utf-8'));
+        edit.replace(document.uri, fullRange, contentStr);
         await vscode.workspace.applyEdit(edit);
+
+        // Skip the upload on save - we're syncing FROM remote
+        this.skipNextSave.add(localPath);
+        await document.save();
+      } else {
+        // Document not open - write directly to disk
+        fs.writeFileSync(localPath, content);
       }
+
+      mapping.originalContent = contentStr;
+      mapping.lastSyncTime = Date.now();
 
       vscode.window.setStatusBarMessage(`$(sync) Reloaded ${path.basename(mapping.remotePath)}`, 3000);
     } catch (error) {
@@ -374,6 +1299,7 @@ export class FileService {
 
   /**
    * Open a remote file for editing
+   * Optimized: Show editor immediately with loading state, then load content
    */
   async openRemoteFile(connection: SSHConnection, remoteFile: IRemoteFile): Promise<void> {
     // Check file size for large file handling
@@ -392,23 +1318,52 @@ export class FileService {
     const baseName = path.basename(remoteFile.name, ext);
     const localPath = path.join(this.tempDir, `${baseName}-${hash}${ext}`);
 
-    // Check if already open
+    // Check if already open - just show the existing file
     const existingMapping = this.fileMappings.get(localPath);
-    if (existingMapping) {
-      // Just open the existing file
+    if (existingMapping && fs.existsSync(localPath)) {
       const document = await vscode.workspace.openTextDocument(localPath);
       await vscode.window.showTextDocument(document);
       return;
     }
 
     try {
-      // Download file
-      vscode.window.setStatusBarMessage(`$(cloud-download) Downloading ${remoteFile.name}...`, 5000);
+      // Create placeholder file and open editor IMMEDIATELY
+      const loadingMessage = `// Loading ${remoteFile.name} from ${connection.host.name}...\n// Please wait...`;
+      fs.writeFileSync(localPath, loadingMessage);
+
+      // Open editor right away so user sees something
+      const document = await vscode.workspace.openTextDocument(localPath);
+      const editor = await vscode.window.showTextDocument(document);
+
+      // Show status bar message
+      vscode.window.setStatusBarMessage(`$(sync~spin) Downloading ${remoteFile.name}...`, 10000);
+
+      // Download content in background
       const content = await connection.readFile(remoteFile.path);
       const contentStr = content.toString('utf-8');
 
-      // Write to temp file
-      fs.writeFileSync(localPath, content);
+      // Write content to disk first
+      fs.writeFileSync(localPath, contentStr, 'utf-8');
+
+      // Replace editor content with actual file content using WorkspaceEdit
+      const edit = new vscode.WorkspaceEdit();
+      const fullRange = new vscode.Range(
+        document.positionAt(0),
+        document.positionAt(document.getText().length)
+      );
+      edit.replace(document.uri, fullRange, contentStr);
+      await vscode.workspace.applyEdit(edit);
+
+      // Mark to skip upload on save - we're just clearing the dirty state
+      this.skipNextSave.add(localPath);
+
+      // Save document - this clears dirty state (content matches disk)
+      await document.save();
+
+      // If still dirty after save, try revert as fallback
+      if (document.isDirty) {
+        await vscode.commands.executeCommand('workbench.action.files.revert');
+      }
 
       // Store mapping with original content for audit
       const mapping: FileMapping = {
@@ -420,6 +1375,17 @@ export class FileService {
         originalContent: contentStr,
       };
       this.fileMappings.set(localPath, mapping);
+
+      // Create server-side backup in background (non-blocking, silent failure)
+      this.createServerBackup(connection, remoteFile.path)
+        .then((backupPath) => {
+          if (backupPath) {
+            mapping.serverBackupPath = backupPath;
+          }
+        })
+        .catch(() => {
+          // Silently ignore backup errors
+        });
 
       // Log download
       this.auditService.log({
@@ -433,13 +1399,19 @@ export class FileService {
         success: true,
       });
 
-      // Open in editor
-      const document = await vscode.workspace.openTextDocument(localPath);
-      await vscode.window.showTextDocument(document);
-
-      vscode.window.setStatusBarMessage(`$(check) Opened ${remoteFile.name}`, 3000);
+      vscode.window.setStatusBarMessage(`$(check) Loaded ${remoteFile.name}`, 3000);
     } catch (error) {
-      vscode.window.showErrorMessage(`Failed to open file: ${(error as Error).message}`);
+      // On error, show error in the already-open editor
+      vscode.window.showErrorMessage(`Failed to load file: ${(error as Error).message}`);
+
+      // Clean up the placeholder file
+      if (fs.existsSync(localPath)) {
+        try {
+          fs.unlinkSync(localPath);
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
     }
   }
 
@@ -946,6 +1918,13 @@ export class FileService {
   }
 
   /**
+   * Get the temp directory path
+   */
+  getTempDir(): string {
+    return this.tempDir;
+  }
+
+  /**
    * Clean up temp files for a connection
    */
   cleanupConnection(connectionId: string): void {
@@ -994,6 +1973,7 @@ export class FileService {
   dispose(): void {
     this.cleanupAll();
     this.stopGlobalRefreshTimer();
+    this.stopAutoCleanupTimer();
 
     if (this.saveListenerDisposable) {
       this.saveListenerDisposable.dispose();

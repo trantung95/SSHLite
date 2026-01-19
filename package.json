@@ -273,6 +273,108 @@
         "title": "Clear Saved Credentials",
         "category": "SSH Lite",
         "icon": "$(trash)"
+      },
+      {
+        "command": "sshLite.addCredential",
+        "title": "Add Credential",
+        "category": "SSH Lite",
+        "icon": "$(add)"
+      },
+      {
+        "command": "sshLite.connectWithCredential",
+        "title": "Connect with Credential",
+        "category": "SSH Lite",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "sshLite.deleteCredential",
+        "title": "Delete Credential",
+        "category": "SSH Lite",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "sshLite.clearAllTempFiles",
+        "title": "Clear All Temp Files",
+        "category": "SSH Lite",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "sshLite.clearTempFilesForConnection",
+        "title": "Clear Temp Files for Server",
+        "category": "SSH Lite",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "sshLite.openTempFolder",
+        "title": "Open Temp Files Folder",
+        "category": "SSH Lite",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "sshLite.pinFolder",
+        "title": "Pin Folder to Credential",
+        "category": "SSH Lite",
+        "icon": "$(pinned)"
+      },
+      {
+        "command": "sshLite.connectToPinnedFolder",
+        "title": "Connect to Pinned Folder",
+        "category": "SSH Lite",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "sshLite.deletePinnedFolder",
+        "title": "Remove Pinned Folder",
+        "category": "SSH Lite",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "sshLite.renamePinnedFolder",
+        "title": "Rename Pinned Folder",
+        "category": "SSH Lite",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "sshLite.revertFile",
+        "title": "Revert File to Previous Version",
+        "category": "SSH Lite",
+        "icon": "$(history)"
+      },
+      {
+        "command": "sshLite.showFileBackups",
+        "title": "Show File Backup History",
+        "category": "SSH Lite",
+        "icon": "$(history)"
+      },
+      {
+        "command": "sshLite.showServerBackups",
+        "title": "Show Server Backups",
+        "category": "SSH Lite",
+        "icon": "$(server)"
+      },
+      {
+        "command": "sshLite.clearServerBackups",
+        "title": "Clear Server Backups",
+        "category": "SSH Lite",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "sshLite.showBackupLogs",
+        "title": "Show Backup Logs",
+        "category": "SSH Lite",
+        "icon": "$(list-flat)"
+      },
+      {
+        "command": "sshLite.openServerBackupFolder",
+        "title": "Open Server Backup Folder",
+        "category": "SSH Lite",
+        "icon": "$(folder-library)"
+      },
+      {
+        "command": "sshLite.openTerminalHere",
+        "title": "Open Terminal Here",
+        "category": "SSH Lite",
+        "icon": "$(terminal)"
       }
     ],
     "menus": {
@@ -313,6 +415,16 @@
           "group": "navigation@5"
         },
         {
+          "command": "sshLite.clearAllTempFiles",
+          "when": "view == sshLite.fileExplorer",
+          "group": "2_cleanup@1"
+        },
+        {
+          "command": "sshLite.openTempFolder",
+          "when": "view == sshLite.fileExplorer",
+          "group": "2_cleanup@2"
+        },
+        {
           "command": "sshLite.forwardPort",
           "when": "view == sshLite.portForwards",
           "group": "navigation"
@@ -320,9 +432,24 @@
       ],
       "view/item/context": [
         {
-          "command": "sshLite.connect",
-          "when": "view == sshLite.hosts && viewItem == host",
+          "command": "sshLite.connectWithCredential",
+          "when": "view == sshLite.hosts && viewItem == credential",
           "group": "inline@1"
+        },
+        {
+          "command": "sshLite.deleteCredential",
+          "when": "view == sshLite.hosts && viewItem == credential",
+          "group": "inline@2"
+        },
+        {
+          "command": "sshLite.renamePinnedFolder",
+          "when": "view == sshLite.hosts && viewItem == pinnedFolder",
+          "group": "inline@1"
+        },
+        {
+          "command": "sshLite.deletePinnedFolder",
+          "when": "view == sshLite.hosts && viewItem == pinnedFolder",
+          "group": "inline@2"
         },
         {
           "command": "sshLite.editHost",
@@ -335,9 +462,24 @@
           "group": "1_modify@2"
         },
         {
+          "command": "sshLite.addCredential",
+          "when": "view == sshLite.hosts && viewItem =~ /^(host|savedHost)$/",
+          "group": "inline@1"
+        },
+        {
           "command": "sshLite.clearCredentials",
           "when": "view == sshLite.hosts && viewItem =~ /^(host|savedHost|connectedHost)$/",
           "group": "2_credentials@1"
+        },
+        {
+          "command": "sshLite.clearTempFilesForConnection",
+          "when": "view == sshLite.hosts && viewItem == connectedHost",
+          "group": "3_cleanup@1"
+        },
+        {
+          "command": "sshLite.openServerBackupFolder",
+          "when": "view == sshLite.hosts && viewItem == connectedHost",
+          "group": "3_cleanup@2"
         },
         {
           "command": "sshLite.disconnect",
@@ -360,6 +502,16 @@
           "group": "inline@1"
         },
         {
+          "command": "sshLite.openTerminalHere",
+          "when": "view == sshLite.fileExplorer && viewItem == file",
+          "group": "inline@2"
+        },
+        {
+          "command": "sshLite.openTerminalHere",
+          "when": "view == sshLite.fileExplorer && viewItem == folder",
+          "group": "inline@1"
+        },
+        {
           "command": "sshLite.downloadFile",
           "when": "view == sshLite.fileExplorer && viewItem =~ /^(file|folder)$/",
           "group": "1_actions@1"
@@ -373,6 +525,31 @@
           "command": "sshLite.createFolder",
           "when": "view == sshLite.fileExplorer && viewItem == folder",
           "group": "1_actions@3"
+        },
+        {
+          "command": "sshLite.pinFolder",
+          "when": "view == sshLite.fileExplorer && viewItem == folder",
+          "group": "1_actions@4"
+        },
+        {
+          "command": "sshLite.showFileBackups",
+          "when": "view == sshLite.fileExplorer && viewItem == file",
+          "group": "1_actions@5"
+        },
+        {
+          "command": "sshLite.showServerBackups",
+          "when": "view == sshLite.fileExplorer && viewItem == file",
+          "group": "1_actions@6"
+        },
+        {
+          "command": "sshLite.showBackupLogs",
+          "when": "view == sshLite.fileExplorer && viewItem == file",
+          "group": "1_actions@7"
+        },
+        {
+          "command": "sshLite.openTerminalHere",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^(file|folder)$/",
+          "group": "1_actions@8"
         },
         {
           "command": "sshLite.deleteRemote",
@@ -457,13 +634,13 @@
         },
         "sshLite.treeRefreshIntervalSeconds": {
           "type": "number",
-          "default": 0,
+          "default": 10,
           "minimum": 0,
           "description": "Auto-refresh file tree interval in seconds (0 to disable)"
         },
         "sshLite.fileRefreshIntervalSeconds": {
           "type": "number",
-          "default": 0,
+          "default": 3,
           "minimum": 0,
           "description": "Auto-refresh opened files interval in seconds (0 to disable)"
         },
@@ -476,6 +653,29 @@
           "type": "string",
           "default": "",
           "description": "Custom path for audit log file (leave empty for default location)"
+        },
+        "sshLite.credentialIndex": {
+          "type": "object",
+          "default": {},
+          "description": "Internal: Credential index (do not edit manually)"
+        },
+        "sshLite.tempFileRetentionHours": {
+          "type": "number",
+          "default": 504,
+          "minimum": 0,
+          "description": "Auto-delete temp files older than this many hours (0 to disable, default: 504 = 21 days)"
+        },
+        "sshLite.confirmUpload": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show confirmation dialog before uploading files to server"
+        },
+        "sshLite.maxBackupsPerFile": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 50,
+          "description": "Maximum number of backups to keep per file for revert functionality"
         }
       }
     }
