@@ -5,6 +5,7 @@ import { SSHConnection } from '../connection/SSHConnection';
 import { IRemoteFile } from '../types';
 import { formatFileSize } from '../utils/helpers';
 import { FolderHistoryService } from '../services/FolderHistoryService';
+import { FileService } from '../services/FileService';
 
 /**
  * Cache entry for directory listing
@@ -108,7 +109,67 @@ export class FileTreeItem extends vscode.TreeItem {
   }
 }
 
-type TreeItem = ConnectionTreeItem | FileTreeItem | ParentFolderTreeItem;
+/**
+ * Tree item for filter results header
+ */
+export class FilterResultsHeaderItem extends vscode.TreeItem {
+  constructor(
+    public readonly connection: SSHConnection,
+    public readonly resultCount: number,
+    public readonly isSearching: boolean
+  ) {
+    super(
+      isSearching ? 'Searching remote files...' : `Filter Results (${resultCount} files)`,
+      resultCount > 0 ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.None
+    );
+
+    this.contextValue = 'filterResultsHeader';
+    this.iconPath = isSearching
+      ? new vscode.ThemeIcon('sync~spin')
+      : new vscode.ThemeIcon('filter-filled', new vscode.ThemeColor('charts.blue'));
+    this.description = isSearching ? '' : 'from recursive search';
+  }
+}
+
+/**
+ * Tree item for a file found via deep filter (shows full path)
+ */
+export class FilteredFileItem extends vscode.TreeItem {
+  constructor(
+    public readonly file: IRemoteFile,
+    public readonly connection: SSHConnection
+  ) {
+    super(file.name, vscode.TreeItemCollapsibleState.None);
+
+    this.resourceUri = vscode.Uri.parse(`ssh://${connection.id}${file.path}`);
+    this.contextValue = 'file'; // Same context as regular file for menus
+
+    // Show parent directory in description
+    const parentDir = path.posix.dirname(file.path);
+    this.description = parentDir;
+
+    this.iconPath = vscode.ThemeIcon.File;
+
+    // Tooltip with full path
+    const sizeStr = formatFileSize(file.size);
+    const date = new Date(file.modifiedTime);
+    this.tooltip = new vscode.MarkdownString(
+      `**${file.name}**\n\n` +
+        `- Path: ${file.path}\n` +
+        `- Size: ${sizeStr}\n` +
+        `- Modified: ${date.toLocaleString()}`
+    );
+
+    // Click to open file
+    this.command = {
+      command: 'sshLite.openFile',
+      title: 'Open File',
+      arguments: [this],
+    };
+  }
+}
+
+type TreeItem = ConnectionTreeItem | FileTreeItem | ParentFolderTreeItem | FilterResultsHeaderItem | FilteredFileItem;
 
 /**
  * MIME type for drag and drop of connections
@@ -128,6 +189,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
   private connectionManager: ConnectionManager;
   private folderHistoryService: FolderHistoryService;
+  private fileService: FileService;
   private currentPaths: Map<string, string> = new Map(); // connectionId -> current path
   private connectionOrder: string[] = []; // Custom order of connection IDs
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -146,9 +208,18 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   // Track pending preload operations
   private preloadQueue: Set<string> = new Set();
 
+  // Filter pattern for file tree (glob-like pattern)
+  private filterPattern: string = '';
+
+  // Deep filter results from remote server search
+  private deepFilterResults: Map<string, IRemoteFile[]> = new Map(); // connectionId -> matched files
+  private isDeepFiltering: boolean = false;
+  private deepFilterAbortController: AbortController | null = null;
+
   constructor() {
     this.connectionManager = ConnectionManager.getInstance();
     this.folderHistoryService = FolderHistoryService.getInstance();
+    this.fileService = FileService.getInstance();
 
     // Create custom status bar item (priority 100 = high, aligned left)
     this.loadingStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
@@ -284,9 +355,24 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   }
 
   /**
+   * Check if preloading is enabled
+   * LITE PRINCIPLE: Preloading is disabled by default to minimize server resource usage
+   */
+  private isPreloadingEnabled(): boolean {
+    const config = vscode.workspace.getConfiguration('sshLite');
+    return config.get<boolean>('enablePreloading', false);
+  }
+
+  /**
    * Preload subdirectories in background (non-blocking)
+   * LITE PRINCIPLE: Only runs if enablePreloading is true
    */
   private preloadSubdirectories(connection: SSHConnection, files: IRemoteFile[]): void {
+    // LITE: Skip preloading if disabled
+    if (!this.isPreloadingEnabled()) {
+      return;
+    }
+
     // Get directories to preload (limit to first 5 to avoid overload)
     const directories = files
       .filter((f) => f.isDirectory)
@@ -418,6 +504,88 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   }
 
   /**
+   * Set filter pattern for the file tree
+   * Supports glob-like patterns: * (any chars), ? (single char)
+   * Empty string clears the filter
+   *
+   * LITE PRINCIPLE: Filter only works on CACHED files (already loaded).
+   * Does NOT automatically search the server - use searchServerForFilter() for that.
+   */
+  setFilter(pattern: string): void {
+    // Cancel any existing deep filter search
+    if (this.deepFilterAbortController) {
+      this.deepFilterAbortController.abort();
+      this.deepFilterAbortController = null;
+    }
+
+    this.filterPattern = pattern.toLowerCase();
+    this.deepFilterResults.clear();
+    this.isDeepFiltering = false;
+
+    // LITE: Do NOT auto-search server. Only filter cached files.
+    // User must explicitly trigger server search via searchServerForFilter()
+
+    this.refresh();
+  }
+
+  /**
+   * Get current filter pattern
+   */
+  getFilter(): string {
+    return this.filterPattern;
+  }
+
+  /**
+   * Clear the filter
+   */
+  clearFilter(): void {
+    // Cancel any existing deep filter search
+    if (this.deepFilterAbortController) {
+      this.deepFilterAbortController.abort();
+      this.deepFilterAbortController = null;
+    }
+
+    this.filterPattern = '';
+    this.deepFilterResults.clear();
+    this.isDeepFiltering = false;
+    this.refresh();
+  }
+
+  /**
+   * Check if a file matches the current filter pattern
+   */
+  private matchesFilter(file: IRemoteFile): boolean {
+    if (!this.filterPattern) {
+      return true; // No filter, show all
+    }
+
+    const fileName = file.name.toLowerCase();
+    const pattern = this.filterPattern;
+
+    // Always show directories when filtering (to allow navigation)
+    if (file.isDirectory) {
+      return true;
+    }
+
+    // Convert glob pattern to regex
+    // * -> .* (any characters)
+    // ? -> . (single character)
+    // Escape other special regex characters
+    const regexPattern = pattern
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&') // Escape special chars
+      .replace(/\*/g, '.*') // * -> .*
+      .replace(/\?/g, '.'); // ? -> .
+
+    try {
+      const regex = new RegExp(`^${regexPattern}$`, 'i');
+      return regex.test(fileName);
+    } catch {
+      // If regex is invalid, fall back to simple includes
+      return fileName.includes(pattern);
+    }
+  }
+
+  /**
    * Get tree item representation
    */
   getTreeItem(element: TreeItem): vscode.TreeItem {
@@ -473,12 +641,20 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       }
     }
 
+    // Filter results header: show deep filter results
+    if (element instanceof FilterResultsHeaderItem) {
+      const results = this.deepFilterResults.get(element.connection.id) || [];
+      return results.map((file) => new FilteredFileItem(file, element.connection));
+    }
+
     // File level: show directory contents
     if (element instanceof FileTreeItem && element.file.isDirectory) {
       // Check cache first
       const cached = this.getCached(element.connection.id, element.file.path);
       if (cached) {
-        const items = cached.map((file) => new FileTreeItem(file, element.connection));
+        // Apply filter
+        const filteredFiles = cached.filter((file) => this.matchesFilter(file));
+        const items = filteredFiles.map((file) => new FileTreeItem(file, element.connection));
         // Preload subdirectories in background
         this.preloadSubdirectories(element.connection, cached);
         return items;
@@ -489,7 +665,9 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
       try {
         const files = await this.loadDirectory(element.connection, element.file.path, false);
-        const items = files.map((file) => new FileTreeItem(file, element.connection));
+        // Apply filter
+        const filteredFiles = files.filter((file) => this.matchesFilter(file));
+        const items = filteredFiles.map((file) => new FileTreeItem(file, element.connection));
 
         // Preload subdirectories in background
         this.preloadSubdirectories(element.connection, files);
@@ -520,41 +698,122 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     if (currentPath !== '/' && currentPath !== '~') {
       const parentPath = path.posix.dirname(currentPath);
       items.push(new ParentFolderTreeItem(connection, parentPath || '/'));
+      // Preload parent folder for instant navigation
+      this.preloadParentFolder(connection, parentPath || '/');
     } else if (currentPath === '~') {
       // Allow going to root from home
       items.push(new ParentFolderTreeItem(connection, '/'));
+      // Preload root for instant navigation
+      this.preloadParentFolder(connection, '/');
     }
 
-    // Add files
-    items.push(...files.map((file) => new FileTreeItem(file, connection)));
+    // Apply filter and add files
+    const filteredFiles = files.filter((file) => this.matchesFilter(file));
+    items.push(...filteredFiles.map((file) => new FileTreeItem(file, connection)));
+
+    // Add filter results section if filter is active
+    if (this.filterPattern) {
+      const deepResults = this.deepFilterResults.get(connection.id) || [];
+      const isSearching = this.isDeepFiltering;
+
+      // Only show if searching or has results
+      if (isSearching || deepResults.length > 0) {
+        items.push(new FilterResultsHeaderItem(connection, deepResults.length, isSearching));
+      }
+    }
 
     return items;
   }
 
   /**
+   * Preload parent folder for instant "go up" navigation
+   * LITE PRINCIPLE: Only runs if enablePreloading is true
+   */
+  private preloadParentFolder(connection: SSHConnection, parentPath: string): void {
+    // LITE: Skip preloading if disabled
+    if (!this.isPreloadingEnabled()) {
+      return;
+    }
+
+    const cacheKey = this.getCacheKey(connection.id, parentPath);
+
+    // Skip if already cached, loading, or in preload queue
+    if (
+      this.getCached(connection.id, parentPath) ||
+      this.activeLoads.has(cacheKey) ||
+      this.preloadQueue.has(cacheKey)
+    ) {
+      return;
+    }
+
+    this.preloadQueue.add(cacheKey);
+
+    // Load in background without blocking
+    this.loadDirectory(connection, parentPath, true)
+      .catch(() => {
+        /* Silently ignore preload errors */
+      })
+      .finally(() => {
+        this.preloadQueue.delete(cacheKey);
+      });
+  }
+
+  /**
    * Preload current directories for all connections in parallel
-   * Also preloads frequently used folders from history
+   * LITE PRINCIPLE: Most preloading only runs if enablePreloading is true
+   * Exception: Current directory is always loaded (required for tree view)
    */
   private preloadConnectionDirectories(connections: SSHConnection[]): void {
+    const preloadingEnabled = this.isPreloadingEnabled();
+
     for (const conn of connections) {
       const currentPath = this.getCurrentPath(conn.id);
 
-      // Only preload if not already cached
+      // REQUIRED: Always load the current directory (needed for tree view)
+      // This is NOT preloading - it's the actual content being displayed
       if (!this.getCached(conn.id, currentPath)) {
         this.loadDirectory(conn, currentPath, true).catch(() => {
+          /* Silently ignore errors */
+        });
+      }
+
+      // LITE: Everything below only runs if preloading is enabled
+      if (!preloadingEnabled) {
+        continue;
+      }
+
+      // Preload home directory if different from current
+      if (currentPath !== '~' && !this.getCached(conn.id, '~')) {
+        this.loadDirectory(conn, '~', true).catch(() => {
           /* Silently ignore preload errors */
         });
       }
 
+      // Preload parent folder for instant "go up" navigation
+      if (currentPath !== '/' && currentPath !== '~') {
+        const parentPath = path.posix.dirname(currentPath);
+        this.preloadParentFolder(conn, parentPath || '/');
+      } else if (currentPath === '~') {
+        // Preload root when at home
+        this.preloadParentFolder(conn, '/');
+      }
+
       // Preload frequently used folders from history (top 5)
       this.preloadFrequentFolders(conn);
+
+      // Preload frequently opened files (top 5)
+      this.fileService.preloadFrequentFiles(conn, 5).catch(() => {
+        /* Silently ignore preload errors */
+      });
     }
   }
 
   /**
    * Preload frequently used folders from history
+   * LITE PRINCIPLE: Only runs if enablePreloading is true (checked by caller)
    */
   private preloadFrequentFolders(connection: SSHConnection): void {
+    // Note: Caller should check isPreloadingEnabled() before calling
     const frequentFolders = this.folderHistoryService.getFrequentFolders(connection.id, 5);
 
     for (const folderPath of frequentFolders) {
@@ -584,17 +843,45 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
   /**
    * Get parent element
+   * This is critical for VS Code's tree virtualization - must return correct parent
+   * so items are rendered at the correct indentation level when scrolling
    */
   getParent(element: TreeItem): vscode.ProviderResult<TreeItem> {
     if (element instanceof FileTreeItem) {
-      const parentPath = path.dirname(element.file.path);
-      if (parentPath === element.file.path || parentPath === '.' || parentPath === '/') {
-        // Return connection root
-        return new ConnectionTreeItem(element.connection);
+      const parentPath = path.posix.dirname(element.file.path);
+      const currentPath = this.getCurrentPath(element.connection.id);
+
+      // If parent path is the current root path, return the connection
+      if (parentPath === currentPath || parentPath === element.file.path || parentPath === '.') {
+        return new ConnectionTreeItem(element.connection, currentPath);
       }
-      // Note: Returning undefined here - VS Code will handle navigation
-      return undefined;
+
+      // If parent is the filesystem root, return connection
+      if (parentPath === '/') {
+        return new ConnectionTreeItem(element.connection, currentPath);
+      }
+
+      // For nested directories, return a FileTreeItem representing the parent directory
+      // We need to construct the parent's IRemoteFile from the path
+      const parentName = path.posix.basename(parentPath);
+      const parentFile: IRemoteFile = {
+        name: parentName,
+        path: parentPath,
+        isDirectory: true,
+        size: 0,
+        modifiedTime: 0,
+        connectionId: element.connection.id,
+      };
+      return new FileTreeItem(parentFile, element.connection);
     }
+
+    if (element instanceof ParentFolderTreeItem) {
+      // Parent folder items are children of the connection
+      const currentPath = this.getCurrentPath(element.connection.id);
+      return new ConnectionTreeItem(element.connection, currentPath);
+    }
+
+    // ConnectionTreeItem has no parent (root level)
     return undefined;
   }
 
@@ -721,6 +1008,106 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   }
 
   /**
+   * Manually trigger server search for current filter pattern
+   * LITE PRINCIPLE: This is user-triggered, not automatic
+   * Call this when user clicks "Search Server" button
+   */
+  async searchServerForFilter(): Promise<void> {
+    if (!this.filterPattern) {
+      return; // No filter set
+    }
+    await this.startDeepFilter(this.filterPattern);
+  }
+
+  /**
+   * Start deep filter search on all connections
+   * Uses 'find' command to recursively search for matching files
+   * LITE PRINCIPLE: Only called when user explicitly requests server search
+   */
+  private async startDeepFilter(pattern: string): Promise<void> {
+    this.isDeepFiltering = true;
+    this.deepFilterAbortController = new AbortController();
+    const signal = this.deepFilterAbortController.signal;
+
+    // Refresh to show "Searching..." indicator
+    this._onDidChangeTreeData.fire();
+
+    const connections = this.connectionManager.getAllConnections();
+
+    // Search each connection in parallel
+    const searchPromises = connections.map(async (connection) => {
+      try {
+        const currentPath = this.getCurrentPath(connection.id);
+
+        // Convert glob pattern to find pattern
+        // For find, we use -iname (case insensitive) with the pattern
+        const findPattern = pattern.includes('*') || pattern.includes('?')
+          ? pattern
+          : `*${pattern}*`; // If no wildcards, wrap with wildcards
+
+        // Execute find command on remote server
+        const results = await connection.searchFiles(currentPath, pattern, {
+          searchContent: false, // Filename search
+          caseSensitive: false,
+          maxResults: 200, // Limit results
+        });
+
+        if (signal.aborted) return;
+
+        // Convert search results to IRemoteFile format
+        const files: IRemoteFile[] = results.map((r) => ({
+          name: path.posix.basename(r.path),
+          path: r.path,
+          isDirectory: false,
+          size: 0,
+          modifiedTime: Date.now(),
+          connectionId: connection.id,
+        }));
+
+        // Filter out files that are already visible in the current tree view
+        // (we only want to show files from deeper directories)
+        const cachedPaths = new Set<string>();
+        for (const [key, entry] of this.directoryCache) {
+          if (key.startsWith(connection.id + ':')) {
+            for (const file of entry.files) {
+              cachedPaths.add(file.path);
+            }
+          }
+        }
+
+        const newFiles = files.filter((f) => !cachedPaths.has(f.path));
+
+        if (newFiles.length > 0) {
+          this.deepFilterResults.set(connection.id, newFiles);
+        }
+      } catch {
+        // Silently ignore errors during deep filter
+      }
+    });
+
+    await Promise.all(searchPromises);
+
+    if (!signal.aborted) {
+      this.isDeepFiltering = false;
+      this._onDidChangeTreeData.fire();
+    }
+  }
+
+  /**
+   * Check if deep filter is currently running
+   */
+  isDeepFilterActive(): boolean {
+    return this.isDeepFiltering;
+  }
+
+  /**
+   * Get deep filter results for a connection
+   */
+  getDeepFilterResults(connectionId: string): IRemoteFile[] {
+    return this.deepFilterResults.get(connectionId) || [];
+  }
+
+  /**
    * Dispose of resources
    */
   dispose(): void {
@@ -731,5 +1118,11 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     this.directoryCache.clear();
     this.activeLoads.clear();
     this.preloadQueue.clear();
+
+    // Cancel any running deep filter
+    if (this.deepFilterAbortController) {
+      this.deepFilterAbortController.abort();
+    }
+    this.deepFilterResults.clear();
   }
 }

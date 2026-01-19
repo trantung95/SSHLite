@@ -7,6 +7,7 @@ import { ConnectionManager } from '../connection/ConnectionManager';
 import { SSHConnection } from '../connection/SSHConnection';
 import { IRemoteFile } from '../types';
 import { AuditService } from './AuditService';
+import { FolderHistoryService } from './FolderHistoryService';
 import { formatFileSize } from '../utils/helpers';
 
 /**
@@ -58,6 +59,7 @@ export class FileService {
   private globalRefreshTimer: NodeJS.Timeout | null = null;
   private refreshingConnections: Set<string> = new Set(); // Track which connections are currently refreshing
   private auditService: AuditService;
+  private folderHistoryService: FolderHistoryService;
   private skipNextSave: Set<string> = new Set(); // Paths to skip upload on next save
 
   private autoCleanupTimer: NodeJS.Timeout | null = null;
@@ -65,6 +67,9 @@ export class FileService {
   // Backup storage for file revert (connectionId:remotePath -> BackupEntry[])
   private backupHistory: Map<string, BackupEntry[]> = new Map();
   private readonly MAX_BACKUPS_PER_FILE = 10;
+
+  // Lock for file operations to prevent concurrent access
+  private fileOperationLocks: Map<string, Promise<void>> = new Map();
 
   private constructor() {
     this.tempDir = path.join(os.tmpdir(), 'ssh-lite');
@@ -74,6 +79,7 @@ export class FileService {
     this.setupSaveListener();
     this.setupConfigListener();
     this.auditService = AuditService.getInstance();
+    this.folderHistoryService = FolderHistoryService.getInstance();
     this.startGlobalRefreshTimer();
     this.startAutoCleanupTimer();
   }
@@ -320,6 +326,31 @@ export class FileService {
   }
 
   /**
+   * Acquire a lock for file operations to prevent concurrent access
+   * Returns a release function that must be called when done
+   */
+  private async acquireFileLock(localPath: string): Promise<() => void> {
+    // Wait for any existing operation to complete
+    const existingLock = this.fileOperationLocks.get(localPath);
+    if (existingLock) {
+      await existingLock;
+    }
+
+    // Create a new lock
+    let releaseFn: () => void;
+    const lockPromise = new Promise<void>((resolve) => {
+      releaseFn = resolve;
+    });
+
+    this.fileOperationLocks.set(localPath, lockPromise);
+
+    return () => {
+      this.fileOperationLocks.delete(localPath);
+      releaseFn!();
+    };
+  }
+
+  /**
    * Save a backup of file content before upload
    */
   private saveBackup(connectionId: string, remotePath: string, content: string, hostName: string): void {
@@ -398,21 +429,16 @@ export class FileService {
       if (localPath) {
         const mapping = this.fileMappings.get(localPath);
         if (mapping) {
-          // Update editor content
+          // Write to disk first
+          this.ensureTempDir();
+          fs.writeFileSync(localPath, content);
+
+          // Update editor content if open
           const document = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === localPath);
           if (document) {
-            const edit = new vscode.WorkspaceEdit();
-            const fullRange = new vscode.Range(
-              document.positionAt(0),
-              document.positionAt(document.getText().length)
-            );
-            edit.replace(document.uri, fullRange, backup.content);
-            await vscode.workspace.applyEdit(edit);
-
             this.skipNextSave.add(localPath);
-            await document.save();
-          } else {
-            fs.writeFileSync(localPath, backup.content);
+            // Revert document to reload from disk
+            await vscode.commands.executeCommand('workbench.action.files.revert', document.uri);
           }
           mapping.originalContent = backup.content;
           mapping.lastSyncTime = Date.now();
@@ -552,20 +578,15 @@ export class FileService {
           const content = await connection.readFile(remotePath);
           const contentStr = content.toString('utf-8');
 
+          // Write to disk first
+          this.ensureTempDir();
+          fs.writeFileSync(localPath, content);
+
           const document = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === localPath);
           if (document) {
-            const edit = new vscode.WorkspaceEdit();
-            const fullRange = new vscode.Range(
-              document.positionAt(0),
-              document.positionAt(document.getText().length)
-            );
-            edit.replace(document.uri, fullRange, contentStr);
-            await vscode.workspace.applyEdit(edit);
-
             this.skipNextSave.add(localPath);
-            await document.save();
-          } else {
-            fs.writeFileSync(localPath, content);
+            // Revert document to reload from disk
+            await vscode.commands.executeCommand('workbench.action.files.revert', document.uri);
           }
           mapping.originalContent = contentStr;
           mapping.lastSyncTime = Date.now();
@@ -1217,6 +1238,15 @@ export class FileService {
       this.ensureTempDir();
     }
 
+    // Try to acquire lock - if already locked, skip this refresh cycle
+    const existingLock = this.fileOperationLocks.get(localPath);
+    if (existingLock) {
+      // Another operation is in progress, skip this refresh
+      return;
+    }
+
+    const releaseLock = await this.acquireFileLock(localPath);
+
     try {
       const content = await connection.readFile(mapping.remotePath);
       const newContent = content.toString('utf-8');
@@ -1227,23 +1257,17 @@ export class FileService {
         const document = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === localPath);
 
         if (document && !document.isDirty) {
-          // Document is open and clean - update editor content first, then save to disk
-          const edit = new vscode.WorkspaceEdit();
-          const fullRange = new vscode.Range(
-            document.positionAt(0),
-            document.positionAt(document.getText().length)
-          );
-          edit.replace(document.uri, fullRange, newContent);
-          await vscode.workspace.applyEdit(edit);
+          // Document is open and clean - write to disk first, then revert to pick up changes
+          this.ensureTempDir();
+          fs.writeFileSync(localPath, content);
 
           // Skip the upload on save - we're syncing FROM remote, not TO remote
           this.skipNextSave.add(localPath);
 
-          // Ensure temp directory exists before save
-          this.ensureTempDir();
-          await document.save();
+          // Revert document to reload from disk (safer than WorkspaceEdit + save)
+          await vscode.commands.executeCommand('workbench.action.files.revert', document.uri);
 
-          // Update mapping after successful save
+          // Update mapping after successful refresh
           mapping.originalContent = newContent;
           mapping.lastSyncTime = Date.now();
 
@@ -1271,6 +1295,8 @@ export class FileService {
       }
     } catch {
       // Ignore errors during refresh
+    } finally {
+      releaseLock();
     }
   }
 
@@ -1290,6 +1316,9 @@ export class FileService {
     if (!mapping) {
       return;
     }
+
+    // Acquire lock to prevent concurrent operations
+    const releaseLock = await this.acquireFileLock(localPath);
 
     try {
       vscode.window.setStatusBarMessage(`$(sync~spin) Refreshing ${path.basename(remotePath)}...`, 5000);
@@ -1317,18 +1346,14 @@ export class FileService {
           }
         }
 
-        // Update editor content
-        const edit = new vscode.WorkspaceEdit();
-        const fullRange = new vscode.Range(
-          document.positionAt(0),
-          document.positionAt(document.getText().length)
-        );
-        edit.replace(document.uri, fullRange, newContent);
-        await vscode.workspace.applyEdit(edit);
+        // Write to disk first as Buffer
+        fs.writeFileSync(localPath, content);
 
         // Skip the upload on save - we're syncing FROM remote
         this.skipNextSave.add(localPath);
-        await document.save();
+
+        // Revert document to reload from disk (safer than WorkspaceEdit + save)
+        await vscode.commands.executeCommand('workbench.action.files.revert', document.uri);
       } else {
         // Document not open in editor - just update the file on disk
         fs.writeFileSync(localPath, content);
@@ -1341,6 +1366,8 @@ export class FileService {
       vscode.window.setStatusBarMessage(`$(check) Refreshed ${path.basename(remotePath)}`, 3000);
     } catch (error) {
       vscode.window.showErrorMessage(`Failed to refresh file: ${(error as Error).message}`);
+    } finally {
+      releaseLock();
     }
   }
 
@@ -1352,6 +1379,9 @@ export class FileService {
     mapping: FileMapping,
     connection: SSHConnection
   ): Promise<void> {
+    // Acquire lock to prevent concurrent operations
+    const releaseLock = await this.acquireFileLock(localPath);
+
     try {
       const content = await connection.readFile(mapping.remotePath);
       const contentStr = content.toString('utf-8');
@@ -1359,23 +1389,17 @@ export class FileService {
       // Ensure temp directory exists
       this.ensureTempDir();
 
-      // Refresh the document in VS Code first
+      // Write to disk first as Buffer
+      fs.writeFileSync(localPath, content);
+
+      // Refresh the document in VS Code
       const document = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === localPath);
       if (document) {
-        const edit = new vscode.WorkspaceEdit();
-        const fullRange = new vscode.Range(
-          document.positionAt(0),
-          document.positionAt(document.getText().length)
-        );
-        edit.replace(document.uri, fullRange, contentStr);
-        await vscode.workspace.applyEdit(edit);
-
         // Skip the upload on save - we're syncing FROM remote
         this.skipNextSave.add(localPath);
-        await document.save();
-      } else {
-        // Document not open - write directly to disk
-        fs.writeFileSync(localPath, content);
+
+        // Revert document to reload from disk (safer than WorkspaceEdit + save)
+        await vscode.commands.executeCommand('workbench.action.files.revert', document.uri);
       }
 
       mapping.originalContent = contentStr;
@@ -1384,6 +1408,8 @@ export class FileService {
       vscode.window.setStatusBarMessage(`$(sync) Reloaded ${path.basename(mapping.remotePath)}`, 3000);
     } catch (error) {
       vscode.window.showErrorMessage(`Failed to reload file: ${(error as Error).message}`);
+    } finally {
+      releaseLock();
     }
   }
 
@@ -1419,7 +1445,7 @@ export class FileService {
 
   /**
    * Open a remote file for editing
-   * Optimized: Show editor immediately with loading state, then load content
+   * Downloads content first, then opens editor to avoid corruption issues
    */
   async openRemoteFile(connection: SSHConnection, remoteFile: IRemoteFile): Promise<void> {
     // Check file size for large file handling
@@ -1438,58 +1464,48 @@ export class FileService {
     const baseName = path.basename(remoteFile.name, ext);
     const localPath = path.join(this.tempDir, `${baseName}-${hash}${ext}`);
 
-    // Check if document is already open in VS Code editor
-    const existingMapping = this.fileMappings.get(localPath);
-    if (existingMapping && fs.existsSync(localPath)) {
-      // Check if the document is currently open in VS Code
-      const existingDoc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === localPath);
-      if (existingDoc) {
-        // Document is open - just show it (user might have unsaved changes)
-        await vscode.window.showTextDocument(existingDoc);
-        return;
-      }
-      // Document was closed - remove stale mapping and re-download fresh from server
-      this.fileMappings.delete(localPath);
+    // Check if document is already open in VS Code editor (quick check before acquiring lock)
+    const existingDoc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === localPath);
+    if (existingDoc && this.fileMappings.has(localPath)) {
+      // Document is open - just show it (user might have unsaved changes)
+      // Use preview: false to ensure it stays open in edit mode
+      await vscode.window.showTextDocument(existingDoc, { preview: false });
+      return;
     }
 
+    // Acquire lock to prevent concurrent operations on the same file
+    const releaseLock = await this.acquireFileLock(localPath);
+
     try {
-      // Create placeholder file and open editor IMMEDIATELY
-      const loadingMessage = `// Loading ${remoteFile.name} from ${connection.host.name}...\n// Please wait...`;
-      fs.writeFileSync(localPath, loadingMessage);
+      // Re-check after acquiring lock (another operation might have completed)
+      const existingMapping = this.fileMappings.get(localPath);
+      if (existingMapping && fs.existsSync(localPath)) {
+        const existingDocAfterLock = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === localPath);
+        if (existingDocAfterLock) {
+          await vscode.window.showTextDocument(existingDocAfterLock, { preview: false });
+          return;
+        }
+        // Document was closed - remove stale mapping and re-download fresh from server
+        this.fileMappings.delete(localPath);
+      }
 
-      // Open editor right away so user sees something
-      const document = await vscode.workspace.openTextDocument(localPath);
-      const editor = await vscode.window.showTextDocument(document);
-
-      // Show status bar message
+      // Show status bar message during download
       vscode.window.setStatusBarMessage(`$(sync~spin) Downloading ${remoteFile.name}...`, 10000);
 
-      // Download content in background
+      // Ensure temp directory exists
+      this.ensureTempDir();
+
+      // Download content FIRST before creating any files
       const content = await connection.readFile(remoteFile.path);
       const contentStr = content.toString('utf-8');
 
-      // Write content to disk first
-      fs.writeFileSync(localPath, contentStr, 'utf-8');
+      // Write content to disk as Buffer (not string) to avoid encoding issues
+      fs.writeFileSync(localPath, content);
 
-      // Replace editor content with actual file content using WorkspaceEdit
-      const edit = new vscode.WorkspaceEdit();
-      const fullRange = new vscode.Range(
-        document.positionAt(0),
-        document.positionAt(document.getText().length)
-      );
-      edit.replace(document.uri, fullRange, contentStr);
-      await vscode.workspace.applyEdit(edit);
-
-      // Mark to skip upload on save - we're just clearing the dirty state
-      this.skipNextSave.add(localPath);
-
-      // Save document - this clears dirty state (content matches disk)
-      await document.save();
-
-      // If still dirty after save, try revert as fallback
-      if (document.isDirty) {
-        await vscode.commands.executeCommand('workbench.action.files.revert');
-      }
+      // Now open the document - content is already correct on disk
+      // Use preview: false to open in edit mode (non-italic tab)
+      const document = await vscode.workspace.openTextDocument(localPath);
+      await vscode.window.showTextDocument(document, { preview: false });
 
       // Store mapping with original content for audit
       const mapping: FileMapping = {
@@ -1525,12 +1541,14 @@ export class FileService {
         success: true,
       });
 
+      // Record file open for preloading
+      this.folderHistoryService.recordFileOpen(connection.id, remoteFile.path);
+
       vscode.window.setStatusBarMessage(`$(check) Loaded ${remoteFile.name}`, 3000);
     } catch (error) {
-      // On error, show error in the already-open editor
       vscode.window.showErrorMessage(`Failed to load file: ${(error as Error).message}`);
 
-      // Clean up the placeholder file
+      // Clean up any partial file
       if (fs.existsSync(localPath)) {
         try {
           fs.unlinkSync(localPath);
@@ -1538,6 +1556,8 @@ export class FileService {
           // Ignore cleanup errors
         }
       }
+    } finally {
+      releaseLock();
     }
   }
 
@@ -2041,6 +2061,84 @@ export class FileService {
    */
   getOpenFiles(): FileMapping[] {
     return Array.from(this.fileMappings.values());
+  }
+
+  /**
+   * Get frequently opened files for a connection
+   */
+  getFrequentFiles(connectionId: string, limit?: number): string[] {
+    return this.folderHistoryService.getFrequentFiles(connectionId, limit);
+  }
+
+  /**
+   * Preload frequently opened files for a connection
+   * Downloads files in background to cache them locally
+   */
+  async preloadFrequentFiles(connection: SSHConnection, limit: number = 5): Promise<void> {
+    const frequentFiles = this.folderHistoryService.getFrequentFiles(connection.id, limit);
+
+    for (const filePath of frequentFiles) {
+      // Generate the same temp file path as openRemoteFile
+      const hash = crypto
+        .createHash('md5')
+        .update(`${connection.id}:${filePath}`)
+        .digest('hex')
+        .substring(0, 8);
+      const ext = path.extname(filePath);
+      const baseName = path.basename(filePath, ext);
+      const localPath = path.join(this.tempDir, `${baseName}-${hash}${ext}`);
+
+      // Skip if already cached (file exists and has mapping)
+      if (this.fileMappings.has(localPath) && fs.existsSync(localPath)) {
+        continue;
+      }
+
+      // Skip if lock exists (already being loaded)
+      if (this.fileOperationLocks.has(localPath)) {
+        continue;
+      }
+
+      // Preload in background (non-blocking, silent errors)
+      this.preloadFile(connection, filePath, localPath).catch(() => {
+        /* Silently ignore preload errors */
+      });
+    }
+  }
+
+  /**
+   * Preload a single file in background
+   */
+  private async preloadFile(connection: SSHConnection, remotePath: string, localPath: string): Promise<void> {
+    const releaseLock = await this.acquireFileLock(localPath);
+
+    try {
+      // Double check it's still not cached
+      if (this.fileMappings.has(localPath) && fs.existsSync(localPath)) {
+        return;
+      }
+
+      // Ensure temp directory exists
+      this.ensureTempDir();
+
+      // Download content
+      const content = await connection.readFile(remotePath);
+      const contentStr = content.toString('utf-8');
+
+      // Write to disk
+      fs.writeFileSync(localPath, content);
+
+      // Store mapping (but don't open the document)
+      const mapping: FileMapping = {
+        connectionId: connection.id,
+        remotePath: remotePath,
+        localPath,
+        lastSyncTime: Date.now(),
+        originalContent: contentStr,
+      };
+      this.fileMappings.set(localPath, mapping);
+    } finally {
+      releaseLock();
+    }
   }
 
   /**

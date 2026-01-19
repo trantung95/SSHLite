@@ -14,6 +14,7 @@ import { SavedCredential, PinnedFolder } from './services/CredentialService';
 import { IHostConfig } from './types';
 import { FileTreeProvider, FileTreeItem, ConnectionTreeItem } from './providers/FileTreeProvider';
 import { PortForwardTreeProvider, PortForwardTreeItem } from './providers/PortForwardTreeProvider';
+import { SearchResultsProvider, SearchResult } from './providers/SearchResultsProvider';
 
 let outputChannel: vscode.OutputChannel;
 
@@ -73,6 +74,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const hostTreeProvider = new HostTreeProvider();
   const fileTreeProvider = new FileTreeProvider();
   const portForwardTreeProvider = new PortForwardTreeProvider();
+  const searchResultsProvider = new SearchResultsProvider();
 
   // Wire up port forward service with its tree provider
   portForwardService.setTreeProvider(portForwardTreeProvider);
@@ -93,6 +95,11 @@ export function activate(context: vscode.ExtensionContext): void {
   const portForwardTreeView = vscode.window.createTreeView('sshLite.portForwards', {
     treeDataProvider: portForwardTreeProvider,
     showCollapseAll: false,
+  });
+
+  const searchResultsTreeView = vscode.window.createTreeView('sshLite.searchResults', {
+    treeDataProvider: searchResultsProvider,
+    showCollapseAll: true,
   });
 
   // Register commands
@@ -430,6 +437,187 @@ export function activate(context: vscode.ExtensionContext): void {
 
     vscode.commands.registerCommand('sshLite.refreshFiles', () => {
       fileTreeProvider.refresh();
+    }),
+
+    // Filter files in tree view
+    vscode.commands.registerCommand('sshLite.filterFiles', async () => {
+      const currentFilter = fileTreeProvider.getFilter();
+      const input = await vscode.window.showInputBox({
+        prompt: 'Enter filter pattern (e.g., *.ts, *.json, config*)',
+        placeHolder: '*.ts, *.json, config*, etc.',
+        value: currentFilter,
+        title: 'Filter Files',
+      });
+
+      if (input !== undefined) {
+        fileTreeProvider.setFilter(input);
+        if (input) {
+          vscode.window.setStatusBarMessage(`$(filter) Filter: ${input}`, 3000);
+        } else {
+          vscode.window.setStatusBarMessage('$(filter) Filter cleared', 2000);
+        }
+      }
+    }),
+
+    // Clear filter
+    vscode.commands.registerCommand('sshLite.clearFilter', () => {
+      fileTreeProvider.clearFilter();
+      vscode.window.setStatusBarMessage('$(filter) Filter cleared', 2000);
+    }),
+
+    // Search server for current filter (user-triggered, LITE)
+    vscode.commands.registerCommand('sshLite.searchServerForFilter', async () => {
+      const currentFilter = fileTreeProvider.getFilter();
+      if (!currentFilter) {
+        vscode.window.showWarningMessage('Set a filter first, then search the server');
+        return;
+      }
+
+      const connections = connectionManager.getAllConnections();
+      if (connections.length === 0) {
+        vscode.window.showWarningMessage('No active SSH connections');
+        return;
+      }
+
+      vscode.window.setStatusBarMessage(`$(search~spin) Searching server for "${currentFilter}"...`, 30000);
+      await fileTreeProvider.searchServerForFilter();
+      vscode.window.setStatusBarMessage(`$(search) Server search complete`, 3000);
+    }),
+
+    // Search in folder (remote grep/find)
+    vscode.commands.registerCommand('sshLite.searchInFolder', async (item?: FileTreeItem | ConnectionTreeItem) => {
+      let connection: SSHConnection | undefined;
+      let searchPath: string = '~';
+
+      if (item instanceof ConnectionTreeItem) {
+        connection = item.connection;
+        searchPath = fileTreeProvider.getCurrentPath(connection.id);
+      } else if (item instanceof FileTreeItem) {
+        connection = item.connection;
+        searchPath = item.file.isDirectory ? item.file.path : fileTreeProvider.getCurrentPath(connection.id);
+      } else {
+        // No item - show quick pick for connection
+        connection = await selectConnection(connectionManager);
+        if (connection) {
+          searchPath = fileTreeProvider.getCurrentPath(connection.id);
+        }
+      }
+
+      if (!connection) {
+        vscode.window.showWarningMessage('No active SSH connection');
+        return;
+      }
+
+      // Show search input
+      const searchQuery = await vscode.window.showInputBox({
+        prompt: `Search in ${searchPath}`,
+        placeHolder: 'Enter search pattern...',
+        title: 'Search in Folder',
+      });
+
+      if (!searchQuery) {
+        return;
+      }
+
+      // Show search options
+      const searchType = await vscode.window.showQuickPick(
+        [
+          { label: '$(search) Search File Contents', description: 'Search text inside files (grep)', value: 'content' },
+          { label: '$(file) Search File Names', description: 'Search by file name pattern (find)', value: 'filename' },
+        ],
+        {
+          placeHolder: 'Select search type',
+          title: 'Search Type',
+        }
+      );
+
+      if (!searchType) {
+        return;
+      }
+
+      // Optional file pattern filter for content search
+      let filePattern = '*';
+      if (searchType.value === 'content') {
+        const patternInput = await vscode.window.showInputBox({
+          prompt: 'File pattern (optional)',
+          placeHolder: '*.ts, *.json, * (all files)',
+          value: '*',
+          title: 'File Pattern Filter',
+        });
+        if (patternInput !== undefined) {
+          filePattern = patternInput || '*';
+        }
+      }
+
+      // Perform search
+      searchResultsProvider.setSearching(searchQuery, searchPath);
+      vscode.commands.executeCommand('sshLite.searchResults.focus');
+
+      try {
+        vscode.window.setStatusBarMessage(`$(search~spin) Searching for "${searchQuery}"...`, 30000);
+
+        const results = await connection.searchFiles(searchPath, searchQuery, {
+          searchContent: searchType.value === 'content',
+          caseSensitive: false,
+          filePattern: filePattern,
+          maxResults: 500,
+        });
+
+        // Convert to SearchResult with connection
+        const searchResults: SearchResult[] = results.map((r) => ({
+          ...r,
+          connection: connection!,
+        }));
+
+        searchResultsProvider.setResults(searchResults, searchQuery, searchPath);
+
+        if (searchResults.length === 0) {
+          vscode.window.setStatusBarMessage(`$(search) No results found for "${searchQuery}"`, 3000);
+        } else {
+          vscode.window.setStatusBarMessage(`$(search) Found ${searchResults.length} result(s) for "${searchQuery}"`, 3000);
+        }
+      } catch (error) {
+        searchResultsProvider.clear();
+        vscode.window.showErrorMessage(`Search failed: ${(error as Error).message}`);
+      }
+    }),
+
+    // Open search result
+    vscode.commands.registerCommand('sshLite.openSearchResult', async (result: SearchResult) => {
+      if (!result) {
+        return;
+      }
+
+      // Create a remote file object
+      const remoteFile = {
+        name: result.path.split('/').pop() || result.path,
+        path: result.path,
+        isDirectory: false,
+        size: 0,
+        modifiedTime: Date.now(),
+        connectionId: result.connection.id,
+      };
+
+      // Open the file
+      await fileService.openRemoteFile(result.connection, remoteFile);
+
+      // If we have a line number, go to that line
+      if (result.line) {
+        // Wait a bit for the file to open
+        setTimeout(async () => {
+          const editor = vscode.window.activeTextEditor;
+          if (editor) {
+            const position = new vscode.Position(result.line! - 1, 0);
+            editor.selection = new vscode.Selection(position, position);
+            editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+          }
+        }, 300);
+      }
+    }),
+
+    // Clear search results
+    vscode.commands.registerCommand('sshLite.clearSearchResults', () => {
+      searchResultsProvider.clear();
     }),
 
     // Refresh individual file or folder

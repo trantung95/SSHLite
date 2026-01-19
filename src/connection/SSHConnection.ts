@@ -392,14 +392,25 @@ export class SSHConnection implements ISSHConnection {
   ): IRemoteFile[] {
     return list
       .filter((item) => item.filename !== '.' && item.filename !== '..')
-      .map((item) => ({
-        name: item.filename,
-        path: basePath === '.' ? item.filename : `${basePath}/${item.filename}`,
-        isDirectory: (item.attrs.mode & 0o40000) !== 0,
-        size: item.attrs.size,
-        modifiedTime: item.attrs.mtime * 1000,
-        connectionId: this.id,
-      }))
+      .map((item) => {
+        // Build path, avoiding double slashes when basePath is '/'
+        let itemPath: string;
+        if (basePath === '.') {
+          itemPath = item.filename;
+        } else if (basePath === '/') {
+          itemPath = `/${item.filename}`;
+        } else {
+          itemPath = `${basePath}/${item.filename}`;
+        }
+        return {
+          name: item.filename,
+          path: itemPath,
+          isDirectory: (item.attrs.mode & 0o40000) !== 0,
+          size: item.attrs.size,
+          modifiedTime: item.attrs.mtime * 1000,
+          connectionId: this.id,
+        };
+      })
       .sort((a, b) => {
         // Directories first, then alphabetically
         if (a.isDirectory && !b.isDirectory) return -1;
@@ -582,6 +593,108 @@ export class SSHConnection implements ISSHConnection {
    */
   getActiveForwards(): number[] {
     return Array.from(this._portForwards.keys());
+  }
+
+  /**
+   * Search for files/content in a remote directory using grep/find
+   * @param searchPath - Directory to search in
+   * @param pattern - Search pattern (for content search)
+   * @param options - Search options
+   * @returns Array of search results
+   */
+  async searchFiles(
+    searchPath: string,
+    pattern: string,
+    options: {
+      searchContent?: boolean; // Search file contents (grep) vs filenames (find)
+      caseSensitive?: boolean;
+      filePattern?: string; // File glob pattern (e.g., *.ts)
+      maxResults?: number;
+    } = {}
+  ): Promise<Array<{ path: string; line?: number; match?: string }>> {
+    if (this.state !== ConnectionState.Connected || !this._client) {
+      throw new SFTPError('Not connected');
+    }
+
+    const {
+      searchContent = true,
+      caseSensitive = false,
+      filePattern = '*',
+      maxResults = 500,
+    } = options;
+
+    // Escape special characters in pattern for shell
+    const escapedPattern = pattern.replace(/['"\\$`!]/g, '\\$&');
+    const caseFlag = caseSensitive ? '' : '-i';
+
+    let command: string;
+    if (searchContent) {
+      // Use grep for content search
+      // -r: recursive, -n: line numbers, -H: show filename
+      // --include: file pattern filter
+      command = `grep -rnH ${caseFlag} --include="${filePattern}" -m ${maxResults} "${escapedPattern}" "${searchPath}" 2>/dev/null | head -${maxResults}`;
+    } else {
+      // Use find for filename search
+      const findCaseFlag = caseSensitive ? '-name' : '-iname';
+      command = `find "${searchPath}" -type f ${findCaseFlag} "*${escapedPattern}*" 2>/dev/null | head -${maxResults}`;
+    }
+
+    return new Promise((resolve, reject) => {
+      this._client!.exec(command, (err, stream) => {
+        if (err) {
+          reject(new SFTPError(`Search failed: ${err.message}`, err));
+          return;
+        }
+
+        let output = '';
+        let errorOutput = '';
+
+        stream.on('data', (data: Buffer) => {
+          output += data.toString();
+        });
+
+        stream.stderr.on('data', (data: Buffer) => {
+          errorOutput += data.toString();
+        });
+
+        stream.on('close', () => {
+          const results: Array<{ path: string; line?: number; match?: string }> = [];
+
+          if (searchContent) {
+            // Parse grep output: filename:line:match
+            const lines = output.trim().split('\n').filter(Boolean);
+            for (const line of lines) {
+              const colonIndex = line.indexOf(':');
+              if (colonIndex === -1) continue;
+
+              const filePath = line.substring(0, colonIndex);
+              const rest = line.substring(colonIndex + 1);
+              const secondColonIndex = rest.indexOf(':');
+
+              if (secondColonIndex !== -1) {
+                const lineNum = parseInt(rest.substring(0, secondColonIndex), 10);
+                const match = rest.substring(secondColonIndex + 1);
+                results.push({
+                  path: filePath,
+                  line: isNaN(lineNum) ? undefined : lineNum,
+                  match: match.trim(),
+                });
+              } else {
+                results.push({ path: filePath, match: rest.trim() });
+              }
+            }
+          } else {
+            // Parse find output: just file paths
+            const lines = output.trim().split('\n').filter(Boolean);
+            for (const filePath of lines) {
+              results.push({ path: filePath.trim() });
+            }
+          }
+
+          resolve(results);
+        });
+      });
+    });
   }
 
   /**

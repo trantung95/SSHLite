@@ -10,6 +10,15 @@ interface FolderVisit {
 }
 
 /**
+ * File visit entry
+ */
+interface FileVisit {
+  path: string;
+  visitCount: number;
+  lastVisit: number;
+}
+
+/**
  * Folder history per connection
  */
 interface ConnectionFolderHistory {
@@ -17,13 +26,23 @@ interface ConnectionFolderHistory {
 }
 
 /**
- * Service to track frequently used folders for smart preloading
+ * File history per connection
+ */
+interface ConnectionFileHistory {
+  [connectionId: string]: FileVisit[];
+}
+
+/**
+ * Service to track frequently used folders and files for smart preloading
  */
 export class FolderHistoryService {
   private static _instance: FolderHistoryService;
   private history: ConnectionFolderHistory = {};
+  private fileHistory: ConnectionFileHistory = {};
   private readonly MAX_FOLDERS_PER_CONNECTION = 10;
+  private readonly MAX_FILES_PER_CONNECTION = 10;
   private readonly STORAGE_KEY = 'sshLite.folderHistory';
+  private readonly FILE_STORAGE_KEY = 'sshLite.fileHistory';
   private readonly MAX_AGE_DAYS = 30; // Clean up entries older than 30 days
   private context: vscode.ExtensionContext | null = null;
 
@@ -42,11 +61,13 @@ export class FolderHistoryService {
   initialize(context: vscode.ExtensionContext): void {
     this.context = context;
     this.loadHistory();
+    this.loadFileHistory();
     this.cleanupOldEntries();
+    this.cleanupOldFileEntries();
   }
 
   /**
-   * Load history from storage
+   * Load folder history from storage
    */
   private loadHistory(): void {
     if (this.context) {
@@ -58,11 +79,32 @@ export class FolderHistoryService {
   }
 
   /**
-   * Save history to storage
+   * Load file history from storage
+   */
+  private loadFileHistory(): void {
+    if (this.context) {
+      const stored = this.context.globalState.get<ConnectionFileHistory>(this.FILE_STORAGE_KEY);
+      if (stored) {
+        this.fileHistory = stored;
+      }
+    }
+  }
+
+  /**
+   * Save folder history to storage
    */
   private async saveHistory(): Promise<void> {
     if (this.context) {
       await this.context.globalState.update(this.STORAGE_KEY, this.history);
+    }
+  }
+
+  /**
+   * Save file history to storage
+   */
+  private async saveFileHistory(): Promise<void> {
+    if (this.context) {
+      await this.context.globalState.update(this.FILE_STORAGE_KEY, this.fileHistory);
     }
   }
 
@@ -127,19 +169,23 @@ export class FolderHistoryService {
   }
 
   /**
-   * Clear history for a specific connection
+   * Clear history for a specific connection (folders and files)
    */
   async clearHistory(connectionId: string): Promise<void> {
     delete this.history[connectionId];
+    delete this.fileHistory[connectionId];
     await this.saveHistory();
+    await this.saveFileHistory();
   }
 
   /**
-   * Clear all history
+   * Clear all history (folders and files)
    */
   async clearAllHistory(): Promise<void> {
     this.history = {};
+    this.fileHistory = {};
     await this.saveHistory();
+    await this.saveFileHistory();
   }
 
   /**
@@ -154,8 +200,107 @@ export class FolderHistoryService {
     }
   }
 
+  // ==================== FILE HISTORY METHODS ====================
+
   /**
-   * Clean up old entries that haven't been visited in MAX_AGE_DAYS
+   * Record a file open
+   */
+  async recordFileOpen(connectionId: string, filePath: string): Promise<void> {
+    if (!this.fileHistory[connectionId]) {
+      this.fileHistory[connectionId] = [];
+    }
+
+    const files = this.fileHistory[connectionId];
+    const existing = files.find((f) => f.path === filePath);
+
+    if (existing) {
+      existing.visitCount++;
+      existing.lastVisit = Date.now();
+    } else {
+      files.push({
+        path: filePath,
+        visitCount: 1,
+        lastVisit: Date.now(),
+      });
+    }
+
+    // Sort by visit count (descending), then by last visit (descending)
+    files.sort((a, b) => {
+      if (b.visitCount !== a.visitCount) {
+        return b.visitCount - a.visitCount;
+      }
+      return b.lastVisit - a.lastVisit;
+    });
+
+    // Keep only top N files
+    if (files.length > this.MAX_FILES_PER_CONNECTION) {
+      this.fileHistory[connectionId] = files.slice(0, this.MAX_FILES_PER_CONNECTION);
+    }
+
+    await this.saveFileHistory();
+  }
+
+  /**
+   * Get frequently opened files for a connection
+   * Returns files sorted by frequency (most used first)
+   */
+  getFrequentFiles(connectionId: string, limit?: number): string[] {
+    const files = this.fileHistory[connectionId] || [];
+    const paths = files.map((f) => f.path);
+    return limit ? paths.slice(0, limit) : paths;
+  }
+
+  /**
+   * Get all file history for a connection (with stats)
+   */
+  getFileHistory(connectionId: string): FileVisit[] {
+    return this.fileHistory[connectionId] || [];
+  }
+
+  /**
+   * Remove a specific file from history
+   */
+  async removeFile(connectionId: string, filePath: string): Promise<void> {
+    if (this.fileHistory[connectionId]) {
+      this.fileHistory[connectionId] = this.fileHistory[connectionId].filter(
+        (f) => f.path !== filePath
+      );
+      await this.saveFileHistory();
+    }
+  }
+
+  /**
+   * Clean up old file entries that haven't been visited in MAX_AGE_DAYS
+   */
+  private async cleanupOldFileEntries(): Promise<void> {
+    const maxAge = this.MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    let cleaned = false;
+
+    for (const connectionId of Object.keys(this.fileHistory)) {
+      const files = this.fileHistory[connectionId];
+      const originalLength = files.length;
+
+      this.fileHistory[connectionId] = files.filter((f) => {
+        return now - f.lastVisit < maxAge;
+      });
+
+      if (this.fileHistory[connectionId].length !== originalLength) {
+        cleaned = true;
+      }
+
+      if (this.fileHistory[connectionId].length === 0) {
+        delete this.fileHistory[connectionId];
+      }
+    }
+
+    if (cleaned) {
+      await this.saveFileHistory();
+    }
+  }
+
+  /**
+   * Clean up old folder entries that haven't been visited in MAX_AGE_DAYS
    */
   private async cleanupOldEntries(): Promise<void> {
     const maxAge = this.MAX_AGE_DAYS * 24 * 60 * 60 * 1000; // Convert to milliseconds
