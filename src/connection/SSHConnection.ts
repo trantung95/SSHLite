@@ -15,6 +15,16 @@ import { expandPath } from '../utils/helpers';
 import { CredentialService, SavedCredential } from '../services/CredentialService';
 
 /**
+ * Server capabilities detected on connection
+ */
+export interface ServerCapabilities {
+  os: 'linux' | 'darwin' | 'windows' | 'unknown';
+  hasInotifywait: boolean;  // Linux file watcher
+  hasFswatch: boolean;      // macOS/BSD file watcher
+  watchMethod: 'inotifywait' | 'fswatch' | 'poll';
+}
+
+/**
  * SSH Connection implementation using ssh2 library
  */
 export class SSHConnection implements ISSHConnection {
@@ -24,13 +34,23 @@ export class SSHConnection implements ISSHConnection {
   private _sftp: SFTPWrapper | null = null;
   private _portForwards: Map<number, net.Server> = new Map();
   private _credential: SavedCredential | undefined;
+  private _capabilities: ServerCapabilities | null = null;
+  private _activeWatchers: Map<string, ClientChannel> = new Map(); // remotePath -> watcher channel
 
   private readonly _onStateChange = new vscode.EventEmitter<ConnectionState>();
   public readonly onStateChange = this._onStateChange.event;
 
+  // Event emitter for file changes detected by watchers
+  private readonly _onFileChange = new vscode.EventEmitter<{ remotePath: string; event: 'modify' | 'delete' | 'create' }>();
+  public readonly onFileChange = this._onFileChange.event;
+
   constructor(public readonly host: IHostConfig, credential?: SavedCredential) {
     this.id = `${host.host}:${host.port}:${host.username}`;
     this._credential = credential;
+  }
+
+  get capabilities(): ServerCapabilities | null {
+    return this._capabilities;
   }
 
   get client(): Client | null {
@@ -99,11 +119,55 @@ export class SSHConnection implements ISSHConnection {
       });
 
       this.setState(ConnectionState.Connected);
+
+      // Detect server capabilities in background (don't block connection)
+      this.detectCapabilities().catch(() => {
+        // Silently ignore capability detection errors - will fall back to poll
+      });
     } catch (error) {
       this.setState(ConnectionState.Error);
       this._client?.end();
       this._client = null;
       throw error;
+    }
+  }
+
+  /**
+   * Detect server capabilities (OS, file watcher availability)
+   */
+  private async detectCapabilities(): Promise<void> {
+    try {
+      // Detect OS
+      const unameResult = await this.exec('uname -s 2>/dev/null || echo unknown');
+      const osName = unameResult.trim().toLowerCase();
+
+      let os: ServerCapabilities['os'] = 'unknown';
+      if (osName === 'linux') os = 'linux';
+      else if (osName === 'darwin') os = 'darwin';
+      else if (osName.includes('mingw') || osName.includes('cygwin') || osName.includes('msys')) os = 'windows';
+
+      // Check for inotifywait (Linux)
+      const hasInotifywait = os === 'linux' &&
+        (await this.exec('which inotifywait 2>/dev/null')).trim().length > 0;
+
+      // Check for fswatch (macOS/BSD)
+      const hasFswatch = (os === 'darwin' || os === 'unknown') &&
+        (await this.exec('which fswatch 2>/dev/null')).trim().length > 0;
+
+      // Determine best watch method
+      let watchMethod: ServerCapabilities['watchMethod'] = 'poll';
+      if (hasInotifywait) watchMethod = 'inotifywait';
+      else if (hasFswatch) watchMethod = 'fswatch';
+
+      this._capabilities = { os, hasInotifywait, hasFswatch, watchMethod };
+    } catch {
+      // Default to poll if detection fails
+      this._capabilities = {
+        os: 'unknown',
+        hasInotifywait: false,
+        hasFswatch: false,
+        watchMethod: 'poll',
+      };
     }
   }
 
@@ -219,7 +283,20 @@ export class SSHConnection implements ISSHConnection {
       }
       this._sftp = null;
     }
+
+    // Close all file watchers
+    for (const [, stream] of this._activeWatchers) {
+      try {
+        stream.close();
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+    this._activeWatchers.clear();
+
     this._client = null;
+    this._capabilities = null;
+
     // Close all port forwards with error handling
     for (const [, server] of this._portForwards) {
       try {
@@ -509,6 +586,175 @@ export class SSHConnection implements ISSHConnection {
         resolve();
       });
     });
+  }
+
+  /**
+   * Read tail portion of a remote file starting from a specific byte offset
+   * Used for efficient incremental file updates (e.g., growing log files)
+   * @param remotePath - Path to remote file
+   * @param offset - Byte offset to start reading from (0-based)
+   * @returns Buffer containing data from offset to end of file
+   */
+  async readFileTail(remotePath: string, offset: number): Promise<Buffer> {
+    if (!this._client || this.state !== ConnectionState.Connected) {
+      throw new ConnectionError('Not connected');
+    }
+
+    // Use tail with byte offset for efficient partial read
+    // tail -c +N reads from byte N to end (1-based offset in tail)
+    const tailOffset = offset + 1;
+    // Escape special shell characters in path to prevent command injection
+    const escapedPath = remotePath.replace(/'/g, "'\\''");
+    const command = `tail -c +${tailOffset} '${escapedPath}'`;
+
+    return new Promise((resolve, reject) => {
+      this._client!.exec(command, (err, stream) => {
+        if (err) {
+          reject(new SFTPError(`Failed to read file tail: ${err.message}`, err));
+          return;
+        }
+
+        const chunks: Buffer[] = [];
+
+        stream.on('data', (chunk: Buffer) => {
+          chunks.push(chunk);
+        });
+
+        stream.on('close', (code: number) => {
+          if (code !== 0 && chunks.length === 0) {
+            reject(new SFTPError(`Failed to read file tail (exit code ${code})`));
+          } else {
+            resolve(Buffer.concat(chunks));
+          }
+        });
+
+        stream.stderr.on('data', () => {
+          // Ignore stderr - tail may output warnings that don't affect result
+        });
+      });
+    });
+  }
+
+  /**
+   * Start watching a file for changes using inotifywait or fswatch
+   * Emits 'onFileChange' events when file is modified
+   * @param remotePath - Path to the file to watch
+   * @returns true if watcher started successfully, false if not supported
+   */
+  async watchFile(remotePath: string): Promise<boolean> {
+    if (!this._client || this.state !== ConnectionState.Connected) {
+      return false;
+    }
+
+    // Stop any existing watcher for this file
+    await this.unwatchFile(remotePath);
+
+    // Wait for capabilities to be detected (with timeout)
+    let waitCount = 0;
+    while (!this._capabilities && waitCount < 20) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      waitCount++;
+    }
+
+    const caps = this._capabilities;
+    if (!caps || caps.watchMethod === 'poll') {
+      return false; // No native watch support, caller should use polling
+    }
+
+    // Escape path for shell
+    const escapedPath = remotePath.replace(/'/g, "'\\''");
+
+    // Build watch command based on available tool
+    let command: string;
+    if (caps.watchMethod === 'inotifywait') {
+      // inotifywait: -m = monitor mode, -e = events to watch
+      // Output format: WATCHED_FILENAME EVENT
+      command = `inotifywait -m -e modify,delete_self,move_self '${escapedPath}' 2>/dev/null`;
+    } else if (caps.watchMethod === 'fswatch') {
+      // fswatch: -o = one event per line, --event = event types
+      command = `fswatch -o --event Updated --event Removed '${escapedPath}' 2>/dev/null`;
+    } else {
+      return false;
+    }
+
+    return new Promise((resolve) => {
+      this._client!.exec(command, (err, stream) => {
+        if (err) {
+          resolve(false);
+          return;
+        }
+
+        this._activeWatchers.set(remotePath, stream);
+
+        stream.on('data', (data: Buffer) => {
+          const output = data.toString().trim();
+          if (!output) return;
+
+          // Parse event type based on watcher
+          let event: 'modify' | 'delete' | 'create' = 'modify';
+
+          if (caps.watchMethod === 'inotifywait') {
+            // inotifywait output: "/path/file MODIFY" or "MODIFY"
+            if (output.includes('DELETE') || output.includes('MOVE_SELF')) {
+              event = 'delete';
+            } else if (output.includes('CREATE')) {
+              event = 'create';
+            }
+          } else if (caps.watchMethod === 'fswatch') {
+            // fswatch with -o outputs a number (count of changes)
+            // With --event, it outputs the path
+            if (output.includes('Removed')) {
+              event = 'delete';
+            }
+          }
+
+          this._onFileChange.fire({ remotePath, event });
+        });
+
+        stream.on('close', () => {
+          this._activeWatchers.delete(remotePath);
+        });
+
+        stream.stderr.on('data', () => {
+          // Ignore stderr
+        });
+
+        // Watcher started successfully
+        resolve(true);
+      });
+    });
+  }
+
+  /**
+   * Stop watching a file
+   * @param remotePath - Path to stop watching
+   */
+  async unwatchFile(remotePath: string): Promise<void> {
+    const stream = this._activeWatchers.get(remotePath);
+    if (stream) {
+      try {
+        stream.close();
+      } catch {
+        // Ignore close errors
+      }
+      this._activeWatchers.delete(remotePath);
+    }
+  }
+
+  /**
+   * Stop all active file watchers
+   */
+  async unwatchAll(): Promise<void> {
+    for (const [path] of this._activeWatchers) {
+      await this.unwatchFile(path);
+    }
+  }
+
+  /**
+   * Check if a file is currently being watched
+   */
+  isWatching(remotePath: string): boolean {
+    return this._activeWatchers.has(remotePath);
   }
 
   /**

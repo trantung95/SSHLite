@@ -110,6 +110,17 @@ export class FileTreeItem extends vscode.TreeItem {
 }
 
 /**
+ * Tree item showing loading indicator with spinning icon
+ */
+export class LoadingTreeItem extends vscode.TreeItem {
+  constructor(message: string = 'Loading...') {
+    super(message, vscode.TreeItemCollapsibleState.None);
+    this.iconPath = new vscode.ThemeIcon('sync~spin');
+    this.contextValue = 'loading';
+  }
+}
+
+/**
  * Tree item for filter results header
  */
 export class FilterResultsHeaderItem extends vscode.TreeItem {
@@ -169,7 +180,7 @@ export class FilteredFileItem extends vscode.TreeItem {
   }
 }
 
-type TreeItem = ConnectionTreeItem | FileTreeItem | ParentFolderTreeItem | FilterResultsHeaderItem | FilteredFileItem;
+type TreeItem = ConnectionTreeItem | FileTreeItem | ParentFolderTreeItem | FilterResultsHeaderItem | FilteredFileItem | LoadingTreeItem;
 
 /**
  * MIME type for drag and drop of connections
@@ -208,6 +219,14 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   // Track pending preload operations
   private preloadQueue: Set<string> = new Set();
 
+  // Concurrency control for preloading
+  private activePreloadCount: number = 0;
+  private preloadWaitQueue: Array<() => void> = [];
+  private preloadCancelled: boolean = false;
+  private totalPreloadQueued: number = 0;
+  private completedPreloadCount: number = 0;
+  private preloadProgressResolve: (() => void) | null = null;
+
   // Filter pattern for file tree (glob-like pattern)
   private filterPattern: string = '';
 
@@ -215,6 +234,9 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   private deepFilterResults: Map<string, IRemoteFile[]> = new Map(); // connectionId -> matched files
   private isDeepFiltering: boolean = false;
   private deepFilterAbortController: AbortController | null = null;
+
+  // Track items currently being loaded (for showing loading spinner)
+  private loadingItems: Set<string> = new Set(); // Set of "connectionId:path" keys
 
   constructor() {
     this.connectionManager = ConnectionManager.getInstance();
@@ -274,6 +296,31 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   }
 
   /**
+   * Load directory in background and refresh tree item when done
+   * This allows showing a loading placeholder immediately while loading
+   */
+  private loadDirectoryAndRefresh(
+    connection: SSHConnection,
+    remotePath: string,
+    element: TreeItem
+  ): void {
+    const loadingKey = this.getCacheKey(connection.id, remotePath);
+
+    this.loadDirectory(connection, remotePath, false)
+      .then(() => {
+        // Loading complete, remove from loading set and refresh
+        this.loadingItems.delete(loadingKey);
+        this._onDidChangeTreeData.fire(element);
+      })
+      .catch((error) => {
+        // Loading failed, remove from loading set
+        this.loadingItems.delete(loadingKey);
+        this._onDidChangeTreeData.fire(element);
+        vscode.window.showErrorMessage(`Failed to list directory: ${(error as Error).message}`);
+      });
+  }
+
+  /**
    * Get cache key for a connection and path
    */
   private getCacheKey(connectionId: string, remotePath: string): string {
@@ -281,12 +328,13 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   }
 
   /**
-   * Get cached directory listing if valid
+   * Get cached directory listing
+   * Cache persists until disconnect (no TTL) for session-based caching
    */
   private getCached(connectionId: string, remotePath: string): IRemoteFile[] | null {
     const key = this.getCacheKey(connectionId, remotePath);
     const entry = this.directoryCache.get(key);
-    if (entry && Date.now() - entry.timestamp < this.CACHE_TTL_MS) {
+    if (entry) {
       return entry.files;
     }
     return null;
@@ -302,6 +350,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
   /**
    * Clear cache for a specific connection or all
+   * Also clears deep filter results for the connection
    */
   clearCache(connectionId?: string): void {
     if (connectionId) {
@@ -311,8 +360,10 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
           this.directoryCache.delete(key);
         }
       }
+      this.deepFilterResults.delete(connectionId);
     } else {
       this.directoryCache.clear();
+      this.deepFilterResults.clear();
     }
   }
 
@@ -356,20 +407,63 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
   /**
    * Check if preloading is enabled
-   * LITE PRINCIPLE: Preloading is disabled by default to minimize server resource usage
    */
   private isPreloadingEnabled(): boolean {
     const config = vscode.workspace.getConfiguration('sshLite');
-    return config.get<boolean>('enablePreloading', false);
+    return config.get<boolean>('enablePreloading', true);
+  }
+
+  /**
+   * Get max preloading concurrency from settings
+   */
+  private getMaxPreloadingConcurrency(): number {
+    const config = vscode.workspace.getConfiguration('sshLite');
+    return config.get<number>('maxPreloadingConcurrency', 2);
+  }
+
+  /**
+   * Acquire a preload slot (for concurrency limiting)
+   * Returns a release function that must be called when done
+   */
+  private async acquirePreloadSlot(): Promise<() => void> {
+    const maxConcurrency = this.getMaxPreloadingConcurrency();
+
+    if (this.activePreloadCount < maxConcurrency) {
+      this.activePreloadCount++;
+      return () => this.releasePreloadSlot();
+    }
+
+    // Wait for a slot to become available
+    await new Promise<void>((resolve) => {
+      this.preloadWaitQueue.push(resolve);
+    });
+
+    this.activePreloadCount++;
+    return () => this.releasePreloadSlot();
+  }
+
+  /**
+   * Release a preload slot
+   */
+  private releasePreloadSlot(): void {
+    this.activePreloadCount--;
+
+    // Wake up next waiting preload if any
+    if (this.preloadWaitQueue.length > 0) {
+      const next = this.preloadWaitQueue.shift();
+      if (next) {
+        next();
+      }
+    }
   }
 
   /**
    * Preload subdirectories in background (non-blocking)
-   * LITE PRINCIPLE: Only runs if enablePreloading is true
+   * Respects maxPreloadingConcurrency setting to limit server load
    */
   private preloadSubdirectories(connection: SSHConnection, files: IRemoteFile[]): void {
-    // LITE: Skip preloading if disabled
-    if (!this.isPreloadingEnabled()) {
+    // Skip preloading if disabled or cancelled
+    if (!this.isPreloadingEnabled() || this.preloadCancelled) {
       return;
     }
 
@@ -380,7 +474,14 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
     if (directories.length === 0) return;
 
-    // Preload in parallel, silently in background
+    // Reset cancelled flag if starting fresh preload
+    if (this.preloadQueue.size === 0 && this.activePreloadCount === 0) {
+      this.preloadCancelled = false;
+      this.completedPreloadCount = 0;
+      this.totalPreloadQueued = 0;
+    }
+
+    // Preload with concurrency control
     for (const dir of directories) {
       const cacheKey = this.getCacheKey(connection.id, dir.path);
 
@@ -392,14 +493,91 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       }
 
       this.preloadQueue.add(cacheKey);
+      this.totalPreloadQueued++;
 
-      // Load in background without blocking
-      this.loadDirectory(connection, dir.path, true)
-        .catch(() => { /* Silently ignore preload errors */ })
-        .finally(() => {
-          this.preloadQueue.delete(cacheKey);
-        });
+      // Preload with concurrency limiting
+      this.preloadWithConcurrencyLimit(connection, dir.path, cacheKey);
     }
+  }
+
+  /**
+   * Preload a directory with concurrency limiting
+   */
+  private async preloadWithConcurrencyLimit(
+    connection: SSHConnection,
+    dirPath: string,
+    cacheKey: string
+  ): Promise<void> {
+    // Check if cancelled before acquiring slot
+    if (this.preloadCancelled) {
+      this.preloadQueue.delete(cacheKey);
+      return;
+    }
+
+    const releaseSlot = await this.acquirePreloadSlot();
+
+    try {
+      // Check again after acquiring slot
+      if (this.preloadCancelled) {
+        return;
+      }
+      await this.loadDirectory(connection, dirPath, true);
+    } catch {
+      /* Silently ignore preload errors */
+    } finally {
+      this.preloadQueue.delete(cacheKey);
+      this.completedPreloadCount++;
+      releaseSlot();
+
+      // Check if all preloads are done
+      if (this.preloadQueue.size === 0 && this.preloadProgressResolve) {
+        this.preloadProgressResolve();
+        this.preloadProgressResolve = null;
+      }
+    }
+  }
+
+  /**
+   * Cancel all pending preload operations
+   */
+  cancelPreloading(): void {
+    this.preloadCancelled = true;
+
+    // Wake up all waiting preloads so they can check cancellation
+    while (this.preloadWaitQueue.length > 0) {
+      const next = this.preloadWaitQueue.shift();
+      if (next) {
+        next();
+      }
+    }
+
+    // Clear the queue
+    this.preloadQueue.clear();
+
+    // Resolve the progress if waiting
+    if (this.preloadProgressResolve) {
+      this.preloadProgressResolve();
+      this.preloadProgressResolve = null;
+    }
+  }
+
+  /**
+   * Check if preloading is in progress
+   */
+  isPreloadingInProgress(): boolean {
+    return this.preloadQueue.size > 0 || this.activePreloadCount > 0;
+  }
+
+  /**
+   * Get preload status for UI display
+   */
+  getPreloadStatus(): { active: number; queued: number; completed: number; total: number } {
+    return {
+      active: this.activePreloadCount,
+      queued: this.preloadQueue.size,
+      completed: this.completedPreloadCount,
+      total: this.totalPreloadQueued,
+    };
   }
 
   /**
@@ -612,33 +790,27 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     // Connection level: show current directory files
     if (element instanceof ConnectionTreeItem) {
       const currentPath = this.getCurrentPath(element.connection.id);
+      const loadingKey = this.getCacheKey(element.connection.id, currentPath);
 
       // Check cache first - if cached, no loading indicator needed
       const cached = this.getCached(element.connection.id, currentPath);
       if (cached) {
+        this.loadingItems.delete(loadingKey);
         const items = this.buildDirectoryItems(element.connection, currentPath, cached);
         // Preload subdirectories in background
         this.preloadSubdirectories(element.connection, cached);
         return items;
       }
 
-      // Show loading indicator (use setTimeout to avoid blocking tree render)
-      setTimeout(() => this.showLoading(`Loading ${currentPath}...`), 0);
-
-      try {
-        const files = await this.loadDirectory(element.connection, currentPath, false);
-        const items = this.buildDirectoryItems(element.connection, currentPath, files);
-
-        // Preload subdirectories in background
-        this.preloadSubdirectories(element.connection, files);
-
-        this.showSuccess(`Loaded ${currentPath}`);
-        return items;
-      } catch (error) {
-        this.hideLoading();
-        vscode.window.showErrorMessage(`Failed to list files: ${(error as Error).message}`);
-        return [];
+      // If already loading, show loading placeholder
+      if (this.loadingItems.has(loadingKey)) {
+        return [new LoadingTreeItem('Loading...')];
       }
+
+      // Start loading in background and return loading placeholder immediately
+      this.loadingItems.add(loadingKey);
+      this.loadDirectoryAndRefresh(element.connection, currentPath, element);
+      return [new LoadingTreeItem('Loading...')];
     }
 
     // Filter results header: show deep filter results
@@ -649,9 +821,12 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
     // File level: show directory contents
     if (element instanceof FileTreeItem && element.file.isDirectory) {
+      const loadingKey = this.getCacheKey(element.connection.id, element.file.path);
+
       // Check cache first
       const cached = this.getCached(element.connection.id, element.file.path);
       if (cached) {
+        this.loadingItems.delete(loadingKey);
         // Apply filter
         const filteredFiles = cached.filter((file) => this.matchesFilter(file));
         const items = filteredFiles.map((file) => new FileTreeItem(file, element.connection));
@@ -660,25 +835,15 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
         return items;
       }
 
-      // Show loading indicator (use setTimeout to avoid blocking tree render)
-      setTimeout(() => this.showLoading(`Loading ${element.file.name}...`), 0);
-
-      try {
-        const files = await this.loadDirectory(element.connection, element.file.path, false);
-        // Apply filter
-        const filteredFiles = files.filter((file) => this.matchesFilter(file));
-        const items = filteredFiles.map((file) => new FileTreeItem(file, element.connection));
-
-        // Preload subdirectories in background
-        this.preloadSubdirectories(element.connection, files);
-
-        this.showSuccess(`Loaded ${element.file.name}`);
-        return items;
-      } catch (error) {
-        this.hideLoading();
-        vscode.window.showErrorMessage(`Failed to list directory: ${(error as Error).message}`);
-        return [];
+      // If already loading, show loading placeholder
+      if (this.loadingItems.has(loadingKey)) {
+        return [new LoadingTreeItem('Loading...')];
       }
+
+      // Start loading in background and return loading placeholder immediately
+      this.loadingItems.add(loadingKey);
+      this.loadDirectoryAndRefresh(element.connection, element.file.path, element);
+      return [new LoadingTreeItem('Loading...')];
     }
 
     return [];
@@ -727,11 +892,13 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
   /**
    * Preload parent folder for instant "go up" navigation
-   * LITE PRINCIPLE: Only runs if enablePreloading is true
+   * NOTE: Parent folder is ALWAYS preloaded (not controlled by enablePreloading setting)
+   * because it's essential for basic navigation - users expect instant "go to parent"
+   * Respects maxPreloadingConcurrency setting to limit server load
    */
   private preloadParentFolder(connection: SSHConnection, parentPath: string): void {
-    // LITE: Skip preloading if disabled
-    if (!this.isPreloadingEnabled()) {
+    // Only check cancellation, NOT enablePreloading - parent is always preloaded for navigation
+    if (this.preloadCancelled) {
       return;
     }
 
@@ -747,15 +914,10 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     }
 
     this.preloadQueue.add(cacheKey);
+    this.totalPreloadQueued++;
 
-    // Load in background without blocking
-    this.loadDirectory(connection, parentPath, true)
-      .catch(() => {
-        /* Silently ignore preload errors */
-      })
-      .finally(() => {
-        this.preloadQueue.delete(cacheKey);
-      });
+    // Preload with concurrency limiting
+    this.preloadWithConcurrencyLimit(connection, parentPath, cacheKey);
   }
 
   /**
@@ -810,10 +972,14 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
   /**
    * Preload frequently used folders from history
-   * LITE PRINCIPLE: Only runs if enablePreloading is true (checked by caller)
+   * Respects maxPreloadingConcurrency setting to limit server load
    */
   private preloadFrequentFolders(connection: SSHConnection): void {
     // Note: Caller should check isPreloadingEnabled() before calling
+    if (this.preloadCancelled) {
+      return;
+    }
+
     const frequentFolders = this.folderHistoryService.getFrequentFolders(connection.id, 5);
 
     for (const folderPath of frequentFolders) {
@@ -829,15 +995,10 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       }
 
       this.preloadQueue.add(cacheKey);
+      this.totalPreloadQueued++;
 
-      // Load in background without blocking
-      this.loadDirectory(connection, folderPath, true)
-        .catch(() => {
-          /* Silently ignore preload errors */
-        })
-        .finally(() => {
-          this.preloadQueue.delete(cacheKey);
-        });
+      // Preload with concurrency limiting
+      this.preloadWithConcurrencyLimit(connection, folderPath, cacheKey);
     }
   }
 
@@ -1118,6 +1279,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     this.directoryCache.clear();
     this.activeLoads.clear();
     this.preloadQueue.clear();
+    this.loadingItems.clear();
 
     // Cancel any running deep filter
     if (this.deepFilterAbortController) {

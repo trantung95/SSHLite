@@ -193,7 +193,7 @@ export class HostTreeProvider implements vscode.TreeDataProvider<TreeItemType> {
 
     // Host level: show credentials (for both connected and disconnected hosts)
     if (element instanceof HostTreeItem) {
-      const credentials = await this.credentialService.listCredentials(element.hostConfig.id);
+      const credentials = this.credentialService.listCredentials(element.hostConfig.id);
       const items: TreeItemType[] = [];
 
       // Add saved credentials

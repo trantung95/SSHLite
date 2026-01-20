@@ -38,5 +38,3 @@ yarn-error.log*
 *.tmp
 .cache/
 
-# Claude Code workflow (personal)
-.claude-workflow.md

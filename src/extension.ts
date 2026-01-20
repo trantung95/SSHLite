@@ -11,7 +11,7 @@ import { ServerMonitorService, showMonitorQuickPick } from './services/ServerMon
 import { FolderHistoryService } from './services/FolderHistoryService';
 import { HostTreeProvider, HostTreeItem, CredentialTreeItem, PinnedFolderTreeItem } from './providers/HostTreeProvider';
 import { SavedCredential, PinnedFolder } from './services/CredentialService';
-import { IHostConfig } from './types';
+import { IHostConfig, ConnectionState } from './types';
 import { FileTreeProvider, FileTreeItem, ConnectionTreeItem } from './providers/FileTreeProvider';
 import { PortForwardTreeProvider, PortForwardTreeItem } from './providers/PortForwardTreeProvider';
 import { SearchResultsProvider, SearchResult } from './providers/SearchResultsProvider';
@@ -102,6 +102,58 @@ export function activate(context: vscode.ExtensionContext): void {
     showCollapseAll: true,
   });
 
+  // Create preload status bar item
+  const preloadStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 50);
+  preloadStatusBar.name = 'SSH Lite Preload';
+  preloadStatusBar.command = 'sshLite.cancelPreloading';
+  preloadStatusBar.tooltip = 'Click to cancel preloading';
+  context.subscriptions.push(preloadStatusBar);
+
+  // Track preload progress with periodic updates
+  let preloadProgressInterval: ReturnType<typeof setInterval> | null = null;
+
+  function startPreloadProgressTracking(): void {
+    if (preloadProgressInterval) {
+      return;
+    }
+
+    preloadProgressInterval = setInterval(() => {
+      const dirStatus = fileTreeProvider.getPreloadStatus();
+      const fileStatus = fileService.getPreloadStatus();
+
+      const totalActive = dirStatus.active + fileStatus.active;
+      const totalQueued = dirStatus.queued;
+      const totalCompleted = dirStatus.completed + fileStatus.completed;
+      const totalTotal = dirStatus.total + fileStatus.total;
+
+      if (totalActive > 0 || totalQueued > 0) {
+        preloadStatusBar.text = `$(sync~spin) Preloading: ${totalCompleted}/${totalTotal} (${totalActive} active)`;
+        preloadStatusBar.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+        preloadStatusBar.show();
+      } else {
+        preloadStatusBar.hide();
+        if (preloadProgressInterval) {
+          clearInterval(preloadProgressInterval);
+          preloadProgressInterval = null;
+        }
+      }
+    }, 500);
+  }
+
+  // Start tracking when connections exist
+  connectionManager.onDidChangeConnections(() => {
+    if (connectionManager.getAllConnections().length > 0) {
+      startPreloadProgressTracking();
+    }
+  });
+
+  // Clear cache on any disconnect (manual or unexpected)
+  connectionManager.onConnectionStateChange((event) => {
+    if (event.state === ConnectionState.Disconnected) {
+      fileTreeProvider.clearCache(event.connection.id);
+    }
+  });
+
   // Register commands
   const commands = [
     // Host commands
@@ -181,6 +233,7 @@ export function activate(context: vscode.ExtensionContext): void {
       fileService.cleanupConnection(connection.id);
       terminalService.closeTerminalsForConnection(connection.id);
       await portForwardService.stopAllForwardsForConnection(connection.id);
+      fileTreeProvider.clearCache(connection.id);
 
       await connectionManager.disconnect(connection.id);
       log(`Disconnected from ${connection.host.name}`);
@@ -620,6 +673,21 @@ export function activate(context: vscode.ExtensionContext): void {
       searchResultsProvider.clear();
     }),
 
+    // Cancel preloading operations
+    vscode.commands.registerCommand('sshLite.cancelPreloading', () => {
+      const dirStatus = fileTreeProvider.getPreloadStatus();
+      const fileStatus = fileService.getPreloadStatus();
+
+      if (dirStatus.active > 0 || dirStatus.queued > 0 || fileStatus.active > 0) {
+        fileTreeProvider.cancelPreloading();
+        fileService.cancelPreloading();
+        preloadStatusBar.hide();
+        vscode.window.setStatusBarMessage('$(x) Preloading cancelled', 3000);
+      } else {
+        vscode.window.setStatusBarMessage('$(info) No preloading in progress', 2000);
+      }
+    }),
+
     // Refresh individual file or folder
     vscode.commands.registerCommand('sshLite.refreshItem', async (item?: FileTreeItem) => {
       if (!item) {
@@ -988,7 +1056,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const remotePath = item.file.path;
 
       // Get all credentials for this host
-      const credentials = await credentialService.listCredentials(connection.id);
+      const credentials = credentialService.listCredentials(connection.id);
       if (credentials.length === 0) {
         vscode.window.showWarningMessage('No saved credentials for this host. Add a credential first.');
         return;

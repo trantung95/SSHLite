@@ -16,6 +16,12 @@ import { formatFileSize } from '../utils/helpers';
 const LARGE_FILE_THRESHOLD = 100 * 1024 * 1024;
 
 /**
+ * Default smart refresh threshold (500KB)
+ * Files larger than this use tail-based incremental refresh when they grow
+ */
+const DEFAULT_SMART_REFRESH_THRESHOLD = 500 * 1024;
+
+/**
  * Mapping from local temp file to remote file info
  */
 interface FileMapping {
@@ -24,6 +30,7 @@ interface FileMapping {
   localPath: string;
   lastSyncTime: number;
   lastRemoteModTime?: number;
+  lastRemoteSize?: number; // Track file size for smart refresh optimization
   originalContent?: string; // For diff tracking
   serverBackupPath?: string; // Path to backup on remote server
 }
@@ -71,6 +78,18 @@ export class FileService {
   // Lock for file operations to prevent concurrent access
   private fileOperationLocks: Map<string, Promise<void>> = new Map();
 
+  // Concurrency control for file preloading
+  private activePreloadCount: number = 0;
+  private preloadWaitQueue: Array<() => void> = [];
+  private preloadCancelled: boolean = false;
+  private totalPreloadQueued: number = 0;
+  private completedPreloadCount: number = 0;
+  private preloadProgressResolve: (() => void) | null = null;
+
+  // File watcher state
+  private currentWatchedFile: { localPath: string; remotePath: string; connectionId: string } | null = null;
+  private fileChangeSubscriptions: Map<string, vscode.Disposable> = new Map(); // connectionId -> subscription
+
   private constructor() {
     this.tempDir = path.join(os.tmpdir(), 'ssh-lite');
     this.backupDir = path.join(this.tempDir, 'backups');
@@ -78,6 +97,7 @@ export class FileService {
     this.ensureBackupDir();
     this.setupSaveListener();
     this.setupConfigListener();
+    this.setupFocusedFileWatcher();
     this.auditService = AuditService.getInstance();
     this.folderHistoryService = FolderHistoryService.getInstance();
     this.startGlobalRefreshTimer();
@@ -96,6 +116,131 @@ export class FileService {
         this.restartAutoCleanupTimer();
       }
     });
+  }
+
+  /**
+   * Setup file watcher for focused file (auto-watch the currently active SSH file)
+   */
+  private setupFocusedFileWatcher(): void {
+    // Watch for active editor changes to update file watcher
+    vscode.window.onDidChangeActiveTextEditor(async (editor) => {
+      if (!editor) {
+        await this.stopCurrentFileWatch();
+        return;
+      }
+
+      const localPath = editor.document.uri.fsPath;
+      const mapping = this.fileMappings.get(localPath);
+
+      if (!mapping) {
+        // Not an SSH file - stop watching
+        await this.stopCurrentFileWatch();
+        return;
+      }
+
+      // If already watching this file, do nothing
+      if (this.currentWatchedFile?.localPath === localPath) {
+        return;
+      }
+
+      // Stop watching previous file
+      await this.stopCurrentFileWatch();
+
+      // Start watching new file
+      await this.startFileWatch(localPath, mapping);
+    });
+  }
+
+  /**
+   * Start watching a file for real-time updates
+   */
+  private async startFileWatch(localPath: string, mapping: FileMapping): Promise<void> {
+    const connectionManager = ConnectionManager.getInstance();
+    const connection = connectionManager.getConnection(mapping.connectionId);
+
+    if (!connection) {
+      return;
+    }
+
+    // Try to start native file watcher
+    const watchStarted = await connection.watchFile(mapping.remotePath);
+
+    if (watchStarted) {
+      this.currentWatchedFile = {
+        localPath,
+        remotePath: mapping.remotePath,
+        connectionId: mapping.connectionId,
+      };
+
+      // Subscribe to file change events if not already subscribed
+      if (!this.fileChangeSubscriptions.has(connection.id)) {
+        const subscription = connection.onFileChange(async (event) => {
+          // Only process if this is the file we're watching
+          if (this.currentWatchedFile?.remotePath === event.remotePath) {
+            await this.handleFileChangeEvent(event);
+          }
+        });
+        this.fileChangeSubscriptions.set(connection.id, subscription);
+      }
+
+      vscode.window.setStatusBarMessage(`$(eye) Watching ${path.basename(mapping.remotePath)} for changes`, 2000);
+    }
+    // If watch didn't start (no inotifywait/fswatch), fall back to polling (existing behavior)
+  }
+
+  /**
+   * Stop watching the current file
+   */
+  private async stopCurrentFileWatch(): Promise<void> {
+    if (!this.currentWatchedFile) {
+      return;
+    }
+
+    const connectionManager = ConnectionManager.getInstance();
+    const connection = connectionManager.getConnection(this.currentWatchedFile.connectionId);
+
+    if (connection) {
+      await connection.unwatchFile(this.currentWatchedFile.remotePath);
+    }
+
+    this.currentWatchedFile = null;
+  }
+
+  /**
+   * Handle file change event from watcher - refresh the file immediately
+   */
+  private async handleFileChangeEvent(event: { remotePath: string; event: 'modify' | 'delete' | 'create' }): Promise<void> {
+    if (event.event === 'delete') {
+      vscode.window.showWarningMessage(`File "${path.basename(event.remotePath)}" was deleted on server`);
+      return;
+    }
+
+    // Find local path for this remote file
+    const localPath = this.currentWatchedFile?.localPath;
+    if (!localPath) {
+      return;
+    }
+
+    const mapping = this.fileMappings.get(localPath);
+    if (!mapping) {
+      return;
+    }
+
+    // Debounce rapid changes (e.g., log files being written to quickly)
+    const debounceKey = `watch:${localPath}`;
+    const existingTimer = this.debounceTimers.get(debounceKey);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+
+    this.debounceTimers.set(debounceKey, setTimeout(async () => {
+      this.debounceTimers.delete(debounceKey);
+
+      // Refresh the file immediately
+      await this.refreshSingleFile(localPath, mapping, true);
+
+      vscode.window.setStatusBarMessage(`$(zap) File updated (real-time watch)`, 1500);
+    }, 100)); // 100ms debounce for rapid changes
   }
 
   /**
@@ -1019,8 +1164,9 @@ export class FileService {
         true
       );
 
-      // Update original content for next diff
+      // Update original content and size for next diff and smart refresh
       mapping.originalContent = newContent;
+      mapping.lastRemoteSize = content.length;
       mapping.lastSyncTime = Date.now();
 
       // Show info notification with revert option
@@ -1215,7 +1361,17 @@ export class FileService {
   }
 
   /**
-   * Refresh a single file from remote
+   * Get smart refresh threshold from configuration
+   */
+  private getSmartRefreshThreshold(): number {
+    const config = vscode.workspace.getConfiguration('sshLite');
+    return config.get<number>('smartRefreshThreshold', DEFAULT_SMART_REFRESH_THRESHOLD);
+  }
+
+  /**
+   * Refresh a single file from remote using smart optimization
+   * For files > threshold that grew: fetch only new bytes (tail)
+   * For other cases: fetch entire file
    */
   private async refreshSingleFile(localPath: string, mapping: FileMapping, isFocused: boolean): Promise<void> {
     const connectionManager = ConnectionManager.getInstance();
@@ -1248,10 +1404,48 @@ export class FileService {
     const releaseLock = await this.acquireFileLock(localPath);
 
     try {
-      const content = await connection.readFile(mapping.remotePath);
+      // Step 1: Get current remote file stats
+      const stats = await connection.stat(mapping.remotePath);
+      const currentSize = stats.size;
+      const previousSize = mapping.lastRemoteSize ?? 0;
+      const smartThreshold = this.getSmartRefreshThreshold();
+
+      let content: Buffer;
+      let usedSmartRefresh = false;
+
+      // Step 2: Smart refresh decision tree
+      // Use tail optimization if: threshold > 0, file is large, file grew (not shrunk or replaced)
+      if (smartThreshold > 0 && previousSize > 0 && currentSize > smartThreshold && currentSize > previousSize) {
+        // File is large and grew - use tail optimization to fetch only new bytes
+        try {
+          const newBytes = await connection.readFileTail(mapping.remotePath, previousSize);
+
+          // Read existing local content
+          const existingContent = fs.readFileSync(localPath);
+
+          // Append new bytes to existing content
+          content = Buffer.concat([existingContent, newBytes]);
+          usedSmartRefresh = true;
+
+          if (isFocused) {
+            const savedBytes = formatFileSize(previousSize);
+            vscode.window.setStatusBarMessage(
+              `$(zap) Smart refresh: ${path.basename(mapping.remotePath)} (+${formatFileSize(newBytes.length)}, saved ${savedBytes})`,
+              2000
+            );
+          }
+        } catch {
+          // Fallback to full download if tail fails (e.g., tail not available, encoding issues)
+          content = await connection.readFile(mapping.remotePath);
+        }
+      } else {
+        // File is small, shrunk, same size, or first refresh - full download
+        content = await connection.readFile(mapping.remotePath);
+      }
+
       const newContent = content.toString('utf-8');
 
-      // Check if content actually changed
+      // Step 3: Check if content actually changed
       if (newContent !== mapping.originalContent) {
         // Find if document is open in VS Code
         const document = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === localPath);
@@ -1269,9 +1463,10 @@ export class FileService {
 
           // Update mapping after successful refresh
           mapping.originalContent = newContent;
+          mapping.lastRemoteSize = currentSize;
           mapping.lastSyncTime = Date.now();
 
-          if (isFocused) {
+          if (isFocused && !usedSmartRefresh) {
             vscode.window.setStatusBarMessage(`$(sync) Auto-refreshed ${path.basename(mapping.remotePath)}`, 2000);
           }
         } else if (document?.isDirty && isFocused) {
@@ -1290,11 +1485,15 @@ export class FileService {
           this.ensureTempDir();
           fs.writeFileSync(localPath, content);
           mapping.originalContent = newContent;
+          mapping.lastRemoteSize = currentSize;
           mapping.lastSyncTime = Date.now();
         }
+      } else {
+        // Content unchanged but update size tracking
+        mapping.lastRemoteSize = currentSize;
       }
     } catch {
-      // Ignore errors during refresh
+      // Ignore errors during refresh (connection might be temporarily down)
     } finally {
       releaseLock();
     }
@@ -1359,8 +1558,9 @@ export class FileService {
         fs.writeFileSync(localPath, content);
       }
 
-      // Update mapping
+      // Update mapping including size for smart refresh
       mapping.originalContent = newContent;
+      mapping.lastRemoteSize = content.length;
       mapping.lastSyncTime = Date.now();
 
       vscode.window.setStatusBarMessage(`$(check) Refreshed ${path.basename(remotePath)}`, 3000);
@@ -1403,6 +1603,7 @@ export class FileService {
       }
 
       mapping.originalContent = contentStr;
+      mapping.lastRemoteSize = content.length;
       mapping.lastSyncTime = Date.now();
 
       vscode.window.setStatusBarMessage(`$(sync) Reloaded ${path.basename(mapping.remotePath)}`, 3000);
@@ -1514,6 +1715,7 @@ export class FileService {
         localPath,
         lastSyncTime: Date.now(),
         lastRemoteModTime: remoteFile.modifiedTime,
+        lastRemoteSize: remoteFile.size, // Initialize size tracking for smart refresh
         originalContent: contentStr,
       };
       this.fileMappings.set(localPath, mapping);
@@ -1660,6 +1862,7 @@ export class FileService {
             localPath,
             lastSyncTime: Date.now(),
             lastRemoteModTime: remoteFile.modifiedTime,
+            lastRemoteSize: remoteFile.size, // Initialize size for smart refresh
             originalContent: contentStr,
           };
           this.fileMappings.set(localPath, mapping);
@@ -2071,13 +2274,112 @@ export class FileService {
   }
 
   /**
+   * Get max preloading concurrency from settings
+   */
+  private getMaxPreloadingConcurrency(): number {
+    const config = vscode.workspace.getConfiguration('sshLite');
+    return config.get<number>('maxPreloadingConcurrency', 2);
+  }
+
+  /**
+   * Acquire a preload slot (for concurrency limiting)
+   * Returns a release function that must be called when done
+   */
+  private async acquirePreloadSlot(): Promise<() => void> {
+    const maxConcurrency = this.getMaxPreloadingConcurrency();
+
+    if (this.activePreloadCount < maxConcurrency) {
+      this.activePreloadCount++;
+      return () => this.releasePreloadSlot();
+    }
+
+    // Wait for a slot to become available
+    await new Promise<void>((resolve) => {
+      this.preloadWaitQueue.push(resolve);
+    });
+
+    this.activePreloadCount++;
+    return () => this.releasePreloadSlot();
+  }
+
+  /**
+   * Release a preload slot
+   */
+  private releasePreloadSlot(): void {
+    this.activePreloadCount--;
+
+    // Wake up next waiting preload if any
+    if (this.preloadWaitQueue.length > 0) {
+      const next = this.preloadWaitQueue.shift();
+      if (next) {
+        next();
+      }
+    }
+  }
+
+  /**
+   * Cancel all pending file preload operations
+   */
+  cancelPreloading(): void {
+    this.preloadCancelled = true;
+
+    // Wake up all waiting preloads so they can check cancellation
+    while (this.preloadWaitQueue.length > 0) {
+      const next = this.preloadWaitQueue.shift();
+      if (next) {
+        next();
+      }
+    }
+
+    // Resolve the progress if waiting
+    if (this.preloadProgressResolve) {
+      this.preloadProgressResolve();
+      this.preloadProgressResolve = null;
+    }
+  }
+
+  /**
+   * Check if file preloading is in progress
+   */
+  isPreloadingInProgress(): boolean {
+    return this.activePreloadCount > 0;
+  }
+
+  /**
+   * Get file preload status for UI display
+   */
+  getPreloadStatus(): { active: number; completed: number; total: number } {
+    return {
+      active: this.activePreloadCount,
+      completed: this.completedPreloadCount,
+      total: this.totalPreloadQueued,
+    };
+  }
+
+  /**
    * Preload frequently opened files for a connection
    * Downloads files in background to cache them locally
+   * Respects maxPreloadingConcurrency setting to limit server load
    */
   async preloadFrequentFiles(connection: SSHConnection, limit: number = 5): Promise<void> {
+    // Reset cancelled flag if starting fresh preload
+    if (this.activePreloadCount === 0) {
+      this.preloadCancelled = false;
+      this.completedPreloadCount = 0;
+      this.totalPreloadQueued = 0;
+    }
+
+    if (this.preloadCancelled) {
+      return;
+    }
+
     const frequentFiles = this.folderHistoryService.getFrequentFiles(connection.id, limit);
 
     for (const filePath of frequentFiles) {
+      if (this.preloadCancelled) {
+        break;
+      }
+
       // Generate the same temp file path as openRemoteFile
       const hash = crypto
         .createHash('md5')
@@ -2098,10 +2400,45 @@ export class FileService {
         continue;
       }
 
-      // Preload in background (non-blocking, silent errors)
-      this.preloadFile(connection, filePath, localPath).catch(() => {
+      this.totalPreloadQueued++;
+
+      // Preload with concurrency limiting (non-blocking, silent errors)
+      this.preloadFileWithConcurrencyLimit(connection, filePath, localPath).catch(() => {
         /* Silently ignore preload errors */
       });
+    }
+  }
+
+  /**
+   * Preload a file with concurrency limiting
+   */
+  private async preloadFileWithConcurrencyLimit(
+    connection: SSHConnection,
+    remotePath: string,
+    localPath: string
+  ): Promise<void> {
+    // Check if cancelled before acquiring slot
+    if (this.preloadCancelled) {
+      return;
+    }
+
+    const releaseSlot = await this.acquirePreloadSlot();
+
+    try {
+      // Check again after acquiring slot
+      if (this.preloadCancelled) {
+        return;
+      }
+      await this.preloadFile(connection, remotePath, localPath);
+    } finally {
+      this.completedPreloadCount++;
+      releaseSlot();
+
+      // Check if all preloads are done
+      if (this.activePreloadCount === 0 && this.preloadProgressResolve) {
+        this.preloadProgressResolve();
+        this.preloadProgressResolve = null;
+      }
     }
   }
 
@@ -2133,6 +2470,7 @@ export class FileService {
         remotePath: remotePath,
         localPath,
         lastSyncTime: Date.now(),
+        lastRemoteSize: content.length, // Initialize size for smart refresh
         originalContent: contentStr,
       };
       this.fileMappings.set(localPath, mapping);

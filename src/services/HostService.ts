@@ -13,6 +13,10 @@ import { expandPath, validatePort } from '../utils/helpers';
 export class HostService {
   private static _instance: HostService;
 
+  // Cache for SSH config hosts (parsed once, invalidated manually)
+  private sshConfigHostsCache: IHostConfig[] | null = null;
+  private sshConfigMtime: number = 0;
+
   private constructor() {}
 
   /**
@@ -47,7 +51,7 @@ export class HostService {
   }
 
   /**
-   * Load hosts from ~/.ssh/config
+   * Load hosts from ~/.ssh/config (with caching for performance)
    */
   private async loadSSHConfigHosts(): Promise<IHostConfig[]> {
     const config = vscode.workspace.getConfiguration('sshLite');
@@ -60,7 +64,20 @@ export class HostService {
     }
 
     if (!fs.existsSync(configPath)) {
+      this.sshConfigHostsCache = [];
       return [];
+    }
+
+    // Check if file has been modified since last cache
+    try {
+      const stats = fs.statSync(configPath);
+      if (this.sshConfigHostsCache !== null && stats.mtimeMs === this.sshConfigMtime) {
+        // Return cached hosts - file hasn't changed
+        return this.sshConfigHostsCache;
+      }
+      this.sshConfigMtime = stats.mtimeMs;
+    } catch {
+      // If stat fails, proceed to parse
     }
 
     try {
@@ -108,11 +125,22 @@ export class HostService {
         }
       }
 
+      // Cache the parsed hosts
+      this.sshConfigHostsCache = hosts;
       return hosts;
     } catch (error) {
       console.error('Failed to parse SSH config:', error);
+      this.sshConfigHostsCache = [];
       return [];
     }
+  }
+
+  /**
+   * Invalidate the SSH config cache (call when user modifies SSH config externally)
+   */
+  invalidateCache(): void {
+    this.sshConfigHostsCache = null;
+    this.sshConfigMtime = 0;
   }
 
   /**

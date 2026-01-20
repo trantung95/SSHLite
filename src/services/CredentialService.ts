@@ -83,9 +83,9 @@ export class CredentialService {
   }
 
   /**
-   * List all credentials for a host
+   * List all credentials for a host (synchronous - reads from local config)
    */
-  async listCredentials(hostId: string): Promise<SavedCredential[]> {
+  listCredentials(hostId: string): SavedCredential[] {
     const index = this.getCredentialIndex();
     return index[hostId] || [];
   }
@@ -172,7 +172,7 @@ export class CredentialService {
    * Delete all credentials for a host
    */
   async deleteAll(hostId: string): Promise<void> {
-    const credentials = await this.listCredentials(hostId);
+    const credentials = this.listCredentials(hostId);
     for (const cred of credentials) {
       await this.deleteCredential(hostId, cred.id);
     }
@@ -183,7 +183,7 @@ export class CredentialService {
    * For backward compatibility with existing auth flow
    */
   async get(hostId: string, type: 'password' | 'passphrase'): Promise<string | undefined> {
-    const credentials = await this.listCredentials(hostId);
+    const credentials = this.listCredentials(hostId);
     const cred = credentials.find((c) => c.type === 'password');
     if (cred) {
       return await this.getCredentialSecret(hostId, cred.id);
@@ -196,7 +196,7 @@ export class CredentialService {
    * For backward compatibility
    */
   async save(hostId: string, type: 'password' | 'passphrase', value: string): Promise<void> {
-    const credentials = await this.listCredentials(hostId);
+    const credentials = this.listCredentials(hostId);
     const existing = credentials.find((c) => c.type === 'password' && c.label === 'Default');
 
     if (existing) {
@@ -321,8 +321,8 @@ export class CredentialService {
   /**
    * Get pinned folders for a credential
    */
-  async getPinnedFolders(hostId: string, credentialId: string): Promise<PinnedFolder[]> {
-    const credentials = await this.listCredentials(hostId);
+  getPinnedFolders(hostId: string, credentialId: string): PinnedFolder[] {
+    const credentials = this.listCredentials(hostId);
     const credential = credentials.find((c) => c.id === credentialId);
     return credential?.pinnedFolders || [];
   }

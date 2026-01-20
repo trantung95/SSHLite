@@ -427,6 +427,12 @@
         "title": "Clear Search Results",
         "category": "SSH Lite",
         "icon": "$(clear-all)"
+      },
+      {
+        "command": "sshLite.cancelPreloading",
+        "title": "Cancel Preloading",
+        "category": "SSH Lite",
+        "icon": "$(close)"
       }
     ],
     "menus": {
@@ -766,6 +772,12 @@
           "minimum": 0,
           "description": "Auto-refresh opened files interval in seconds (0 to disable)"
         },
+        "sshLite.smartRefreshThreshold": {
+          "type": "number",
+          "default": 512000,
+          "minimum": 0,
+          "description": "File size threshold in bytes for smart tail-based refresh (default: 500KB). Files larger than this that grow will only fetch new bytes instead of downloading the entire file. Set to 0 to always download full file."
+        },
         "sshLite.largeFileSizeThreshold": {
           "type": "number",
           "default": 104857600,
@@ -801,8 +813,15 @@
         },
         "sshLite.enablePreloading": {
           "type": "boolean",
-          "default": false,
-          "description": "Enable background preloading of directories and frequent files (uses server resources, disabled by default for LITE mode)"
+          "default": true,
+          "description": "Enable background preloading of directories and frequent files for faster navigation"
+        },
+        "sshLite.maxPreloadingConcurrency": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Maximum number of parallel preload operations (lower = less server load, higher = faster preloading)"
         }
       }
     }
