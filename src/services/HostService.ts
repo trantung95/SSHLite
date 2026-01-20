@@ -30,10 +30,10 @@ export class HostService {
   }
 
   /**
-   * Get all available hosts from both sources
+   * Get all available hosts from both sources (synchronous for instant UI)
    */
-  async getAllHosts(): Promise<IHostConfig[]> {
-    const sshConfigHosts = await this.loadSSHConfigHosts();
+  getAllHosts(): IHostConfig[] {
+    const sshConfigHosts = this.loadSSHConfigHosts();
     const savedHosts = this.loadSavedHosts();
 
     // Merge hosts, saved hosts take priority for duplicates
@@ -53,7 +53,7 @@ export class HostService {
   /**
    * Load hosts from ~/.ssh/config (with caching for performance)
    */
-  private async loadSSHConfigHosts(): Promise<IHostConfig[]> {
+  private loadSSHConfigHosts(): IHostConfig[] {
     const config = vscode.workspace.getConfiguration('sshLite');
     let configPath = config.get<string>('sshConfigPath', '');
 

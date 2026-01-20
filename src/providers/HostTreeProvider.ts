@@ -179,12 +179,12 @@ export class HostTreeProvider implements vscode.TreeDataProvider<TreeItemType> {
   }
 
   /**
-   * Get children (hosts or credentials)
+   * Get children (hosts or credentials) - synchronous for instant UI
    */
-  async getChildren(element?: TreeItemType): Promise<TreeItemType[]> {
+  getChildren(element?: TreeItemType): TreeItemType[] {
     // Root level: show hosts
     if (!element) {
-      const hosts = await this.hostService.getAllHosts();
+      const hosts = this.hostService.getAllHosts();
       const connections = this.connectionManager.getAllConnections();
       const connectedIds = new Set(connections.map((c) => c.id));
 

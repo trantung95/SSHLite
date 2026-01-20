@@ -467,12 +467,24 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       return;
     }
 
-    // Get directories to preload (limit to first 5 to avoid overload)
-    const directories = files
-      .filter((f) => f.isDirectory)
-      .slice(0, 5);
+    // Get all directories
+    const allDirectories = files.filter((f) => f.isDirectory);
+    if (allDirectories.length === 0) return;
 
-    if (directories.length === 0) return;
+    // Get frequently visited folders for this connection
+    const frequentFolders = new Set(this.folderHistoryService.getFrequentFolders(connection.id, 20));
+
+    // Sort directories: frequently visited first, then alphabetically
+    const sortedDirectories = [...allDirectories].sort((a, b) => {
+      const aFrequent = frequentFolders.has(a.path);
+      const bFrequent = frequentFolders.has(b.path);
+      if (aFrequent && !bFrequent) return -1;
+      if (!aFrequent && bFrequent) return 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    // Take top 5 (prioritized by frequency)
+    const directories = sortedDirectories.slice(0, 5);
 
     // Reset cancelled flag if starting fresh preload
     if (this.preloadQueue.size === 0 && this.activePreloadCount === 0) {
@@ -495,18 +507,21 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       this.preloadQueue.add(cacheKey);
       this.totalPreloadQueued++;
 
-      // Preload with concurrency limiting
-      this.preloadWithConcurrencyLimit(connection, dir.path, cacheKey);
+      // Preload with concurrency limiting - give extra depth to frequent folders
+      const isFrequent = frequentFolders.has(dir.path);
+      this.preloadWithConcurrencyLimit(connection, dir.path, cacheKey, isFrequent ? 2 : 1);
     }
   }
 
   /**
    * Preload a directory with concurrency limiting
+   * @param depth - How many more levels to preload (0 = just this directory)
    */
   private async preloadWithConcurrencyLimit(
     connection: SSHConnection,
     dirPath: string,
-    cacheKey: string
+    cacheKey: string,
+    depth: number = 1
   ): Promise<void> {
     // Check if cancelled before acquiring slot
     if (this.preloadCancelled) {
@@ -521,7 +536,23 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       if (this.preloadCancelled) {
         return;
       }
-      await this.loadDirectory(connection, dirPath, true);
+      const files = await this.loadDirectory(connection, dirPath, true);
+
+      // If we have remaining depth, queue subdirectories for preloading too
+      if (depth > 0 && files && !this.preloadCancelled) {
+        const subdirs = files.filter((f) => f.isDirectory).slice(0, 3); // Limit to 3 per level
+        for (const subdir of subdirs) {
+          const subCacheKey = this.getCacheKey(connection.id, subdir.path);
+          if (!this.getCached(connection.id, subdir.path) &&
+              !this.activeLoads.has(subCacheKey) &&
+              !this.preloadQueue.has(subCacheKey)) {
+            this.preloadQueue.add(subCacheKey);
+            this.totalPreloadQueued++;
+            // Queue with reduced depth
+            this.preloadWithConcurrencyLimit(connection, subdir.path, subCacheKey, depth - 1);
+          }
+        }
+      }
     } catch {
       /* Silently ignore preload errors */
     } finally {

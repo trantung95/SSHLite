@@ -89,6 +89,8 @@ export class FileService {
   // File watcher state
   private currentWatchedFile: { localPath: string; remotePath: string; connectionId: string } | null = null;
   private fileChangeSubscriptions: Map<string, vscode.Disposable> = new Map(); // connectionId -> subscription
+  private focusedFilePollTimer: NodeJS.Timeout | null = null; // Fast polling for focused file when no native watch
+  private usingNativeWatch: boolean = false; // Track if native watch is active
 
   private constructor() {
     this.tempDir = path.join(os.tmpdir(), 'ssh-lite');
@@ -162,15 +164,21 @@ export class FileService {
       return;
     }
 
+    // Stop any existing poll timer
+    this.stopFocusedFilePollTimer();
+
+    // Set current watched file
+    this.currentWatchedFile = {
+      localPath,
+      remotePath: mapping.remotePath,
+      connectionId: mapping.connectionId,
+    };
+
     // Try to start native file watcher
     const watchStarted = await connection.watchFile(mapping.remotePath);
 
     if (watchStarted) {
-      this.currentWatchedFile = {
-        localPath,
-        remotePath: mapping.remotePath,
-        connectionId: mapping.connectionId,
-      };
+      this.usingNativeWatch = true;
 
       // Subscribe to file change events if not already subscribed
       if (!this.fileChangeSubscriptions.has(connection.id)) {
@@ -183,15 +191,51 @@ export class FileService {
         this.fileChangeSubscriptions.set(connection.id, subscription);
       }
 
-      vscode.window.setStatusBarMessage(`$(eye) Watching ${path.basename(mapping.remotePath)} for changes`, 2000);
+      vscode.window.setStatusBarMessage(`$(eye) Watching ${path.basename(mapping.remotePath)} (native)`, 2000);
+    } else {
+      // No native watch - use fast polling for focused file (1 second interval)
+      this.usingNativeWatch = false;
+      this.startFocusedFilePollTimer();
+      vscode.window.setStatusBarMessage(`$(eye) Watching ${path.basename(mapping.remotePath)} (polling)`, 2000);
     }
-    // If watch didn't start (no inotifywait/fswatch), fall back to polling (existing behavior)
+  }
+
+  /**
+   * Start fast polling timer for focused file (when native watch not available)
+   */
+  private startFocusedFilePollTimer(): void {
+    this.stopFocusedFilePollTimer();
+
+    // Poll every 1 second for focused file
+    this.focusedFilePollTimer = setInterval(async () => {
+      if (!this.currentWatchedFile) {
+        return;
+      }
+
+      const mapping = this.fileMappings.get(this.currentWatchedFile.localPath);
+      if (mapping) {
+        await this.refreshSingleFile(this.currentWatchedFile.localPath, mapping, true);
+      }
+    }, 1000);
+  }
+
+  /**
+   * Stop focused file poll timer
+   */
+  private stopFocusedFilePollTimer(): void {
+    if (this.focusedFilePollTimer) {
+      clearInterval(this.focusedFilePollTimer);
+      this.focusedFilePollTimer = null;
+    }
   }
 
   /**
    * Stop watching the current file
    */
   private async stopCurrentFileWatch(): Promise<void> {
+    // Stop poll timer
+    this.stopFocusedFilePollTimer();
+
     if (!this.currentWatchedFile) {
       return;
     }
@@ -199,11 +243,12 @@ export class FileService {
     const connectionManager = ConnectionManager.getInstance();
     const connection = connectionManager.getConnection(this.currentWatchedFile.connectionId);
 
-    if (connection) {
+    if (connection && this.usingNativeWatch) {
       await connection.unwatchFile(this.currentWatchedFile.remotePath);
     }
 
     this.currentWatchedFile = null;
+    this.usingNativeWatch = false;
   }
 
   /**
@@ -326,25 +371,64 @@ export class FileService {
     }
 
     // Also clean orphan files in temp directory that aren't in our mappings
+    // Handle both flat files and connection subdirectories
     try {
-      const files = fs.readdirSync(this.tempDir);
-      for (const file of files) {
-        const filePath = path.join(this.tempDir, file);
+      const entries = fs.readdirSync(this.tempDir, { withFileTypes: true });
+      for (const entry of entries) {
+        const entryPath = path.join(this.tempDir, entry.name);
 
-        // Skip if this file is in our active mappings
-        if (this.fileMappings.has(filePath)) {
-          continue;
-        }
+        if (entry.isDirectory() && entry.name !== 'backups') {
+          // Connection subdirectory - check files inside
+          try {
+            const subFiles = fs.readdirSync(entryPath);
+            for (const subFile of subFiles) {
+              const filePath = path.join(entryPath, subFile);
 
-        try {
-          const stats = fs.statSync(filePath);
-          const fileAge = now - stats.mtimeMs;
-          if (fileAge > maxAge) {
-            fs.unlinkSync(filePath);
-            cleanedCount++;
+              // Skip if this file is in our active mappings
+              if (this.fileMappings.has(filePath)) {
+                continue;
+              }
+
+              try {
+                const stats = fs.statSync(filePath);
+                const fileAge = now - stats.mtimeMs;
+                if (fileAge > maxAge) {
+                  fs.unlinkSync(filePath);
+                  cleanedCount++;
+                }
+              } catch {
+                // Ignore errors for individual files
+              }
+            }
+
+            // Remove empty subdirectory
+            try {
+              const remainingFiles = fs.readdirSync(entryPath);
+              if (remainingFiles.length === 0) {
+                fs.rmdirSync(entryPath);
+              }
+            } catch {
+              // Ignore errors
+            }
+          } catch {
+            // Ignore errors reading subdirectory
           }
-        } catch {
-          // Ignore errors for individual files
+        } else if (entry.isFile()) {
+          // Legacy flat file (from old structure)
+          if (this.fileMappings.has(entryPath)) {
+            continue;
+          }
+
+          try {
+            const stats = fs.statSync(entryPath);
+            const fileAge = now - stats.mtimeMs;
+            if (fileAge > maxAge) {
+              fs.unlinkSync(entryPath);
+              cleanedCount++;
+            }
+          } catch {
+            // Ignore errors for individual files
+          }
         }
       }
     } catch {
@@ -461,6 +545,30 @@ export class FileService {
     if (!fs.existsSync(this.backupDir)) {
       fs.mkdirSync(this.backupDir, { recursive: true });
     }
+  }
+
+  /**
+   * Get local temp file path for a remote file.
+   * Uses connection subdirectories to avoid collisions while keeping original filenames.
+   */
+  private getLocalFilePath(connectionId: string, remotePath: string): string {
+    // Create a short hash of connection ID for subdirectory
+    const connHash = crypto
+      .createHash('md5')
+      .update(connectionId)
+      .digest('hex')
+      .substring(0, 8);
+
+    const connDir = path.join(this.tempDir, connHash);
+
+    // Ensure connection subdirectory exists
+    if (!fs.existsSync(connDir)) {
+      fs.mkdirSync(connDir, { recursive: true });
+    }
+
+    // Use original filename
+    const fileName = path.basename(remotePath);
+    return path.join(connDir, fileName);
   }
 
   /**
@@ -1655,15 +1763,8 @@ export class FileService {
       return;
     }
 
-    // Generate unique temp file path
-    const hash = crypto
-      .createHash('md5')
-      .update(`${connection.id}:${remoteFile.path}`)
-      .digest('hex')
-      .substring(0, 8);
-    const ext = path.extname(remoteFile.name);
-    const baseName = path.basename(remoteFile.name, ext);
-    const localPath = path.join(this.tempDir, `${baseName}-${hash}${ext}`);
+    // Get local file path (uses connection subdirectory with original filename)
+    const localPath = this.getLocalFilePath(connection.id, remoteFile.path);
 
     // Check if document is already open in VS Code editor (quick check before acquiring lock)
     const existingDoc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === localPath);
@@ -1690,63 +1791,96 @@ export class FileService {
         this.fileMappings.delete(localPath);
       }
 
-      // Show status bar message during download
-      vscode.window.setStatusBarMessage(`$(sync~spin) Downloading ${remoteFile.name}...`, 10000);
-
       // Ensure temp directory exists
       this.ensureTempDir();
 
-      // Download content FIRST before creating any files
-      const content = await connection.readFile(remoteFile.path);
-      const contentStr = content.toString('utf-8');
+      // Download with visible progress indicator
+      const fileSizeStr = formatFileSize(remoteFile.size);
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `Downloading ${remoteFile.name} (${fileSizeStr})`,
+          cancellable: false,
+        },
+        async (progress) => {
+          // Show initial progress with file info
+          progress.report({ increment: 10, message: 'Connecting...' });
 
-      // Write content to disk as Buffer (not string) to avoid encoding issues
-      fs.writeFileSync(localPath, content);
+          // Download content FIRST before creating any files
+          // Use progress simulation for better UX since SFTP doesn't provide real progress
+          const downloadPromise = connection.readFile(remoteFile.path);
 
-      // Now open the document - content is already correct on disk
-      // Use preview: false to open in edit mode (non-italic tab)
-      const document = await vscode.workspace.openTextDocument(localPath);
-      await vscode.window.showTextDocument(document, { preview: false });
+          // Simulate progress during download (10% to 80%)
+          let currentProgress = 10;
+          const progressInterval = setInterval(() => {
+            if (currentProgress < 80) {
+              const increment = Math.min(5, 80 - currentProgress);
+              currentProgress += increment;
+              progress.report({ increment, message: `Downloading... ${currentProgress}%` });
+            }
+          }, 200);
 
-      // Store mapping with original content for audit
-      const mapping: FileMapping = {
-        connectionId: connection.id,
-        remotePath: remoteFile.path,
-        localPath,
-        lastSyncTime: Date.now(),
-        lastRemoteModTime: remoteFile.modifiedTime,
-        lastRemoteSize: remoteFile.size, // Initialize size tracking for smart refresh
-        originalContent: contentStr,
-      };
-      this.fileMappings.set(localPath, mapping);
+          const content = await downloadPromise;
+          clearInterval(progressInterval);
 
-      // Create server-side backup in background (non-blocking, silent failure)
-      this.createServerBackup(connection, remoteFile.path)
-        .then((backupPath) => {
-          if (backupPath) {
-            mapping.serverBackupPath = backupPath;
-          }
-        })
-        .catch(() => {
-          // Silently ignore backup errors
-        });
+          const contentStr = content.toString('utf-8');
 
-      // Log download
-      this.auditService.log({
-        action: 'download',
-        connectionId: connection.id,
-        hostName: connection.host.name,
-        username: connection.host.username,
-        remotePath: remoteFile.path,
-        localPath,
-        fileSize: remoteFile.size,
-        success: true,
-      });
+          progress.report({ increment: 85 - currentProgress, message: 'Writing file...' });
 
-      // Record file open for preloading
-      this.folderHistoryService.recordFileOpen(connection.id, remoteFile.path);
+          // Write content to disk as Buffer (not string) to avoid encoding issues
+          fs.writeFileSync(localPath, content);
 
-      vscode.window.setStatusBarMessage(`$(check) Loaded ${remoteFile.name}`, 3000);
+          progress.report({ increment: 5, message: 'Opening editor...' });
+
+          // Now open the document - content is already correct on disk
+          // Use preview: false to open in edit mode (non-italic tab)
+          const document = await vscode.workspace.openTextDocument(localPath);
+          await vscode.window.showTextDocument(document, { preview: false });
+
+          // Store mapping with original content for audit
+          const mapping: FileMapping = {
+            connectionId: connection.id,
+            remotePath: remoteFile.path,
+            localPath,
+            lastSyncTime: Date.now(),
+            lastRemoteModTime: remoteFile.modifiedTime,
+            lastRemoteSize: remoteFile.size, // Initialize size tracking for smart refresh
+            originalContent: contentStr,
+          };
+          this.fileMappings.set(localPath, mapping);
+
+          // Create server-side backup in background (non-blocking, silent failure)
+          this.createServerBackup(connection, remoteFile.path)
+            .then((backupPath) => {
+              if (backupPath) {
+                mapping.serverBackupPath = backupPath;
+              }
+            })
+            .catch(() => {
+              // Silently ignore backup errors
+            });
+
+          // Log download
+          this.auditService.log({
+            action: 'download',
+            connectionId: connection.id,
+            hostName: connection.host.name,
+            username: connection.host.username,
+            remotePath: remoteFile.path,
+            localPath,
+            fileSize: remoteFile.size,
+            success: true,
+          });
+
+          // Record file open for preloading
+          this.folderHistoryService.recordFileOpen(connection.id, remoteFile.path);
+
+          // Start file watcher for real-time updates (mapping must exist first)
+          await this.startFileWatch(localPath, mapping);
+
+          progress.report({ increment: 10, message: 'Complete!' });
+        }
+      );
     } catch (error) {
       vscode.window.showErrorMessage(`Failed to load file: ${(error as Error).message}`);
 
@@ -1825,34 +1959,43 @@ export class FileService {
     connection: SSHConnection,
     remoteFile: IRemoteFile
   ): Promise<void> {
-    const hash = crypto
-      .createHash('md5')
-      .update(`${connection.id}:${remoteFile.path}`)
-      .digest('hex')
-      .substring(0, 8);
-    const ext = path.extname(remoteFile.name);
-    const baseName = path.basename(remoteFile.name, ext);
-    const localPath = path.join(this.tempDir, `${baseName}-${hash}${ext}`);
+    // Get local file path (uses connection subdirectory with original filename)
+    const localPath = this.getLocalFilePath(connection.id, remoteFile.path);
 
+    const fileSizeStr = formatFileSize(remoteFile.size);
     await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: `Downloading ${remoteFile.name} (${formatFileSize(remoteFile.size)})...`,
+        title: `Downloading ${remoteFile.name} (${fileSizeStr})`,
         cancellable: true,
       },
       async (progress, token) => {
         try {
-          // For very large files, we could implement chunked download
-          // For now, use standard download with progress indication
-          progress.report({ increment: 0, message: 'Starting download...' });
+          // Show initial progress with file size info
+          progress.report({ increment: 5, message: `Starting download of ${fileSizeStr}...` });
 
-          const content = await connection.readFile(remoteFile.path);
+          // Start the download
+          const downloadPromise = connection.readFile(remoteFile.path);
+
+          // Simulate progress during download (5% to 75%) with smooth animation
+          let currentProgress = 5;
+          const progressInterval = setInterval(() => {
+            if (currentProgress < 75 && !token.isCancellationRequested) {
+              // Slower progress for larger files to make it feel more realistic
+              const increment = Math.min(3, 75 - currentProgress);
+              currentProgress += increment;
+              progress.report({ increment, message: `Downloading... ${currentProgress}%` });
+            }
+          }, 300);
+
+          const content = await downloadPromise;
+          clearInterval(progressInterval);
 
           if (token.isCancellationRequested) {
             return;
           }
 
-          progress.report({ increment: 80, message: 'Writing to disk...' });
+          progress.report({ increment: 80 - currentProgress, message: 'Writing to disk...' });
           fs.writeFileSync(localPath, content);
 
           const contentStr = content.toString('utf-8');
@@ -1867,10 +2010,13 @@ export class FileService {
           };
           this.fileMappings.set(localPath, mapping);
 
-          progress.report({ increment: 100, message: 'Opening...' });
+          progress.report({ increment: 10, message: 'Opening editor...' });
 
           const document = await vscode.workspace.openTextDocument(localPath);
           await vscode.window.showTextDocument(document);
+
+          // Start file watcher for real-time updates
+          await this.startFileWatch(localPath, mapping);
 
           this.auditService.log({
             action: 'download',
@@ -1882,6 +2028,8 @@ export class FileService {
             fileSize: remoteFile.size,
             success: true,
           });
+
+          progress.report({ increment: 10, message: 'Complete!' });
         } catch (error) {
           if (!token.isCancellationRequested) {
             vscode.window.showErrorMessage(`Failed to download: ${(error as Error).message}`);
@@ -2005,15 +2153,34 @@ export class FileService {
     }
 
     try {
+      const fileSizeStr = formatFileSize(remoteFile.size);
       await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
-          title: `Downloading ${remoteFile.name}...`,
+          title: `Downloading ${remoteFile.name} (${fileSizeStr})`,
           cancellable: false,
         },
-        async () => {
-          const content = await connection.readFile(remoteFile.path);
+        async (progress) => {
+          progress.report({ increment: 10, message: 'Starting download...' });
+
+          // Start download with progress simulation
+          const downloadPromise = connection.readFile(remoteFile.path);
+
+          let currentProgress = 10;
+          const progressInterval = setInterval(() => {
+            if (currentProgress < 80) {
+              const increment = Math.min(5, 80 - currentProgress);
+              currentProgress += increment;
+              progress.report({ increment, message: `Downloading... ${currentProgress}%` });
+            }
+          }, 200);
+
+          const content = await downloadPromise;
+          clearInterval(progressInterval);
+
+          progress.report({ increment: 90 - currentProgress, message: 'Saving file...' });
           fs.writeFileSync(saveUri.fsPath, content);
+          progress.report({ increment: 10, message: 'Complete!' });
         }
       );
 
@@ -2055,11 +2222,13 @@ export class FileService {
       await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
-          title: `Downloading ${remoteFile.name}...`,
+          title: `Downloading folder: ${remoteFile.name}`,
           cancellable: false,
         },
         async (progress) => {
-          await this.downloadFolderRecursive(connection, remoteFile.path, targetDir, progress);
+          progress.report({ increment: 5, message: 'Scanning folder...' });
+          await this.downloadFolderRecursive(connection, remoteFile.path, targetDir, progress, { count: 0 });
+          progress.report({ increment: 5, message: 'Complete!' });
         }
       );
 
@@ -2076,7 +2245,8 @@ export class FileService {
     connection: SSHConnection,
     remotePath: string,
     localPath: string,
-    progress: vscode.Progress<{ message?: string; increment?: number }>
+    progress: vscode.Progress<{ message?: string; increment?: number }>,
+    counter: { count: number }
   ): Promise<void> {
     // Create local directory
     if (!fs.existsSync(localPath)) {
@@ -2088,11 +2258,14 @@ export class FileService {
 
     for (const file of files) {
       const localFilePath = path.join(localPath, file.name);
-      progress.report({ message: file.name });
+      counter.count++;
 
       if (file.isDirectory) {
-        await this.downloadFolderRecursive(connection, file.path, localFilePath, progress);
+        progress.report({ increment: 1, message: `Folder: ${file.name}` });
+        await this.downloadFolderRecursive(connection, file.path, localFilePath, progress, counter);
       } else {
+        const fileSizeStr = formatFileSize(file.size);
+        progress.report({ increment: 1, message: `${file.name} (${fileSizeStr})` });
         const content = await connection.readFile(file.path);
         fs.writeFileSync(localFilePath, content);
       }
@@ -2380,15 +2553,8 @@ export class FileService {
         break;
       }
 
-      // Generate the same temp file path as openRemoteFile
-      const hash = crypto
-        .createHash('md5')
-        .update(`${connection.id}:${filePath}`)
-        .digest('hex')
-        .substring(0, 8);
-      const ext = path.extname(filePath);
-      const baseName = path.basename(filePath, ext);
-      const localPath = path.join(this.tempDir, `${baseName}-${hash}${ext}`);
+      // Get the same temp file path as openRemoteFile
+      const localPath = this.getLocalFilePath(connection.id, filePath);
 
       // Skip if already cached (file exists and has mapping)
       if (this.fileMappings.has(localPath) && fs.existsSync(localPath)) {
@@ -2536,6 +2702,7 @@ export class FileService {
     this.cleanupAll();
     this.stopGlobalRefreshTimer();
     this.stopAutoCleanupTimer();
+    this.stopFocusedFilePollTimer();
 
     if (this.saveListenerDisposable) {
       this.saveListenerDisposable.dispose();

@@ -163,7 +163,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
         if (!hostConfig) {
           // Show quick pick to select host
-          const hosts = await hostService.getAllHosts();
+          const hosts = hostService.getAllHosts();
           if (hosts.length === 0) {
             const action = await vscode.window.showInformationMessage(
               'No SSH hosts found. Would you like to add one?',
