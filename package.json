@@ -418,6 +418,12 @@
         "icon": "$(search)"
       },
       {
+        "command": "sshLite.searchInFile",
+        "title": "Search in File",
+        "category": "SSH Lite",
+        "icon": "$(search)"
+      },
+      {
         "command": "sshLite.openSearchResult",
         "title": "Open Search Result",
         "category": "SSH Lite"
@@ -433,6 +439,12 @@
         "title": "Cancel Preloading",
         "category": "SSH Lite",
         "icon": "$(close)"
+      },
+      {
+        "command": "sshLite.revealInTree",
+        "title": "Reveal in File Tree",
+        "category": "SSH Lite",
+        "icon": "$(target)"
       }
     ],
     "menus": {
@@ -486,6 +498,11 @@
           "command": "sshLite.searchInFolder",
           "when": "view == sshLite.fileExplorer",
           "group": "navigation@8"
+        },
+        {
+          "command": "sshLite.revealInTree",
+          "when": "view == sshLite.fileExplorer",
+          "group": "navigation@9"
         },
         {
           "command": "sshLite.clearSearchResults",
@@ -605,14 +622,19 @@
           "group": "inline@1"
         },
         {
-          "command": "sshLite.openTerminalHere",
+          "command": "sshLite.searchInFile",
           "when": "view == sshLite.fileExplorer && viewItem == file",
           "group": "inline@2"
         },
         {
-          "command": "sshLite.refreshItem",
+          "command": "sshLite.openTerminalHere",
           "when": "view == sshLite.fileExplorer && viewItem == file",
           "group": "inline@3"
+        },
+        {
+          "command": "sshLite.refreshItem",
+          "when": "view == sshLite.fileExplorer && viewItem == file",
+          "group": "inline@4"
         },
         {
           "command": "sshLite.openTerminalHere",
@@ -822,6 +844,38 @@
           "minimum": 1,
           "maximum": 10,
           "description": "Maximum number of parallel preload operations (lower = less server load, higher = faster preloading)"
+        },
+        "sshLite.progressiveDownloadThreshold": {
+          "type": "number",
+          "default": 1048576,
+          "minimum": 0,
+          "description": "File size threshold in bytes for progressive download (default: 1MB). Files larger than this show a preview of the last lines first, then download the full file in background. Set to 0 to disable progressive downloads."
+        },
+        "sshLite.progressivePreviewLines": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 100,
+          "maximum": 10000,
+          "description": "Number of lines to show in progressive preview for large files (default: 1000). These lines are loaded from the end of the file for quick viewing."
+        },
+        "sshLite.progressiveTailFollow": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable live tail-f during progressive preview. When enabled, new lines appended to the file are automatically shown in the preview."
+        },
+        "sshLite.progressiveTailPollInterval": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 500,
+          "maximum": 10000,
+          "description": "Interval in milliseconds for polling new lines during tail-f preview (default: 1000ms)"
+        },
+        "sshLite.progressiveChunkSize": {
+          "type": "number",
+          "default": 65536,
+          "minimum": 8192,
+          "maximum": 1048576,
+          "description": "SFTP chunk size in bytes for progress reporting during large file downloads (default: 64KB). Larger values = faster download but less frequent progress updates."
         }
       }
     }

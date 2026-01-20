@@ -9,12 +9,15 @@ import { CredentialService } from './services/CredentialService';
 import { AuditService } from './services/AuditService';
 import { ServerMonitorService, showMonitorQuickPick } from './services/ServerMonitorService';
 import { FolderHistoryService } from './services/FolderHistoryService';
-import { HostTreeProvider, HostTreeItem, CredentialTreeItem, PinnedFolderTreeItem } from './providers/HostTreeProvider';
+import { ProgressiveDownloadManager } from './services/ProgressiveDownloadManager';
+import { HostTreeProvider, HostTreeItem, CredentialTreeItem, PinnedFolderTreeItem, setExtensionPath } from './providers/HostTreeProvider';
 import { SavedCredential, PinnedFolder } from './services/CredentialService';
 import { IHostConfig, ConnectionState } from './types';
-import { FileTreeProvider, FileTreeItem, ConnectionTreeItem } from './providers/FileTreeProvider';
+import { FileTreeProvider, FileTreeItem, ConnectionTreeItem, setFileTreeExtensionPath } from './providers/FileTreeProvider';
 import { PortForwardTreeProvider, PortForwardTreeItem } from './providers/PortForwardTreeProvider';
 import { SearchResultsProvider, SearchResult } from './providers/SearchResultsProvider';
+import { ProgressiveFileContentProvider } from './providers/ProgressiveFileContentProvider';
+import { PROGRESSIVE_PREVIEW_SCHEME } from './types/progressive';
 
 let outputChannel: vscode.OutputChannel;
 
@@ -70,11 +73,28 @@ export function activate(context: vscode.ExtensionContext): void {
   const folderHistoryService = FolderHistoryService.getInstance();
   folderHistoryService.initialize(context);
 
+  // Set extension path for custom icons
+  setExtensionPath(context.extensionPath);
+  setFileTreeExtensionPath(context.extensionPath);
+
   // Create tree providers
   const hostTreeProvider = new HostTreeProvider();
   const fileTreeProvider = new FileTreeProvider();
   const portForwardTreeProvider = new PortForwardTreeProvider();
   const searchResultsProvider = new SearchResultsProvider();
+
+  // Initialize progressive download system for large files
+  const progressiveContentProvider = ProgressiveFileContentProvider.getInstance();
+  const progressiveDownloadManager = ProgressiveDownloadManager.getInstance();
+  progressiveDownloadManager.initialize(progressiveContentProvider);
+
+  // Register progressive file content provider for preview URIs
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(
+      PROGRESSIVE_PREVIEW_SCHEME,
+      progressiveContentProvider
+    )
+  );
 
   // Wire up port forward service with its tree provider
   portForwardService.setTreeProvider(portForwardTreeProvider);
@@ -549,15 +569,21 @@ export function activate(context: vscode.ExtensionContext): void {
         connection = item.connection;
         searchPath = item.file.isDirectory ? item.file.path : fileTreeProvider.getCurrentPath(connection.id);
       } else {
-        // No item - show quick pick for connection
-        connection = await selectConnection(connectionManager);
-        if (connection) {
+        // No item - try to get first active connection or show quick pick
+        const connections = connectionManager.getAllConnections();
+        if (connections.length === 1) {
+          connection = connections[0];
           searchPath = fileTreeProvider.getCurrentPath(connection.id);
+        } else if (connections.length > 1) {
+          connection = await selectConnection(connectionManager);
+          if (connection) {
+            searchPath = fileTreeProvider.getCurrentPath(connection.id);
+          }
         }
       }
 
       if (!connection) {
-        vscode.window.showWarningMessage('No active SSH connection');
+        vscode.window.showWarningMessage('No active SSH connection. Connect to a server first.');
         return;
       }
 
@@ -635,6 +661,74 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
 
+    // Search in file (opens terminal with grep command)
+    vscode.commands.registerCommand('sshLite.searchInFile', async (item?: FileTreeItem) => {
+      if (!item || item.file.isDirectory) {
+        vscode.window.showWarningMessage('Select a file to search');
+        return;
+      }
+
+      const connection = item.connection;
+      const filePath = item.file.path;
+
+      // Ask for search pattern
+      const searchPattern = await vscode.window.showInputBox({
+        prompt: `Search pattern in ${item.file.name}`,
+        placeHolder: 'Enter search pattern (regex supported)...',
+        title: 'Search in File',
+      });
+
+      if (!searchPattern) {
+        return;
+      }
+
+      // Ask for search options
+      const options = await vscode.window.showQuickPick(
+        [
+          { label: '$(search) Basic Search', description: 'Case-insensitive search', value: 'basic' },
+          { label: '$(regex) Regex Search', description: 'Use regular expression', value: 'regex' },
+          { label: '$(list-ordered) With Line Numbers', description: 'Show line numbers', value: 'lines' },
+          { label: '$(code) With Context', description: 'Show 3 lines of context', value: 'context' },
+        ],
+        {
+          placeHolder: 'Select search mode',
+          title: 'Search Options',
+        }
+      );
+
+      if (!options) {
+        return;
+      }
+
+      // Build grep command based on options
+      let grepCmd = 'grep';
+      const escapedPattern = searchPattern.replace(/'/g, "'\\''");
+      const escapedPath = filePath.replace(/'/g, "'\\''");
+
+      switch (options.value) {
+        case 'basic':
+          grepCmd = `grep -i '${escapedPattern}' '${escapedPath}'`;
+          break;
+        case 'regex':
+          grepCmd = `grep -E '${escapedPattern}' '${escapedPath}'`;
+          break;
+        case 'lines':
+          grepCmd = `grep -in '${escapedPattern}' '${escapedPath}'`;
+          break;
+        case 'context':
+          grepCmd = `grep -in -C 3 '${escapedPattern}' '${escapedPath}'`;
+          break;
+      }
+
+      // Open terminal and run the grep command
+      const terminalService = TerminalService.getInstance();
+      const terminal = await terminalService.createTerminal(connection);
+      terminal.show();
+      terminal.sendText(grepCmd);
+
+      log(`Search in file: ${grepCmd}`);
+    }),
+
     // Open search result
     vscode.commands.registerCommand('sshLite.openSearchResult', async (result: SearchResult) => {
       if (!result) {
@@ -685,6 +779,59 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.window.setStatusBarMessage('$(x) Preloading cancelled', 3000);
       } else {
         vscode.window.setStatusBarMessage('$(info) No preloading in progress', 2000);
+      }
+    }),
+
+    // Reveal current file in tree
+    vscode.commands.registerCommand('sshLite.revealInTree', async () => {
+      const activeEditor = vscode.window.activeTextEditor;
+      if (!activeEditor) {
+        vscode.window.showInformationMessage('No file is currently open');
+        return;
+      }
+
+      const localPath = activeEditor.document.uri.fsPath;
+      log(`revealInTree: localPath=${localPath}`);
+
+      // Try to get mapping from FileService
+      let mapping = fileService.getMappingForLocalPath(localPath);
+
+      // If not found, try to extract from temp path structure
+      // Temp files are stored as: tempDir/connectionId/remote/path/to/file.txt
+      if (!mapping) {
+        const tempDir = fileService.getTempDir();
+        if (localPath.startsWith(tempDir)) {
+          const relativePath = localPath.substring(tempDir.length);
+          // Split by path separator and get connectionId (first segment after tempDir)
+          const segments = relativePath.split(/[/\\]/).filter(s => s.length > 0);
+          if (segments.length >= 2) {
+            const connectionId = segments[0];
+            const remotePath = '/' + segments.slice(1).join('/');
+            log(`revealInTree: Extracted from path - connectionId=${connectionId}, remotePath=${remotePath}`);
+
+            // Verify connection exists
+            const connection = connectionManager.getConnection(connectionId);
+            if (connection) {
+              mapping = { connectionId, remotePath };
+            }
+          }
+        }
+      }
+
+      if (!mapping) {
+        log(`revealInTree: No mapping found for ${localPath}`);
+        vscode.window.showInformationMessage('Current file is not a remote SSH file');
+        return;
+      }
+
+      log(`revealInTree: Found mapping - connectionId=${mapping.connectionId}, remotePath=${mapping.remotePath}`);
+
+      // Navigate to parent folder and reveal the file
+      const treeItem = await fileTreeProvider.revealFile(mapping.connectionId, mapping.remotePath);
+      if (treeItem) {
+        // Reveal in tree view with focus
+        await fileTreeView.reveal(treeItem, { select: true, focus: true, expand: true });
+        vscode.window.setStatusBarMessage(`$(target) Revealed ${treeItem.file.name} in tree`, 3000);
       }
     }),
 
@@ -874,6 +1021,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Add credential command
     vscode.commands.registerCommand('sshLite.addCredential', async (hostConfig?: IHostConfig) => {
+      log(`addCredential: called with hostConfig=${hostConfig ? JSON.stringify({ id: hostConfig.id, name: hostConfig.name }) : 'undefined'}`);
       if (!hostConfig) {
         vscode.window.showWarningMessage('Select a host first');
         return;
@@ -912,9 +1060,16 @@ export function activate(context: vscode.ExtensionContext): void {
 
         if (!password) return;
 
-        await credentialService.addCredential(hostConfig.id, label, 'password', password);
-        hostTreeProvider.refresh();
-        vscode.window.showInformationMessage(`Credential "${label}" added`);
+        log(`addCredential: Adding password credential "${label}" for host ${hostConfig.id}`);
+        try {
+          const cred = await credentialService.addCredential(hostConfig.id, label, 'password', password);
+          log(`addCredential: Success - created credential ${cred.id}`);
+          hostTreeProvider.refresh();
+          vscode.window.showInformationMessage(`Credential "${label}" added`);
+        } catch (error) {
+          log(`addCredential: Error - ${(error as Error).message}`);
+          vscode.window.showErrorMessage(`Failed to add credential: ${(error as Error).message}`);
+        }
       } else {
         // Ask for private key path
         const keyUri = await vscode.window.showOpenDialog({
@@ -943,9 +1098,16 @@ export function activate(context: vscode.ExtensionContext): void {
           passphrase = pass || '';
         }
 
-        await credentialService.addCredential(hostConfig.id, label, 'privateKey', passphrase, keyPath);
-        hostTreeProvider.refresh();
-        vscode.window.showInformationMessage(`Credential "${label}" added`);
+        log(`addCredential: Adding privateKey credential "${label}" for host ${hostConfig.id}, keyPath=${keyPath}`);
+        try {
+          const cred = await credentialService.addCredential(hostConfig.id, label, 'privateKey', passphrase, keyPath);
+          log(`addCredential: Success - created credential ${cred.id}`);
+          hostTreeProvider.refresh();
+          vscode.window.showInformationMessage(`Credential "${label}" added`);
+        } catch (error) {
+          log(`addCredential: Error - ${(error as Error).message}`);
+          vscode.window.showErrorMessage(`Failed to add credential: ${(error as Error).message}`);
+        }
       }
     }),
 
@@ -980,8 +1142,12 @@ export function activate(context: vscode.ExtensionContext): void {
     // Delete credential command
     vscode.commands.registerCommand('sshLite.deleteCredential', async (item?: CredentialTreeItem) => {
       if (!item) {
+        log('deleteCredential: No item provided');
+        vscode.window.showWarningMessage('Select a credential to delete');
         return;
       }
+
+      log(`deleteCredential: Deleting credential "${item.credential.label}" for host "${item.hostConfig.name}" (hostId: ${item.hostConfig.id})`);
 
       const confirm = await vscode.window.showWarningMessage(
         `Delete credential "${item.credential.label}"?`,
@@ -989,9 +1155,15 @@ export function activate(context: vscode.ExtensionContext): void {
       );
 
       if (confirm === 'Delete') {
-        await credentialService.deleteCredential(item.hostConfig.id, item.credential.id);
-        hostTreeProvider.refresh();
-        vscode.window.showInformationMessage('Credential deleted');
+        try {
+          await credentialService.deleteCredential(item.hostConfig.id, item.credential.id);
+          hostTreeProvider.refresh();
+          vscode.window.showInformationMessage('Credential deleted');
+          log('deleteCredential: Success');
+        } catch (error) {
+          log(`deleteCredential: Error - ${(error as Error).message}`);
+          vscode.window.showErrorMessage(`Failed to delete credential: ${(error as Error).message}`);
+        }
       }
     }),
 
@@ -1055,10 +1227,13 @@ export function activate(context: vscode.ExtensionContext): void {
       const connection = item.connection;
       const remotePath = item.file.path;
 
+      // Use host config ID (same as connection.id but more explicit)
+      const hostId = connection.host.id;
+
       // Get all credentials for this host
-      const credentials = credentialService.listCredentials(connection.id);
+      const credentials = credentialService.listCredentials(hostId);
       if (credentials.length === 0) {
-        vscode.window.showWarningMessage('No saved credentials for this host. Add a credential first.');
+        vscode.window.showWarningMessage(`No saved credentials for "${connection.host.name}". Add a credential first from SSH Hosts.`);
         return;
       }
 
@@ -1088,7 +1263,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!name) return;
 
       await credentialService.addPinnedFolder(
-        connection.id,
+        hostId,
         credentialChoice.credential.id,
         name,
         remotePath

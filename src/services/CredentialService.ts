@@ -67,11 +67,13 @@ export class CredentialService {
   }
 
   /**
-   * Get credential index from settings
+   * Get credential index from settings (deep cloned to avoid proxy issues)
    */
   private getCredentialIndex(): CredentialIndex {
     const config = vscode.workspace.getConfiguration('sshLite');
-    return config.get<CredentialIndex>('credentialIndex', {});
+    const index = config.get<CredentialIndex>('credentialIndex', {});
+    // Deep clone to avoid VS Code's proxy trap issues when modifying
+    return JSON.parse(JSON.stringify(index));
   }
 
   /**
@@ -87,7 +89,9 @@ export class CredentialService {
    */
   listCredentials(hostId: string): SavedCredential[] {
     const index = this.getCredentialIndex();
-    return index[hostId] || [];
+    const credentials = index[hostId] || [];
+    console.log(`[CredentialService] listCredentials(${hostId}): found ${credentials.length} credentials`);
+    return credentials;
   }
 
   /**
@@ -100,13 +104,16 @@ export class CredentialService {
     value: string,
     privateKeyPath?: string
   ): Promise<SavedCredential> {
+    console.log(`[CredentialService] addCredential: hostId=${hostId}, label=${label}, type=${type}`);
     const index = this.getCredentialIndex();
+    console.log(`[CredentialService] Current index for host: ${JSON.stringify(index[hostId] || [])}`);
     if (!index[hostId]) {
       index[hostId] = [];
     }
 
     // Generate unique ID
     const id = `cred_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    console.log(`[CredentialService] Generated credential ID: ${id}`);
 
     const credential: SavedCredential = {
       id,
@@ -119,12 +126,15 @@ export class CredentialService {
     const secretKey = this.getSecretKey(hostId, id);
     if (this.secretStorage) {
       await this.secretStorage.store(secretKey, value);
+      console.log(`[CredentialService] Stored secret in secretStorage`);
     }
     this.sessionCredentials.set(secretKey, value);
 
     // Add to index
     index[hostId].push(credential);
+    console.log(`[CredentialService] Index after push: ${JSON.stringify(index[hostId])}`);
     await this.saveCredentialIndex(index);
+    console.log(`[CredentialService] Index saved successfully`);
 
     return credential;
   }

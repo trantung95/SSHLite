@@ -3,9 +3,15 @@ import * as path from 'path';
 import { ConnectionManager } from '../connection/ConnectionManager';
 import { SSHConnection } from '../connection/SSHConnection';
 import { IRemoteFile } from '../types';
-import { formatFileSize } from '../utils/helpers';
+import { formatFileSize, formatRelativeTime, formatDateTime } from '../utils/helpers';
 import { FolderHistoryService } from '../services/FolderHistoryService';
 import { FileService } from '../services/FileService';
+
+// Get extension path for custom icons
+let extensionPath: string = '';
+export function setFileTreeExtensionPath(extPath: string): void {
+  extensionPath = extPath;
+}
 
 /**
  * Cache entry for directory listing
@@ -27,7 +33,15 @@ export class ConnectionTreeItem extends vscode.TreeItem {
 
     this.description = `${connection.host.username}@${connection.host.host} - ${currentPath}`;
     this.contextValue = 'connection';
-    this.iconPath = new vscode.ThemeIcon('vm-active', new vscode.ThemeColor('charts.green'));
+    // Use custom SVG icon with green color baked in (persists when selected)
+    if (extensionPath) {
+      this.iconPath = {
+        light: vscode.Uri.file(path.join(extensionPath, 'images', 'vm-connected.svg')),
+        dark: vscode.Uri.file(path.join(extensionPath, 'images', 'vm-connected.svg')),
+      };
+    } else {
+      this.iconPath = new vscode.ThemeIcon('vm-active', new vscode.ThemeColor('charts.green'));
+    }
   }
 }
 
@@ -85,17 +99,25 @@ export class FileTreeItem extends vscode.TreeItem {
       this.iconPath = vscode.ThemeIcon.File;
     }
 
-    // Format file size
+    // Format description: size + relative modified time (grayed out by VS Code)
     const sizeStr = file.isDirectory ? '' : formatFileSize(file.size);
-    this.description = sizeStr;
+    const timeStr = formatRelativeTime(file.modifiedTime);
+    this.description = file.isDirectory ? timeStr : `${sizeStr}  ${timeStr}`;
 
-    // Tooltip with more details
-    const date = new Date(file.modifiedTime);
+    // Tooltip with more details including times, owner, and permissions
+    const modifiedStr = formatDateTime(file.modifiedTime);
+    const accessStr = file.accessTime ? formatDateTime(file.accessTime) : 'N/A';
+    const ownerStr = file.owner || 'N/A';
+    const groupStr = file.group || 'N/A';
+    const permStr = file.permissions || 'N/A';
     this.tooltip = new vscode.MarkdownString(
       `**${file.name}**\n\n` +
-        `- Path: ${file.path}\n` +
+        `- Path: \`${file.path}\`\n` +
         `- Size: ${sizeStr || 'Directory'}\n` +
-        `- Modified: ${date.toLocaleString()}`
+        `- Modified: ${modifiedStr}\n` +
+        `- Accessed: ${accessStr}\n` +
+        `- Owner: ${ownerStr}:${groupStr}\n` +
+        `- Permissions: \`${permStr}\``
     );
 
     // Double-click to open file
@@ -161,14 +183,21 @@ export class FilteredFileItem extends vscode.TreeItem {
 
     this.iconPath = vscode.ThemeIcon.File;
 
-    // Tooltip with full path
+    // Tooltip with full path, times, owner, and permissions
     const sizeStr = formatFileSize(file.size);
-    const date = new Date(file.modifiedTime);
+    const modifiedStr = formatDateTime(file.modifiedTime);
+    const accessStr = file.accessTime ? formatDateTime(file.accessTime) : 'N/A';
+    const ownerStr = file.owner || 'N/A';
+    const groupStr = file.group || 'N/A';
+    const permStr = file.permissions || 'N/A';
     this.tooltip = new vscode.MarkdownString(
       `**${file.name}**\n\n` +
-        `- Path: ${file.path}\n` +
+        `- Path: \`${file.path}\`\n` +
         `- Size: ${sizeStr}\n` +
-        `- Modified: ${date.toLocaleString()}`
+        `- Modified: ${modifiedStr}\n` +
+        `- Accessed: ${accessStr}\n` +
+        `- Owner: ${ownerStr}:${groupStr}\n` +
+        `- Permissions: \`${permStr}\``
     );
 
     // Click to open file
@@ -460,11 +489,18 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   /**
    * Preload subdirectories in background (non-blocking)
    * Respects maxPreloadingConcurrency setting to limit server load
+   * Called after user expands a folder - resets cancelled flag for user-initiated actions
    */
   private preloadSubdirectories(connection: SSHConnection, files: IRemoteFile[]): void {
-    // Skip preloading if disabled or cancelled
-    if (!this.isPreloadingEnabled() || this.preloadCancelled) {
+    // Skip preloading if disabled
+    if (!this.isPreloadingEnabled()) {
       return;
+    }
+
+    // User expanded a folder - reset cancelled flag so preloading can continue
+    // This is a user-initiated action, not background preloading
+    if (this.preloadCancelled && this.preloadQueue.size === 0 && this.activePreloadCount === 0) {
+      this.preloadCancelled = false;
     }
 
     // Get all directories
@@ -925,13 +961,12 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
    * Preload parent folder for instant "go up" navigation
    * NOTE: Parent folder is ALWAYS preloaded (not controlled by enablePreloading setting)
    * because it's essential for basic navigation - users expect instant "go to parent"
+   * Also NOT affected by preloadCancelled - user navigation should never be blocked
    * Respects maxPreloadingConcurrency setting to limit server load
    */
   private preloadParentFolder(connection: SSHConnection, parentPath: string): void {
-    // Only check cancellation, NOT enablePreloading - parent is always preloaded for navigation
-    if (this.preloadCancelled) {
-      return;
-    }
+    // Parent folder preloading is NEVER blocked - essential for navigation
+    // Don't check preloadCancelled here - user expects instant "go to parent"
 
     const cacheKey = this.getCacheKey(connection.id, parentPath);
 
@@ -970,6 +1005,16 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
         });
       }
 
+      // ALWAYS preload parent folder for instant "go up" navigation (LITE exception)
+      // This is essential for basic navigation - users expect instant "go to parent"
+      if (currentPath !== '/' && currentPath !== '~') {
+        const parentPath = path.posix.dirname(currentPath);
+        this.preloadParentFolder(conn, parentPath || '/');
+      } else if (currentPath === '~') {
+        // Preload root when at home
+        this.preloadParentFolder(conn, '/');
+      }
+
       // LITE: Everything below only runs if preloading is enabled
       if (!preloadingEnabled) {
         continue;
@@ -980,15 +1025,6 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
         this.loadDirectory(conn, '~', true).catch(() => {
           /* Silently ignore preload errors */
         });
-      }
-
-      // Preload parent folder for instant "go up" navigation
-      if (currentPath !== '/' && currentPath !== '~') {
-        const parentPath = path.posix.dirname(currentPath);
-        this.preloadParentFolder(conn, parentPath || '/');
-      } else if (currentPath === '~') {
-        // Preload root when at home
-        this.preloadParentFolder(conn, '/');
       }
 
       // Preload frequently used folders from history (top 5)
@@ -1297,6 +1333,52 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
    */
   getDeepFilterResults(connectionId: string): IRemoteFile[] {
     return this.deepFilterResults.get(connectionId) || [];
+  }
+
+  /**
+   * Create a FileTreeItem for a given connection and remote path
+   * Used for revealing files in the tree view
+   */
+  createFileTreeItem(connectionId: string, remotePath: string): FileTreeItem | undefined {
+    const connection = this.connectionManager.getConnection(connectionId);
+    if (!connection) {
+      return undefined;
+    }
+
+    const fileName = path.posix.basename(remotePath);
+    const file: IRemoteFile = {
+      name: fileName,
+      path: remotePath,
+      isDirectory: false,
+      size: 0,
+      modifiedTime: Date.now(),
+      connectionId: connectionId,
+    };
+
+    return new FileTreeItem(file, connection);
+  }
+
+  /**
+   * Navigate to and reveal a file in the tree
+   * First navigates to the parent folder, then refreshes and reveals the file
+   */
+  async revealFile(connectionId: string, remotePath: string): Promise<FileTreeItem | undefined> {
+    const connection = this.connectionManager.getConnection(connectionId);
+    if (!connection) {
+      vscode.window.showWarningMessage('Connection not found');
+      return undefined;
+    }
+
+    // Navigate to the parent folder
+    const parentPath = path.posix.dirname(remotePath);
+    this.setCurrentPath(connection.id, parentPath);
+
+    // Refresh the tree to load the parent directory
+    await this.loadDirectory(connection, parentPath, true);
+    this._onDidChangeTreeData.fire();
+
+    // Create and return the FileTreeItem for reveal
+    return this.createFileTreeItem(connectionId, remotePath);
   }
 
   /**

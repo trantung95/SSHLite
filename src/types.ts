@@ -42,8 +42,16 @@ export interface IRemoteFile {
   isDirectory: boolean;
   /** File size in bytes */
   size: number;
-  /** Last modified timestamp */
+  /** Last modified timestamp (Unix ms) */
   modifiedTime: number;
+  /** Last access timestamp (Unix ms) - optional for backward compatibility */
+  accessTime?: number;
+  /** Owner username - optional for backward compatibility */
+  owner?: string;
+  /** Group name - optional for backward compatibility */
+  group?: string;
+  /** Unix permissions string (e.g., "rwxr-xr-x") - optional */
+  permissions?: string;
   /** Connection this file belongs to */
   connectionId: string;
 }

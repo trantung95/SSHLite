@@ -461,10 +461,53 @@ export class SSHConnection implements ISSHConnection {
   }
 
   /**
+   * Parse owner and group from longname (ls -l format)
+   * Example: "-rw-r--r--  1 user group  1234 Jan 20 10:30 filename"
+   */
+  private parseOwnerGroup(longname: string): { owner: string; group: string } {
+    // Split by whitespace, handling multiple spaces
+    const parts = longname.split(/\s+/);
+    // Format: permissions, links, owner, group, size, month, day, time/year, filename
+    // Minimum 8 parts for a valid longname
+    if (parts.length >= 8) {
+      return {
+        owner: parts[2] || 'unknown',
+        group: parts[3] || 'unknown',
+      };
+    }
+    return { owner: 'unknown', group: 'unknown' };
+  }
+
+  /**
+   * Convert Unix mode to permission string (e.g., "rwxr-xr-x")
+   */
+  private formatPermissions(mode: number): string {
+    const perms = mode & 0o777; // Get only permission bits
+    let result = '';
+
+    // Owner permissions
+    result += (perms & 0o400) ? 'r' : '-';
+    result += (perms & 0o200) ? 'w' : '-';
+    result += (perms & 0o100) ? 'x' : '-';
+
+    // Group permissions
+    result += (perms & 0o040) ? 'r' : '-';
+    result += (perms & 0o020) ? 'w' : '-';
+    result += (perms & 0o010) ? 'x' : '-';
+
+    // Other permissions
+    result += (perms & 0o004) ? 'r' : '-';
+    result += (perms & 0o002) ? 'w' : '-';
+    result += (perms & 0o001) ? 'x' : '-';
+
+    return result;
+  }
+
+  /**
    * Map SFTP file list to IRemoteFile array
    */
   private mapFileList(
-    list: Array<{ filename: string; longname: string; attrs: { size: number; mtime: number; mode: number } }>,
+    list: Array<{ filename: string; longname: string; attrs: { size: number; mtime: number; atime: number; mode: number } }>,
     basePath: string
   ): IRemoteFile[] {
     return list
@@ -479,12 +522,20 @@ export class SSHConnection implements ISSHConnection {
         } else {
           itemPath = `${basePath}/${item.filename}`;
         }
+
+        // Parse owner and group from longname
+        const { owner, group } = this.parseOwnerGroup(item.longname);
+
         return {
           name: item.filename,
           path: itemPath,
           isDirectory: (item.attrs.mode & 0o40000) !== 0,
           size: item.attrs.size,
           modifiedTime: item.attrs.mtime * 1000,
+          accessTime: item.attrs.atime * 1000,
+          owner,
+          group,
+          permissions: this.formatPermissions(item.attrs.mode),
           connectionId: this.id,
         };
       })
@@ -519,6 +570,100 @@ export class SSHConnection implements ISSHConnection {
         reject(new SFTPError(`Failed to read file: ${err.message}`, err));
       });
     });
+  }
+
+  /**
+   * Read a remote file in chunks with progress reporting
+   * Enables real progress tracking for large file downloads
+   * @param remotePath - Path to remote file
+   * @param onProgress - Callback for progress updates (bytesTransferred, totalBytes)
+   * @param abortSignal - Optional abort signal to cancel download
+   * @param chunkSize - Size of each chunk in bytes (default: 64KB)
+   * @returns Buffer containing file contents
+   */
+  async readFileChunked(
+    remotePath: string,
+    onProgress: (transferred: number, total: number) => void,
+    abortSignal?: { aborted: boolean },
+    chunkSize: number = 64 * 1024
+  ): Promise<Buffer> {
+    const sftp = await this.getSFTP();
+
+    // Get file size first for progress calculation
+    const stats = await this.stat(remotePath);
+    const totalSize = stats.size;
+
+    return new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      let transferred = 0;
+
+      // Create read stream with configurable high water mark for chunked reads
+      const stream = sftp.createReadStream(remotePath, {
+        highWaterMark: chunkSize,
+      });
+
+      stream.on('data', (chunk: Buffer) => {
+        // Check for cancellation
+        if (abortSignal?.aborted) {
+          stream.destroy();
+          reject(new SFTPError('Download cancelled by user'));
+          return;
+        }
+
+        chunks.push(chunk);
+        transferred += chunk.length;
+
+        // Report progress
+        onProgress(transferred, totalSize);
+      });
+
+      stream.on('end', () => {
+        resolve(Buffer.concat(chunks));
+      });
+
+      stream.on('error', (err: Error) => {
+        stream.destroy();
+        reject(new SFTPError(`Failed to read file: ${err.message}`, err));
+      });
+    });
+  }
+
+  /**
+   * Read the last N lines of a remote file using tail command
+   * Much faster than downloading entire file for preview
+   * @param remotePath - Path to remote file
+   * @param lineCount - Number of lines to read from end
+   * @returns String containing the last N lines
+   */
+  async readFileLastLines(remotePath: string, lineCount: number): Promise<string> {
+    if (!this._client || this.state !== ConnectionState.Connected) {
+      throw new ConnectionError('Not connected');
+    }
+
+    // Escape special shell characters in path to prevent command injection
+    const escapedPath = remotePath.replace(/'/g, "'\\''");
+    const command = `tail -n ${lineCount} '${escapedPath}'`;
+
+    return this.exec(command);
+  }
+
+  /**
+   * Read the first N lines of a remote file using head command
+   * Useful for file type detection and header preview
+   * @param remotePath - Path to remote file
+   * @param lineCount - Number of lines to read from start
+   * @returns String containing the first N lines
+   */
+  async readFileFirstLines(remotePath: string, lineCount: number): Promise<string> {
+    if (!this._client || this.state !== ConnectionState.Connected) {
+      throw new ConnectionError('Not connected');
+    }
+
+    // Escape special shell characters in path to prevent command injection
+    const escapedPath = remotePath.replace(/'/g, "'\\''");
+    const command = `head -n ${lineCount} '${escapedPath}'`;
+
+    return this.exec(command);
   }
 
   /**
@@ -777,6 +922,7 @@ export class SSHConnection implements ISSHConnection {
           isDirectory: stats.isDirectory(),
           size: stats.size,
           modifiedTime: stats.mtime * 1000,
+          accessTime: stats.atime * 1000,
           connectionId: this.id,
         });
       });

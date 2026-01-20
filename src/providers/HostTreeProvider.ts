@@ -1,8 +1,15 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { HostService } from '../services/HostService';
 import { ConnectionManager } from '../connection/ConnectionManager';
 import { CredentialService, SavedCredential, PinnedFolder } from '../services/CredentialService';
 import { IHostConfig } from '../types';
+
+// Get extension path for custom icons
+let extensionPath: string = '';
+export function setExtensionPath(extPath: string): void {
+  extensionPath = extPath;
+}
 
 /**
  * Tree item representing an SSH host (expandable to show credentials)
@@ -31,7 +38,15 @@ export class HostTreeItem extends vscode.TreeItem {
     // Set context value for menu visibility
     if (isConnected) {
       this.contextValue = 'connectedHost';
-      this.iconPath = new vscode.ThemeIcon('vm-active', new vscode.ThemeColor('charts.green'));
+      // Use custom SVG icon with green color baked in (persists when selected)
+      if (extensionPath) {
+        this.iconPath = {
+          light: vscode.Uri.file(path.join(extensionPath, 'images', 'vm-connected.svg')),
+          dark: vscode.Uri.file(path.join(extensionPath, 'images', 'vm-connected.svg')),
+        };
+      } else {
+        this.iconPath = new vscode.ThemeIcon('vm-active', new vscode.ThemeColor('charts.green'));
+      }
     } else if (hostConfig.source === 'saved') {
       this.contextValue = 'savedHost';
       this.iconPath = new vscode.ThemeIcon('vm');

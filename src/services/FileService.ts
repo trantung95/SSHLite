@@ -8,7 +8,9 @@ import { SSHConnection } from '../connection/SSHConnection';
 import { IRemoteFile } from '../types';
 import { AuditService } from './AuditService';
 import { FolderHistoryService } from './FolderHistoryService';
+import { ProgressiveDownloadManager } from './ProgressiveDownloadManager';
 import { formatFileSize } from '../utils/helpers';
+import { isLikelyBinary, DEFAULT_PROGRESSIVE_CONFIG } from '../types/progressive';
 
 /**
  * Large file size threshold (100MB default)
@@ -1753,13 +1755,32 @@ export class FileService {
   }
 
   /**
+   * Get progressive download threshold from configuration
+   */
+  private getProgressiveDownloadThreshold(): number {
+    const config = vscode.workspace.getConfiguration('sshLite');
+    return config.get<number>('progressiveDownloadThreshold', DEFAULT_PROGRESSIVE_CONFIG.threshold);
+  }
+
+  /**
    * Open a remote file for editing
    * Downloads content first, then opens editor to avoid corruption issues
+   * Uses progressive download for large text files (>threshold)
    */
   async openRemoteFile(connection: SSHConnection, remoteFile: IRemoteFile): Promise<void> {
-    // Check file size for large file handling
+    // Check for very large files (>100MB) - use old large file handler
     if (remoteFile.size >= LARGE_FILE_THRESHOLD) {
       await this.handleLargeFile(connection, remoteFile);
+      return;
+    }
+
+    // Check for progressive download threshold (default 1MB)
+    // Uses tail-first preview + background download for better UX
+    const progressiveThreshold = this.getProgressiveDownloadThreshold();
+    if (progressiveThreshold > 0 &&
+        remoteFile.size >= progressiveThreshold &&
+        !isLikelyBinary(remoteFile.name)) {
+      await this.openFileWithProgressiveDownload(connection, remoteFile);
       return;
     }
 
@@ -1949,6 +1970,108 @@ export class FileService {
       case 'remote':
         await this.viewLargeFileRemote(connection, remoteFile);
         break;
+    }
+  }
+
+  /**
+   * Open a file using progressive download
+   * Shows last N lines instantly as preview, then downloads full file in background
+   */
+  private async openFileWithProgressiveDownload(
+    connection: SSHConnection,
+    remoteFile: IRemoteFile
+  ): Promise<void> {
+    const downloadManager = ProgressiveDownloadManager.getInstance();
+
+    // Check if already downloading
+    if (downloadManager.isDownloading(connection.id, remoteFile.path)) {
+      vscode.window.showWarningMessage(`Already downloading: ${remoteFile.name}`);
+      return;
+    }
+
+    // Check if already downloaded and available locally
+    const existingLocalPath = downloadManager.getLocalPath(connection.id, remoteFile.path);
+    if (existingLocalPath && fs.existsSync(existingLocalPath)) {
+      // File already downloaded - open it directly
+      const document = await vscode.workspace.openTextDocument(existingLocalPath);
+      await vscode.window.showTextDocument(document, { preview: false });
+      return;
+    }
+
+    // Subscribe to download completion to create file mapping
+    // Also subscribe to error events to ensure cleanup
+    let completionDisposable: vscode.Disposable | null = null;
+    let errorDisposable: vscode.Disposable | null = null;
+
+    const cleanup = () => {
+      completionDisposable?.dispose();
+      errorDisposable?.dispose();
+    };
+
+    completionDisposable = downloadManager.onDownloadComplete(async ({ state, localPath }) => {
+      if (state.connectionId === connection.id && state.remotePath === remoteFile.path) {
+        // Create file mapping for the downloaded file
+        const content = fs.readFileSync(localPath);
+        const contentStr = content.toString('utf-8');
+
+        const mapping: FileMapping = {
+          connectionId: connection.id,
+          remotePath: remoteFile.path,
+          localPath,
+          lastSyncTime: Date.now(),
+          lastRemoteModTime: remoteFile.modifiedTime,
+          lastRemoteSize: remoteFile.size,
+          originalContent: contentStr,
+        };
+        this.fileMappings.set(localPath, mapping);
+
+        // Create server-side backup in background
+        this.createServerBackup(connection, remoteFile.path)
+          .then((backupPath) => {
+            if (backupPath) {
+              mapping.serverBackupPath = backupPath;
+            }
+          })
+          .catch(() => {
+            // Silently ignore backup errors
+          });
+
+        // Log download
+        this.auditService.log({
+          action: 'download',
+          connectionId: connection.id,
+          hostName: connection.host.name,
+          username: connection.host.username,
+          remotePath: remoteFile.path,
+          localPath,
+          fileSize: remoteFile.size,
+          success: true,
+        });
+
+        // Record file open for preloading
+        this.folderHistoryService.recordFileOpen(connection.id, remoteFile.path);
+
+        // Start file watcher for real-time updates
+        await this.startFileWatch(localPath, mapping);
+
+        // Cleanup listeners
+        cleanup();
+      }
+    });
+
+    // Subscribe to error events to cleanup on failure
+    errorDisposable = downloadManager.onDownloadError(({ state }) => {
+      if (state.connectionId === connection.id && state.remotePath === remoteFile.path) {
+        cleanup();
+      }
+    });
+
+    // Start the progressive download (use try-catch to cleanup on immediate failure)
+    try {
+      await downloadManager.startProgressiveDownload(connection, remoteFile);
+    } catch (error) {
+      cleanup();
+      throw error;
     }
   }
 
@@ -2437,6 +2560,36 @@ export class FileService {
    */
   getOpenFiles(): FileMapping[] {
     return Array.from(this.fileMappings.values());
+  }
+
+  /**
+   * Get mapping for a local file path
+   * Handles path normalization for cross-platform compatibility
+   */
+  getMappingForLocalPath(localPath: string): { connectionId: string; remotePath: string } | undefined {
+    // Try exact match first
+    const mapping = this.fileMappings.get(localPath);
+    if (mapping) {
+      return {
+        connectionId: mapping.connectionId,
+        remotePath: mapping.remotePath,
+      };
+    }
+
+    // On Windows, paths may have different casing or drive letter format
+    // Try case-insensitive search and path normalization
+    const normalizedInput = path.normalize(localPath).toLowerCase();
+    for (const [storedPath, storedMapping] of this.fileMappings) {
+      const normalizedStored = path.normalize(storedPath).toLowerCase();
+      if (normalizedInput === normalizedStored) {
+        return {
+          connectionId: storedMapping.connectionId,
+          remotePath: storedMapping.remotePath,
+        };
+      }
+    }
+
+    return undefined;
   }
 
   /**
