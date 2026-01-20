@@ -261,8 +261,9 @@ export class ProgressiveDownloadManager {
 
           // Check for cancellation
           if (token.isCancellationRequested) {
-            vscode.window.showInformationMessage(
-              `Download cancelled. Preview of ${remoteFile.name} remains available.`
+            vscode.window.setStatusBarMessage(
+              `$(x) Download cancelled: ${remoteFile.name} (preview still available)`,
+              5000
             );
             return;
           }
@@ -327,10 +328,10 @@ export class ProgressiveDownloadManager {
     const document = await vscode.workspace.openTextDocument(localPath);
     await vscode.window.showTextDocument(document, { preview: false });
 
-    // Show success notification
-    vscode.window.showInformationMessage(
-      `Download complete: ${path.basename(localPath)} is now editable`,
-      'Dismiss'
+    // Show brief status bar notification (auto-dismiss to avoid cluttering screen)
+    vscode.window.setStatusBarMessage(
+      `$(check) Download complete: ${path.basename(localPath)} is now editable`,
+      5000
     );
   }
 

@@ -878,7 +878,45 @@
           "description": "SFTP chunk size in bytes for progress reporting during large file downloads (default: 64KB). Larger values = faster download but less frequent progress updates."
         }
       }
-    }
+    },
+    "keybindings": [
+      {
+        "command": "sshLite.connect",
+        "key": "ctrl+shift+c",
+        "mac": "cmd+shift+c",
+        "when": "view == sshLite.hosts"
+      },
+      {
+        "command": "sshLite.openTerminal",
+        "key": "ctrl+shift+t",
+        "mac": "cmd+shift+t",
+        "when": "sshLite.hasConnections"
+      },
+      {
+        "command": "sshLite.refreshFiles",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r",
+        "when": "view == sshLite.fileExplorer"
+      },
+      {
+        "command": "sshLite.goToPath",
+        "key": "ctrl+shift+g",
+        "mac": "cmd+shift+g",
+        "when": "view == sshLite.fileExplorer && sshLite.hasConnections"
+      },
+      {
+        "command": "sshLite.filterFiles",
+        "key": "ctrl+shift+f",
+        "mac": "cmd+shift+f",
+        "when": "view == sshLite.fileExplorer && sshLite.hasConnections"
+      },
+      {
+        "command": "sshLite.searchInFolder",
+        "key": "ctrl+shift+s",
+        "mac": "cmd+shift+s",
+        "when": "view == sshLite.fileExplorer && sshLite.hasConnections"
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

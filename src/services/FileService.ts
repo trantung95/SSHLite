@@ -700,8 +700,8 @@ export class FileService {
         }
       }
 
-      vscode.window.showInformationMessage(
-        `Reverted ${path.basename(remotePath)} to backup from ${new Date(backup.timestamp).toLocaleString()}`
+      vscode.window.setStatusBarMessage(
+        `$(check) Reverted ${path.basename(remotePath)}`, 3000
       );
       return true;
     } catch (error) {
@@ -848,7 +848,7 @@ export class FileService {
         }
       }
 
-      vscode.window.showInformationMessage(`Restored ${path.basename(remotePath)} from server backup`);
+      vscode.window.setStatusBarMessage(`$(check) Restored ${path.basename(remotePath)}`, 3000);
       return true;
     } catch (error) {
       vscode.window.showErrorMessage(`Failed to restore: ${(error as Error).message}`);
@@ -1083,7 +1083,7 @@ export class FileService {
         );
         if (confirm === 'Clear') {
           const count = await this.clearServerBackups(connection);
-          vscode.window.showInformationMessage(`Cleared ${count} backup(s)`);
+          vscode.window.setStatusBarMessage(`$(check) Cleared ${count} backup(s)`, 3000);
         }
       }
     } catch (error) {
@@ -1815,93 +1815,95 @@ export class FileService {
       // Ensure temp directory exists
       this.ensureTempDir();
 
-      // Download with visible progress indicator
+      // Create placeholder file and open tab IMMEDIATELY for instant feedback
+      const loadingPlaceholder = `// Loading ${remoteFile.name}...\n// Size: ${formatFileSize(remoteFile.size)}\n// Please wait...`;
+      fs.writeFileSync(localPath, loadingPlaceholder);
+
+      // Open tab immediately - user sees instant feedback
+      const document = await vscode.workspace.openTextDocument(localPath);
+      await vscode.window.showTextDocument(document, { preview: false });
+
+      // Download content in background with status bar indicator
       const fileSizeStr = formatFileSize(remoteFile.size);
-      await vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: `Downloading ${remoteFile.name} (${fileSizeStr})`,
-          cancellable: false,
-        },
-        async (progress) => {
-          // Show initial progress with file info
-          progress.report({ increment: 10, message: 'Connecting...' });
+      vscode.window.setStatusBarMessage(`$(sync~spin) Downloading ${remoteFile.name} (${fileSizeStr})...`, 30000);
 
-          // Download content FIRST before creating any files
-          // Use progress simulation for better UX since SFTP doesn't provide real progress
-          const downloadPromise = connection.readFile(remoteFile.path);
+      try {
+        const content = await connection.readFile(remoteFile.path);
+        const contentStr = content.toString('utf-8');
 
-          // Simulate progress during download (10% to 80%)
-          let currentProgress = 10;
-          const progressInterval = setInterval(() => {
-            if (currentProgress < 80) {
-              const increment = Math.min(5, 80 - currentProgress);
-              currentProgress += increment;
-              progress.report({ increment, message: `Downloading... ${currentProgress}%` });
+        // Skip the save listener for this update (we're writing downloaded content, not user changes)
+        this.skipNextSave.add(localPath);
+
+        // Update editor content (this makes document dirty)
+        const fullRange = new vscode.Range(
+          document.positionAt(0),
+          document.positionAt(document.getText().length)
+        );
+        const edit = new vscode.WorkspaceEdit();
+        edit.replace(document.uri, fullRange, contentStr);
+        await vscode.workspace.applyEdit(edit);
+
+        // Save document - VS Code writes to disk and clears dirty state
+        // Don't manually write to disk, let VS Code handle it to avoid conflict detection
+        await document.save();
+
+        vscode.window.setStatusBarMessage(`$(check) Downloaded ${remoteFile.name}`, 3000);
+
+        // Store mapping with original content for audit
+        const mapping: FileMapping = {
+          connectionId: connection.id,
+          remotePath: remoteFile.path,
+          localPath,
+          lastSyncTime: Date.now(),
+          lastRemoteModTime: remoteFile.modifiedTime,
+          lastRemoteSize: remoteFile.size,
+          originalContent: contentStr,
+        };
+        this.fileMappings.set(localPath, mapping);
+
+        // Create server-side backup in background (non-blocking, silent failure)
+        this.createServerBackup(connection, remoteFile.path)
+          .then((backupPath) => {
+            if (backupPath) {
+              mapping.serverBackupPath = backupPath;
             }
-          }, 200);
-
-          const content = await downloadPromise;
-          clearInterval(progressInterval);
-
-          const contentStr = content.toString('utf-8');
-
-          progress.report({ increment: 85 - currentProgress, message: 'Writing file...' });
-
-          // Write content to disk as Buffer (not string) to avoid encoding issues
-          fs.writeFileSync(localPath, content);
-
-          progress.report({ increment: 5, message: 'Opening editor...' });
-
-          // Now open the document - content is already correct on disk
-          // Use preview: false to open in edit mode (non-italic tab)
-          const document = await vscode.workspace.openTextDocument(localPath);
-          await vscode.window.showTextDocument(document, { preview: false });
-
-          // Store mapping with original content for audit
-          const mapping: FileMapping = {
-            connectionId: connection.id,
-            remotePath: remoteFile.path,
-            localPath,
-            lastSyncTime: Date.now(),
-            lastRemoteModTime: remoteFile.modifiedTime,
-            lastRemoteSize: remoteFile.size, // Initialize size tracking for smart refresh
-            originalContent: contentStr,
-          };
-          this.fileMappings.set(localPath, mapping);
-
-          // Create server-side backup in background (non-blocking, silent failure)
-          this.createServerBackup(connection, remoteFile.path)
-            .then((backupPath) => {
-              if (backupPath) {
-                mapping.serverBackupPath = backupPath;
-              }
-            })
-            .catch(() => {
-              // Silently ignore backup errors
-            });
-
-          // Log download
-          this.auditService.log({
-            action: 'download',
-            connectionId: connection.id,
-            hostName: connection.host.name,
-            username: connection.host.username,
-            remotePath: remoteFile.path,
-            localPath,
-            fileSize: remoteFile.size,
-            success: true,
+          })
+          .catch(() => {
+            // Silently ignore backup errors
           });
 
-          // Record file open for preloading
-          this.folderHistoryService.recordFileOpen(connection.id, remoteFile.path);
+        // Log download
+        this.auditService.log({
+          action: 'download',
+          connectionId: connection.id,
+          hostName: connection.host.name,
+          username: connection.host.username,
+          remotePath: remoteFile.path,
+          localPath,
+          fileSize: remoteFile.size,
+          success: true,
+        });
 
-          // Start file watcher for real-time updates (mapping must exist first)
-          await this.startFileWatch(localPath, mapping);
+        // Record file open for preloading
+        this.folderHistoryService.recordFileOpen(connection.id, remoteFile.path);
 
-          progress.report({ increment: 10, message: 'Complete!' });
-        }
-      );
+        // Start file watcher for real-time updates (mapping must exist first)
+        await this.startFileWatch(localPath, mapping);
+      } catch (downloadError) {
+        // Download failed - show error in the placeholder tab
+        vscode.window.setStatusBarMessage(`$(error) Download failed: ${remoteFile.name}`, 5000);
+
+        const errorContent = `// Failed to download ${remoteFile.name}\n// Error: ${(downloadError as Error).message}\n// \n// Close this tab and try again.`;
+        const fullRange = new vscode.Range(
+          document.positionAt(0),
+          document.positionAt(document.getText().length)
+        );
+        const edit = new vscode.WorkspaceEdit();
+        edit.replace(document.uri, fullRange, errorContent);
+        await vscode.workspace.applyEdit(edit);
+
+        throw downloadError; // Re-throw to be caught by outer catch
+      }
     } catch (error) {
       vscode.window.showErrorMessage(`Failed to load file: ${(error as Error).message}`);
 
@@ -2318,7 +2320,7 @@ export class FileService {
         success: true,
       });
 
-      vscode.window.showInformationMessage(`Downloaded ${remoteFile.name} successfully`);
+      vscode.window.setStatusBarMessage(`$(check) Downloaded ${remoteFile.name}`, 3000);
     } catch (error) {
       vscode.window.showErrorMessage(`Failed to download file: ${(error as Error).message}`);
     }
@@ -2355,7 +2357,7 @@ export class FileService {
         }
       );
 
-      vscode.window.showInformationMessage(`Downloaded ${remoteFile.name} successfully`);
+      vscode.window.setStatusBarMessage(`$(check) Downloaded folder ${remoteFile.name}`, 3000);
     } catch (error) {
       vscode.window.showErrorMessage(`Failed to download folder: ${(error as Error).message}`);
     }
@@ -2438,7 +2440,7 @@ export class FileService {
         success: true,
       });
 
-      vscode.window.showInformationMessage(`Uploaded ${fileName} successfully`);
+      vscode.window.setStatusBarMessage(`$(check) Uploaded ${fileName}`, 3000);
     } catch (error) {
       vscode.window.showErrorMessage(`Failed to upload file: ${(error as Error).message}`);
     }
@@ -2476,7 +2478,7 @@ export class FileService {
         success: true,
       });
 
-      vscode.window.showInformationMessage(`Deleted ${remoteFile.name} successfully`);
+      vscode.window.setStatusBarMessage(`$(check) Deleted ${remoteFile.name}`, 3000);
       return true;
     } catch (error) {
       this.auditService.log({
@@ -2547,7 +2549,7 @@ export class FileService {
         success: true,
       });
 
-      vscode.window.showInformationMessage(`Created folder ${folderName}`);
+      vscode.window.setStatusBarMessage(`$(check) Created folder ${folderName}`, 3000);
       return remotePath;
     } catch (error) {
       vscode.window.showErrorMessage(`Failed to create folder: ${(error as Error).message}`);

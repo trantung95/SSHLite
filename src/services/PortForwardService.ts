@@ -135,8 +135,8 @@ export class PortForwardService {
         this.treeProvider.addForward(connection.id, localPort, remoteHost, remotePort);
       }
 
-      vscode.window.showInformationMessage(
-        `Port forward created: localhost:${localPort} → ${remoteHost}:${remotePort}`
+      vscode.window.setStatusBarMessage(
+        `$(check) Port forward: localhost:${localPort} → ${remoteHost}:${remotePort}`, 5000
       );
     } catch (error) {
       vscode.window.showErrorMessage(`Failed to create port forward: ${(error as Error).message}`);
@@ -163,7 +163,7 @@ export class PortForwardService {
         this.treeProvider.removeForward(forward.localPort, forward.connectionId);
       }
 
-      vscode.window.showInformationMessage(`Port forward stopped: localhost:${forward.localPort}`);
+      vscode.window.setStatusBarMessage(`$(check) Port forward stopped: localhost:${forward.localPort}`, 3000);
     } catch (error) {
       vscode.window.showErrorMessage(`Failed to stop port forward: ${(error as Error).message}`);
     }

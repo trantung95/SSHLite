@@ -31,6 +31,8 @@ export class ConnectionTreeItem extends vscode.TreeItem {
   ) {
     super(connection.host.name, vscode.TreeItemCollapsibleState.Expanded);
 
+    // Unique ID for VS Code to preserve expand/collapse state
+    this.id = `connection:${connection.id}`;
     this.description = `${connection.host.username}@${connection.host.host} - ${currentPath}`;
     this.contextValue = 'connection';
     // Use custom SVG icon with green color baked in (persists when selected)
@@ -55,6 +57,8 @@ export class ParentFolderTreeItem extends vscode.TreeItem {
   ) {
     super('..', vscode.TreeItemCollapsibleState.None);
 
+    // Unique ID for VS Code to preserve expand/collapse state
+    this.id = `parent:${connection.id}:${parentPath}`;
     this.description = 'Go to parent folder';
     this.contextValue = 'parentFolder';
     this.iconPath = new vscode.ThemeIcon('folder-opened');
@@ -89,6 +93,8 @@ export class FileTreeItem extends vscode.TreeItem {
         : vscode.TreeItemCollapsibleState.None
     );
 
+    // Unique ID for VS Code to preserve expand/collapse state
+    this.id = `file:${connection.id}:${file.path}`;
     this.resourceUri = vscode.Uri.parse(`ssh://${connection.id}${file.path}`);
     this.contextValue = file.isDirectory ? 'folder' : 'file';
 
@@ -135,8 +141,10 @@ export class FileTreeItem extends vscode.TreeItem {
  * Tree item showing loading indicator with spinning icon
  */
 export class LoadingTreeItem extends vscode.TreeItem {
-  constructor(message: string = 'Loading...') {
+  constructor(message: string = 'Loading...', uniqueKey?: string) {
     super(message, vscode.TreeItemCollapsibleState.None);
+    // Unique ID - use provided key or generate unique one to prevent ID conflicts
+    this.id = uniqueKey ? `loading:${uniqueKey}` : `loading:${Date.now()}:${Math.random()}`;
     this.iconPath = new vscode.ThemeIcon('sync~spin');
     this.contextValue = 'loading';
   }
@@ -156,6 +164,8 @@ export class FilterResultsHeaderItem extends vscode.TreeItem {
       resultCount > 0 ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.None
     );
 
+    // Unique ID for VS Code to preserve expand/collapse state
+    this.id = `filter-header:${connection.id}`;
     this.contextValue = 'filterResultsHeader';
     this.iconPath = isSearching
       ? new vscode.ThemeIcon('sync~spin')
@@ -174,6 +184,8 @@ export class FilteredFileItem extends vscode.TreeItem {
   ) {
     super(file.name, vscode.TreeItemCollapsibleState.None);
 
+    // Unique ID for VS Code to preserve expand/collapse state
+    this.id = `filtered:${connection.id}:${file.path}`;
     this.resourceUri = vscode.Uri.parse(`ssh://${connection.id}${file.path}`);
     this.contextValue = 'file'; // Same context as regular file for menus
 
@@ -871,13 +883,13 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
       // If already loading, show loading placeholder
       if (this.loadingItems.has(loadingKey)) {
-        return [new LoadingTreeItem('Loading...')];
+        return [new LoadingTreeItem('Loading...', loadingKey)];
       }
 
       // Start loading in background and return loading placeholder immediately
       this.loadingItems.add(loadingKey);
       this.loadDirectoryAndRefresh(element.connection, currentPath, element);
-      return [new LoadingTreeItem('Loading...')];
+      return [new LoadingTreeItem('Loading...', loadingKey)];
     }
 
     // Filter results header: show deep filter results
@@ -904,13 +916,13 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
       // If already loading, show loading placeholder
       if (this.loadingItems.has(loadingKey)) {
-        return [new LoadingTreeItem('Loading...')];
+        return [new LoadingTreeItem('Loading...', loadingKey)];
       }
 
       // Start loading in background and return loading placeholder immediately
       this.loadingItems.add(loadingKey);
       this.loadDirectoryAndRefresh(element.connection, element.file.path, element);
-      return [new LoadingTreeItem('Loading...')];
+      return [new LoadingTreeItem('Loading...', loadingKey)];
     }
 
     return [];

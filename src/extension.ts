@@ -227,10 +227,21 @@ export function activate(context: vscode.ExtensionContext): void {
         );
 
         log(`Connected to ${hostConfig.name}`);
-        vscode.window.showInformationMessage(`Connected to ${hostConfig.name}`);
+        // Auto-dismiss connection success (non-blocking UX)
+        vscode.window.setStatusBarMessage(`$(check) Connected to ${hostConfig.name}`, 3000);
       } catch (error) {
         log(`Connection failed: ${(error as Error).message}`);
-        vscode.window.showErrorMessage(`Connection failed: ${(error as Error).message}`);
+        const errMsg = (error as Error).message;
+        // Provide actionable suggestions based on error type
+        let suggestion = '';
+        if (errMsg.includes('ECONNREFUSED') || errMsg.includes('ETIMEDOUT')) {
+          suggestion = ' Check if the server is running and the port is correct.';
+        } else if (errMsg.includes('authentication') || errMsg.includes('password') || errMsg.includes('Permission denied')) {
+          suggestion = ' Verify your username and password/key.';
+        } else if (errMsg.includes('ENOTFOUND') || errMsg.includes('getaddrinfo')) {
+          suggestion = ' Check the hostname - it may be misspelled or unreachable.';
+        }
+        vscode.window.showErrorMessage(`Connection failed: ${errMsg}${suggestion}`);
       }
     }),
 
@@ -257,14 +268,15 @@ export function activate(context: vscode.ExtensionContext): void {
 
       await connectionManager.disconnect(connection.id);
       log(`Disconnected from ${connection.host.name}`);
-      vscode.window.showInformationMessage(`Disconnected from ${connection.host.name}`);
+      // Auto-dismiss disconnect success (non-blocking UX)
+      vscode.window.setStatusBarMessage(`$(check) Disconnected from ${connection.host.name}`, 3000);
     }),
 
     vscode.commands.registerCommand('sshLite.addHost', async () => {
       const host = await hostService.promptAddHost();
       if (host) {
         hostTreeProvider.refresh();
-        vscode.window.showInformationMessage(`Added host: ${host.name}`);
+        vscode.window.setStatusBarMessage(`$(check) Added host: ${host.name}`, 3000);
       }
     }),
 
@@ -276,7 +288,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const host = await hostService.promptEditHost(item.hostConfig);
       if (host) {
         hostTreeProvider.refresh();
-        vscode.window.showInformationMessage(`Updated host: ${host.name}`);
+        vscode.window.setStatusBarMessage(`$(check) Updated host: ${host.name}`, 3000);
       }
     }),
 
@@ -294,7 +306,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (confirm === 'Remove') {
         await hostService.removeHost(item.hostConfig.id);
         hostTreeProvider.refresh();
-        vscode.window.showInformationMessage(`Removed host: ${item.hostConfig.name}`);
+        vscode.window.setStatusBarMessage(`$(check) Removed host: ${item.hostConfig.name}`, 3000);
       }
     }),
 
@@ -956,7 +968,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
       if (confirm === 'Clear') {
         auditService.clearLogs();
-        vscode.window.showInformationMessage('Audit log cleared');
+        vscode.window.setStatusBarMessage('$(check) Audit log cleared', 3000);
       }
     }),
 
@@ -1015,7 +1027,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (confirm === 'Clear') {
         await credentialService.deleteAll(item.hostConfig.id);
         hostTreeProvider.refresh();
-        vscode.window.showInformationMessage('Credentials cleared');
+        vscode.window.setStatusBarMessage('$(check) Credentials cleared', 3000);
       }
     }),
 
@@ -1065,7 +1077,7 @@ export function activate(context: vscode.ExtensionContext): void {
           const cred = await credentialService.addCredential(hostConfig.id, label, 'password', password);
           log(`addCredential: Success - created credential ${cred.id}`);
           hostTreeProvider.refresh();
-          vscode.window.showInformationMessage(`Credential "${label}" added`);
+          vscode.window.setStatusBarMessage(`$(check) Credential "${label}" added`, 3000);
         } catch (error) {
           log(`addCredential: Error - ${(error as Error).message}`);
           vscode.window.showErrorMessage(`Failed to add credential: ${(error as Error).message}`);
@@ -1103,7 +1115,7 @@ export function activate(context: vscode.ExtensionContext): void {
           const cred = await credentialService.addCredential(hostConfig.id, label, 'privateKey', passphrase, keyPath);
           log(`addCredential: Success - created credential ${cred.id}`);
           hostTreeProvider.refresh();
-          vscode.window.showInformationMessage(`Credential "${label}" added`);
+          vscode.window.setStatusBarMessage(`$(check) Credential "${label}" added`, 3000);
         } catch (error) {
           log(`addCredential: Error - ${(error as Error).message}`);
           vscode.window.showErrorMessage(`Failed to add credential: ${(error as Error).message}`);
@@ -1132,10 +1144,20 @@ export function activate(context: vscode.ExtensionContext): void {
         );
 
         log(`Connected to ${hostConfig.name}`);
-        vscode.window.showInformationMessage(`Connected to ${hostConfig.name}`);
+        // Auto-dismiss connection success (non-blocking UX)
+        vscode.window.setStatusBarMessage(`$(check) Connected to ${hostConfig.name}`, 3000);
       } catch (error) {
         log(`Connection failed: ${(error as Error).message}`);
-        vscode.window.showErrorMessage(`Connection failed: ${(error as Error).message}`);
+        const errMsg = (error as Error).message;
+        let suggestion = '';
+        if (errMsg.includes('ECONNREFUSED') || errMsg.includes('ETIMEDOUT')) {
+          suggestion = ' Check if the server is running and the port is correct.';
+        } else if (errMsg.includes('authentication') || errMsg.includes('password') || errMsg.includes('Permission denied')) {
+          suggestion = ' Verify your username and password/key.';
+        } else if (errMsg.includes('ENOTFOUND') || errMsg.includes('getaddrinfo')) {
+          suggestion = ' Check the hostname - it may be misspelled or unreachable.';
+        }
+        vscode.window.showErrorMessage(`Connection failed: ${errMsg}${suggestion}`);
       }
     }),
 
@@ -1158,7 +1180,7 @@ export function activate(context: vscode.ExtensionContext): void {
         try {
           await credentialService.deleteCredential(item.hostConfig.id, item.credential.id);
           hostTreeProvider.refresh();
-          vscode.window.showInformationMessage('Credential deleted');
+          vscode.window.setStatusBarMessage('$(check) Credential deleted', 3000);
           log('deleteCredential: Success');
         } catch (error) {
           log(`deleteCredential: Error - ${(error as Error).message}`);
@@ -1177,7 +1199,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
       if (confirm === 'Clear All') {
         const count = fileService.clearAllTempFiles();
-        vscode.window.showInformationMessage(`Cleared ${count} temporary file(s)`);
+        vscode.window.setStatusBarMessage(`$(check) Cleared ${count} temporary file(s)`, 3000);
       }
     }),
 
@@ -1211,8 +1233,8 @@ export function activate(context: vscode.ExtensionContext): void {
         fileTreeProvider.refresh();
         hostTreeProvider.refresh();
 
-        vscode.window.showInformationMessage(
-          `Cache cleared: ${tempCount} temp file(s) removed, folder history and backup history reset.`
+        vscode.window.setStatusBarMessage(
+          `$(check) Cache cleared: ${tempCount} temp file(s) removed`, 5000
         );
       }
     }),
@@ -1270,7 +1292,7 @@ export function activate(context: vscode.ExtensionContext): void {
       );
 
       hostTreeProvider.refresh();
-      vscode.window.showInformationMessage(`Pinned "${name}" to credential "${credentialChoice.credential.label}"`);
+      vscode.window.setStatusBarMessage(`$(check) Pinned "${name}" to ${credentialChoice.credential.label}`, 3000);
     }),
 
     // Connect to pinned folder
@@ -1304,10 +1326,19 @@ export function activate(context: vscode.ExtensionContext): void {
         }
 
         log(`Connected to ${hostConfig.name} at ${pinnedFolder.remotePath}`);
-        vscode.window.showInformationMessage(`Connected to ${hostConfig.name}`);
+        vscode.window.setStatusBarMessage(`$(check) Connected to ${hostConfig.name}`, 3000);
       } catch (error) {
         log(`Connection failed: ${(error as Error).message}`);
-        vscode.window.showErrorMessage(`Connection failed: ${(error as Error).message}`);
+        const errMsg = (error as Error).message;
+        let suggestion = '';
+        if (errMsg.includes('ECONNREFUSED') || errMsg.includes('ETIMEDOUT')) {
+          suggestion = ' Check if the server is running and the port is correct.';
+        } else if (errMsg.includes('authentication') || errMsg.includes('password') || errMsg.includes('Permission denied')) {
+          suggestion = ' Verify your username and password/key.';
+        } else if (errMsg.includes('ENOTFOUND') || errMsg.includes('getaddrinfo')) {
+          suggestion = ' Check the hostname - it may be misspelled or unreachable.';
+        }
+        vscode.window.showErrorMessage(`Connection failed: ${errMsg}${suggestion}`);
       }
     }),
 
@@ -1329,7 +1360,7 @@ export function activate(context: vscode.ExtensionContext): void {
           item.pinnedFolder.id
         );
         hostTreeProvider.refresh();
-        vscode.window.showInformationMessage('Pinned folder removed');
+        vscode.window.setStatusBarMessage('$(check) Pinned folder removed', 3000);
       }
     }),
 
@@ -1354,7 +1385,7 @@ export function activate(context: vscode.ExtensionContext): void {
         newName
       );
       hostTreeProvider.refresh();
-      vscode.window.showInformationMessage(`Renamed to "${newName}"`);
+      vscode.window.setStatusBarMessage(`$(check) Renamed to "${newName}"`, 3000);
     }),
 
     // Clear temp files for specific server
@@ -1392,7 +1423,7 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!selected) return;
 
         const count = fileService.clearTempFilesForConnection(selected.connection.id);
-        vscode.window.showInformationMessage(`Cleared ${count} temporary file(s) for ${selected.connection.host.name}`);
+        vscode.window.setStatusBarMessage(`$(check) Cleared ${count} temp file(s) for ${selected.connection.host.name}`, 3000);
         return;
       }
 
@@ -1403,7 +1434,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
       if (confirm === 'Clear') {
         const count = fileService.clearTempFilesForConnection(connection.id);
-        vscode.window.showInformationMessage(`Cleared ${count} temporary file(s)`);
+        vscode.window.setStatusBarMessage(`$(check) Cleared ${count} temporary file(s)`, 3000);
       }
     }),
 
@@ -1508,7 +1539,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
       if (confirm === 'Clear') {
         const count = await fileService.clearServerBackups(connection);
-        vscode.window.showInformationMessage(`Cleared ${count} server backup(s) on ${connection.host.name}`);
+        vscode.window.setStatusBarMessage(`$(check) Cleared ${count} server backup(s)`, 3000);
       }
     }),
   ];
