@@ -1,8 +1,11 @@
 # SSH Lite - Lightweight SSH Client for VS Code
 
-![Version](https://img.shields.io/badge/version-0.1.0-blue)
+![Version](https://img.shields.io/badge/version-0.1.2-blue)
+![Beta](https://img.shields.io/badge/status-BETA-orange)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-1.85.0+-purple)
+
+> **BETA VERSION** - This extension is in active development. Please report any issues on [GitHub](https://github.com/trantung95/SSHLite/issues).
 
 **The ultimate lightweight SSH extension for Visual Studio Code!** Connect to remote servers, browse files, open terminals, and forward ports - all **without installing anything on the remote server**. Perfect for small VMs, shared hosting, and resource-constrained environments.
 
@@ -161,6 +164,14 @@ Contributions welcome! Please submit Pull Requests on GitHub.
 Apache-2.0 License
 
 ## Release Notes
+
+### 0.1.2 (Beta)
+- Search feature redesign with webview panel
+- Filename filter with tree highlighting
+- Smart refresh and real-time file watching
+- Progressive download for large files
+- UX enhancements: auto-dismiss notifications, keyboard shortcuts
+- Improved preloading and caching
 
 ### 0.1.0
 - Initial release

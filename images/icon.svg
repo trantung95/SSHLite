@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#2d5a7b;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1a3a4f;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <!-- Background -->
+  <rect width="128" height="128" rx="20" ry="20" fill="url(#bg)"/>
+  <!-- Terminal icon -->
+  <rect x="20" y="30" width="88" height="68" rx="8" ry="8" fill="#0d1117" stroke="#30a14e" stroke-width="2"/>
+  <!-- Terminal prompt -->
+  <text x="30" y="55" font-family="monospace" font-size="16" fill="#30a14e">$</text>
+  <text x="45" y="55" font-family="monospace" font-size="16" fill="#58a6ff">ssh</text>
+  <text x="75" y="55" font-family="monospace" font-size="16" fill="#8b949e">@</text>
+  <!-- Cursor blink -->
+  <rect x="30" y="65" width="50" height="2" fill="#30a14e"/>
+  <!-- Connection indicator -->
+  <circle cx="100" cy="40" r="6" fill="#30a14e"/>
+  <!-- "LITE" text -->
+  <text x="64" y="118" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#58a6ff" text-anchor="middle">LITE</text>
+</svg>
