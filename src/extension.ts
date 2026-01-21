@@ -1211,15 +1211,64 @@ export function activate(context: vscode.ExtensionContext): void {
       } catch (error) {
         log(`Connection failed: ${(error as Error).message}`);
         const errMsg = (error as Error).message;
-        let suggestion = '';
-        if (errMsg.includes('ECONNREFUSED') || errMsg.includes('ETIMEDOUT')) {
-          suggestion = ' Check if the server is running and the port is correct.';
-        } else if (errMsg.includes('authentication') || errMsg.includes('password') || errMsg.includes('Permission denied')) {
-          suggestion = ' Verify your username and password/key.';
-        } else if (errMsg.includes('ENOTFOUND') || errMsg.includes('getaddrinfo')) {
-          suggestion = ' Check the hostname - it may be misspelled or unreachable.';
+        const isAuthError = errMsg.includes('authentication') || errMsg.includes('password') || errMsg.includes('Permission denied') || errMsg.includes('All configured authentication methods failed');
+
+        if (isAuthError && credential.type === 'password') {
+          // Authentication failed - offer to retry with new password
+          const action = await vscode.window.showErrorMessage(
+            `Connection failed: ${errMsg}`,
+            'Enter New Password',
+            'Cancel'
+          );
+
+          if (action === 'Enter New Password') {
+            // Prompt for new password
+            const newPassword = await vscode.window.showInputBox({
+              prompt: `Enter password for ${hostConfig.username}@${hostConfig.host}`,
+              password: true,
+              ignoreFocusOut: true,
+            });
+
+            if (newPassword) {
+              try {
+                // Update the credential with new password
+                await credentialService.updateCredentialPassword(hostConfig.id, credential.id, newPassword);
+                log(`Updated password for credential "${credential.label}"`);
+
+                // Retry connection with updated credential
+                const updatedCredential = { ...credential };
+                await vscode.window.withProgress(
+                  {
+                    location: vscode.ProgressLocation.Notification,
+                    title: `Reconnecting to ${hostConfig.name}...`,
+                    cancellable: false,
+                  },
+                  async () => {
+                    await connectionManager.connectWithCredential(hostConfig!, updatedCredential);
+                  }
+                );
+
+                log(`Connected to ${hostConfig.name}`);
+                vscode.window.setStatusBarMessage(`$(check) Connected to ${hostConfig.name}`, 3000);
+                hostTreeProvider.refresh();
+              } catch (retryError) {
+                log(`Retry connection failed: ${(retryError as Error).message}`);
+                vscode.window.showErrorMessage(`Connection failed: ${(retryError as Error).message}. Verify your password.`);
+              }
+            }
+          }
+        } else {
+          // Non-auth error or non-password credential
+          let suggestion = '';
+          if (errMsg.includes('ECONNREFUSED') || errMsg.includes('ETIMEDOUT')) {
+            suggestion = ' Check if the server is running and the port is correct.';
+          } else if (isAuthError) {
+            suggestion = ' Verify your username and password/key.';
+          } else if (errMsg.includes('ENOTFOUND') || errMsg.includes('getaddrinfo')) {
+            suggestion = ' Check the hostname - it may be misspelled or unreachable.';
+          }
+          vscode.window.showErrorMessage(`Connection failed: ${errMsg}${suggestion}`);
         }
-        vscode.window.showErrorMessage(`Connection failed: ${errMsg}${suggestion}`);
       }
     }),
 

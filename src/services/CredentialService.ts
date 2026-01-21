@@ -179,6 +179,21 @@ export class CredentialService {
   }
 
   /**
+   * Update the password for an existing credential
+   */
+  async updateCredentialPassword(hostId: string, credentialId: string, newPassword: string): Promise<void> {
+    const secretKey = this.getSecretKey(hostId, credentialId);
+
+    // Update in session cache
+    this.sessionCredentials.set(secretKey, newPassword);
+
+    // Update in secure storage
+    if (this.secretStorage) {
+      await this.secretStorage.store(secretKey, newPassword);
+    }
+  }
+
+  /**
    * Delete all credentials for a host
    */
   async deleteAll(hostId: string): Promise<void> {

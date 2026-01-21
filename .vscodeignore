@@ -9,6 +9,8 @@ vsc-extension-quickstart.md
 **/*.map
 **/*.ts
 !out/**/*.d.ts
-node_modules/**
 *.vsix
 .git/**
+.claude-workflow.md
+.claude/**
+nul
