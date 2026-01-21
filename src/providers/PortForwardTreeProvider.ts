@@ -11,21 +11,28 @@ export class PortForwardTreeItem extends vscode.TreeItem {
     public readonly forward: IPortForward,
     public readonly connection: SSHConnection
   ) {
+    // Format: remoteHost:remotePort <-> localhost:localPort
+    // Shows the actual remote target clearly (not just "localhost" which is relative to SSH server)
+    const remoteDisplay = forward.remoteHost === 'localhost'
+      ? `${connection.host.host}:${forward.remotePort}`
+      : `${forward.remoteHost}:${forward.remotePort}`;
+
     super(
-      `localhost:${forward.localPort} → ${forward.remoteHost}:${forward.remotePort}`,
+      `${remoteDisplay} <-> localhost:${forward.localPort}`,
       vscode.TreeItemCollapsibleState.None
     );
 
     this.description = connection.host.name;
     this.contextValue = 'forward';
-    this.iconPath = new vscode.ThemeIcon('arrow-right', new vscode.ThemeColor('charts.blue'));
+    this.iconPath = new vscode.ThemeIcon('arrow-swap', new vscode.ThemeColor('charts.blue'));
 
     this.tooltip = new vscode.MarkdownString(
       `**Port Forward**\n\n` +
-        `- Local: localhost:${forward.localPort}\n` +
-        `- Remote: ${forward.remoteHost}:${forward.remotePort}\n` +
+        `- Local: \`localhost:${forward.localPort}\`\n` +
+        `- Remote: \`${forward.remoteHost}:${forward.remotePort}\` (on ${connection.host.host})\n` +
         `- Connection: ${connection.host.name}\n` +
-        `- Status: ${forward.active ? 'Active' : 'Stopped'}`
+        `- Status: ${forward.active ? 'Active' : 'Stopped'}\n\n` +
+        `*Connect to localhost:${forward.localPort} to reach ${remoteDisplay}*`
     );
   }
 }

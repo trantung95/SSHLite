@@ -66,10 +66,12 @@ export class FileService {
   private configChangeListener: vscode.Disposable | null = null;
   private debounceTimers: Map<string, NodeJS.Timeout> = new Map();
   private globalRefreshTimer: NodeJS.Timeout | null = null;
+  private globalRefreshRunning: boolean = false; // Prevent concurrent global refresh cycles
   private refreshingConnections: Set<string> = new Set(); // Track which connections are currently refreshing
   private auditService: AuditService;
   private folderHistoryService: FolderHistoryService;
   private skipNextSave: Set<string> = new Set(); // Paths to skip upload on next save
+  private activeDownloads: Set<string> = new Set(); // Track paths currently being downloaded
 
   private autoCleanupTimer: NodeJS.Timeout | null = null;
 
@@ -344,7 +346,9 @@ export class FileService {
     let cleanedCount = 0;
 
     // Clean files in our mappings
-    for (const [localPath, mapping] of this.fileMappings) {
+    // Create snapshot to avoid concurrent modification during iteration
+    const mappingsSnapshot = Array.from(this.fileMappings.entries());
+    for (const [localPath, mapping] of mappingsSnapshot) {
       // Skip if filtering by connection and this doesn't match
       if (connectionId && mapping.connectionId !== connectionId) {
         continue;
@@ -447,7 +451,9 @@ export class FileService {
     let cleanedCount = 0;
 
     // Clear all mappings
-    for (const [localPath] of this.fileMappings) {
+    // Create snapshot to avoid concurrent modification during iteration
+    const localPaths = Array.from(this.fileMappings.keys());
+    for (const localPath of localPaths) {
       const timer = this.debounceTimers.get(localPath);
       if (timer) {
         clearTimeout(timer);
@@ -490,7 +496,9 @@ export class FileService {
   clearTempFilesForConnection(connectionId: string): number {
     let cleanedCount = 0;
 
-    for (const [localPath, mapping] of this.fileMappings) {
+    // Create snapshot to avoid concurrent modification during iteration
+    const mappingsSnapshot = Array.from(this.fileMappings.entries());
+    for (const [localPath, mapping] of mappingsSnapshot) {
       if (mapping.connectionId === connectionId) {
         const timer = this.debounceTimers.get(localPath);
         if (timer) {
@@ -753,6 +761,208 @@ export class FileService {
     } catch {
       // Silently fail - backup is optional and shouldn't interrupt workflow
       return undefined;
+    }
+  }
+
+  /**
+   * List ALL server backups (for backup viewer UI)
+   */
+  async listAllServerBackups(connection: SSHConnection): Promise<{name: string, path: string, timestamp: Date, size: number, isDirectory: boolean}[]> {
+    try {
+      // List all files in backup folder with size
+      const result = await connection.exec(
+        `ls -lh ${SERVER_BACKUP_FOLDER} 2>/dev/null | tail -n +2 || true`
+      );
+      const lines = result.trim().split('\n').filter((f) => f.length > 0);
+
+      return lines.map((line) => {
+        // Parse ls -lh output: -rw-r--r-- 1 user group 1.5K Jan 21 12:30 filename
+        const parts = line.split(/\s+/);
+        const sizeStr = parts[4] || '0';
+        const fileName = parts.slice(8).join(' ');
+        const filePath = `${SERVER_BACKUP_FOLDER}/${fileName}`;
+        const isDirectory = fileName.endsWith('.tar.gz');
+
+        // Parse size (1.5K, 2M, etc.)
+        let size = 0;
+        const sizeMatch = sizeStr.match(/^([\d.]+)([KMGT]?)$/i);
+        if (sizeMatch) {
+          const num = parseFloat(sizeMatch[1]);
+          const unit = (sizeMatch[2] || '').toUpperCase();
+          const multipliers: Record<string, number> = { '': 1, 'K': 1024, 'M': 1024 * 1024, 'G': 1024 * 1024 * 1024, 'T': 1024 * 1024 * 1024 * 1024 };
+          size = num * (multipliers[unit] || 1);
+        }
+
+        // Extract timestamp from filename
+        const match = fileName.match(/_(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)/);
+        const timestamp = match ? new Date(match[1].replace(/-/g, (m, i) => i > 9 ? (i === 13 || i === 16 ? ':' : '.') : '-')) : new Date();
+
+        return {
+          name: fileName,
+          path: filePath,
+          timestamp,
+          size,
+          isDirectory,
+        };
+      }).sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime()); // Newest first
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Show ALL backups UI for a connection
+   */
+  async showAllBackups(connection: SSHConnection): Promise<void> {
+    const backups = await this.listAllServerBackups(connection);
+
+    if (backups.length === 0) {
+      vscode.window.showInformationMessage(`No backups found on ${connection.host.name}`);
+      return;
+    }
+
+    const items = backups.map((backup) => {
+      const icon = backup.isDirectory ? '$(folder)' : '$(file)';
+      const typeLabel = backup.isDirectory ? 'Folder backup' : 'File backup';
+      const originalName = backup.name.replace(/_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z(\.tar\.gz)?/, '');
+
+      return {
+        label: `${icon} ${originalName}`,
+        description: backup.timestamp.toLocaleString(),
+        detail: `${typeLabel} - ${formatFileSize(backup.size)}`,
+        backup,
+      };
+    });
+
+    const selected = await vscode.window.showQuickPick(items, {
+      placeHolder: `Select backup to restore or delete (${backups.length} backup(s) on ${connection.host.name})`,
+      ignoreFocusOut: true,
+    });
+
+    if (!selected) return;
+
+    const actions = [
+      { label: '$(history) Restore', description: 'Restore this backup (current version will be backed up first)', value: 'restore' },
+      { label: '$(trash) Delete Backup', description: 'Remove this backup from server', value: 'delete' },
+    ];
+
+    // Add view option for non-directory backups
+    if (!selected.backup.isDirectory) {
+      actions.unshift({ label: '$(eye) View Content', description: 'View backup file content', value: 'view' });
+    }
+
+    const action = await vscode.window.showQuickPick(actions, {
+      placeHolder: `Action for "${selected.backup.name}"`,
+    });
+
+    if (!action) return;
+
+    switch (action.value) {
+      case 'view':
+        await this.viewBackupContent(connection, selected.backup.path);
+        break;
+      case 'restore':
+        await this.restoreBackupWithConfirmation(connection, selected.backup);
+        break;
+      case 'delete':
+        await this.deleteBackup(connection, selected.backup);
+        break;
+    }
+  }
+
+  /**
+   * View content of a backup file
+   */
+  private async viewBackupContent(connection: SSHConnection, backupPath: string): Promise<void> {
+    try {
+      const content = await connection.readFile(backupPath);
+      const tempPath = path.join(this.tempDir, `backup-view-${path.basename(backupPath)}`);
+      fs.writeFileSync(tempPath, content);
+
+      const document = await vscode.workspace.openTextDocument(tempPath);
+      await vscode.window.showTextDocument(document, { preview: true });
+    } catch (error) {
+      vscode.window.showErrorMessage(`Failed to view backup: ${(error as Error).message}`);
+    }
+  }
+
+  /**
+   * Restore a backup with confirmation and pre-restore backup
+   */
+  private async restoreBackupWithConfirmation(
+    connection: SSHConnection,
+    backup: { name: string; path: string; timestamp: Date; isDirectory: boolean }
+  ): Promise<void> {
+    // Extract original path from backup name
+    const originalName = backup.name.replace(/_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z(\.tar\.gz)?/, '');
+
+    // Ask where to restore
+    const restorePath = await vscode.window.showInputBox({
+      prompt: 'Restore to path (leave empty to restore to original location)',
+      placeHolder: backup.isDirectory ? `/path/to/restore/${originalName}` : `/path/to/restore/${originalName}`,
+      value: '',
+    });
+
+    if (restorePath === undefined) return; // Cancelled
+
+    const targetPath = restorePath || `~/${originalName}`;
+
+    const confirm = await vscode.window.showWarningMessage(
+      `Restore "${backup.name}" to "${targetPath}"?\n\nIf the target exists, it will be backed up first.`,
+      { modal: true },
+      'Restore'
+    );
+
+    if (confirm !== 'Restore') return;
+
+    try {
+      // Check if target exists and backup if so
+      const existsResult = await connection.exec(`test -e "${targetPath}" && echo "exists" || echo "not_exists"`);
+      if (existsResult.trim() === 'exists') {
+        // Create backup of current version before restore
+        if (backup.isDirectory) {
+          await this.createDirectoryBackup(connection, targetPath);
+        } else {
+          await this.createServerBackup(connection, targetPath);
+        }
+        vscode.window.setStatusBarMessage(`$(archive) Backed up current version`, 2000);
+      }
+
+      // Perform restore
+      if (backup.isDirectory) {
+        // Extract tar.gz
+        await connection.exec(`mkdir -p "${path.dirname(targetPath)}" && tar -xzf "${backup.path}" -C "${path.dirname(targetPath)}"`);
+      } else {
+        // Copy file
+        await connection.exec(`mkdir -p "${path.dirname(targetPath)}" && cp "${backup.path}" "${targetPath}"`);
+      }
+
+      vscode.window.showInformationMessage(`Restored "${originalName}" to ${targetPath}`);
+    } catch (error) {
+      vscode.window.showErrorMessage(`Failed to restore: ${(error as Error).message}`);
+    }
+  }
+
+  /**
+   * Delete a backup from server
+   */
+  private async deleteBackup(
+    connection: SSHConnection,
+    backup: { name: string; path: string }
+  ): Promise<void> {
+    const confirm = await vscode.window.showWarningMessage(
+      `Delete backup "${backup.name}"? This cannot be undone.`,
+      { modal: true },
+      'Delete'
+    );
+
+    if (confirm !== 'Delete') return;
+
+    try {
+      await connection.exec(`rm -f "${backup.path}"`);
+      vscode.window.setStatusBarMessage(`$(check) Deleted backup: ${backup.name}`, 3000);
+    } catch (error) {
+      vscode.window.showErrorMessage(`Failed to delete backup: ${(error as Error).message}`);
     }
   }
 
@@ -1395,7 +1605,16 @@ export class FileService {
     }
 
     this.globalRefreshTimer = setInterval(async () => {
-      await this.refreshOpenedFiles();
+      // Skip if previous refresh cycle is still running
+      if (this.globalRefreshRunning) {
+        return;
+      }
+      this.globalRefreshRunning = true;
+      try {
+        await this.refreshOpenedFiles();
+      } finally {
+        this.globalRefreshRunning = false;
+      }
     }, refreshInterval * 1000);
   }
 
@@ -1422,8 +1641,10 @@ export class FileService {
     const focusedPath = activeEditor?.document.uri.fsPath;
 
     // Group mappings by connectionId for parallel refresh
+    // Create snapshot to avoid concurrent modification during iteration
     const mappingsByConnection = new Map<string, Array<[string, FileMapping]>>();
-    for (const [localPath, mapping] of this.fileMappings.entries()) {
+    const mappingsSnapshot = Array.from(this.fileMappings.entries());
+    for (const [localPath, mapping] of mappingsSnapshot) {
       const group = mappingsByConnection.get(mapping.connectionId) || [];
       group.push([localPath, mapping]);
       mappingsByConnection.set(mapping.connectionId, group);
@@ -1789,9 +2010,34 @@ export class FileService {
 
     // Check if document is already open in VS Code editor (quick check before acquiring lock)
     const existingDoc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === localPath);
-    if (existingDoc && this.fileMappings.has(localPath)) {
-      // Document is open - just show it (user might have unsaved changes)
-      // Use preview: false to ensure it stays open in edit mode
+    if (existingDoc) {
+      // Document is open - check if content is loaded or still has placeholder
+      const hasMapping = this.fileMappings.has(localPath);
+      const isDownloading = this.activeDownloads.has(localPath);
+
+      if (hasMapping) {
+        // Content is loaded - just show the document
+        await vscode.window.showTextDocument(existingDoc, { preview: false });
+        return;
+      }
+
+      if (isDownloading) {
+        // Download still in progress - show the document and notify user
+        await vscode.window.showTextDocument(existingDoc, { preview: false });
+        vscode.window.setStatusBarMessage(`$(sync~spin) Download in progress: ${remoteFile.name}...`, 5000);
+        return;
+      }
+
+      // Document open but no mapping and not downloading - might be stale placeholder
+      // Check if content looks like a placeholder
+      const content = existingDoc.getText();
+      if (content.startsWith('// Loading ') || content.startsWith('// Failed to download')) {
+        // Stale placeholder - trigger high-priority refresh with progress
+        await this.refreshFileContentWithProgress(connection, remoteFile, existingDoc, localPath);
+        return;
+      }
+
+      // Unknown state - just show the document
       await vscode.window.showTextDocument(existingDoc, { preview: false });
       return;
     }
@@ -1826,6 +2072,9 @@ export class FileService {
       // Download content in background with status bar indicator
       const fileSizeStr = formatFileSize(remoteFile.size);
       vscode.window.setStatusBarMessage(`$(sync~spin) Downloading ${remoteFile.name} (${fileSizeStr})...`, 30000);
+
+      // Mark download as active
+      this.activeDownloads.add(localPath);
 
       try {
         const content = await connection.readFile(remoteFile.path);
@@ -1889,7 +2138,13 @@ export class FileService {
 
         // Start file watcher for real-time updates (mapping must exist first)
         await this.startFileWatch(localPath, mapping);
+
+        // Mark download as complete
+        this.activeDownloads.delete(localPath);
       } catch (downloadError) {
+        // Mark download as failed
+        this.activeDownloads.delete(localPath);
+
         // Download failed - show error in the placeholder tab
         vscode.window.setStatusBarMessage(`$(error) Download failed: ${remoteFile.name}`, 5000);
 
@@ -1918,6 +2173,108 @@ export class FileService {
     } finally {
       releaseLock();
     }
+  }
+
+  /**
+   * Refresh file content with progress indicator (high-priority update)
+   * Used when clicking on a file that has stale placeholder content
+   */
+  private async refreshFileContentWithProgress(
+    connection: SSHConnection,
+    remoteFile: IRemoteFile,
+    document: vscode.TextDocument,
+    localPath: string
+  ): Promise<void> {
+    // Show the document first
+    await vscode.window.showTextDocument(document, { preview: false });
+
+    // Check if already downloading
+    if (this.activeDownloads.has(localPath)) {
+      vscode.window.setStatusBarMessage(`$(sync~spin) Download already in progress: ${remoteFile.name}...`, 5000);
+      return;
+    }
+
+    // Use progress notification for visibility
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Updating ${remoteFile.name}`,
+        cancellable: false,
+      },
+      async (progress) => {
+        progress.report({ message: `Downloading (${formatFileSize(remoteFile.size)})...` });
+
+        // Mark download as active
+        this.activeDownloads.add(localPath);
+
+        try {
+          const content = await connection.readFile(remoteFile.path);
+          const contentStr = content.toString('utf-8');
+
+          // Skip the save listener for this update
+          this.skipNextSave.add(localPath);
+
+          // Update editor content
+          const fullRange = new vscode.Range(
+            document.positionAt(0),
+            document.positionAt(document.getText().length)
+          );
+          const edit = new vscode.WorkspaceEdit();
+          edit.replace(document.uri, fullRange, contentStr);
+          await vscode.workspace.applyEdit(edit);
+
+          // Save document
+          await document.save();
+
+          progress.report({ message: 'Complete!' });
+
+          // Store mapping
+          const mapping: FileMapping = {
+            connectionId: connection.id,
+            remotePath: remoteFile.path,
+            localPath,
+            lastSyncTime: Date.now(),
+            lastRemoteModTime: remoteFile.modifiedTime,
+            lastRemoteSize: remoteFile.size,
+            originalContent: contentStr,
+          };
+          this.fileMappings.set(localPath, mapping);
+
+          // Create server-side backup in background
+          this.createServerBackup(connection, remoteFile.path)
+            .then((backupPath) => {
+              if (backupPath) {
+                mapping.serverBackupPath = backupPath;
+              }
+            })
+            .catch(() => {});
+
+          // Log download
+          this.auditService.log({
+            action: 'download',
+            connectionId: connection.id,
+            hostName: connection.host.name,
+            username: connection.host.username,
+            remotePath: remoteFile.path,
+            localPath,
+            fileSize: remoteFile.size,
+            success: true,
+          });
+
+          // Record file open
+          this.folderHistoryService.recordFileOpen(connection.id, remoteFile.path);
+
+          // Start file watcher
+          await this.startFileWatch(localPath, mapping);
+
+          vscode.window.setStatusBarMessage(`$(check) Updated ${remoteFile.name}`, 3000);
+        } catch (error) {
+          vscode.window.showErrorMessage(`Failed to update file: ${(error as Error).message}`);
+        } finally {
+          this.activeDownloads.delete(localPath);
+        }
+      }
+    );
   }
 
   /**
@@ -2450,19 +2807,36 @@ export class FileService {
    * Delete a remote file or folder
    */
   async deleteRemote(connection: SSHConnection, remoteFile: IRemoteFile): Promise<boolean> {
+    const typeLabel = remoteFile.isDirectory ? 'folder' : 'file';
+
+    // Show warning with backup option
     const confirm = await vscode.window.showWarningMessage(
-      `Are you sure you want to delete "${remoteFile.name}"?`,
-      { modal: true },
-      'Delete'
+      `Delete "${remoteFile.name}"?\n\nA backup will be created before deletion.`,
+      { modal: true, detail: `This ${typeLabel} will be backed up to ${SERVER_BACKUP_FOLDER} before deletion.` },
+      'Delete with Backup',
+      'Delete Permanently'
     );
 
-    if (confirm !== 'Delete') {
+    if (!confirm) {
       return false;
     }
 
+    const createBackup = confirm === 'Delete with Backup';
+
     try {
+      let backupPath: string | undefined;
+
+      // Create backup before deletion
+      if (createBackup) {
+        if (remoteFile.isDirectory) {
+          backupPath = await this.createDirectoryBackup(connection, remoteFile.path);
+        } else {
+          backupPath = await this.createServerBackup(connection, remoteFile.path);
+        }
+      }
+
+      // Perform deletion
       if (remoteFile.isDirectory) {
-        // Delete directory contents recursively
         await this.deleteDirectoryRecursive(connection, remoteFile.path);
       } else {
         await connection.deleteFile(remoteFile.path);
@@ -2478,7 +2852,19 @@ export class FileService {
         success: true,
       });
 
-      vscode.window.setStatusBarMessage(`$(check) Deleted ${remoteFile.name}`, 3000);
+      // Show notification with backup path and option to view backups
+      if (backupPath) {
+        const viewBackups = await vscode.window.showInformationMessage(
+          `Deleted "${remoteFile.name}". Backup saved.`,
+          'View Backups',
+          'OK'
+        );
+        if (viewBackups === 'View Backups') {
+          vscode.commands.executeCommand('sshLite.showAllBackups', connection);
+        }
+      } else {
+        vscode.window.setStatusBarMessage(`$(check) Deleted ${remoteFile.name}`, 3000);
+      }
       return true;
     } catch (error) {
       this.auditService.log({
@@ -2492,6 +2878,33 @@ export class FileService {
       });
       vscode.window.showErrorMessage(`Failed to delete: ${(error as Error).message}`);
       return false;
+    }
+  }
+
+  /**
+   * Create a backup of a directory (as tar.gz)
+   */
+  private async createDirectoryBackup(connection: SSHConnection, remotePath: string): Promise<string | undefined> {
+    try {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const dirName = path.basename(remotePath);
+      const backupFileName = `${dirName}_${timestamp}.tar.gz`;
+      const backupPath = `${SERVER_BACKUP_FOLDER}/${backupFileName}`;
+
+      // Create backup folder and tar the directory
+      await connection.exec(
+        `mkdir -p ${SERVER_BACKUP_FOLDER} 2>/dev/null; cd "${path.dirname(remotePath)}" && tar -czf "${backupPath}" "${dirName}" 2>/dev/null || true`
+      );
+
+      // Verify backup was created
+      const verifyResult = await connection.exec(`test -f "${backupPath}" && echo "ok" || echo "fail"`).catch(() => 'fail');
+      if (verifyResult.trim() === 'ok') {
+        return backupPath;
+      }
+
+      return undefined;
+    } catch {
+      return undefined;
     }
   }
 
@@ -2811,7 +3224,9 @@ export class FileService {
    * Clean up temp files for a connection
    */
   cleanupConnection(connectionId: string): void {
-    for (const [localPath, mapping] of this.fileMappings) {
+    // Create snapshot to avoid concurrent modification during iteration
+    const mappingsSnapshot = Array.from(this.fileMappings.entries());
+    for (const [localPath, mapping] of mappingsSnapshot) {
       if (mapping.connectionId === connectionId) {
         // Clear any pending debounce timer
         const timer = this.debounceTimers.get(localPath);
@@ -2819,7 +3234,6 @@ export class FileService {
           clearTimeout(timer);
           this.debounceTimers.delete(localPath);
         }
-
 
         // Try to delete the temp file
         try {
@@ -2838,7 +3252,9 @@ export class FileService {
    * Clean up all temp files
    */
   cleanupAll(): void {
-    for (const [localPath] of this.fileMappings) {
+    // Create snapshot to avoid concurrent modification during iteration
+    const localPaths = Array.from(this.fileMappings.keys());
+    for (const localPath of localPaths) {
       try {
         if (fs.existsSync(localPath)) {
           fs.unlinkSync(localPath);

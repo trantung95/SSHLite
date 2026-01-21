@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { SSHConnection } from '../connection/SSHConnection';
+import { formatFileSize, formatRelativeTime } from '../utils/helpers';
 
 /**
  * Search result item
@@ -10,6 +11,9 @@ export interface SearchResult {
   line?: number;
   match?: string;
   connection: SSHConnection;
+  size?: number;
+  modified?: Date;
+  permissions?: string;
 }
 
 /**
@@ -20,23 +24,54 @@ export class SearchResultFileItem extends vscode.TreeItem {
     public readonly filePath: string,
     public readonly connection: SSHConnection,
     public readonly results: SearchResult[],
-    hasMultipleMatches: boolean
+    hasMatches: boolean
   ) {
+    // Always make collapsible if there are matches to show (line numbers or multiple results)
+    // Default to Collapsed so user can expand to see details
     super(
       path.basename(filePath),
-      hasMultipleMatches
-        ? vscode.TreeItemCollapsibleState.Expanded
+      hasMatches
+        ? vscode.TreeItemCollapsibleState.Collapsed
         : vscode.TreeItemCollapsibleState.None
     );
 
+    // Unique ID for tree state preservation
+    this.id = `search-file:${connection.id}:${filePath}`;
     this.description = path.dirname(filePath);
-    this.tooltip = filePath;
     this.contextValue = 'searchResultFile';
     this.iconPath = vscode.ThemeIcon.File;
     this.resourceUri = vscode.Uri.parse(`ssh://${connection.id}${filePath}`);
 
-    // If only one result, make it clickable directly
-    if (!hasMultipleMatches && results.length === 1) {
+    // Rich tooltip with file info (same as file tree items)
+    const matchCount = results.length;
+    const lineNumbers = results
+      .filter((r) => r.line !== undefined)
+      .map((r) => r.line)
+      .slice(0, 10); // Show first 10 lines
+    const linesPreview = lineNumbers.length > 0
+      ? `Lines: ${lineNumbers.join(', ')}${lineNumbers.length < matchCount ? '...' : ''}`
+      : '';
+
+    // Get file metadata from first result (all results for same file share same metadata)
+    const firstResult = results[0];
+    const sizeStr = firstResult.size !== undefined ? formatFileSize(firstResult.size) : 'Unknown';
+    const modifiedStr = firstResult.modified ? formatRelativeTime(firstResult.modified.getTime()) : 'Unknown';
+    const permStr = firstResult.permissions || 'Unknown';
+
+    this.tooltip = new vscode.MarkdownString(
+      `**${path.basename(filePath)}**\n\n` +
+      `- Path: \`${filePath}\`\n` +
+      `- Server: ${connection.host.name}\n` +
+      `- Size: ${sizeStr}\n` +
+      `- Modified: ${modifiedStr}\n` +
+      `- Permissions: \`${permStr}\`\n` +
+      `- Matches: ${matchCount}\n` +
+      (linesPreview ? `- ${linesPreview}\n` : '') +
+      `\n*Click to open, right-click for options*`
+    );
+
+    // Always make clickable - opens first result (first match or file itself)
+    if (results.length > 0) {
       this.command = {
         command: 'sshLite.openSearchResult',
         title: 'Open File',
@@ -60,10 +95,28 @@ export class SearchResultMatchItem extends vscode.TreeItem {
 
     super(matchText || lineInfo, vscode.TreeItemCollapsibleState.None);
 
+    // Unique ID for tree state preservation
+    this.id = `search-match:${result.connection.id}:${result.path}:${result.line || 0}`;
     this.description = lineInfo;
-    this.tooltip = result.match || result.path;
     this.contextValue = 'searchResultMatch';
     this.iconPath = new vscode.ThemeIcon('search');
+
+    // Rich tooltip with match context and file metadata
+    const fileName = path.basename(result.path);
+    const sizeStr = result.size !== undefined ? formatFileSize(result.size) : 'Unknown';
+    const modifiedStr = result.modified ? formatRelativeTime(result.modified.getTime()) : 'Unknown';
+    const permStr = result.permissions || 'Unknown';
+
+    this.tooltip = new vscode.MarkdownString(
+      `**${fileName}${result.line ? `:${result.line}` : ''}**\n\n` +
+      (result.match ? `\`\`\`\n${result.match}\n\`\`\`\n\n` : '') +
+      `- Path: \`${result.path}\`\n` +
+      `- Server: ${result.connection.host.name}\n` +
+      `- Size: ${sizeStr}\n` +
+      `- Modified: ${modifiedStr}\n` +
+      `- Permissions: \`${permStr}\`\n` +
+      `\n*Click to open at this line*`
+    );
 
     this.command = {
       command: 'sshLite.openSearchResult',
@@ -73,7 +126,35 @@ export class SearchResultMatchItem extends vscode.TreeItem {
   }
 }
 
-type SearchTreeItem = SearchResultFileItem | SearchResultMatchItem;
+type SearchTreeItem = SearchResultFileItem | SearchResultMatchItem | SortOptionItem;
+
+/**
+ * Sort options for search results
+ */
+export type SortOption = 'name' | 'path' | 'matches';
+
+/**
+ * Tree item for displaying current sort option (clickable to change)
+ */
+export class SortOptionItem extends vscode.TreeItem {
+  constructor(public readonly currentSort: SortOption, public readonly resultCount: number) {
+    const sortLabels: Record<SortOption, string> = {
+      name: 'Name (A-Z)',
+      path: 'Path',
+      matches: 'Match Count',
+    };
+    super(`Sort: ${sortLabels[currentSort]}`, vscode.TreeItemCollapsibleState.None);
+
+    this.description = `${resultCount} file(s) found`;
+    this.contextValue = 'sortOption';
+    this.iconPath = new vscode.ThemeIcon('arrow-swap');
+    this.tooltip = 'Click to change sort order';
+    this.command = {
+      command: 'sshLite.cycleSearchSort',
+      title: 'Change Sort Order',
+    };
+  }
+}
 
 /**
  * Tree data provider for search results
@@ -86,6 +167,7 @@ export class SearchResultsProvider implements vscode.TreeDataProvider<SearchTree
   private searchQuery: string = '';
   private searchPath: string = '';
   private isSearching: boolean = false;
+  private sortOption: SortOption = 'name'; // Default sort by name
 
   /**
    * Set search results
@@ -141,6 +223,31 @@ export class SearchResultsProvider implements vscode.TreeDataProvider<SearchTree
     return this.isSearching;
   }
 
+  /**
+   * Get current sort option
+   */
+  getSortOption(): SortOption {
+    return this.sortOption;
+  }
+
+  /**
+   * Set sort option and refresh
+   */
+  setSortOption(option: SortOption): void {
+    this.sortOption = option;
+    this._onDidChangeTreeData.fire();
+  }
+
+  /**
+   * Cycle through sort options
+   */
+  cycleSort(): void {
+    const options: SortOption[] = ['name', 'path', 'matches'];
+    const currentIndex = options.indexOf(this.sortOption);
+    this.sortOption = options[(currentIndex + 1) % options.length];
+    this._onDidChangeTreeData.fire();
+  }
+
   getTreeItem(element: SearchTreeItem): vscode.TreeItem {
     return element;
   }
@@ -168,7 +275,24 @@ export class SearchResultsProvider implements vscode.TreeDataProvider<SearchTree
         items.push(new SearchResultFileItem(filePath, connection, fileResults, hasMultiple));
       }
 
-      return items;
+      // Sort items based on current sort option
+      items.sort((a, b) => {
+        switch (this.sortOption) {
+          case 'name':
+            return path.basename(a.filePath).localeCompare(path.basename(b.filePath));
+          case 'path':
+            return a.filePath.localeCompare(b.filePath);
+          case 'matches':
+            return b.results.length - a.results.length; // Descending (most matches first)
+          default:
+            return 0;
+        }
+      });
+
+      // Add sort option header at top
+      const result: SearchTreeItem[] = [new SortOptionItem(this.sortOption, items.length)];
+      result.push(...items);
+      return result;
     }
 
     // Child level - show individual matches

@@ -34,6 +34,9 @@ export class ProgressiveDownloadManager {
   // Active downloads
   private downloads: Map<string, DownloadState> = new Map();
 
+  // Lock for atomic download state operations
+  private downloadLock: Promise<void> = Promise.resolve();
+
   // Content provider reference
   private contentProvider: ProgressiveFileContentProvider | null = null;
 
@@ -132,9 +135,18 @@ export class ProgressiveDownloadManager {
   ): Promise<void> {
     const downloadId = `${connection.id}:${remoteFile.path}`;
 
-    // Check if already downloading
+    // Acquire lock for atomic check-and-set of download state
+    const previousLock = this.downloadLock;
+    let releaseLock: () => void;
+    this.downloadLock = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    await previousLock;
+
+    // Check if already downloading (now atomic with state set)
     const existing = this.downloads.get(downloadId);
     if (existing && (existing.status === 'downloading' || existing.status === 'pending')) {
+      releaseLock!();
       vscode.window.showWarningMessage(`Already downloading: ${remoteFile.name}`);
       return;
     }
@@ -152,6 +164,9 @@ export class ProgressiveDownloadManager {
     };
 
     this.downloads.set(downloadId, state);
+
+    // Release lock after state is set
+    releaseLock!();
 
     try {
       // Phase 1: Show preview immediately
@@ -400,10 +415,40 @@ export class ProgressiveDownloadManager {
   }
 
   /**
+   * Cancel download by document URI (called when tab is closed)
+   * Matches by preview URI or local path
+   */
+  public cancelDownloadByUri(uri: vscode.Uri): boolean {
+    const uriString = uri.toString();
+    const fsPath = uri.fsPath;
+
+    // Snapshot to prevent concurrent modification during iteration
+    const downloadsSnapshot = Array.from(this.downloads.entries());
+
+    for (const [id, state] of downloadsSnapshot) {
+      // Check if this is the preview URI or the local path
+      const isMatch =
+        state.previewUri?.toString() === uriString ||
+        state.localPath === fsPath ||
+        (state.localPath && fsPath.includes(state.remotePath.split('/').pop() || ''));
+
+      if (isMatch && (state.status === 'downloading' || state.status === 'pending')) {
+        this.cancelDownload(id);
+        vscode.window.setStatusBarMessage(`$(x) Download cancelled: ${state.remotePath.split('/').pop()}`, 3000);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * Clean up completed/cancelled downloads
    */
   public cleanupDownloads(): void {
-    for (const [id, state] of this.downloads) {
+    // Snapshot to prevent concurrent modification during iteration
+    const downloadsSnapshot = Array.from(this.downloads.entries());
+
+    for (const [id, state] of downloadsSnapshot) {
       if (state.status === 'completed' || state.status === 'cancelled' || state.status === 'error') {
         this.downloads.delete(id);
       }
@@ -421,8 +466,11 @@ export class ProgressiveDownloadManager {
    * Dispose of resources
    */
   public dispose(): void {
+    // Snapshot to prevent concurrent modification during iteration
+    const downloadsSnapshot = Array.from(this.downloads.values());
+
     // Cancel all active downloads
-    for (const state of this.downloads.values()) {
+    for (const state of downloadsSnapshot) {
       if (state.cancelTokenSource) {
         state.cancelTokenSource.cancel();
       }

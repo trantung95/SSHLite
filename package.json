@@ -116,8 +116,9 @@
           "when": "sshLite.hasConnections"
         },
         {
-          "id": "sshLite.searchResults",
-          "name": "Search Results",
+          "id": "sshLite.search",
+          "name": "Search",
+          "type": "webview",
           "when": "sshLite.hasConnections"
         }
       ]
@@ -409,30 +410,37 @@
         "command": "sshLite.searchServerForFilter",
         "title": "Search Server for Filter",
         "category": "SSH Lite",
+        "icon": "$(remote-explorer)"
+      },
+      {
+        "command": "sshLite.showSearch",
+        "title": "Show Search",
+        "category": "SSH Lite",
         "icon": "$(search)"
       },
       {
-        "command": "sshLite.searchInFolder",
-        "title": "Search in Folder",
+        "command": "sshLite.searchInScope",
+        "title": "Search Here",
         "category": "SSH Lite",
         "icon": "$(search)"
+      },
+      {
+        "command": "sshLite.filterFileNames",
+        "title": "Filter by Name",
+        "category": "SSH Lite",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "sshLite.clearFilenameFilter",
+        "title": "Clear Filename Filter",
+        "category": "SSH Lite",
+        "icon": "$(close)"
       },
       {
         "command": "sshLite.searchInFile",
         "title": "Search in File",
         "category": "SSH Lite",
         "icon": "$(search)"
-      },
-      {
-        "command": "sshLite.openSearchResult",
-        "title": "Open Search Result",
-        "category": "SSH Lite"
-      },
-      {
-        "command": "sshLite.clearSearchResults",
-        "title": "Clear Search Results",
-        "category": "SSH Lite",
-        "icon": "$(clear-all)"
       },
       {
         "command": "sshLite.cancelPreloading",
@@ -445,6 +453,18 @@
         "title": "Reveal in File Tree",
         "category": "SSH Lite",
         "icon": "$(target)"
+      },
+      {
+        "command": "sshLite.revealSearchResultInTree",
+        "title": "Reveal in File Tree",
+        "category": "SSH Lite",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "sshLite.showAllBackups",
+        "title": "View All Backups",
+        "category": "SSH Lite",
+        "icon": "$(archive)"
       }
     ],
     "menus": {
@@ -495,19 +515,19 @@
           "group": "navigation@7"
         },
         {
-          "command": "sshLite.searchInFolder",
+          "command": "sshLite.showSearch",
           "when": "view == sshLite.fileExplorer",
           "group": "navigation@8"
         },
         {
           "command": "sshLite.revealInTree",
-          "when": "view == sshLite.fileExplorer",
+          "when": "view == sshLite.fileExplorer && sshLite.hasActiveRemoteFile",
           "group": "navigation@9"
         },
         {
-          "command": "sshLite.clearSearchResults",
-          "when": "view == sshLite.searchResults",
-          "group": "navigation"
+          "command": "sshLite.clearFilenameFilter",
+          "when": "view == sshLite.fileExplorer && sshLite.hasFilenameFilter",
+          "group": "navigation@10"
         },
         {
           "command": "sshLite.clearAllTempFiles",
@@ -582,6 +602,11 @@
           "group": "3_cleanup@2"
         },
         {
+          "command": "sshLite.showAllBackups",
+          "when": "view == sshLite.hosts && viewItem == connectedHost",
+          "group": "3_cleanup@3"
+        },
+        {
           "command": "sshLite.disconnect",
           "when": "view == sshLite.hosts && viewItem == connectedHost",
           "group": "inline@1"
@@ -617,6 +642,11 @@
           "group": "1_cleanup@2"
         },
         {
+          "command": "sshLite.showAllBackups",
+          "when": "view == sshLite.fileExplorer && viewItem == connection",
+          "group": "1_cleanup@3"
+        },
+        {
           "command": "sshLite.openFile",
           "when": "view == sshLite.fileExplorer && viewItem == file",
           "group": "inline@1"
@@ -642,9 +672,14 @@
           "group": "inline@1"
         },
         {
-          "command": "sshLite.searchInFolder",
+          "command": "sshLite.searchInScope",
           "when": "view == sshLite.fileExplorer && viewItem == folder",
           "group": "inline@2"
+        },
+        {
+          "command": "sshLite.filterFileNames",
+          "when": "view == sshLite.fileExplorer && viewItem == folder",
+          "group": "inline@3"
         },
         {
           "command": "sshLite.refreshItem",
@@ -672,9 +707,14 @@
           "group": "1_actions@4"
         },
         {
-          "command": "sshLite.searchInFolder",
+          "command": "sshLite.searchInScope",
           "when": "view == sshLite.fileExplorer && viewItem == folder",
           "group": "1_actions@5"
+        },
+        {
+          "command": "sshLite.filterFileNames",
+          "when": "view == sshLite.fileExplorer && viewItem == folder",
+          "group": "1_actions@6"
         },
         {
           "command": "sshLite.showFileBackups",
@@ -710,6 +750,16 @@
           "command": "sshLite.stopForward",
           "when": "view == sshLite.portForwards && viewItem == forward",
           "group": "inline"
+        },
+        {
+          "command": "sshLite.searchInScope",
+          "when": "view == sshLite.fileExplorer && viewItem == file",
+          "group": "1_actions@6"
+        },
+        {
+          "command": "sshLite.searchInScope",
+          "when": "view == sshLite.fileExplorer && viewItem == connection",
+          "group": "inline@3"
         }
       ]
     },
@@ -911,7 +961,7 @@
         "when": "view == sshLite.fileExplorer && sshLite.hasConnections"
       },
       {
-        "command": "sshLite.searchInFolder",
+        "command": "sshLite.showSearch",
         "key": "ctrl+shift+s",
         "mac": "cmd+shift+s",
         "when": "view == sshLite.fileExplorer && sshLite.hasConnections"

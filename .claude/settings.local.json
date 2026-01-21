@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm run compile:*)"
+      "Bash(npm run compile:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd VS Code-style search panel and filename filter highlighting\n\n- Add SearchPanel webview with VS Code-native styling and multi-scope search\n- Add filename filter with tree highlighting \\(yellow icons for matches\\)\n- Add excludePattern support to searchFiles for better filtering\n- Add rich tooltips to search results with file metadata\n- Add \"Reveal in Tree\" option for search results\n- Add race condition fixes with mutex locks in FileService and ProgressiveDownloadManager\n- Update LITE principles documentation \\(server + UI/UX\\)\n- Add code quality and logging guidelines to workflow\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   }
 }

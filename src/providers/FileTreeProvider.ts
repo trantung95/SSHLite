@@ -84,7 +84,8 @@ function getRefreshInterval(): number {
 export class FileTreeItem extends vscode.TreeItem {
   constructor(
     public readonly file: IRemoteFile,
-    public readonly connection: SSHConnection
+    public readonly connection: SSHConnection,
+    public readonly isHighlighted: boolean = false
   ) {
     super(
       file.name,
@@ -98,11 +99,15 @@ export class FileTreeItem extends vscode.TreeItem {
     this.resourceUri = vscode.Uri.parse(`ssh://${connection.id}${file.path}`);
     this.contextValue = file.isDirectory ? 'folder' : 'file';
 
-    // Set icon based on type
+    // Set icon based on type, with highlighting for filename filter matches
     if (file.isDirectory) {
-      this.iconPath = vscode.ThemeIcon.Folder;
+      this.iconPath = isHighlighted
+        ? new vscode.ThemeIcon('folder', new vscode.ThemeColor('charts.yellow'))
+        : vscode.ThemeIcon.Folder;
     } else {
-      this.iconPath = vscode.ThemeIcon.File;
+      this.iconPath = isHighlighted
+        ? new vscode.ThemeIcon('file', new vscode.ThemeColor('charts.yellow'))
+        : vscode.ThemeIcon.File;
     }
 
     // Format description: size + relative modified time (grayed out by VS Code)
@@ -267,6 +272,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   private totalPreloadQueued: number = 0;
   private completedPreloadCount: number = 0;
   private preloadProgressResolve: (() => void) | null = null;
+  private preloadSlotLock: Promise<void> = Promise.resolve(); // Mutex for slot acquisition
 
   // Filter pattern for file tree (glob-like pattern)
   private filterPattern: string = '';
@@ -278,6 +284,12 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
   // Track items currently being loaded (for showing loading spinner)
   private loadingItems: Set<string> = new Set(); // Set of "connectionId:path" keys
+
+  // Filename filter for tree highlighting (different from filterPattern which filters the view)
+  private filenameFilterPattern: string = '';
+  private filenameFilterBasePath: string = '';
+  private filenameFilterConnectionId: string = '';
+  private highlightedPaths: Set<string> = new Set();
 
   constructor() {
     this.connectionManager = ConnectionManager.getInstance();
@@ -465,28 +477,62 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   /**
    * Acquire a preload slot (for concurrency limiting)
    * Returns a release function that must be called when done
+   * Uses a mutex to prevent race conditions in slot acquisition
    */
   private async acquirePreloadSlot(): Promise<() => void> {
+    // Acquire lock to ensure atomic check-and-increment
+    const previousLock = this.preloadSlotLock;
+    let releaseLockFn: () => void;
+    this.preloadSlotLock = new Promise<void>((resolve) => {
+      releaseLockFn = resolve;
+    });
+
+    await previousLock;
+
     const maxConcurrency = this.getMaxPreloadingConcurrency();
 
     if (this.activePreloadCount < maxConcurrency) {
       this.activePreloadCount++;
+      releaseLockFn!(); // Release lock immediately since we got a slot
       return () => this.releasePreloadSlot();
     }
+
+    // Release lock before waiting (allow others to queue up)
+    releaseLockFn!();
 
     // Wait for a slot to become available
     await new Promise<void>((resolve) => {
       this.preloadWaitQueue.push(resolve);
     });
 
+    // Re-acquire lock for increment
+    const prevLock2 = this.preloadSlotLock;
+    let releaseLock2: () => void;
+    this.preloadSlotLock = new Promise<void>((resolve) => {
+      releaseLock2 = resolve;
+    });
+    await prevLock2;
+
     this.activePreloadCount++;
+    releaseLock2!();
+
     return () => this.releasePreloadSlot();
   }
 
   /**
    * Release a preload slot
+   * Uses async lock to ensure atomic decrement and queue notification
    */
-  private releasePreloadSlot(): void {
+  private async releasePreloadSlot(): Promise<void> {
+    // Acquire lock for atomic decrement
+    const previousLock = this.preloadSlotLock;
+    let releaseLockFn: () => void;
+    this.preloadSlotLock = new Promise<void>((resolve) => {
+      releaseLockFn = resolve;
+    });
+
+    await previousLock;
+
     this.activePreloadCount--;
 
     // Wake up next waiting preload if any
@@ -496,6 +542,8 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
         next();
       }
     }
+
+    releaseLockFn!();
   }
 
   /**
@@ -606,7 +654,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     } finally {
       this.preloadQueue.delete(cacheKey);
       this.completedPreloadCount++;
-      releaseSlot();
+      await releaseSlot();
 
       // Check if all preloads are done
       if (this.preloadQueue.size === 0 && this.preloadProgressResolve) {
@@ -908,7 +956,11 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
         this.loadingItems.delete(loadingKey);
         // Apply filter
         const filteredFiles = cached.filter((file) => this.matchesFilter(file));
-        const items = filteredFiles.map((file) => new FileTreeItem(file, element.connection));
+        const items = filteredFiles.map((file) => new FileTreeItem(
+          file,
+          element.connection,
+          this.highlightedPaths.has(file.path)
+        ));
         // Preload subdirectories in background
         this.preloadSubdirectories(element.connection, cached);
         return items;
@@ -951,9 +1003,13 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       this.preloadParentFolder(connection, '/');
     }
 
-    // Apply filter and add files
+    // Apply filter and add files with highlighting
     const filteredFiles = files.filter((file) => this.matchesFilter(file));
-    items.push(...filteredFiles.map((file) => new FileTreeItem(file, connection)));
+    items.push(...filteredFiles.map((file) => new FileTreeItem(
+      file,
+      connection,
+      this.highlightedPaths.has(file.path)
+    )));
 
     // Add filter results section if filter is active
     if (this.filterPattern) {
@@ -1394,6 +1450,94 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   }
 
   /**
+   * Set filename filter for tree highlighting
+   * This highlights matching files in the tree without filtering them out
+   * @param pattern - Glob-like pattern (e.g., "*.ts", "config*")
+   * @param basePath - The folder path to search within
+   * @param connection - The SSH connection to search on
+   */
+  async setFilenameFilter(pattern: string, basePath: string, connection: SSHConnection): Promise<void> {
+    this.filenameFilterPattern = pattern.toLowerCase();
+    this.filenameFilterBasePath = basePath;
+    this.filenameFilterConnectionId = connection.id;
+    this.highlightedPaths.clear();
+
+    if (!pattern) {
+      this._onDidChangeTreeData.fire();
+      return;
+    }
+
+    // Show loading status
+    this.showLoading(`Finding files matching "${pattern}"...`);
+
+    try {
+      // Search for files matching the pattern
+      const results = await connection.searchFiles(basePath, pattern, {
+        searchContent: false, // Filename search only
+        caseSensitive: false,
+        maxResults: 500,
+      });
+
+      // Add all matching paths to highlighted set
+      for (const result of results) {
+        this.highlightedPaths.add(result.path);
+        // Also highlight parent directories leading to the file
+        let parentPath = path.posix.dirname(result.path);
+        while (parentPath && parentPath !== '/' && parentPath !== basePath) {
+          this.highlightedPaths.add(parentPath);
+          parentPath = path.posix.dirname(parentPath);
+        }
+      }
+
+      this.showSuccess(`Found ${results.length} files matching "${pattern}"`);
+    } catch (error) {
+      vscode.window.showErrorMessage(`Failed to search files: ${(error as Error).message}`);
+      this.hideLoading();
+    }
+
+    this._onDidChangeTreeData.fire();
+  }
+
+  /**
+   * Clear the filename filter and remove all highlights
+   */
+  clearFilenameFilter(): void {
+    this.filenameFilterPattern = '';
+    this.filenameFilterBasePath = '';
+    this.filenameFilterConnectionId = '';
+    this.highlightedPaths.clear();
+    this._onDidChangeTreeData.fire();
+  }
+
+  /**
+   * Check if a file path is highlighted by the filename filter
+   */
+  isHighlighted(filePath: string): boolean {
+    return this.highlightedPaths.has(filePath);
+  }
+
+  /**
+   * Check if filename filter is active
+   */
+  hasFilenameFilter(): boolean {
+    return this.filenameFilterPattern.length > 0;
+  }
+
+  /**
+   * Get current filename filter pattern
+   */
+  getFilenameFilterPattern(): string {
+    return this.filenameFilterPattern;
+  }
+
+  /**
+   * Get the base path for the filename filter
+   */
+  getFilenameFilterBasePath(): string {
+    return this.filenameFilterBasePath;
+  }
+
+  /**
    * Dispose of resources
    */
   dispose(): void {
@@ -1411,5 +1555,6 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       this.deepFilterAbortController.abort();
     }
     this.deepFilterResults.clear();
+    this.highlightedPaths.clear();
   }
 }

@@ -1001,9 +1001,10 @@ export class SSHConnection implements ISSHConnection {
       searchContent?: boolean; // Search file contents (grep) vs filenames (find)
       caseSensitive?: boolean;
       filePattern?: string; // File glob pattern (e.g., *.ts)
+      excludePattern?: string; // Exclude pattern (e.g., node_modules, *.test.ts)
       maxResults?: number;
     } = {}
-  ): Promise<Array<{ path: string; line?: number; match?: string }>> {
+  ): Promise<Array<{ path: string; line?: number; match?: string; size?: number; modified?: Date; permissions?: string }>> {
     if (this.state !== ConnectionState.Connected || !this._client) {
       throw new SFTPError('Not connected');
     }
@@ -1012,6 +1013,7 @@ export class SSHConnection implements ISSHConnection {
       searchContent = true,
       caseSensitive = false,
       filePattern = '*',
+      excludePattern = '',
       maxResults = 500,
     } = options;
 
@@ -1019,16 +1021,40 @@ export class SSHConnection implements ISSHConnection {
     const escapedPattern = pattern.replace(/['"\\$`!]/g, '\\$&');
     const caseFlag = caseSensitive ? '' : '-i';
 
+    // Build exclude flags for grep/find
+    let excludeFlags = '';
+    if (excludePattern) {
+      const excludePatterns = excludePattern.split(',').map((p) => p.trim()).filter(Boolean);
+      for (const ep of excludePatterns) {
+        if (searchContent) {
+          // For grep: --exclude for files, --exclude-dir for directories
+          if (ep.includes('/') || !ep.includes('.')) {
+            excludeFlags += ` --exclude-dir="${ep}"`;
+          } else {
+            excludeFlags += ` --exclude="${ep}"`;
+          }
+        }
+      }
+    }
+
     let command: string;
     if (searchContent) {
       // Use grep for content search
       // -r: recursive, -n: line numbers, -H: show filename
-      // --include: file pattern filter
-      command = `grep -rnH ${caseFlag} --include="${filePattern}" -m ${maxResults} "${escapedPattern}" "${searchPath}" 2>/dev/null | head -${maxResults}`;
+      // --include: file pattern filter, --exclude/--exclude-dir: exclude patterns
+      command = `grep -rnH ${caseFlag} --include="${filePattern}"${excludeFlags} -m ${maxResults} "${escapedPattern}" "${searchPath}" 2>/dev/null | head -${maxResults}`;
     } else {
       // Use find for filename search
       const findCaseFlag = caseSensitive ? '-name' : '-iname';
-      command = `find "${searchPath}" -type f ${findCaseFlag} "*${escapedPattern}*" 2>/dev/null | head -${maxResults}`;
+      // Build find exclude patterns
+      let findExcludes = '';
+      if (excludePattern) {
+        const excludePatterns = excludePattern.split(',').map((p) => p.trim()).filter(Boolean);
+        for (const ep of excludePatterns) {
+          findExcludes += ` ! -path "*/${ep}/*" ! -name "${ep}"`;
+        }
+      }
+      command = `find "${searchPath}" -type f ${findCaseFlag} "*${escapedPattern}*"${findExcludes} 2>/dev/null | head -${maxResults}`;
     }
 
     return new Promise((resolve, reject) => {
@@ -1049,8 +1075,9 @@ export class SSHConnection implements ISSHConnection {
           errorOutput += data.toString();
         });
 
-        stream.on('close', () => {
-          const results: Array<{ path: string; line?: number; match?: string }> = [];
+        stream.on('close', async () => {
+          const results: Array<{ path: string; line?: number; match?: string; size?: number; modified?: Date; permissions?: string }> = [];
+          const uniquePaths = new Set<string>();
 
           if (searchContent) {
             // Parse grep output: filename:line:match
@@ -1060,6 +1087,7 @@ export class SSHConnection implements ISSHConnection {
               if (colonIndex === -1) continue;
 
               const filePath = line.substring(0, colonIndex);
+              uniquePaths.add(filePath);
               const rest = line.substring(colonIndex + 1);
               const secondColonIndex = rest.indexOf(':');
 
@@ -1079,7 +1107,57 @@ export class SSHConnection implements ISSHConnection {
             // Parse find output: just file paths
             const lines = output.trim().split('\n').filter(Boolean);
             for (const filePath of lines) {
-              results.push({ path: filePath.trim() });
+              const trimmedPath = filePath.trim();
+              uniquePaths.add(trimmedPath);
+              results.push({ path: trimmedPath });
+            }
+          }
+
+          // Fetch file stats for unique paths (limit to avoid slowdown)
+          const pathsToStat = Array.from(uniquePaths).slice(0, 100);
+          const statsMap = new Map<string, { size: number; modified: Date; permissions: string }>();
+
+          try {
+            const sftp = await this.getSFTP();
+            await Promise.all(
+              pathsToStat.map(async (filePath) => {
+                try {
+                  const stats = await new Promise<{ size: number; mtime: number; mode: number }>((res, rej) => {
+                    sftp.stat(filePath, (err: Error | undefined, s: { size: number; mtime: number; mode: number }) => {
+                      if (err) rej(err);
+                      else res(s);
+                    });
+                  });
+                  const permissions = ((stats.mode & 0o400) ? 'r' : '-') +
+                    ((stats.mode & 0o200) ? 'w' : '-') +
+                    ((stats.mode & 0o100) ? 'x' : '-') +
+                    ((stats.mode & 0o040) ? 'r' : '-') +
+                    ((stats.mode & 0o020) ? 'w' : '-') +
+                    ((stats.mode & 0o010) ? 'x' : '-') +
+                    ((stats.mode & 0o004) ? 'r' : '-') +
+                    ((stats.mode & 0o002) ? 'w' : '-') +
+                    ((stats.mode & 0o001) ? 'x' : '-');
+                  statsMap.set(filePath, {
+                    size: stats.size,
+                    modified: new Date(stats.mtime * 1000),
+                    permissions,
+                  });
+                } catch {
+                  // Ignore stat errors for individual files
+                }
+              })
+            );
+          } catch {
+            // Ignore if SFTP fails - stats are optional
+          }
+
+          // Enrich results with stats
+          for (const result of results) {
+            const stats = statsMap.get(result.path);
+            if (stats) {
+              result.size = stats.size;
+              result.modified = stats.modified;
+              result.permissions = stats.permissions;
             }
           }
 
