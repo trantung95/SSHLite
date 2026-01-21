@@ -1,6 +1,6 @@
 # SSH Lite - Lightweight SSH Client for VS Code
 
-![Version](https://img.shields.io/badge/version-0.1.2-blue)
+![Version](https://img.shields.io/badge/version-0.1.3-blue)
 ![Beta](https://img.shields.io/badge/status-BETA-orange)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-1.85.0+-purple)
@@ -164,6 +164,10 @@ Contributions welcome! Please submit Pull Requests on GitHub.
 Apache-2.0 License
 
 ## Release Notes
+
+### 0.1.3 (Beta)
+- Fix extension activation issue (commands not found)
+- Fix view registration mismatch
 
 ### 0.1.2 (Beta)
 - Search feature redesign with webview panel
