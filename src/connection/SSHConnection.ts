@@ -14,6 +14,22 @@ import {
 import { expandPath } from '../utils/helpers';
 import { CredentialService, SavedCredential } from '../services/CredentialService';
 
+// Shared output channel for SSH command logging
+let sshOutputChannel: vscode.OutputChannel | null = null;
+
+function getOutputChannel(): vscode.OutputChannel {
+  if (!sshOutputChannel) {
+    sshOutputChannel = vscode.window.createOutputChannel('SSH Lite');
+  }
+  return sshOutputChannel;
+}
+
+function logSSHCommand(host: string, command: string): void {
+  const timestamp = new Date().toISOString();
+  const shortCmd = command.length > 200 ? command.substring(0, 200) + '...' : command;
+  getOutputChannel().appendLine(`[${timestamp}] [SSH ${host}] $ ${shortCmd}`);
+}
+
 /**
  * Server capabilities detected on connection
  */
@@ -183,12 +199,29 @@ export class SSHConnection implements ISSHConnection {
     if (this._credential) {
       if (this._credential.type === 'password') {
         // Get password from credential storage
-        const password = await creds.getCredentialSecret(this.id, this._credential.id);
-        if (password) {
-          authMethods.password = password;
-        } else {
-          throw new AuthenticationError('Credential password not found');
+        let password = await creds.getCredentialSecret(this.id, this._credential.id);
+        if (!password) {
+          // Password not found - prompt user to enter it
+          password = await vscode.window.showInputBox({
+            prompt: `Enter password for ${this._credential.label} (${this.host.username}@${this.host.host})`,
+            password: true,
+            ignoreFocusOut: true,
+          });
+          if (!password) {
+            throw new AuthenticationError('Password is required');
+          }
+          // Ask if user wants to save the password
+          const save = await vscode.window.showQuickPick(['Yes, remember this password', 'No, use only for this session'], {
+            placeHolder: 'Save password?',
+          });
+          if (save === 'Yes, remember this password') {
+            await creds.updateCredentialPassword(this.id, this._credential.id, password);
+          } else {
+            // Store in session only
+            creds.setSessionCredential(this.id, this._credential.id, password);
+          }
         }
+        authMethods.password = password;
       } else if (this._credential.type === 'privateKey' && this._credential.privateKeyPath) {
         // Use private key from credential
         const keyPath = expandPath(this._credential.privateKeyPath);
@@ -380,6 +413,9 @@ export class SSHConnection implements ISSHConnection {
     if (!this._client || this.state !== ConnectionState.Connected) {
       throw new ConnectionError('Not connected');
     }
+
+    // Log the command being executed
+    logSSHCommand(this.host.name, command);
 
     return new Promise((resolve, reject) => {
       this._client!.exec(command, (err, stream) => {
@@ -930,6 +966,18 @@ export class SSHConnection implements ISSHConnection {
   }
 
   /**
+   * Check if a file exists on the remote server
+   */
+  async fileExists(remotePath: string): Promise<boolean> {
+    try {
+      await this.stat(remotePath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Forward a local port to a remote port
    */
   async forwardPort(localPort: number, remoteHost: string, remotePort: number): Promise<void> {
@@ -1000,6 +1048,7 @@ export class SSHConnection implements ISSHConnection {
     options: {
       searchContent?: boolean; // Search file contents (grep) vs filenames (find)
       caseSensitive?: boolean;
+      regex?: boolean; // Use regex matching (default: false = literal string matching)
       filePattern?: string; // File glob pattern (e.g., *.ts)
       excludePattern?: string; // Exclude pattern (e.g., node_modules, *.test.ts)
       maxResults?: number;
@@ -1012,14 +1061,19 @@ export class SSHConnection implements ISSHConnection {
     const {
       searchContent = true,
       caseSensitive = false,
+      regex = false,
       filePattern = '*',
       excludePattern = '',
-      maxResults = 500,
+      maxResults = 2000,
     } = options;
 
-    // Escape special characters in pattern for shell
-    const escapedPattern = pattern.replace(/['"\\$`!]/g, '\\$&');
+    // Escape special characters in pattern for shell (double quotes)
+    // We escape: " \ $ ` ! for shell safety inside double quotes
+    const escapedPattern = pattern.replace(/["\\$`!]/g, '\\$&');
     const caseFlag = caseSensitive ? '' : '-i';
+    // Use -F for fixed string matching (literal text, not regex) unless user wants regex
+    // This allows searching for text with special chars like "audio/ogg; codecs=opus"
+    const fixedStringFlag = regex ? '' : '-F';
 
     // Build exclude flags for grep/find
     let excludeFlags = '';
@@ -1040,9 +1094,9 @@ export class SSHConnection implements ISSHConnection {
     let command: string;
     if (searchContent) {
       // Use grep for content search
-      // -r: recursive, -n: line numbers, -H: show filename
+      // -r: recursive, -n: line numbers, -H: show filename, -F: fixed string (literal, not regex)
       // --include: file pattern filter, --exclude/--exclude-dir: exclude patterns
-      command = `grep -rnH ${caseFlag} --include="${filePattern}"${excludeFlags} -m ${maxResults} "${escapedPattern}" "${searchPath}" 2>/dev/null | head -${maxResults}`;
+      command = `grep -rnH ${fixedStringFlag} ${caseFlag} --include="${filePattern}"${excludeFlags} -m ${maxResults} "${escapedPattern}" "${searchPath}" 2>/dev/null | head -${maxResults}`;
     } else {
       // Use find for filename search
       const findCaseFlag = caseSensitive ? '-name' : '-iname';
@@ -1056,6 +1110,9 @@ export class SSHConnection implements ISSHConnection {
       }
       command = `find "${searchPath}" -type f ${findCaseFlag} "*${escapedPattern}*"${findExcludes} 2>/dev/null | head -${maxResults}`;
     }
+
+    // Log the search command
+    logSSHCommand(this.host.name, command);
 
     return new Promise((resolve, reject) => {
       this._client!.exec(command, (err, stream) => {

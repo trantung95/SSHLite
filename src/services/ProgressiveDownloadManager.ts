@@ -97,6 +97,7 @@ export class ProgressiveDownloadManager {
 
   /**
    * Get local file path for a remote file
+   * Adds [SSH] prefix for easy identification in tabs
    */
   private getLocalFilePath(connectionId: string, remotePath: string): string {
     // Create subdirectory for each connection using hash
@@ -107,9 +108,10 @@ export class ProgressiveDownloadManager {
       fs.mkdirSync(connectionDir, { recursive: true });
     }
 
-    // Use original filename
+    // Use original filename with [SSH] prefix for easy identification in tabs
     const fileName = path.basename(remotePath);
-    return path.join(connectionDir, fileName);
+    const sshFileName = `[SSH] ${fileName}`;
+    return path.join(connectionDir, sshFileName);
   }
 
   /**
@@ -314,21 +316,35 @@ export class ProgressiveDownloadManager {
    * Transition from preview to editable file
    */
   private async transitionToEditableFile(localPath: string, state: DownloadState): Promise<void> {
-    // Close preview document if open
+    // Check if preview document is still open
+    let previewWasOpen = false;
+    let savedScrollPosition: { line: number; character: number } | null = null;
+
     if (state.previewUri) {
       const previewDoc = vscode.workspace.textDocuments.find(
         (d) => d.uri.toString() === state.previewUri?.toString()
       );
 
       if (previewDoc) {
-        // Find the editor showing this document and close it
+        // Find the editor showing this document
         const editors = vscode.window.visibleTextEditors.filter(
           (e) => e.document.uri.toString() === state.previewUri?.toString()
         );
 
-        for (const editor of editors) {
-          await vscode.window.showTextDocument(editor.document);
-          await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+        if (editors.length > 0) {
+          previewWasOpen = true;
+          // Save the current scroll/cursor position before closing
+          const activeEditor = editors[0];
+          savedScrollPosition = {
+            line: activeEditor.visibleRanges[0]?.start.line ?? 0,
+            character: 0,
+          };
+
+          // Close the preview editor
+          for (const editor of editors) {
+            await vscode.window.showTextDocument(editor.document);
+            await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+          }
         }
       }
 
@@ -339,15 +355,33 @@ export class ProgressiveDownloadManager {
       }
     }
 
-    // Open the full editable document
-    const document = await vscode.workspace.openTextDocument(localPath);
-    await vscode.window.showTextDocument(document, { preview: false });
+    // Only open the editable document if the preview was still open
+    // This respects the user's intent - if they closed the preview, don't re-open
+    if (previewWasOpen) {
+      const document = await vscode.workspace.openTextDocument(localPath);
+      const editor = await vscode.window.showTextDocument(document, { preview: false });
 
-    // Show brief status bar notification (auto-dismiss to avoid cluttering screen)
-    vscode.window.setStatusBarMessage(
-      `$(check) Download complete: ${path.basename(localPath)} is now editable`,
-      5000
-    );
+      // Restore scroll position to where user was viewing
+      if (savedScrollPosition && editor) {
+        const position = new vscode.Position(savedScrollPosition.line, savedScrollPosition.character);
+        editor.revealRange(
+          new vscode.Range(position, position),
+          vscode.TextEditorRevealType.AtTop
+        );
+      }
+
+      // Show brief status bar notification
+      vscode.window.setStatusBarMessage(
+        `$(check) Download complete: ${path.basename(localPath)} is now editable`,
+        5000
+      );
+    } else {
+      // Preview was closed by user - just show a notification, don't open the file
+      vscode.window.setStatusBarMessage(
+        `$(check) Download complete: ${path.basename(localPath)} (saved to temp)`,
+        5000
+      );
+    }
   }
 
   /**
@@ -416,25 +450,58 @@ export class ProgressiveDownloadManager {
 
   /**
    * Cancel download by document URI (called when tab is closed)
-   * Matches by preview URI or local path
+   * Matches by preview URI, local path, or remote path in URI
    */
   public cancelDownloadByUri(uri: vscode.Uri): boolean {
     const uriString = uri.toString();
     const fsPath = uri.fsPath;
+    const scheme = uri.scheme;
 
     // Snapshot to prevent concurrent modification during iteration
     const downloadsSnapshot = Array.from(this.downloads.entries());
 
     for (const [id, state] of downloadsSnapshot) {
-      // Check if this is the preview URI or the local path
-      const isMatch =
-        state.previewUri?.toString() === uriString ||
-        state.localPath === fsPath ||
-        (state.localPath && fsPath.includes(state.remotePath.split('/').pop() || ''));
+      // Skip already completed/cancelled/error downloads
+      if (state.status !== 'downloading' && state.status !== 'pending') {
+        continue;
+      }
 
-      if (isMatch && (state.status === 'downloading' || state.status === 'pending')) {
+      let isMatch = false;
+
+      // Check if this is the preview URI (scheme: ssh-lite-preview)
+      if (state.previewUri?.toString() === uriString) {
+        isMatch = true;
+      }
+      // Check if this is the local file path
+      else if (state.localPath && state.localPath === fsPath) {
+        isMatch = true;
+      }
+      // Check if URI contains the remote filename (for ssh-lite-preview scheme)
+      else if (scheme === 'ssh-lite-preview') {
+        const remoteName = state.remotePath.split('/').pop();
+        if (remoteName && uriString.includes(encodeURIComponent(remoteName))) {
+          isMatch = true;
+        }
+      }
+      // Check if local path contains the remote filename (for file scheme)
+      else if (scheme === 'file' && state.localPath) {
+        const remoteName = state.remotePath.split('/').pop();
+        if (remoteName && fsPath.includes(remoteName)) {
+          isMatch = true;
+        }
+      }
+
+      if (isMatch) {
         this.cancelDownload(id);
-        vscode.window.setStatusBarMessage(`$(x) Download cancelled: ${state.remotePath.split('/').pop()}`, 3000);
+        const fileName = state.remotePath.split('/').pop() || 'file';
+        vscode.window.setStatusBarMessage(`$(x) Download cancelled: ${fileName}`, 3000);
+
+        // Also stop tail following and clean up preview cache
+        if (this.contentProvider && state.previewUri) {
+          this.contentProvider.stopTailFollow(state.previewUri);
+          this.contentProvider.clearCache(state.previewUri);
+        }
+
         return true;
       }
     }

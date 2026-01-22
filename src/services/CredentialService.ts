@@ -158,6 +158,14 @@ export class CredentialService {
   }
 
   /**
+   * Store credential in session only (not persisted)
+   */
+  setSessionCredential(hostId: string, credentialId: string, secret: string): void {
+    const secretKey = this.getSecretKey(hostId, credentialId);
+    this.sessionCredentials.set(secretKey, secret);
+  }
+
+  /**
    * Delete a specific credential
    */
   async deleteCredential(hostId: string, credentialId: string): Promise<void> {

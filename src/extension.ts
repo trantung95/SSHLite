@@ -15,10 +15,10 @@ import { SavedCredential, PinnedFolder } from './services/CredentialService';
 import { IHostConfig, ConnectionState } from './types';
 import { FileTreeProvider, FileTreeItem, ConnectionTreeItem, setFileTreeExtensionPath } from './providers/FileTreeProvider';
 import { PortForwardTreeProvider, PortForwardTreeItem } from './providers/PortForwardTreeProvider';
-import { SearchResultsProvider, SearchResult, SearchResultFileItem, SearchResultMatchItem } from './providers/SearchResultsProvider';
 import { SearchPanel } from './webviews/SearchPanel';
 import { ProgressiveFileContentProvider } from './providers/ProgressiveFileContentProvider';
 import { PROGRESSIVE_PREVIEW_SCHEME } from './types/progressive';
+import { formatFileSize, formatRelativeTime } from './utils/helpers';
 
 let outputChannel: vscode.OutputChannel;
 
@@ -82,7 +82,6 @@ export function activate(context: vscode.ExtensionContext): void {
   const hostTreeProvider = new HostTreeProvider();
   const fileTreeProvider = new FileTreeProvider();
   const portForwardTreeProvider = new PortForwardTreeProvider();
-  const searchResultsProvider = new SearchResultsProvider();
 
   // Initialize progressive download system for large files
   const progressiveContentProvider = ProgressiveFileContentProvider.getInstance();
@@ -118,10 +117,75 @@ export function activate(context: vscode.ExtensionContext): void {
     showCollapseAll: false,
   });
 
-  const searchResultsTreeView = vscode.window.createTreeView('sshLite.searchResults', {
-    treeDataProvider: searchResultsProvider,
-    showCollapseAll: true,
-  });
+  // Track orphaned SSH files from previous session (read-only until reconnected)
+  // Maps local file path -> { remotePath, hostInfo (parsed from path) }
+  const orphanedSshFiles = new Map<string, { remotePath: string; hostHash: string }>();
+
+  // Check if a document is an orphaned SSH file
+  const isOrphanedSshFile = (localPath: string): boolean => {
+    return orphanedSshFiles.has(localPath);
+  };
+
+  // Parse host info from SSH temp file path
+  // Path format: {tempDir}/{hostHash}/[SSH] filename
+  const parseHostInfoFromPath = (filePath: string): { hostHash: string; fileName: string } | null => {
+    const sshTempDir = fileService.getTempDir();
+    if (!filePath.includes(sshTempDir) && !filePath.includes('ssh-lite')) {
+      return null;
+    }
+
+    // Extract the hash directory and filename
+    const pathParts = filePath.split(/[/\\]/);
+    const sshIndex = pathParts.findIndex(p => p.includes('[SSH]'));
+    if (sshIndex > 0) {
+      const hostHash = pathParts[sshIndex - 1];
+      const fileName = pathParts[sshIndex].replace('[SSH] ', '');
+      return { hostHash, fileName };
+    }
+    return null;
+  };
+
+  // Detect orphaned SSH files on startup
+  const detectOrphanedSshFiles = () => {
+    const sshTempDir = fileService.getTempDir();
+    const openDocs = vscode.workspace.textDocuments;
+
+    for (const doc of openDocs) {
+      // Check if this is an SSH file
+      const isInSshTempDir = doc.uri.fsPath.includes(sshTempDir) ||
+                             doc.uri.fsPath.includes('ssh-lite');
+      const hasSshPrefix = doc.uri.fsPath.includes('[SSH]');
+
+      if ((isInSshTempDir || hasSshPrefix) && !doc.isUntitled) {
+        // Check if we have an active connection for it
+        const mapping = fileService.getFileMapping(doc.uri.fsPath);
+        if (!mapping) {
+          // No mapping = orphaned file from previous session
+          const hostInfo = parseHostInfoFromPath(doc.uri.fsPath);
+          if (hostInfo) {
+            orphanedSshFiles.set(doc.uri.fsPath, {
+              remotePath: '', // We don't know the remote path yet
+              hostHash: hostInfo.hostHash,
+            });
+            log(`Detected orphaned SSH file: ${doc.uri.fsPath} (hostHash: ${hostInfo.hostHash})`);
+          }
+        }
+      }
+    }
+
+    if (orphanedSshFiles.size > 0) {
+      log(`Found ${orphanedSshFiles.size} orphaned SSH file(s) from previous session`);
+      vscode.window.setStatusBarMessage(
+        `$(warning) ${orphanedSshFiles.size} SSH file(s) are read-only. Click "Reconnect" to enable editing.`,
+        10000
+      );
+      // Update context for menu visibility
+      vscode.commands.executeCommand('setContext', 'sshLite.hasOrphanedFiles', true);
+    }
+  };
+
+  // Run detection after a short delay to let VS Code finish restoring tabs
+  setTimeout(detectOrphanedSshFiles, 1000);
 
   // Create preload status bar item
   const preloadStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 50);
@@ -129,6 +193,62 @@ export function activate(context: vscode.ExtensionContext): void {
   preloadStatusBar.command = 'sshLite.cancelPreloading';
   preloadStatusBar.tooltip = 'Click to cancel preloading';
   context.subscriptions.push(preloadStatusBar);
+
+  // Create SSH file info status bar item (shows when SSH file is active)
+  const sshFileInfoStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+  sshFileInfoStatusBar.name = 'SSH Lite File Info';
+  context.subscriptions.push(sshFileInfoStatusBar);
+
+  // Update SSH file info when active editor changes
+  const updateSshFileInfo = () => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      sshFileInfoStatusBar.hide();
+      vscode.commands.executeCommand('setContext', 'sshLite.isConnectedFile', false);
+      return;
+    }
+
+    const filePath = editor.document.uri.fsPath;
+    const mapping = fileService.getFileMapping(filePath);
+
+    // Set context for showing/hiding reconnect button
+    const isConnected = !!mapping;
+    vscode.commands.executeCommand('setContext', 'sshLite.isConnectedFile', isConnected);
+
+    if (mapping) {
+      // Handle cases where remoteFile or connection might be undefined (preloaded files)
+      if (mapping.remoteFile && mapping.connection) {
+        const sizeStr = formatFileSize(mapping.remoteFile.size);
+        const relativeTime = formatRelativeTime(mapping.remoteFile.modifiedTime);
+        const hostName = mapping.connection.host.name;
+
+        sshFileInfoStatusBar.text = `$(remote) ${hostName}`;
+        sshFileInfoStatusBar.tooltip = [
+          `Remote File: ${mapping.remoteFile.path}`,
+          `Host: ${hostName}`,
+          `Size: ${sizeStr}`,
+          `Modified: ${relativeTime}`,
+          `Connection: ${mapping.connection.host.host}:${mapping.connection.host.port}`,
+        ].join('\n');
+        sshFileInfoStatusBar.show();
+      } else {
+        // Fallback for preloaded files without full info
+        sshFileInfoStatusBar.text = `$(remote) SSH File`;
+        sshFileInfoStatusBar.tooltip = `Remote File: ${mapping.remotePath}`;
+        sshFileInfoStatusBar.show();
+      }
+    } else {
+      sshFileInfoStatusBar.hide();
+    }
+  };
+
+  // Listen for active editor changes
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveTextEditor(updateSshFileInfo)
+  );
+
+  // Initial update
+  updateSshFileInfo();
 
   // Track preload progress with periodic updates
   let preloadProgressInterval: ReturnType<typeof setInterval> | null = null;
@@ -215,7 +335,7 @@ export function activate(context: vscode.ExtensionContext): void {
           hostConfig = selected.host;
         }
 
-        log(`Connecting to ${hostConfig.name}...`);
+        logCommand('connect', `${hostConfig.username}@${hostConfig.host}:${hostConfig.port}`);
         await vscode.window.withProgress(
           {
             location: vscode.ProgressLocation.Notification,
@@ -227,12 +347,12 @@ export function activate(context: vscode.ExtensionContext): void {
           }
         );
 
-        log(`Connected to ${hostConfig.name}`);
+        logResult('connect', true, `Connected to ${hostConfig.name}`);
         // Auto-dismiss connection success (non-blocking UX)
         vscode.window.setStatusBarMessage(`$(check) Connected to ${hostConfig.name}`, 3000);
       } catch (error) {
-        log(`Connection failed: ${(error as Error).message}`);
         const errMsg = (error as Error).message;
+        logResult('connect', false, errMsg);
         // Provide actionable suggestions based on error type
         let suggestion = '';
         if (errMsg.includes('ECONNREFUSED') || errMsg.includes('ETIMEDOUT')) {
@@ -261,6 +381,8 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
+      logCommand('disconnect', connection.host.name);
+
       // Clean up resources
       fileService.cleanupConnection(connection.id);
       terminalService.closeTerminalsForConnection(connection.id);
@@ -268,15 +390,176 @@ export function activate(context: vscode.ExtensionContext): void {
       fileTreeProvider.clearCache(connection.id);
 
       await connectionManager.disconnect(connection.id);
-      log(`Disconnected from ${connection.host.name}`);
+      logResult('disconnect', true, connection.host.name);
       // Auto-dismiss disconnect success (non-blocking UX)
       vscode.window.setStatusBarMessage(`$(check) Disconnected from ${connection.host.name}`, 3000);
     }),
 
+    // Reconnect orphaned SSH file - connects to server and enables editing
+    vscode.commands.registerCommand('sshLite.reconnectOrphanedFile', async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) {
+        vscode.window.showWarningMessage('No active editor');
+        return;
+      }
+
+      const localPath = editor.document.uri.fsPath;
+      const orphanInfo = orphanedSshFiles.get(localPath);
+
+      if (!orphanInfo) {
+        // Check if it's a regular SSH file that just needs the mapping restored
+        const hostInfo = parseHostInfoFromPath(localPath);
+        if (!hostInfo) {
+          vscode.window.showWarningMessage('This is not an SSH file');
+          return;
+        }
+      }
+
+      // Get host hash from path
+      const hostInfo = parseHostInfoFromPath(localPath);
+      if (!hostInfo) {
+        vscode.window.showWarningMessage('Cannot determine server from file path');
+        return;
+      }
+
+      // Find matching host by comparing hashes
+      const crypto = await import('crypto');
+      const allHosts = hostService.getAllHosts();
+      let matchingHost: IHostConfig | undefined;
+
+      for (const host of allHosts) {
+        const hostHash = crypto.createHash('md5').update(host.id).digest('hex').substring(0, 8);
+        if (hostHash === hostInfo.hostHash) {
+          matchingHost = host;
+          break;
+        }
+      }
+
+      if (!matchingHost) {
+        // Show quick pick to let user select the host manually
+        const selected = await vscode.window.showQuickPick(
+          allHosts.map((h) => ({
+            label: h.name,
+            description: `${h.username}@${h.host}:${h.port}`,
+            host: h,
+          })),
+          {
+            placeHolder: 'Select the server this file belongs to',
+            ignoreFocusOut: true,
+          }
+        );
+
+        if (!selected) {
+          return;
+        }
+        matchingHost = selected.host;
+      }
+
+      logCommand('reconnectOrphanedFile', `${matchingHost.name} for ${hostInfo.fileName}`);
+
+      try {
+        // Check if already connected
+        let connection = connectionManager.getConnection(matchingHost.id);
+
+        if (!connection) {
+          // Need to connect first
+          await vscode.window.withProgress(
+            {
+              location: vscode.ProgressLocation.Notification,
+              title: `Connecting to ${matchingHost.name}...`,
+              cancellable: false,
+            },
+            async () => {
+              await connectionManager.connect(matchingHost!);
+            }
+          );
+          connection = connectionManager.getConnection(matchingHost.id);
+        }
+
+        if (!connection) {
+          throw new Error('Failed to establish connection');
+        }
+
+        // Try to get remote path from persisted metadata
+        const metadata = fileService.getRemotePathFromMetadata(localPath);
+        let remotePath: string | undefined;
+
+        if (metadata?.remotePath) {
+          // Use the stored remote path
+          remotePath = metadata.remotePath;
+        } else {
+          // Fallback: ask user to provide the remote path
+          const fileName = hostInfo.fileName;
+          remotePath = await vscode.window.showInputBox({
+            prompt: `Enter the remote path for "${fileName}"`,
+            placeHolder: '/path/to/file',
+            value: `~/${fileName}`, // Default guess
+            ignoreFocusOut: true,
+          });
+        }
+
+        if (!remotePath) {
+          return;
+        }
+
+        // Verify the file exists on server
+        const exists = await connection.fileExists(remotePath);
+        if (!exists) {
+          const action = await vscode.window.showWarningMessage(
+            `File not found on server: ${remotePath}`,
+            'Try Again',
+            'Cancel'
+          );
+          if (action === 'Try Again') {
+            await vscode.commands.executeCommand('sshLite.reconnectOrphanedFile');
+          }
+          return;
+        }
+
+        // Register the file mapping so it becomes editable
+        const remoteFile = await connection.stat(remotePath);
+        await fileService.registerExistingFile(localPath, connection, remoteFile);
+
+        // Remove from orphaned list
+        orphanedSshFiles.delete(localPath);
+        if (orphanedSshFiles.size === 0) {
+          vscode.commands.executeCommand('setContext', 'sshLite.hasOrphanedFiles', false);
+        }
+
+        // Reveal in file tree - navigate to parent folder and highlight the file
+        const treeItem = await fileTreeProvider.revealFile(connection.id, remotePath);
+        if (treeItem) {
+          // Wait a bit for tree to render, then reveal with focus
+          setTimeout(async () => {
+            try {
+              await fileTreeView.reveal(treeItem, { select: true, focus: true, expand: true });
+            } catch {
+              // Silently ignore reveal errors (item might not be rendered yet)
+            }
+          }, 300);
+        }
+
+        logResult('reconnectOrphanedFile', true, `${matchingHost.name}: ${remotePath}`);
+        vscode.window.setStatusBarMessage(
+          `$(check) Reconnected! File is now editable: ${remotePath}`,
+          5000
+        );
+
+        // Refresh the editor to update any read-only decorations
+        await vscode.commands.executeCommand('workbench.action.files.revert');
+
+      } catch (error) {
+        logResult('reconnectOrphanedFile', false, (error as Error).message);
+        vscode.window.showErrorMessage(`Failed to reconnect: ${(error as Error).message}`);
+      }
+    }),
+
     vscode.commands.registerCommand('sshLite.addHost', async () => {
+      logCommand('addHost');
       const host = await hostService.promptAddHost();
       if (host) {
         hostTreeProvider.refresh();
+        logResult('addHost', true, host.name);
         vscode.window.setStatusBarMessage(`$(check) Added host: ${host.name}`, 3000);
       }
     }),
@@ -355,10 +638,12 @@ export function activate(context: vscode.ExtensionContext): void {
 
       // Verify path exists
       try {
+        logCommand('goToPath', targetPath);
         await connection.listFiles(targetPath);
         fileTreeProvider.setCurrentPath(connection.id, targetPath);
-        log(`Navigated to ${targetPath}`);
+        logResult('goToPath', true, targetPath);
       } catch (error) {
+        logResult('goToPath', false, (error as Error).message);
         vscode.window.showErrorMessage(`Cannot access path: ${(error as Error).message}`);
       }
     }),
@@ -428,7 +713,13 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
-      await fileService.openRemoteFile(item.connection, item.file);
+      logCommand('openFile', item.file.path);
+      try {
+        await fileService.openRemoteFile(item.connection, item.file);
+        logResult('openFile', true, item.file.name);
+      } catch (error) {
+        logResult('openFile', false, (error as Error).message);
+      }
     }),
 
     vscode.commands.registerCommand('sshLite.downloadFile', async (item?: FileTreeItem) => {
@@ -436,13 +727,18 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
-      if (item.file.isDirectory) {
-        await fileService.downloadFolder(item.connection, item.file);
-      } else {
-        await fileService.downloadFileTo(item.connection, item.file);
+      logCommand('downloadFile', item.file.path);
+      try {
+        if (item.file.isDirectory) {
+          await fileService.downloadFolder(item.connection, item.file);
+        } else {
+          await fileService.downloadFileTo(item.connection, item.file);
+        }
+        logResult('downloadFile', true, item.file.name);
+        fileTreeProvider.refresh();
+      } catch (error) {
+        logResult('downloadFile', false, (error as Error).message);
       }
-
-      fileTreeProvider.refresh();
     }),
 
     vscode.commands.registerCommand('sshLite.uploadFile', async (item?: FileTreeItem | ConnectionTreeItem) => {
@@ -473,8 +769,14 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
-      await fileService.uploadFileTo(connection, remotePath);
-      fileTreeProvider.refresh();
+      logCommand('uploadFile', remotePath);
+      try {
+        await fileService.uploadFileTo(connection, remotePath);
+        logResult('uploadFile', true, remotePath);
+        fileTreeProvider.refresh();
+      } catch (error) {
+        logResult('uploadFile', false, (error as Error).message);
+      }
     }),
 
     vscode.commands.registerCommand('sshLite.deleteRemote', async (item?: FileTreeItem) => {
@@ -482,9 +784,13 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
+      logCommand('deleteRemote', item.file.path);
       const deleted = await fileService.deleteRemote(item.connection, item.file);
       if (deleted) {
+        logResult('deleteRemote', true, item.file.name);
         fileTreeProvider.refresh();
+      } else {
+        logResult('deleteRemote', false, 'Cancelled or failed');
       }
     }),
 
@@ -515,9 +821,13 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
+      logCommand('createFolder', parentPath);
       const created = await fileService.createFolder(connection, parentPath);
       if (created) {
+        logResult('createFolder', true, parentPath);
         fileTreeProvider.refresh();
+      } else {
+        logResult('createFolder', false, 'Cancelled or failed');
       }
     }),
 
@@ -527,10 +837,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Filter files in tree view
     vscode.commands.registerCommand('sshLite.filterFiles', async () => {
+      logCommand('filterFiles');
       const currentFilter = fileTreeProvider.getFilter();
       const input = await vscode.window.showInputBox({
-        prompt: 'Enter filter pattern (e.g., *.ts, *.json, config*)',
-        placeHolder: '*.ts, *.json, config*, etc.',
+        prompt: 'Enter filter pattern (plain text or glob: *.ts, config*)',
+        placeHolder: 'Plain text or *.ts, *.json, config*, etc.',
         value: currentFilter,
         title: 'Filter Files',
       });
@@ -538,8 +849,10 @@ export function activate(context: vscode.ExtensionContext): void {
       if (input !== undefined) {
         fileTreeProvider.setFilter(input);
         if (input) {
+          logResult('filterFiles', true, `Pattern: "${input}"`);
           vscode.window.setStatusBarMessage(`$(filter) Filter: ${input}`, 3000);
         } else {
+          logResult('filterFiles', true, 'Filter cleared');
           vscode.window.setStatusBarMessage('$(filter) Filter cleared', 2000);
         }
       }
@@ -547,7 +860,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Clear filter
     vscode.commands.registerCommand('sshLite.clearFilter', () => {
+      logCommand('clearFilter');
       fileTreeProvider.clearFilter();
+      logResult('clearFilter', true);
       vscode.window.setStatusBarMessage('$(filter) Filter cleared', 2000);
     }),
 
@@ -565,9 +880,39 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
+      logCommand('searchServerForFilter', `"${currentFilter}"`);
       vscode.window.setStatusBarMessage(`$(search~spin) Searching server for "${currentFilter}"...`, 30000);
-      await fileTreeProvider.searchServerForFilter();
-      vscode.window.setStatusBarMessage(`$(search) Server search complete`, 3000);
+      const result = await fileTreeProvider.searchServerForFilter();
+      logResult('searchServerForFilter', true, `Found ${result.count} files${result.hitLimit ? ' (limit reached)' : ''}`);
+
+      if (result.hitLimit) {
+        const action = await vscode.window.showWarningMessage(
+          `Found ${result.count} files (limit ${result.limit} reached). Results may be incomplete.`,
+          'Increase Limit',
+          'OK'
+        );
+        if (action === 'Increase Limit') {
+          const config = vscode.workspace.getConfiguration('sshLite');
+          const newLimit = await vscode.window.showInputBox({
+            prompt: `Enter new filter limit (current: ${result.limit})`,
+            value: String(result.limit * 2),
+            validateInput: (value) => {
+              const num = parseInt(value, 10);
+              if (isNaN(num) || num < 100 || num > 10000) {
+                return 'Please enter a number between 100 and 10000';
+              }
+              return null;
+            },
+          });
+          if (newLimit) {
+            const limit = parseInt(newLimit, 10);
+            await config.update('filterMaxResults', limit, vscode.ConfigurationTarget.Global);
+            vscode.window.showInformationMessage(`Filter limit increased to ${limit}. Re-run the filter to see more results.`);
+          }
+        }
+      } else {
+        vscode.window.setStatusBarMessage(`$(search) Found ${result.count} files`, 3000);
+      }
     }),
 
     // Show search panel
@@ -653,9 +998,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       });
 
-      // Clear existing scopes and add the selected one
-      searchPanel.clearScopes();
-
+      // Add the selected scope (don't clear existing scopes to allow multiple)
       if (item instanceof ConnectionTreeItem) {
         const searchPath = fileTreeProvider.getCurrentPath(item.connection.id);
         searchPanel.addScope(searchPath, item.connection);
@@ -665,10 +1008,12 @@ export function activate(context: vscode.ExtensionContext): void {
           : item.file.path.substring(0, item.file.path.lastIndexOf('/')) || '/';
         searchPanel.addScope(searchPath, item.connection);
       } else {
-        // No item - add all connections' current paths
-        const connections = connectionManager.getAllConnections();
-        for (const conn of connections) {
-          searchPanel.addScope(fileTreeProvider.getCurrentPath(conn.id), conn);
+        // No item - add all connections' current paths (only if no scopes exist)
+        if (!searchPanel.hasScopes()) {
+          const connections = connectionManager.getAllConnections();
+          for (const conn of connections) {
+            searchPanel.addScope(fileTreeProvider.getCurrentPath(conn.id), conn);
+          }
         }
       }
 
@@ -769,76 +1114,6 @@ export function activate(context: vscode.ExtensionContext): void {
       terminal.sendText(grepCmd);
 
       log(`Search in file: ${grepCmd}`);
-    }),
-
-    // Open search result
-    vscode.commands.registerCommand('sshLite.openSearchResult', async (result: SearchResult) => {
-      if (!result) {
-        return;
-      }
-
-      // Create a remote file object
-      const remoteFile = {
-        name: result.path.split('/').pop() || result.path,
-        path: result.path,
-        isDirectory: false,
-        size: 0,
-        modifiedTime: Date.now(),
-        connectionId: result.connection.id,
-      };
-
-      // Open the file
-      await fileService.openRemoteFile(result.connection, remoteFile);
-
-      // If we have a line number, go to that line
-      if (result.line) {
-        // Wait a bit for the file to open
-        setTimeout(async () => {
-          const editor = vscode.window.activeTextEditor;
-          if (editor) {
-            const position = new vscode.Position(result.line! - 1, 0);
-            editor.selection = new vscode.Selection(position, position);
-            editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
-          }
-        }, 300);
-      }
-    }),
-
-    // Clear search results
-    vscode.commands.registerCommand('sshLite.clearSearchResults', () => {
-      searchResultsProvider.clear();
-    }),
-
-    // Cycle search results sort order
-    vscode.commands.registerCommand('sshLite.cycleSearchSort', () => {
-      searchResultsProvider.cycleSort();
-    }),
-
-    // Reveal search result in file tree
-    vscode.commands.registerCommand('sshLite.revealSearchResultInTree', async (item?: SearchResultFileItem | SearchResultMatchItem) => {
-      if (!item) {
-        return;
-      }
-
-      let connectionId: string;
-      let remotePath: string;
-
-      if (item instanceof SearchResultFileItem) {
-        connectionId = item.connection.id;
-        remotePath = item.filePath;
-      } else if (item instanceof SearchResultMatchItem) {
-        connectionId = item.result.connection.id;
-        remotePath = item.result.path;
-      } else {
-        return;
-      }
-
-      // Navigate to parent folder and reveal the file
-      const treeItem = await fileTreeProvider.revealFile(connectionId, remotePath);
-      if (treeItem) {
-        await fileTreeView.reveal(treeItem, { select: true, focus: true, expand: true });
-        vscode.window.setStatusBarMessage(`$(go-to-file) Revealed ${treeItem.file.name} in tree`, 3000);
-      }
     }),
 
     // Cancel preloading operations
@@ -944,9 +1219,11 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
+      logCommand('openTerminalHere', targetPath);
       const terminal = await terminalService.createTerminal(connection);
       if (terminal) {
         terminal.sendText(`cd "${targetPath}"`);
+        logResult('openTerminalHere', true, `cd "${targetPath}"`);
       }
     }),
 
@@ -989,11 +1266,14 @@ export function activate(context: vscode.ExtensionContext): void {
         connection = selected.connection;
       }
 
+      logCommand('openTerminal', connection.host.name);
       await terminalService.createTerminal(connection);
+      logResult('openTerminal', true, connection.host.name);
     }),
 
     // Port forward commands
     vscode.commands.registerCommand('sshLite.forwardPort', async () => {
+      logCommand('forwardPort');
       await portForwardService.promptForwardPort();
     }),
 
@@ -1002,7 +1282,9 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
+      logCommand('stopForward', `${item.forward.localPort} -> ${item.forward.remoteHost}:${item.forward.remotePort}`);
       await portForwardService.stopForward(item.forward);
+      logResult('stopForward', true);
     }),
 
     // Audit log commands
@@ -1729,7 +2011,10 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.workspace.onDidCloseTextDocument((document) => {
       // Check if there's an active download for this document and cancel it
-      progressiveDownloadManager.cancelDownloadByUri(document.uri);
+      const cancelled = progressiveDownloadManager.cancelDownloadByUri(document.uri);
+      if (cancelled) {
+        logResult('cancelDownload', true, `Tab closed: ${document.uri.fsPath || document.uri.toString()}`);
+      }
     })
   );
 
@@ -1985,4 +2270,21 @@ export function deactivate(): void {
 function log(message: string): void {
   const timestamp = new Date().toISOString();
   outputChannel.appendLine(`[${timestamp}] ${message}`);
+}
+
+/**
+ * Log command execution with result
+ */
+function logCommand(command: string, details?: string): void {
+  const msg = details ? `[CMD] ${command}: ${details}` : `[CMD] ${command}`;
+  log(msg);
+}
+
+/**
+ * Log command result (success or error)
+ */
+function logResult(command: string, success: boolean, details?: string): void {
+  const status = success ? '✓' : '✗';
+  const msg = details ? `[${status}] ${command}: ${details}` : `[${status}] ${command}`;
+  log(msg);
 }

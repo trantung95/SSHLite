@@ -35,6 +35,7 @@ type WebviewMessage =
   | { type: 'removeScope'; index: number }
   | { type: 'clearScopes' }
   | { type: 'openResult'; result: WebviewSearchResult; line?: number }
+  | { type: 'increaseLimit' }
   | { type: 'ready' };
 
 /**
@@ -165,6 +166,13 @@ export class SearchPanel {
   }
 
   /**
+   * Check if any scopes exist
+   */
+  public hasScopes(): boolean {
+    return this.searchScopes.length > 0;
+  }
+
+  /**
    * Focus search input in webview
    */
   public focusSearchInput(): void {
@@ -210,9 +218,39 @@ export class SearchPanel {
         }
         break;
 
+      case 'increaseLimit':
+        await this.increaseSearchLimit();
+        break;
+
       case 'ready':
         this.sendState();
         break;
+    }
+  }
+
+  /**
+   * Increase search limit setting
+   */
+  private async increaseSearchLimit(): Promise<void> {
+    const config = vscode.workspace.getConfiguration('sshLite');
+    const currentLimit = config.get<number>('searchMaxResults', 2000);
+
+    const newLimit = await vscode.window.showInputBox({
+      prompt: `Enter new search result limit (current: ${currentLimit})`,
+      value: String(currentLimit * 2),
+      validateInput: (value) => {
+        const num = parseInt(value, 10);
+        if (isNaN(num) || num < 100 || num > 50000) {
+          return 'Please enter a number between 100 and 50000';
+        }
+        return null;
+      },
+    });
+
+    if (newLimit) {
+      const limit = parseInt(newLimit, 10);
+      await config.update('searchMaxResults', limit, vscode.ConfigurationTarget.Global);
+      vscode.window.showInformationMessage(`Search limit increased to ${limit}. Re-run your search to see more results.`);
     }
   }
 
@@ -235,6 +273,10 @@ export class SearchPanel {
     this.lastSearchQuery = query;
     this.postMessage({ type: 'searching', query });
 
+    // Get configurable limit from settings
+    const config = vscode.workspace.getConfiguration('sshLite');
+    const maxResults = config.get<number>('searchMaxResults', 2000);
+
     try {
       // Deduplicate scopes (same connection+path)
       const uniqueScopes = new Map<string, SearchScope>();
@@ -250,9 +292,10 @@ export class SearchPanel {
           const results = await scope.connection.searchFiles(scope.path, query, {
             searchContent: true,
             caseSensitive,
+            regex,
             filePattern: includePattern || '*',
             excludePattern: excludePattern || undefined,
-            maxResults: 500,
+            maxResults,
           });
 
           return results.map((r) => ({
@@ -278,7 +321,12 @@ export class SearchPanel {
         return true;
       });
 
-      this.postMessage({ type: 'results', results: uniqueResults, query });
+      // Check if we hit the limit
+      const hitLimit = uniqueResults.length >= maxResults;
+      this.postMessage({ type: 'results', results: uniqueResults, query, hitLimit, limit: maxResults });
+
+      // Log search results
+      console.log(`Search completed: ${uniqueResults.length} results for "${query}"${hitLimit ? ` (LIMIT ${maxResults} REACHED)` : ''}`);
     } catch (error) {
       console.error('Search error:', error);
       this.postMessage({ type: 'error', message: (error as Error).message });
@@ -327,6 +375,19 @@ export class SearchPanel {
       flex-direction: column;
     }
 
+    .main-container {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      margin: 0;
+    }
+
+    .controls-section {
+      max-width: 600px;
+      border-bottom: 1px solid var(--vscode-panel-border);
+    }
+
     .search-container {
       padding: 8px;
       border-bottom: 1px solid var(--vscode-panel-border);
@@ -345,6 +406,7 @@ export class SearchPanel {
       background: var(--vscode-input-background);
       border: 1px solid var(--vscode-input-border);
       border-radius: 2px;
+      max-width: 400px;
     }
 
     .search-input-wrapper:focus-within {
@@ -359,6 +421,7 @@ export class SearchPanel {
       padding: 4px 8px;
       font-size: 13px;
       outline: none;
+      min-width: 0;
     }
 
     .search-input::placeholder {
@@ -374,6 +437,7 @@ export class SearchPanel {
       font-size: 12px;
       border-radius: 2px;
       opacity: 0.6;
+      flex-shrink: 0;
     }
 
     .toggle-btn:hover {
@@ -387,6 +451,41 @@ export class SearchPanel {
       opacity: 1;
     }
 
+    .pattern-section {
+      margin-top: 4px;
+    }
+
+    .pattern-toggle {
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+      margin-bottom: 4px;
+      user-select: none;
+    }
+
+    .pattern-toggle:hover {
+      color: var(--vscode-foreground);
+    }
+
+    .pattern-toggle .chevron {
+      margin-right: 4px;
+      transition: transform 0.1s;
+    }
+
+    .pattern-toggle .chevron.collapsed {
+      transform: rotate(-90deg);
+    }
+
+    .pattern-fields {
+      display: none;
+    }
+
+    .pattern-fields.expanded {
+      display: block;
+    }
+
     .pattern-row {
       display: flex;
       align-items: center;
@@ -396,7 +495,7 @@ export class SearchPanel {
     .pattern-label {
       font-size: 11px;
       color: var(--vscode-descriptionForeground);
-      width: 100px;
+      width: 90px;
       flex-shrink: 0;
     }
 
@@ -409,6 +508,7 @@ export class SearchPanel {
       padding: 3px 6px;
       font-size: 12px;
       outline: none;
+      max-width: 300px;
     }
 
     .pattern-input:focus {
@@ -617,40 +717,88 @@ export class SearchPanel {
       background: var(--vscode-editor-findMatchHighlightBackground);
       border-radius: 2px;
     }
+
+    .search-btn {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border: none;
+      padding: 6px 12px;
+      margin-left: 6px;
+      border-radius: 2px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .search-btn:hover {
+      background: var(--vscode-button-hoverBackground);
+    }
+
+    .search-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .limit-warning {
+      color: var(--vscode-editorWarning-foreground, #cca700);
+      font-size: 11px;
+    }
+
+    .limit-warning a {
+      color: var(--vscode-textLink-foreground);
+      text-decoration: underline;
+      cursor: pointer;
+    }
+
+    .limit-warning a:hover {
+      text-decoration: none;
+    }
   </style>
 </head>
 <body>
-  <div class="search-container">
-    <div class="search-row">
-      <div class="search-input-wrapper">
-        <input type="text" id="searchInput" class="search-input" placeholder="Search" autofocus>
-        <button id="caseSensitiveBtn" class="toggle-btn" title="Match Case">Aa</button>
-        <button id="regexBtn" class="toggle-btn" title="Use Regular Expression">.*</button>
+  <div class="main-container">
+    <div class="controls-section">
+      <div class="search-container">
+        <div class="search-row">
+          <div class="search-input-wrapper">
+            <input type="text" id="searchInput" class="search-input" placeholder="Search" autofocus>
+            <button id="caseSensitiveBtn" class="toggle-btn" title="Match Case">Aa</button>
+            <button id="regexBtn" class="toggle-btn" title="Use Regular Expression">.*</button>
+          </div>
+          <button id="searchBtn" class="search-btn" title="Search (Enter)">&#128269;</button>
+        </div>
+        <div class="pattern-section">
+          <div class="pattern-toggle" id="patternToggle">
+            <span class="chevron collapsed" id="patternChevron">▼</span>
+            <span>files to include/exclude</span>
+          </div>
+          <div class="pattern-fields" id="patternFields">
+            <div class="pattern-row">
+              <span class="pattern-label">to include</span>
+              <input type="text" id="includeInput" class="pattern-input" placeholder="e.g. *.ts, src/**">
+            </div>
+            <div class="pattern-row">
+              <span class="pattern-label">to exclude</span>
+              <input type="text" id="excludeInput" class="pattern-input" placeholder="e.g. node_modules, *.test.ts">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="scopes-section">
+        <div class="scopes-header">
+          <span class="scopes-title">Search In</span>
+          <button id="clearScopesBtn" class="clear-btn" title="Clear all scopes">Clear</button>
+        </div>
+        <div id="scopeList" class="scope-list">
+          <div class="no-scopes">No folders selected. Click search icon on a folder to add.</div>
+        </div>
       </div>
     </div>
-    <div class="pattern-row">
-      <span class="pattern-label">files to include</span>
-      <input type="text" id="includeInput" class="pattern-input" placeholder="e.g. *.ts, src/**">
-    </div>
-    <div class="pattern-row">
-      <span class="pattern-label">files to exclude</span>
-      <input type="text" id="excludeInput" class="pattern-input" placeholder="e.g. node_modules, *.test.ts">
-    </div>
-  </div>
 
-  <div class="scopes-section">
-    <div class="scopes-header">
-      <span class="scopes-title">Search In</span>
-      <button id="clearScopesBtn" class="clear-btn" title="Clear all scopes">Clear</button>
+    <div class="results-section">
+      <div id="resultsHeader" class="results-header" style="display: none;"></div>
+      <div id="resultsContainer"></div>
     </div>
-    <div id="scopeList" class="scope-list">
-      <div class="no-scopes">No folders selected. Click search icon on a folder to add.</div>
-    </div>
-  </div>
-
-  <div class="results-section">
-    <div id="resultsHeader" class="results-header" style="display: none;"></div>
-    <div id="resultsContainer"></div>
   </div>
 
   <script>
@@ -662,7 +810,6 @@ export class SearchPanel {
     let currentQuery = '';
     let caseSensitive = false;
     let useRegex = false;
-    let searchTimeout = null;
     let expandedFiles = new Set();
 
     // Elements
@@ -671,29 +818,47 @@ export class SearchPanel {
     const excludeInput = document.getElementById('excludeInput');
     const caseSensitiveBtn = document.getElementById('caseSensitiveBtn');
     const regexBtn = document.getElementById('regexBtn');
+    const searchBtn = document.getElementById('searchBtn');
     const clearScopesBtn = document.getElementById('clearScopesBtn');
     const scopeList = document.getElementById('scopeList');
     const resultsHeader = document.getElementById('resultsHeader');
     const resultsContainer = document.getElementById('resultsContainer');
+    const patternToggle = document.getElementById('patternToggle');
+    const patternChevron = document.getElementById('patternChevron');
+    const patternFields = document.getElementById('patternFields');
 
     // Initialize
     function init() {
-      // Search input with debounce
-      searchInput.addEventListener('input', () => {
-        clearTimeout(searchTimeout);
-        searchTimeout = setTimeout(performSearch, 300);
-      });
-
+      // Search only on Enter key press
       searchInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
-          clearTimeout(searchTimeout);
           performSearch();
         }
       });
 
-      // Pattern inputs
-      includeInput.addEventListener('change', performSearch);
-      excludeInput.addEventListener('change', performSearch);
+      // Search button click
+      searchBtn.addEventListener('click', () => {
+        performSearch();
+      });
+
+      // Pattern toggle (collapsible)
+      patternToggle.addEventListener('click', () => {
+        const isExpanded = patternFields.classList.contains('expanded');
+        patternFields.classList.toggle('expanded', !isExpanded);
+        patternChevron.classList.toggle('collapsed', isExpanded);
+      });
+
+      // Pattern inputs - trigger search on Enter only
+      includeInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          performSearch();
+        }
+      });
+      excludeInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          performSearch();
+        }
+      });
 
       // Toggle buttons
       caseSensitiveBtn.addEventListener('click', () => {
@@ -760,7 +925,7 @@ export class SearchPanel {
     }
 
     // Render results
-    function renderResults() {
+    function renderResults(hitLimit = false, limit = 2000) {
       if (results.length === 0) {
         showNoResults();
         return;
@@ -788,7 +953,21 @@ export class SearchPanel {
       const matchCount = results.length;
 
       resultsHeader.style.display = 'block';
-      resultsHeader.textContent = \`\${matchCount} result\${matchCount !== 1 ? 's' : ''} in \${fileCount} file\${fileCount !== 1 ? 's' : ''}\`;
+      if (hitLimit) {
+        resultsHeader.innerHTML = \`\${matchCount} result\${matchCount !== 1 ? 's' : ''} in \${fileCount} file\${fileCount !== 1 ? 's' : ''} <span class="limit-warning" title="Click to increase limit">⚠️ Limit \${limit} reached - <a href="#" id="increaseLimitLink">increase limit</a></span>\`;
+        // Add click handler for increase limit link
+        setTimeout(() => {
+          const link = document.getElementById('increaseLimitLink');
+          if (link) {
+            link.addEventListener('click', (e) => {
+              e.preventDefault();
+              vscode.postMessage({ type: 'increaseLimit' });
+            });
+          }
+        }, 0);
+      } else {
+        resultsHeader.textContent = \`\${matchCount} result\${matchCount !== 1 ? 's' : ''} in \${fileCount} file\${fileCount !== 1 ? 's' : ''}\`;
+      }
 
       resultsContainer.innerHTML = fileGroups.map((group, index) => {
         const fileName = group.path.split('/').pop();
@@ -894,7 +1073,7 @@ export class SearchPanel {
         case 'results':
           results = message.results || [];
           currentQuery = message.query || '';
-          renderResults();
+          renderResults(message.hitLimit, message.limit);
           break;
 
         case 'error':

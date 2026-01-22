@@ -2,10 +2,11 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { ConnectionManager } from '../connection/ConnectionManager';
 import { SSHConnection } from '../connection/SSHConnection';
-import { IRemoteFile } from '../types';
+import { IRemoteFile, IHostConfig } from '../types';
 import { formatFileSize, formatRelativeTime, formatDateTime } from '../utils/helpers';
 import { FolderHistoryService } from '../services/FolderHistoryService';
 import { FileService } from '../services/FileService';
+import { PriorityQueueService, PreloadPriority } from '../services/PriorityQueueService';
 
 // Get extension path for custom icons
 let extensionPath: string = '';
@@ -48,6 +49,34 @@ export class ConnectionTreeItem extends vscode.TreeItem {
 }
 
 /**
+ * Tree item representing a reconnecting connection (connection lost, auto-reconnecting)
+ */
+export class ReconnectingConnectionTreeItem extends vscode.TreeItem {
+  constructor(
+    public readonly connectionId: string,
+    public readonly host: IHostConfig,
+    public readonly currentPath: string = '~',
+    public readonly attempts: number = 0
+  ) {
+    super(host.name, vscode.TreeItemCollapsibleState.Expanded);
+
+    // Unique ID for VS Code to preserve expand/collapse state
+    this.id = `connection:${connectionId}`;
+    this.description = `${host.username}@${host.host} - Reconnecting (${attempts})...`;
+    this.contextValue = 'reconnecting';
+    // Use spinning sync icon to show reconnecting status
+    this.iconPath = new vscode.ThemeIcon('sync~spin', new vscode.ThemeColor('charts.yellow'));
+    this.tooltip = new vscode.MarkdownString(
+      `**${host.name}**\n\n` +
+      `Connection lost. Auto-reconnecting...\n\n` +
+      `- Attempts: ${attempts}\n` +
+      `- User: ${host.username}@${host.host}:${host.port}\n\n` +
+      `_Tree data preserved from cache_`
+    );
+  }
+}
+
+/**
  * Tree item for navigating to parent directory
  */
 export class ParentFolderTreeItem extends vscode.TreeItem {
@@ -85,7 +114,9 @@ export class FileTreeItem extends vscode.TreeItem {
   constructor(
     public readonly file: IRemoteFile,
     public readonly connection: SSHConnection,
-    public readonly isHighlighted: boolean = false
+    public readonly isHighlighted: boolean = false,
+    public readonly isOpenInTab: boolean = false,
+    public readonly isLoading: boolean = false
   ) {
     super(
       file.name,
@@ -99,21 +130,31 @@ export class FileTreeItem extends vscode.TreeItem {
     this.resourceUri = vscode.Uri.parse(`ssh://${connection.id}${file.path}`);
     this.contextValue = file.isDirectory ? 'folder' : 'file';
 
-    // Set icon based on type, with highlighting for filename filter matches
+    // Set icon based on type, with special indicators for open/loading files
     if (file.isDirectory) {
       this.iconPath = isHighlighted
         ? new vscode.ThemeIcon('folder', new vscode.ThemeColor('charts.yellow'))
         : vscode.ThemeIcon.Folder;
+    } else if (isLoading) {
+      // Show spinning icon when loading data from server
+      this.iconPath = new vscode.ThemeIcon('sync~spin');
+    } else if (isOpenInTab) {
+      // Show eye icon with green color for files open in editor tabs
+      this.iconPath = new vscode.ThemeIcon('eye', new vscode.ThemeColor('charts.green'));
+    } else if (isHighlighted) {
+      this.iconPath = new vscode.ThemeIcon('file', new vscode.ThemeColor('charts.yellow'));
     } else {
-      this.iconPath = isHighlighted
-        ? new vscode.ThemeIcon('file', new vscode.ThemeColor('charts.yellow'))
-        : vscode.ThemeIcon.File;
+      this.iconPath = vscode.ThemeIcon.File;
     }
 
     // Format description: size + relative modified time (grayed out by VS Code)
+    // Note: VS Code tree item descriptions don't render codicons, so we only use text
+    // The icon itself already indicates open/loading state
     const sizeStr = file.isDirectory ? '' : formatFileSize(file.size);
     const timeStr = formatRelativeTime(file.modifiedTime);
-    this.description = file.isDirectory ? timeStr : `${sizeStr}  ${timeStr}`;
+    this.description = file.isDirectory
+      ? timeStr
+      : `${sizeStr}  ${timeStr}`;
 
     // Tooltip with more details including times, owner, and permissions
     const modifiedStr = formatDateTime(file.modifiedTime);
@@ -121,7 +162,10 @@ export class FileTreeItem extends vscode.TreeItem {
     const ownerStr = file.owner || 'N/A';
     const groupStr = file.group || 'N/A';
     const permStr = file.permissions || 'N/A';
+    const openStr = isOpenInTab ? '**Open in Editor**\n\n' : '';
+    const loadingStr = isLoading ? '**Loading from server...**\n\n' : '';
     this.tooltip = new vscode.MarkdownString(
+      loadingStr + openStr +
       `**${file.name}**\n\n` +
         `- Path: \`${file.path}\`\n` +
         `- Size: ${sizeStr || 'Directory'}\n` +
@@ -226,7 +270,7 @@ export class FilteredFileItem extends vscode.TreeItem {
   }
 }
 
-type TreeItem = ConnectionTreeItem | FileTreeItem | ParentFolderTreeItem | FilterResultsHeaderItem | FilteredFileItem | LoadingTreeItem;
+type TreeItem = ConnectionTreeItem | ReconnectingConnectionTreeItem | FileTreeItem | ParentFolderTreeItem | FilterResultsHeaderItem | FilteredFileItem | LoadingTreeItem;
 
 /**
  * MIME type for drag and drop of connections
@@ -247,6 +291,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   private connectionManager: ConnectionManager;
   private folderHistoryService: FolderHistoryService;
   private fileService: FileService;
+  private priorityQueue: PriorityQueueService;
   private currentPaths: Map<string, string> = new Map(); // connectionId -> current path
   private connectionOrder: string[] = []; // Custom order of connection IDs
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -262,17 +307,8 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   // Track active loading operations to avoid duplicates
   private activeLoads: Map<string, Promise<IRemoteFile[]>> = new Map();
 
-  // Track pending preload operations
+  // Track pending preload operations (for deduplication - keys only)
   private preloadQueue: Set<string> = new Set();
-
-  // Concurrency control for preloading
-  private activePreloadCount: number = 0;
-  private preloadWaitQueue: Array<() => void> = [];
-  private preloadCancelled: boolean = false;
-  private totalPreloadQueued: number = 0;
-  private completedPreloadCount: number = 0;
-  private preloadProgressResolve: (() => void) | null = null;
-  private preloadSlotLock: Promise<void> = Promise.resolve(); // Mutex for slot acquisition
 
   // Filter pattern for file tree (glob-like pattern)
   private filterPattern: string = '';
@@ -291,10 +327,17 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   private filenameFilterConnectionId: string = '';
   private highlightedPaths: Set<string> = new Set();
 
+  // Live update tracking: files currently open in editor tabs (show eye icon)
+  private openFilePaths: Set<string> = new Set();
+
+  // Loading state tracking: files currently being loaded/refreshed from server
+  private loadingFilePaths: Set<string> = new Set();
+
   constructor() {
     this.connectionManager = ConnectionManager.getInstance();
     this.folderHistoryService = FolderHistoryService.getInstance();
     this.fileService = FileService.getInstance();
+    this.priorityQueue = PriorityQueueService.getInstance();
 
     // Create custom status bar item (priority 100 = high, aligned left)
     this.loadingStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
@@ -313,6 +356,34 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       if (e.affectsConfiguration('sshLite.treeRefreshIntervalSeconds')) {
         this.restartAutoRefresh();
       }
+    });
+
+    // Subscribe to open files changes (for live-update eye icon on all open tab files)
+    this.fileService.onOpenFilesChanged((openFiles) => {
+      this.openFilePaths = openFiles;
+      // Refresh tree to update eye icons
+      this._onDidChangeTreeData.fire();
+    });
+
+    // Subscribe to file loading changes (for spinner indicators)
+    // NOTE: We only update state tracking here - NO tree refresh
+    // This preserves tooltips. The spinner icon will appear when VS Code
+    // re-renders the item (on scroll, expand, or next manual refresh)
+    this.fileService.onFileLoadingChanged(({ remotePath, isLoading }) => {
+      if (isLoading) {
+        this.loadingFilePaths.add(remotePath);
+      } else {
+        this.loadingFilePaths.delete(remotePath);
+      }
+      // Do NOT refresh tree - this preserves tooltip state
+      // The correct icon will show on next natural tree render
+    });
+
+    // Subscribe to reconnecting events (for auto-reconnect UI updates)
+    this.connectionManager.onReconnecting(({ connectionId, isReconnecting }) => {
+      // Refresh tree to show reconnecting status
+      // Don't clear cache - we want to preserve the tree data
+      this._onDidChangeTreeData.fire();
     });
   }
 
@@ -467,89 +538,9 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   }
 
   /**
-   * Get max preloading concurrency from settings
-   */
-  private getMaxPreloadingConcurrency(): number {
-    const config = vscode.workspace.getConfiguration('sshLite');
-    return config.get<number>('maxPreloadingConcurrency', 2);
-  }
-
-  /**
-   * Acquire a preload slot (for concurrency limiting)
-   * Returns a release function that must be called when done
-   * Uses a mutex to prevent race conditions in slot acquisition
-   */
-  private async acquirePreloadSlot(): Promise<() => void> {
-    // Acquire lock to ensure atomic check-and-increment
-    const previousLock = this.preloadSlotLock;
-    let releaseLockFn: () => void;
-    this.preloadSlotLock = new Promise<void>((resolve) => {
-      releaseLockFn = resolve;
-    });
-
-    await previousLock;
-
-    const maxConcurrency = this.getMaxPreloadingConcurrency();
-
-    if (this.activePreloadCount < maxConcurrency) {
-      this.activePreloadCount++;
-      releaseLockFn!(); // Release lock immediately since we got a slot
-      return () => this.releasePreloadSlot();
-    }
-
-    // Release lock before waiting (allow others to queue up)
-    releaseLockFn!();
-
-    // Wait for a slot to become available
-    await new Promise<void>((resolve) => {
-      this.preloadWaitQueue.push(resolve);
-    });
-
-    // Re-acquire lock for increment
-    const prevLock2 = this.preloadSlotLock;
-    let releaseLock2: () => void;
-    this.preloadSlotLock = new Promise<void>((resolve) => {
-      releaseLock2 = resolve;
-    });
-    await prevLock2;
-
-    this.activePreloadCount++;
-    releaseLock2!();
-
-    return () => this.releasePreloadSlot();
-  }
-
-  /**
-   * Release a preload slot
-   * Uses async lock to ensure atomic decrement and queue notification
-   */
-  private async releasePreloadSlot(): Promise<void> {
-    // Acquire lock for atomic decrement
-    const previousLock = this.preloadSlotLock;
-    let releaseLockFn: () => void;
-    this.preloadSlotLock = new Promise<void>((resolve) => {
-      releaseLockFn = resolve;
-    });
-
-    await previousLock;
-
-    this.activePreloadCount--;
-
-    // Wake up next waiting preload if any
-    if (this.preloadWaitQueue.length > 0) {
-      const next = this.preloadWaitQueue.shift();
-      if (next) {
-        next();
-      }
-    }
-
-    releaseLockFn!();
-  }
-
-  /**
    * Preload subdirectories in background (non-blocking)
-   * Respects maxPreloadingConcurrency setting to limit server load
-   * Called after user expands a folder - resets cancelled flag for user-initiated actions
+   * Uses PriorityQueueService for priority-based scheduling
+   * Called after user expands a folder
    */
   private preloadSubdirectories(connection: SSHConnection, files: IRemoteFile[]): void {
     // Skip preloading if disabled
@@ -557,10 +548,9 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       return;
     }
 
-    // User expanded a folder - reset cancelled flag so preloading can continue
-    // This is a user-initiated action, not background preloading
-    if (this.preloadCancelled && this.preloadQueue.size === 0 && this.activePreloadCount === 0) {
-      this.preloadCancelled = false;
+    // User expanded a folder - reset the priority queue if it was cancelled
+    if (this.priorityQueue.isCancelled() && !this.priorityQueue.isPreloadingInProgress()) {
+      this.priorityQueue.reset();
     }
 
     // Get all directories
@@ -582,14 +572,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     // Take top 5 (prioritized by frequency)
     const directories = sortedDirectories.slice(0, 5);
 
-    // Reset cancelled flag if starting fresh preload
-    if (this.preloadQueue.size === 0 && this.activePreloadCount === 0) {
-      this.preloadCancelled = false;
-      this.completedPreloadCount = 0;
-      this.totalPreloadQueued = 0;
-    }
-
-    // Preload with concurrency control
+    // Preload with priority queue
     for (const dir of directories) {
       const cacheKey = this.getCacheKey(connection.id, dir.path);
 
@@ -601,110 +584,84 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       }
 
       this.preloadQueue.add(cacheKey);
-      this.totalPreloadQueued++;
 
-      // Preload with concurrency limiting - give extra depth to frequent folders
+      // Determine priority based on folder frequency
       const isFrequent = frequentFolders.has(dir.path);
-      this.preloadWithConcurrencyLimit(connection, dir.path, cacheKey, isFrequent ? 2 : 1);
+      const priority = isFrequent ? PreloadPriority.MEDIUM : PreloadPriority.LOW;
+      const depth = isFrequent ? 2 : 1;
+
+      // Enqueue with priority
+      this.enqueueDirectoryPreload(connection, dir.path, cacheKey, priority, depth);
     }
   }
 
   /**
-   * Preload a directory with concurrency limiting
+   * Enqueue a directory preload task with priority
+   * @param priority - Task priority level
    * @param depth - How many more levels to preload (0 = just this directory)
    */
-  private async preloadWithConcurrencyLimit(
+  private enqueueDirectoryPreload(
     connection: SSHConnection,
     dirPath: string,
     cacheKey: string,
+    priority: PreloadPriority,
     depth: number = 1
-  ): Promise<void> {
-    // Check if cancelled before acquiring slot
-    if (this.preloadCancelled) {
-      this.preloadQueue.delete(cacheKey);
-      return;
-    }
+  ): void {
+    this.priorityQueue.enqueue(
+      connection.id,
+      `Preload ${dirPath}`,
+      priority,
+      async () => {
+        try {
+          const files = await this.loadDirectory(connection, dirPath, true);
 
-    const releaseSlot = await this.acquirePreloadSlot();
-
-    try {
-      // Check again after acquiring slot
-      if (this.preloadCancelled) {
-        return;
-      }
-      const files = await this.loadDirectory(connection, dirPath, true);
-
-      // If we have remaining depth, queue subdirectories for preloading too
-      if (depth > 0 && files && !this.preloadCancelled) {
-        const subdirs = files.filter((f) => f.isDirectory).slice(0, 3); // Limit to 3 per level
-        for (const subdir of subdirs) {
-          const subCacheKey = this.getCacheKey(connection.id, subdir.path);
-          if (!this.getCached(connection.id, subdir.path) &&
-              !this.activeLoads.has(subCacheKey) &&
-              !this.preloadQueue.has(subCacheKey)) {
-            this.preloadQueue.add(subCacheKey);
-            this.totalPreloadQueued++;
-            // Queue with reduced depth
-            this.preloadWithConcurrencyLimit(connection, subdir.path, subCacheKey, depth - 1);
+          // If we have remaining depth, queue subdirectories for preloading too
+          if (depth > 0 && files && !this.priorityQueue.isCancelled()) {
+            const subdirs = files.filter((f) => f.isDirectory).slice(0, 3); // Limit to 3 per level
+            for (const subdir of subdirs) {
+              const subCacheKey = this.getCacheKey(connection.id, subdir.path);
+              if (!this.getCached(connection.id, subdir.path) &&
+                  !this.activeLoads.has(subCacheKey) &&
+                  !this.preloadQueue.has(subCacheKey)) {
+                this.preloadQueue.add(subCacheKey);
+                // Queue with reduced depth and lower priority
+                const subPriority = priority < PreloadPriority.IDLE ? priority + 1 : PreloadPriority.IDLE;
+                this.enqueueDirectoryPreload(connection, subdir.path, subCacheKey, subPriority as PreloadPriority, depth - 1);
+              }
+            }
           }
+        } finally {
+          this.preloadQueue.delete(cacheKey);
         }
       }
-    } catch {
-      /* Silently ignore preload errors */
-    } finally {
+    ).catch(() => {
+      // Silently ignore preload errors
       this.preloadQueue.delete(cacheKey);
-      this.completedPreloadCount++;
-      await releaseSlot();
-
-      // Check if all preloads are done
-      if (this.preloadQueue.size === 0 && this.preloadProgressResolve) {
-        this.preloadProgressResolve();
-        this.preloadProgressResolve = null;
-      }
-    }
+    });
   }
 
   /**
    * Cancel all pending preload operations
    */
   cancelPreloading(): void {
-    this.preloadCancelled = true;
+    this.priorityQueue.cancelAll();
 
-    // Wake up all waiting preloads so they can check cancellation
-    while (this.preloadWaitQueue.length > 0) {
-      const next = this.preloadWaitQueue.shift();
-      if (next) {
-        next();
-      }
-    }
-
-    // Clear the queue
+    // Clear the local tracking queue
     this.preloadQueue.clear();
-
-    // Resolve the progress if waiting
-    if (this.preloadProgressResolve) {
-      this.preloadProgressResolve();
-      this.preloadProgressResolve = null;
-    }
   }
 
   /**
    * Check if preloading is in progress
    */
   isPreloadingInProgress(): boolean {
-    return this.preloadQueue.size > 0 || this.activePreloadCount > 0;
+    return this.preloadQueue.size > 0 || this.priorityQueue.isPreloadingInProgress();
   }
 
   /**
    * Get preload status for UI display
    */
-  getPreloadStatus(): { active: number; queued: number; completed: number; total: number } {
-    return {
-      active: this.activePreloadCount,
-      queued: this.preloadQueue.size,
-      completed: this.completedPreloadCount,
-      total: this.totalPreloadQueued,
-    };
+  getPreloadStatus(): { active: number; queued: number; completed: number; total: number; byPriority: { [key: number]: number } } {
+    return this.priorityQueue.getStatus();
   }
 
   /**
@@ -858,6 +815,9 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
   /**
    * Check if a file matches the current filter pattern
+   * Supports:
+   * - Plain text: matches anywhere in filename (e.g., "config" matches "config.json", "my-config.ts")
+   * - Glob patterns with * or ?: exact pattern match (e.g., "*.ts" matches only .ts files)
    */
   private matchesFilter(file: IRemoteFile): boolean {
     if (!this.filterPattern) {
@@ -872,7 +832,15 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       return true;
     }
 
-    // Convert glob pattern to regex
+    // Check if pattern contains glob wildcards
+    const hasGlobWildcards = pattern.includes('*') || pattern.includes('?');
+
+    if (!hasGlobWildcards) {
+      // Plain text: case-insensitive substring match (like SQL ILIKE)
+      return fileName.includes(pattern);
+    }
+
+    // Convert glob pattern to regex for wildcard patterns
     // * -> .* (any characters)
     // ? -> . (single character)
     // Escape other special regex characters
@@ -901,17 +869,33 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
    * Get children
    */
   async getChildren(element?: TreeItem): Promise<TreeItem[]> {
-    // Root level: show all connections in custom order
+    // Root level: show all connections (active + reconnecting) in custom order
     if (!element) {
-      const connections = this.getOrderedConnections();
+      const { active, reconnecting } = this.connectionManager.getAllConnectionsWithReconnecting();
+      const items: TreeItem[] = [];
 
-      // Preload current directory for all connections in parallel
-      this.preloadConnectionDirectories(connections);
+      // Get ordered active connections
+      const orderedActive = this.getOrderedConnections();
 
-      return connections.map((conn) => {
+      // Create tree items for active connections
+      for (const conn of orderedActive) {
         const currentPath = this.getCurrentPath(conn.id);
-        return new ConnectionTreeItem(conn, currentPath);
-      });
+        items.push(new ConnectionTreeItem(conn, currentPath));
+      }
+
+      // Add reconnecting connections (preserving tree data from cache)
+      for (const { connectionId, host, attempts } of reconnecting) {
+        // Only add if not already in active list
+        if (!orderedActive.find(c => c.id === connectionId)) {
+          const currentPath = this.getCurrentPath(connectionId);
+          items.push(new ReconnectingConnectionTreeItem(connectionId, host, currentPath, attempts));
+        }
+      }
+
+      // Preload current directory for active connections in parallel
+      this.preloadConnectionDirectories(orderedActive);
+
+      return items;
     }
 
     // Connection level: show current directory files
@@ -940,6 +924,22 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       return [new LoadingTreeItem('Loading...', loadingKey)];
     }
 
+    // Reconnecting connection level: show cached directory files (read-only)
+    if (element instanceof ReconnectingConnectionTreeItem) {
+      const currentPath = this.getCurrentPath(element.connectionId);
+      const loadingKey = this.getCacheKey(element.connectionId, currentPath);
+
+      // Show cached data only - don't try to load from server
+      const cached = this.getCached(element.connectionId, currentPath);
+      if (cached) {
+        // Build items but mark them as from a disconnected connection
+        return this.buildReconnectingDirectoryItems(element.connectionId, element.host, currentPath, cached);
+      }
+
+      // No cache available
+      return [new LoadingTreeItem('Waiting for reconnection...', loadingKey)];
+    }
+
     // Filter results header: show deep filter results
     if (element instanceof FilterResultsHeaderItem) {
       const results = this.deepFilterResults.get(element.connection.id) || [];
@@ -959,7 +959,9 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
         const items = filteredFiles.map((file) => new FileTreeItem(
           file,
           element.connection,
-          this.highlightedPaths.has(file.path)
+          this.highlightedPaths.has(file.path),
+          this.openFilePaths.has(file.path),
+          this.loadingFilePaths.has(file.path)
         ));
         // Preload subdirectories in background
         this.preloadSubdirectories(element.connection, cached);
@@ -1003,12 +1005,14 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       this.preloadParentFolder(connection, '/');
     }
 
-    // Apply filter and add files with highlighting
+    // Apply filter and add files with highlighting, watched state, and loading state
     const filteredFiles = files.filter((file) => this.matchesFilter(file));
     items.push(...filteredFiles.map((file) => new FileTreeItem(
       file,
       connection,
-      this.highlightedPaths.has(file.path)
+      this.highlightedPaths.has(file.path),
+      this.openFilePaths.has(file.path),
+      this.loadingFilePaths.has(file.path)
     )));
 
     // Add filter results section if filter is active
@@ -1026,16 +1030,58 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   }
 
   /**
+   * Build tree items for a reconnecting connection's directory (cached, read-only)
+   * Shows files with a grayed-out appearance and no interactive commands
+   */
+  private buildReconnectingDirectoryItems(
+    connectionId: string,
+    host: IHostConfig,
+    currentPath: string,
+    files: IRemoteFile[]
+  ): TreeItem[] {
+    const items: TreeItem[] = [];
+
+    // Add a "waiting for reconnection" header
+    const headerItem = new vscode.TreeItem('⏳ Reconnecting... (cached data)', vscode.TreeItemCollapsibleState.None);
+    headerItem.id = `reconnecting-header:${connectionId}`;
+    headerItem.iconPath = new vscode.ThemeIcon('sync~spin');
+    headerItem.tooltip = 'Connection lost. Auto-reconnecting in background. Cached files shown below.';
+    // Cast to TreeItem type
+    items.push(headerItem as unknown as TreeItem);
+
+    // Apply filter and add files (read-only, grayed out)
+    const filteredFiles = files.filter((file) => this.matchesFilter(file));
+    for (const file of filteredFiles) {
+      const item = new vscode.TreeItem(
+        file.name,
+        file.isDirectory ? vscode.TreeItemCollapsibleState.None : vscode.TreeItemCollapsibleState.None
+      );
+      item.id = `reconnecting-file:${connectionId}:${file.path}`;
+      item.description = file.isDirectory ? '(folder)' : formatFileSize(file.size);
+      item.tooltip = new vscode.MarkdownString(
+        `**${file.name}** _(cached)_\n\n` +
+        `Path: \`${file.path}\`\n\n` +
+        `_Waiting for reconnection to enable actions_`
+      );
+      // Use grayed icons for disconnected files
+      item.iconPath = file.isDirectory
+        ? new vscode.ThemeIcon('folder', new vscode.ThemeColor('disabledForeground'))
+        : new vscode.ThemeIcon('file', new vscode.ThemeColor('disabledForeground'));
+      // No command - files are not clickable during reconnection
+
+      items.push(item as unknown as TreeItem);
+    }
+
+    return items;
+  }
+
+  /**
    * Preload parent folder for instant "go up" navigation
-   * NOTE: Parent folder is ALWAYS preloaded (not controlled by enablePreloading setting)
+   * NOTE: Parent folder is ALWAYS preloaded with HIGH priority (not controlled by enablePreloading setting)
    * because it's essential for basic navigation - users expect instant "go to parent"
-   * Also NOT affected by preloadCancelled - user navigation should never be blocked
-   * Respects maxPreloadingConcurrency setting to limit server load
+   * Uses HIGH priority to ensure quick loading but doesn't block CRITICAL operations
    */
   private preloadParentFolder(connection: SSHConnection, parentPath: string): void {
-    // Parent folder preloading is NEVER blocked - essential for navigation
-    // Don't check preloadCancelled here - user expects instant "go to parent"
-
     const cacheKey = this.getCacheKey(connection.id, parentPath);
 
     // Skip if already cached, loading, or in preload queue
@@ -1048,10 +1094,9 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     }
 
     this.preloadQueue.add(cacheKey);
-    this.totalPreloadQueued++;
 
-    // Preload with concurrency limiting
-    this.preloadWithConcurrencyLimit(connection, parentPath, cacheKey);
+    // Parent folder uses HIGH priority - essential for navigation
+    this.enqueueDirectoryPreload(connection, parentPath, cacheKey, PreloadPriority.HIGH, 0);
   }
 
   /**
@@ -1107,11 +1152,11 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
   /**
    * Preload frequently used folders from history
-   * Respects maxPreloadingConcurrency setting to limit server load
+   * Uses MEDIUM priority since these are user-important but not immediately needed
    */
   private preloadFrequentFolders(connection: SSHConnection): void {
     // Note: Caller should check isPreloadingEnabled() before calling
-    if (this.preloadCancelled) {
+    if (this.priorityQueue.isCancelled()) {
       return;
     }
 
@@ -1130,10 +1175,9 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       }
 
       this.preloadQueue.add(cacheKey);
-      this.totalPreloadQueued++;
 
-      // Preload with concurrency limiting
-      this.preloadWithConcurrencyLimit(connection, folderPath, cacheKey);
+      // Frequent folders use MEDIUM priority - important but not critical
+      this.enqueueDirectoryPreload(connection, folderPath, cacheKey, PreloadPriority.MEDIUM, 1);
     }
   }
 
@@ -1168,7 +1212,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
         modifiedTime: 0,
         connectionId: element.connection.id,
       };
-      return new FileTreeItem(parentFile, element.connection);
+      return new FileTreeItem(parentFile, element.connection, false, false, false);
     }
 
     if (element instanceof ParentFolderTreeItem) {
@@ -1307,23 +1351,32 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
    * Manually trigger server search for current filter pattern
    * LITE PRINCIPLE: This is user-triggered, not automatic
    * Call this when user clicks "Search Server" button
+   * @returns Object with hitLimit boolean and count of results
    */
-  async searchServerForFilter(): Promise<void> {
+  async searchServerForFilter(): Promise<{ hitLimit: boolean; count: number; limit: number }> {
     if (!this.filterPattern) {
-      return; // No filter set
+      return { hitLimit: false, count: 0, limit: 0 }; // No filter set
     }
-    await this.startDeepFilter(this.filterPattern);
+    return await this.startDeepFilter(this.filterPattern);
   }
 
   /**
    * Start deep filter search on all connections
    * Uses 'find' command to recursively search for matching files
    * LITE PRINCIPLE: Only called when user explicitly requests server search
+   * @returns Object with hitLimit boolean and count of results
    */
-  private async startDeepFilter(pattern: string): Promise<void> {
+  private async startDeepFilter(pattern: string): Promise<{ hitLimit: boolean; count: number; limit: number }> {
     this.isDeepFiltering = true;
     this.deepFilterAbortController = new AbortController();
     const signal = this.deepFilterAbortController.signal;
+
+    // Get configurable limit from settings
+    const config = vscode.workspace.getConfiguration('sshLite');
+    const maxResults = config.get<number>('filterMaxResults', 1000);
+
+    let totalCount = 0;
+    let hitLimit = false;
 
     // Refresh to show "Searching..." indicator
     this._onDidChangeTreeData.fire();
@@ -1341,11 +1394,15 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
           ? pattern
           : `*${pattern}*`; // If no wildcards, wrap with wildcards
 
+        // Get configurable limit from settings
+        const config = vscode.workspace.getConfiguration('sshLite');
+        const maxResults = config.get<number>('filterMaxResults', 1000);
+
         // Execute find command on remote server
         const results = await connection.searchFiles(currentPath, pattern, {
           searchContent: false, // Filename search
           caseSensitive: false,
-          maxResults: 200, // Limit results
+          maxResults,
         });
 
         if (signal.aborted) return;
@@ -1375,6 +1432,11 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
         if (newFiles.length > 0) {
           this.deepFilterResults.set(connection.id, newFiles);
+          totalCount += newFiles.length;
+          // Check if this connection hit the limit
+          if (results.length >= maxResults) {
+            hitLimit = true;
+          }
         }
       } catch {
         // Silently ignore errors during deep filter
@@ -1387,6 +1449,8 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       this.isDeepFiltering = false;
       this._onDidChangeTreeData.fire();
     }
+
+    return { hitLimit, count: totalCount, limit: maxResults };
   }
 
   /**
@@ -1423,12 +1487,18 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       connectionId: connectionId,
     };
 
-    return new FileTreeItem(file, connection);
+    return new FileTreeItem(
+      file,
+      connection,
+      this.highlightedPaths.has(remotePath),
+      this.openFilePaths.has(remotePath),
+      this.loadingFilePaths.has(remotePath)
+    );
   }
 
   /**
-   * Navigate to and reveal a file in the tree
-   * First navigates to the parent folder, then refreshes and reveals the file
+   * Reveal a file in the tree by navigating to its parent directory
+   * Automatically navigates to the file location and returns the FileTreeItem for reveal
    */
   async revealFile(connectionId: string, remotePath: string): Promise<FileTreeItem | undefined> {
     const connection = this.connectionManager.getConnection(connectionId);
@@ -1437,15 +1507,25 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       return undefined;
     }
 
-    // Navigate to the parent folder
     const parentPath = path.posix.dirname(remotePath);
-    this.setCurrentPath(connection.id, parentPath);
+    const fileName = path.posix.basename(remotePath);
 
-    // Refresh the tree to load the parent directory
+    // Check if file is already visible in current tree (parent directory is cached/visible)
+    const cachedFiles = this.getCached(connectionId, parentPath);
+
+    if (cachedFiles) {
+      // Parent directory is cached - check if file exists in it
+      const fileExists = cachedFiles.some(f => f.name === fileName || f.path === remotePath);
+      if (fileExists) {
+        // File is visible in current tree - return item for reveal
+        return this.createFileTreeItem(connectionId, remotePath);
+      }
+    }
+
+    // File is not in current tree view - automatically navigate to parent folder
+    this.setCurrentPath(connection.id, parentPath);
     await this.loadDirectory(connection, parentPath, true);
     this._onDidChangeTreeData.fire();
-
-    // Create and return the FileTreeItem for reveal
     return this.createFileTreeItem(connectionId, remotePath);
   }
 
