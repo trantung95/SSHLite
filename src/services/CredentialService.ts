@@ -90,7 +90,6 @@ export class CredentialService {
   listCredentials(hostId: string): SavedCredential[] {
     const index = this.getCredentialIndex();
     const credentials = index[hostId] || [];
-    console.log(`[CredentialService] listCredentials(${hostId}): found ${credentials.length} credentials`);
     return credentials;
   }
 
@@ -104,16 +103,13 @@ export class CredentialService {
     value: string,
     privateKeyPath?: string
   ): Promise<SavedCredential> {
-    console.log(`[CredentialService] addCredential: hostId=${hostId}, label=${label}, type=${type}`);
     const index = this.getCredentialIndex();
-    console.log(`[CredentialService] Current index for host: ${JSON.stringify(index[hostId] || [])}`);
     if (!index[hostId]) {
       index[hostId] = [];
     }
 
     // Generate unique ID
     const id = `cred_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-    console.log(`[CredentialService] Generated credential ID: ${id}`);
 
     const credential: SavedCredential = {
       id,
@@ -126,15 +122,12 @@ export class CredentialService {
     const secretKey = this.getSecretKey(hostId, id);
     if (this.secretStorage) {
       await this.secretStorage.store(secretKey, value);
-      console.log(`[CredentialService] Stored secret in secretStorage`);
     }
     this.sessionCredentials.set(secretKey, value);
 
     // Add to index
     index[hostId].push(credential);
-    console.log(`[CredentialService] Index after push: ${JSON.stringify(index[hostId])}`);
     await this.saveCredentialIndex(index);
-    console.log(`[CredentialService] Index saved successfully`);
 
     return credential;
   }

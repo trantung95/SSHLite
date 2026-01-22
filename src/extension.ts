@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { ConnectionManager } from './connection/ConnectionManager';
-import { SSHConnection } from './connection/SSHConnection';
+import { SSHConnection, setGlobalState } from './connection/SSHConnection';
 import { HostService } from './services/HostService';
 import { FileService } from './services/FileService';
 import { TerminalService } from './services/TerminalService';
@@ -69,6 +69,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Initialize credential service with extension context
   credentialService.initialize(context);
+
+  // Initialize host key verification storage
+  setGlobalState(context.globalState);
 
   // Initialize folder history service for smart preloading
   const folderHistoryService = FolderHistoryService.getInstance();
@@ -278,7 +281,7 @@ export function activate(context: vscode.ExtensionContext): void {
           preloadProgressInterval = null;
         }
       }
-    }, 500);
+    }, 2000); // LITE: Update every 2 seconds instead of 500ms
   }
 
   // Start tracking when connections exist

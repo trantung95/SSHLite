@@ -10,6 +10,7 @@ import {
   loadProgressiveConfig,
 } from '../types/progressive';
 import { formatFileSize } from '../utils/helpers';
+import { PriorityQueueService, PreloadPriority } from '../services/PriorityQueueService';
 
 /**
  * Content provider for progressive file preview
@@ -52,8 +53,12 @@ export class ProgressiveFileContentProvider implements vscode.TextDocumentConten
   // Configuration
   private config: ProgressiveConfig;
 
+  // Priority queue for tail-f operations
+  private priorityQueue: PriorityQueueService;
+
   constructor() {
     this.config = loadProgressiveConfig();
+    this.priorityQueue = PriorityQueueService.getInstance();
 
     // Listen for configuration changes
     vscode.workspace.onDidChangeConfiguration((e) => {
@@ -191,10 +196,18 @@ export class ProgressiveFileContentProvider implements vscode.TextDocumentConten
     // Stop any existing follower
     this.stopTailFollow(uri);
 
-    // Start polling for new content
+    // Start polling for new content using priority queue with LOW priority
     const intervalId = setInterval(async () => {
       try {
-        await this.updatePreviewContent(uri, connection);
+        // Use priority queue to avoid overwhelming the server
+        await this.priorityQueue.enqueue(
+          parsed.connectionId,
+          `tail-follow:${key}`,
+          PreloadPriority.LOW, // Priority 3 - runs when 3+ slots available
+          async () => {
+            await this.updatePreviewContent(uri, connection);
+          }
+        );
       } catch {
         // Ignore errors during tail follow - connection might be down
       }

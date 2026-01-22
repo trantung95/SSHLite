@@ -1,6 +1,7 @@
 import { Client, ClientChannel, SFTPWrapper } from 'ssh2';
 import * as fs from 'fs';
 import * as net from 'net';
+import * as crypto from 'crypto';
 import * as vscode from 'vscode';
 import {
   ISSHConnection,
@@ -28,6 +29,100 @@ function logSSHCommand(host: string, command: string): void {
   const timestamp = new Date().toISOString();
   const shortCmd = command.length > 200 ? command.substring(0, 200) + '...' : command;
   getOutputChannel().appendLine(`[${timestamp}] [SSH ${host}] $ ${shortCmd}`);
+}
+
+// Known hosts storage key
+const KNOWN_HOSTS_KEY = 'sshLite.knownHosts';
+
+// Global state for known hosts (set by extension on activation)
+let globalState: vscode.Memento | null = null;
+
+/**
+ * Set the global state for known hosts storage
+ * Called by extension.ts on activation
+ */
+export function setGlobalState(state: vscode.Memento): void {
+  globalState = state;
+}
+
+/**
+ * Get known hosts from storage
+ */
+function getKnownHosts(): Record<string, string> {
+  if (!globalState) return {};
+  return globalState.get<Record<string, string>>(KNOWN_HOSTS_KEY, {});
+}
+
+/**
+ * Save known host to storage
+ */
+async function saveKnownHost(hostKey: string, fingerprint: string): Promise<void> {
+  if (!globalState) return;
+  const knownHosts = getKnownHosts();
+  knownHosts[hostKey] = fingerprint;
+  await globalState.update(KNOWN_HOSTS_KEY, knownHosts);
+}
+
+/**
+ * Generate host key fingerprint (SHA256)
+ */
+function getHostKeyFingerprint(key: Buffer): string {
+  return crypto.createHash('sha256').update(key).digest('base64');
+}
+
+/**
+ * Verify host key and prompt user if needed
+ * Returns true if connection should proceed, false otherwise
+ */
+async function verifyHostKey(
+  host: string,
+  port: number,
+  hostKey: Buffer
+): Promise<boolean> {
+  const hostIdentifier = `${host}:${port}`;
+  const fingerprint = getHostKeyFingerprint(hostKey);
+  const knownHosts = getKnownHosts();
+  const storedFingerprint = knownHosts[hostIdentifier];
+
+  if (storedFingerprint === fingerprint) {
+    // Known host, fingerprint matches
+    return true;
+  }
+
+  if (storedFingerprint) {
+    // WARNING: Host key has changed!
+    const choice = await vscode.window.showWarningMessage(
+      `⚠️ WARNING: HOST KEY CHANGED for ${host}!\n\n` +
+      `This could indicate a man-in-the-middle attack or server reconfiguration.\n\n` +
+      `Old fingerprint: SHA256:${storedFingerprint.substring(0, 16)}...\n` +
+      `New fingerprint: SHA256:${fingerprint.substring(0, 16)}...`,
+      { modal: true },
+      'Accept New Key',
+      'Reject'
+    );
+
+    if (choice === 'Accept New Key') {
+      await saveKnownHost(hostIdentifier, fingerprint);
+      return true;
+    }
+    return false;
+  }
+
+  // New host - ask user to verify
+  const choice = await vscode.window.showInformationMessage(
+    `The authenticity of host '${host}' can't be established.\n\n` +
+    `Fingerprint: SHA256:${fingerprint}\n\n` +
+    `Are you sure you want to continue connecting?`,
+    { modal: true },
+    'Yes, Connect',
+    'No'
+  );
+
+  if (choice === 'Yes, Connect') {
+    await saveKnownHost(hostIdentifier, fingerprint);
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -131,6 +226,22 @@ export class SSHConnection implements ISSHConnection {
           keepaliveInterval,
           readyTimeout: timeout,
           ...authConfig,
+          // Host key verification for MITM protection
+          hostVerifier: (key: Buffer, verify: (valid: boolean) => void) => {
+            verifyHostKey(this.host.host, this.host.port, key)
+              .then((accepted) => {
+                if (accepted) {
+                  verify(true);
+                } else {
+                  verify(false);
+                  reject(new ConnectionError('Host key verification failed - connection rejected by user'));
+                }
+              })
+              .catch(() => {
+                verify(false);
+                reject(new ConnectionError('Host key verification failed'));
+              });
+          },
         });
       });
 
@@ -676,9 +787,12 @@ export class SSHConnection implements ISSHConnection {
       throw new ConnectionError('Not connected');
     }
 
+    // Validate lineCount to prevent command injection
+    const validatedLineCount = Math.max(1, Math.min(Math.floor(Number(lineCount) || 1), 100000));
+
     // Escape special shell characters in path to prevent command injection
     const escapedPath = remotePath.replace(/'/g, "'\\''");
-    const command = `tail -n ${lineCount} '${escapedPath}'`;
+    const command = `tail -n ${validatedLineCount} '${escapedPath}'`;
 
     return this.exec(command);
   }
@@ -695,9 +809,12 @@ export class SSHConnection implements ISSHConnection {
       throw new ConnectionError('Not connected');
     }
 
+    // Validate lineCount to prevent command injection
+    const validatedLineCount = Math.max(1, Math.min(Math.floor(Number(lineCount) || 1), 100000));
+
     // Escape special shell characters in path to prevent command injection
     const escapedPath = remotePath.replace(/'/g, "'\\''");
-    const command = `head -n ${lineCount} '${escapedPath}'`;
+    const command = `head -n ${validatedLineCount} '${escapedPath}'`;
 
     return this.exec(command);
   }
@@ -781,9 +898,12 @@ export class SSHConnection implements ISSHConnection {
       throw new ConnectionError('Not connected');
     }
 
+    // Validate offset to prevent command injection (must be non-negative integer)
+    const validatedOffset = Math.max(0, Math.floor(Number(offset) || 0));
+
     // Use tail with byte offset for efficient partial read
     // tail -c +N reads from byte N to end (1-based offset in tail)
-    const tailOffset = offset + 1;
+    const tailOffset = validatedOffset + 1;
     // Escape special shell characters in path to prevent command injection
     const escapedPath = remotePath.replace(/'/g, "'\\''");
     const command = `tail -c +${tailOffset} '${escapedPath}'`;
@@ -1067,9 +1187,17 @@ export class SSHConnection implements ISSHConnection {
       maxResults = 2000,
     } = options;
 
-    // Escape special characters in pattern for shell (double quotes)
-    // We escape: " \ $ ` ! for shell safety inside double quotes
-    const escapedPattern = pattern.replace(/["\\$`!]/g, '\\$&');
+    // Validate maxResults to prevent command injection (must be positive integer, max 50000)
+    const validatedMaxResults = Math.max(1, Math.min(Math.floor(Number(maxResults) || 2000), 50000));
+
+    // Escape for single quotes (most secure shell escaping)
+    // Single quotes prevent ALL shell expansion except single quotes themselves
+    // To include a single quote, we end the string, add escaped quote, and start new string: '\''
+    const escapeForSingleQuotes = (str: string): string => str.replace(/'/g, "'\\''");
+
+    const escapedPattern = escapeForSingleQuotes(pattern);
+    const escapedSearchPath = escapeForSingleQuotes(searchPath);
+    const escapedFilePattern = escapeForSingleQuotes(filePattern);
     const caseFlag = caseSensitive ? '' : '-i';
     // Use -F for fixed string matching (literal text, not regex) unless user wants regex
     // This allows searching for text with special chars like "audio/ogg; codecs=opus"
@@ -1081,11 +1209,13 @@ export class SSHConnection implements ISSHConnection {
       const excludePatterns = excludePattern.split(',').map((p) => p.trim()).filter(Boolean);
       for (const ep of excludePatterns) {
         if (searchContent) {
+          // Escape the exclude pattern for shell safety
+          const escapedEp = escapeForSingleQuotes(ep);
           // For grep: --exclude for files, --exclude-dir for directories
           if (ep.includes('/') || !ep.includes('.')) {
-            excludeFlags += ` --exclude-dir="${ep}"`;
+            excludeFlags += ` --exclude-dir='${escapedEp}'`;
           } else {
-            excludeFlags += ` --exclude="${ep}"`;
+            excludeFlags += ` --exclude='${escapedEp}'`;
           }
         }
       }
@@ -1096,7 +1226,7 @@ export class SSHConnection implements ISSHConnection {
       // Use grep for content search
       // -r: recursive, -n: line numbers, -H: show filename, -F: fixed string (literal, not regex)
       // --include: file pattern filter, --exclude/--exclude-dir: exclude patterns
-      command = `grep -rnH ${fixedStringFlag} ${caseFlag} --include="${filePattern}"${excludeFlags} -m ${maxResults} "${escapedPattern}" "${searchPath}" 2>/dev/null | head -${maxResults}`;
+      command = `grep -rnH ${fixedStringFlag} ${caseFlag} --include='${escapedFilePattern}'${excludeFlags} -m ${validatedMaxResults} '${escapedPattern}' '${escapedSearchPath}' 2>/dev/null | head -${validatedMaxResults}`;
     } else {
       // Use find for filename search
       const findCaseFlag = caseSensitive ? '-name' : '-iname';
@@ -1105,10 +1235,11 @@ export class SSHConnection implements ISSHConnection {
       if (excludePattern) {
         const excludePatterns = excludePattern.split(',').map((p) => p.trim()).filter(Boolean);
         for (const ep of excludePatterns) {
-          findExcludes += ` ! -path "*/${ep}/*" ! -name "${ep}"`;
+          const escapedEp = escapeForSingleQuotes(ep);
+          findExcludes += ` ! -path '*/${escapedEp}/*' ! -name '${escapedEp}'`;
         }
       }
-      command = `find "${searchPath}" -type f ${findCaseFlag} "*${escapedPattern}*"${findExcludes} 2>/dev/null | head -${maxResults}`;
+      command = `find '${escapedSearchPath}' -type f ${findCaseFlag} '*${escapedPattern}*'${findExcludes} 2>/dev/null | head -${validatedMaxResults}`;
     }
 
     // Log the search command

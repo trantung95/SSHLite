@@ -264,7 +264,7 @@
       },
       {
         "command": "sshLite.quickStatus",
-        "title": "Quick Status",
+        "title": "Quick Status (runs 10+ server commands)",
         "category": "SSH Lite",
         "icon": "$(dashboard)"
       },
@@ -845,7 +845,8 @@
         },
         "sshLite.uploadDebounceMs": {
           "type": "number",
-          "default": 500,
+          "default": 1000,
+          "minimum": 300,
           "description": "Debounce time for auto-upload (ms)"
         },
         "sshLite.connectionTimeout": {
@@ -941,10 +942,10 @@
         },
         "sshLite.progressiveTailPollInterval": {
           "type": "number",
-          "default": 1000,
-          "minimum": 500,
+          "default": 3000,
+          "minimum": 1000,
           "maximum": 10000,
-          "description": "Interval in milliseconds for polling new lines during tail-f preview (default: 1000ms)"
+          "description": "Interval in milliseconds for polling new lines during tail-f preview (default: 3000ms)"
         },
         "sshLite.progressiveChunkSize": {
           "type": "number",

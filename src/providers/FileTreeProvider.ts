@@ -295,6 +295,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   private currentPaths: Map<string, string> = new Map(); // connectionId -> current path
   private connectionOrder: string[] = []; // Custom order of connection IDs
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
+  private isRefreshing: boolean = false; // Prevent overlapping auto-refresh
   private configChangeListener: vscode.Disposable;
 
   // Custom status bar item for loading indicator
@@ -698,10 +699,15 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     const intervalSeconds = getRefreshInterval();
     if (intervalSeconds > 0) {
       const intervalMs = intervalSeconds * 1000;
-      this.refreshTimer = setInterval(() => {
-        // Only refresh if there are active connections
-        if (this.connectionManager.getAllConnections().length > 0) {
-          this.refresh();
+      this.refreshTimer = setInterval(async () => {
+        // Only refresh if there are active connections and not already refreshing
+        if (this.connectionManager.getAllConnections().length > 0 && !this.isRefreshing) {
+          this.isRefreshing = true;
+          try {
+            this.refresh();
+          } finally {
+            this.isRefreshing = false;
+          }
         }
       }, intervalMs);
     }

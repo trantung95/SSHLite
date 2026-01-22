@@ -304,8 +304,8 @@ export class SearchPanel {
             connectionId: scope.connection.id,
             connectionName: scope.connection.host.name,
           }));
-        } catch (error) {
-          console.error(`Search failed for ${scope.displayName}:`, error);
+        } catch {
+          // Search failed for this scope, continue with others
           return [];
         }
       });
@@ -324,11 +324,7 @@ export class SearchPanel {
       // Check if we hit the limit
       const hitLimit = uniqueResults.length >= maxResults;
       this.postMessage({ type: 'results', results: uniqueResults, query, hitLimit, limit: maxResults });
-
-      // Log search results
-      console.log(`Search completed: ${uniqueResults.length} results for "${query}"${hitLimit ? ` (LIMIT ${maxResults} REACHED)` : ''}`);
     } catch (error) {
-      console.error('Search error:', error);
       this.postMessage({ type: 'error', message: (error as Error).message });
     } finally {
       this.isSearching = false;
@@ -910,7 +906,7 @@ export class SearchPanel {
       scopeList.innerHTML = scopes.map((scope, index) => \`
         <div class="scope-item">
           <span class="scope-icon">📁</span>
-          <span class="scope-path" title="\${scope.displayName}">\${scope.displayName}</span>
+          <span class="scope-path" title="\${escapeHtml(scope.displayName)}">\${escapeHtml(scope.displayName)}</span>
           <button class="scope-remove" data-index="\${index}" title="Remove">×</button>
         </div>
       \`).join('');
@@ -976,17 +972,17 @@ export class SearchPanel {
         const isExpanded = expandedFiles.has(fileKey);
 
         return \`
-          <div class="file-group" data-file-key="\${fileKey}">
-            <div class="file-header" data-file-key="\${fileKey}">
+          <div class="file-group" data-file-key="\${escapeHtml(fileKey)}">
+            <div class="file-header" data-file-key="\${escapeHtml(fileKey)}">
               <span class="chevron \${isExpanded ? '' : 'collapsed'}">▼</span>
               <span class="file-icon">📄</span>
-              <span class="file-name">\${fileName}</span>
-              <span class="file-path">\${dirPath}</span>
+              <span class="file-name">\${escapeHtml(fileName)}</span>
+              <span class="file-path">\${escapeHtml(dirPath)}</span>
               <span class="file-count">\${group.matches.length}</span>
             </div>
-            <div class="match-list \${isExpanded ? 'expanded' : ''}" data-file-key="\${fileKey}">
+            <div class="match-list \${isExpanded ? 'expanded' : ''}" data-file-key="\${escapeHtml(fileKey)}">
               \${group.matches.map(match => \`
-                <div class="match-item" data-path="\${match.path}" data-connection="\${match.connectionId}" data-line="\${match.line || ''}">
+                <div class="match-item" data-path="\${escapeHtml(match.path)}" data-connection="\${escapeHtml(match.connectionId)}" data-line="\${match.line || ''}">
                   <span class="match-line">\${match.line || ''}</span>
                   <span class="match-text">\${escapeHtml(match.match || '')}</span>
                 </div>

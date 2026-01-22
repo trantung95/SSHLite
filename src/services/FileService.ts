@@ -96,7 +96,7 @@ export class FileService {
   private usingNativeWatch: boolean = false; // Track if native watch is active
   private watchHeartbeatTimer: NodeJS.Timeout | null = null; // Heartbeat timer to check connection health
   private lastWatchActivity: number = 0; // Timestamp of last watch activity
-  private readonly WATCH_HEARTBEAT_INTERVAL_MS = 3000; // Check every 3 seconds
+  private readonly WATCH_HEARTBEAT_INTERVAL_MS = 15000; // Check every 15 seconds (LITE compliant)
   private readonly WATCH_TIMEOUT_MS = 10000; // Clear highlight after 10 seconds of no activity
 
   // Event emitter for watched file changes (used by tree view for live-update indicators)
