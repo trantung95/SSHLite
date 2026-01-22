@@ -1,6 +1,6 @@
 # SSH Lite - Lightweight SSH Client for VS Code
 
-![Version](https://img.shields.io/badge/version-0.1.6-blue)
+![Version](https://img.shields.io/badge/version-0.1.8-blue)
 ![Beta](https://img.shields.io/badge/status-BETA-orange)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-1.85.0+-purple)
@@ -199,3 +199,17 @@ ssh, sftp, remote, terminal, ssh client, remote file, file browser, ssh terminal
 ---
 
 **Enjoy simple, fast SSH access!**
+
+---
+
+<div align="center">
+
+### 🥖 Send me a Bánh Mì
+
+<sub>If this extension saved you time, you could send me a Vietnamese sandwich! 🇻🇳</sub>
+
+**Crypto wallet**: *Coming soon* ☕
+
+<sub>🪷 Made with cà phê sữa đá in Vietnam 🍜</sub>
+
+</div>
