@@ -12,84 +12,113 @@ export function setExtensionPath(extPath: string): void {
 }
 
 /**
- * Tree item representing an SSH host (expandable to show credentials)
+ * Get server key (host:port) for grouping
  */
-export class HostTreeItem extends vscode.TreeItem {
-  constructor(
-    public readonly hostConfig: IHostConfig,
-    public readonly isConnected: boolean
-  ) {
-    // Hosts are always expandable to show credentials (even when connected)
-    super(
-      hostConfig.name,
-      vscode.TreeItemCollapsibleState.Collapsed
-    );
+function getServerKey(host: IHostConfig): string {
+  return `${host.host}:${host.port}`;
+}
 
-    this.description = `${hostConfig.username}@${hostConfig.host}:${hostConfig.port}`;
+/**
+ * Tree item representing a server (host:port), expandable to show credentials/usernames
+ */
+export class ServerTreeItem extends vscode.TreeItem {
+  public readonly serverKey: string;
+  public readonly hosts: IHostConfig[]; // All host configs for this server (different usernames)
+  public readonly isConnected: boolean;
+
+  constructor(
+    serverKey: string,
+    hosts: IHostConfig[],
+    isConnected: boolean
+  ) {
+    // Use first host's name as display name
+    const displayName = hosts[0].name;
+
+    super(displayName, vscode.TreeItemCollapsibleState.Collapsed);
+
+    this.serverKey = serverKey;
+    this.hosts = hosts;
+    this.isConnected = isConnected;
+
+    // Unique ID that includes connection state to prevent VS Code icon caching issues
+    this.id = `server:${serverKey}:${isConnected ? 'connected' : 'disconnected'}`;
+
+    // Description shows host:port only (no username)
+    this.description = serverKey;
+
+    // Tooltip with server info
+    const usernames = hosts.map(h => h.username).join(', ');
     this.tooltip = new vscode.MarkdownString(
-      `**${hostConfig.name}**\n\n` +
-        `- Host: ${hostConfig.host}\n` +
-        `- Port: ${hostConfig.port}\n` +
-        `- Username: ${hostConfig.username}\n` +
-        `- Source: ${hostConfig.source === 'ssh-config' ? '~/.ssh/config' : 'Saved'}\n` +
+      `**${displayName}**\n\n` +
+        `- Server: ${serverKey}\n` +
+        `- Users: ${usernames}\n` +
         `- Status: ${isConnected ? 'Connected' : 'Disconnected'}`
     );
 
-    // Set context value for menu visibility
+    // Set context value and icon based on connection status
+    // Always use ThemeIcon to avoid VS Code SVG caching issues
+    // Check for actual saved credentials in CredentialService (not just host config source)
+    const credentialService = CredentialService.getInstance();
+    const hasSavedCredential = hosts.some(h => credentialService.listCredentials(h.id).length > 0);
+
     if (isConnected) {
-      this.contextValue = 'connectedHost';
-      // Use custom SVG icon with green color baked in (persists when selected)
-      if (extensionPath) {
-        this.iconPath = {
-          light: vscode.Uri.file(path.join(extensionPath, 'images', 'vm-connected.svg')),
-          dark: vscode.Uri.file(path.join(extensionPath, 'images', 'vm-connected.svg')),
-        };
-      } else {
-        this.iconPath = new vscode.ThemeIcon('vm-active', new vscode.ThemeColor('charts.green'));
-      }
-    } else if (hostConfig.source === 'saved') {
-      this.contextValue = 'savedHost';
+      this.contextValue = 'connectedServer';
+      this.iconPath = new vscode.ThemeIcon('vm-running', new vscode.ThemeColor('charts.green'));
+    } else if (hasSavedCredential) {
+      this.contextValue = 'savedServer';
       this.iconPath = new vscode.ThemeIcon('vm');
     } else {
-      this.contextValue = 'host';
+      this.contextValue = 'server';
       this.iconPath = new vscode.ThemeIcon('vm-outline');
     }
+  }
 
-    // No click command - user expands to see credentials
+  /**
+   * Get the primary host config (first one, usually the one user interacts with most)
+   */
+  get primaryHost(): IHostConfig {
+    return this.hosts[0];
   }
 }
 
 /**
- * Tree item representing a saved credential for a host
+ * Tree item representing a username/credential for a server
  */
-export class CredentialTreeItem extends vscode.TreeItem {
+export class UserCredentialTreeItem extends vscode.TreeItem {
   constructor(
     public readonly hostConfig: IHostConfig,
-    public readonly credential: SavedCredential,
-    hasPinnedFolders: boolean = false,
-    isHostConnected: boolean = false
+    public readonly credential: SavedCredential | null, // null if no saved credential
+    public readonly isConnected: boolean,
+    hasPinnedFolders: boolean = false
   ) {
-    // Expandable if has pinned folders
+    // Show username as label
     super(
-      credential.label,
+      hostConfig.username,
       hasPinnedFolders ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None
     );
 
-    this.description = credential.type === 'password' ? 'Password' : 'Private Key';
-    this.contextValue = isHostConnected ? 'credentialConnected' : 'credential';
-
-    // Icon based on credential type
-    if (credential.type === 'password') {
-      this.iconPath = new vscode.ThemeIcon('key');
+    // Description shows credential type if saved
+    if (credential) {
+      this.description = credential.type === 'password' ? 'Password saved' : 'Private Key';
     } else {
-      this.iconPath = new vscode.ThemeIcon('file-symlink-file');
+      this.description = 'No password saved';
     }
 
-    // Only add click-to-connect command if not already connected
-    if (isHostConnected) {
-      this.tooltip = `${credential.label} (connected)`;
+    this.contextValue = isConnected ? 'credentialConnected' : 'credential';
+
+    // Icon based on credential status
+    if (credential) {
+      this.iconPath = new vscode.ThemeIcon('key');
     } else {
-      this.tooltip = `Click to connect using ${credential.label}`;
+      this.iconPath = new vscode.ThemeIcon('person');
+    }
+
+    // Tooltip
+    if (isConnected) {
+      this.tooltip = `${hostConfig.username} (connected)`;
+    } else {
+      this.tooltip = `Click to connect as ${hostConfig.username}`;
+      // Click to connect
       this.command = {
         command: 'sshLite.connectWithCredential',
         title: 'Connect',
@@ -136,13 +165,13 @@ export class PinnedFolderTreeItem extends vscode.TreeItem {
 }
 
 /**
- * Tree item for adding new credential
+ * Tree item for adding new credential/user
  */
 export class AddCredentialTreeItem extends vscode.TreeItem {
-  constructor(public readonly hostConfig: IHostConfig) {
-    super('Add Credential...', vscode.TreeItemCollapsibleState.None);
+  constructor(public readonly serverItem: ServerTreeItem) {
+    super('Add User...', vscode.TreeItemCollapsibleState.None);
 
-    this.tooltip = 'Add a new credential for this host';
+    this.tooltip = 'Add a new user credential for this server';
     this.contextValue = 'addCredential';
     this.iconPath = new vscode.ThemeIcon('add');
 
@@ -150,12 +179,25 @@ export class AddCredentialTreeItem extends vscode.TreeItem {
     this.command = {
       command: 'sshLite.addCredential',
       title: 'Add Credential',
-      arguments: [hostConfig],
+      arguments: [serverItem],
     };
   }
 }
 
-type TreeItemType = HostTreeItem | CredentialTreeItem | AddCredentialTreeItem | PinnedFolderTreeItem;
+// Legacy exports for compatibility
+export { ServerTreeItem as HostTreeItem };
+export class CredentialTreeItem extends UserCredentialTreeItem {
+  constructor(
+    hostConfig: IHostConfig,
+    credential: SavedCredential,
+    hasPinnedFolders: boolean = false,
+    isHostConnected: boolean = false
+  ) {
+    super(hostConfig, credential, isHostConnected, hasPinnedFolders);
+  }
+}
+
+type TreeItemType = ServerTreeItem | UserCredentialTreeItem | AddCredentialTreeItem | PinnedFolderTreeItem;
 
 /**
  * Tree data provider for SSH hosts
@@ -194,42 +236,24 @@ export class HostTreeProvider implements vscode.TreeDataProvider<TreeItemType> {
   }
 
   /**
-   * Get children (hosts or credentials) - synchronous for instant UI
+   * Get children - synchronous for instant UI
    */
   getChildren(element?: TreeItemType): TreeItemType[] {
-    // Root level: show hosts
+    // Root level: show servers (grouped by host:port)
     if (!element) {
-      const hosts = this.hostService.getAllHosts();
-      const connections = this.connectionManager.getAllConnections();
-      const connectedIds = new Set(connections.map((c) => c.id));
-
-      return hosts.map((host) => new HostTreeItem(host, connectedIds.has(host.id)));
+      return this.getServerItems();
     }
 
-    // Host level: show credentials (for both connected and disconnected hosts)
-    if (element instanceof HostTreeItem) {
-      const credentials = this.credentialService.listCredentials(element.hostConfig.id);
-      const items: TreeItemType[] = [];
-
-      // Add saved credentials
-      for (const cred of credentials) {
-        const hasPinnedFolders = (cred.pinnedFolders?.length || 0) > 0;
-        items.push(new CredentialTreeItem(element.hostConfig, cred, hasPinnedFolders, element.isConnected));
-      }
-
-      // Add "Add Credential" item
-      items.push(new AddCredentialTreeItem(element.hostConfig));
-
-      return items;
+    // Server level: show user credentials
+    if (element instanceof ServerTreeItem) {
+      return this.getUserCredentialItems(element);
     }
 
-    // Credential level: show pinned folders
-    if (element instanceof CredentialTreeItem) {
+    // User credential level: show pinned folders
+    if (element instanceof UserCredentialTreeItem && element.credential) {
       const pinnedFolders = element.credential.pinnedFolders || [];
-      const connections = this.connectionManager.getAllConnections();
-      const isConnected = connections.some((c) => c.id === element.hostConfig.id);
       return pinnedFolders.map(
-        (folder) => new PinnedFolderTreeItem(element.hostConfig, element.credential, folder, isConnected)
+        (folder) => new PinnedFolderTreeItem(element.hostConfig, element.credential!, folder, element.isConnected)
       );
     }
 
@@ -237,13 +261,70 @@ export class HostTreeProvider implements vscode.TreeDataProvider<TreeItemType> {
   }
 
   /**
+   * Get server items grouped by host:port
+   */
+  private getServerItems(): ServerTreeItem[] {
+    const hosts = this.hostService.getAllHosts();
+    const connections = this.connectionManager.getAllConnections();
+    const connectedIds = new Set(connections.map((c) => c.id));
+
+    // DEBUG: Log connections on startup
+    if (connections.length > 0) {
+      console.log('[SSH Lite] getServerItems - Active connections:', connections.map(c => c.id));
+    }
+
+    // Group hosts by server key (host:port)
+    const serverMap = new Map<string, IHostConfig[]>();
+    for (const host of hosts) {
+      const key = getServerKey(host);
+      if (!serverMap.has(key)) {
+        serverMap.set(key, []);
+      }
+      serverMap.get(key)!.push(host);
+    }
+
+    // Create server items
+    const items: ServerTreeItem[] = [];
+    for (const [serverKey, serverHosts] of serverMap) {
+      // Check if any username for this server is connected
+      const isConnected = serverHosts.some(h => connectedIds.has(h.id));
+      items.push(new ServerTreeItem(serverKey, serverHosts, isConnected));
+    }
+
+    return items;
+  }
+
+  /**
+   * Get user credential items for a server
+   */
+  private getUserCredentialItems(serverItem: ServerTreeItem): TreeItemType[] {
+    const items: TreeItemType[] = [];
+    const connections = this.connectionManager.getAllConnections();
+    const connectedIds = new Set(connections.map((c) => c.id));
+
+    // Add each username as a credential item
+    for (const host of serverItem.hosts) {
+      const isConnected = connectedIds.has(host.id);
+
+      // Get saved credentials for this specific host config
+      const credentials = this.credentialService.listCredentials(host.id);
+      const primaryCredential = credentials.length > 0 ? credentials[0] : null;
+      const hasPinnedFolders = primaryCredential?.pinnedFolders?.length ? primaryCredential.pinnedFolders.length > 0 : false;
+
+      items.push(new UserCredentialTreeItem(host, primaryCredential, isConnected, hasPinnedFolders));
+    }
+
+    // Add "Add User" item
+    items.push(new AddCredentialTreeItem(serverItem));
+
+    return items;
+  }
+
+  /**
    * Get parent element
    */
   getParent(element: TreeItemType): vscode.ProviderResult<TreeItemType> {
-    if (element instanceof CredentialTreeItem || element instanceof AddCredentialTreeItem) {
-      // Return the parent host - but we need to find it
-      return undefined; // VS Code will handle this
-    }
+    // VS Code will handle parent resolution
     return undefined;
   }
 

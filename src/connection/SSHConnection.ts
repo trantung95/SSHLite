@@ -20,7 +20,7 @@ let sshOutputChannel: vscode.OutputChannel | null = null;
 
 function getOutputChannel(): vscode.OutputChannel {
   if (!sshOutputChannel) {
-    sshOutputChannel = vscode.window.createOutputChannel('SSH Lite');
+    sshOutputChannel = vscode.window.createOutputChannel('SSH Lite Commands');
   }
   return sshOutputChannel;
 }
@@ -166,6 +166,13 @@ export class SSHConnection implements ISSHConnection {
 
   get client(): Client | null {
     return this._client;
+  }
+
+  /**
+   * Get the credential used for this connection
+   */
+  get credential(): SavedCredential | undefined {
+    return this._credential;
   }
 
   /**
@@ -485,12 +492,16 @@ export class SSHConnection implements ISSHConnection {
     }
     this._portForwards.clear();
 
-    // Close client connection
+    // Close client connection - the 'close' event will call handleDisconnect()
+    // which sets state to Disconnected. Don't call setState here to avoid
+    // double state change events that could trigger unwanted auto-reconnect.
     if (this._client) {
       this._client.end();
       this._client = null;
+    } else {
+      // Client already null, manually set state
+      this.setState(ConnectionState.Disconnected);
     }
-    this.setState(ConnectionState.Disconnected);
   }
 
   /**

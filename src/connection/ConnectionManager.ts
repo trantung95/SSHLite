@@ -79,16 +79,20 @@ export class ConnectionManager {
 
     // Listen to state changes
     connection.onStateChange((state) => {
+      console.log(`[SSH Lite] State change for ${connectionId}: ${state}`);
       this._onConnectionStateChange.fire({ connection, state });
 
       // Handle unexpected disconnect - start auto-reconnect
       if (state === ConnectionState.Disconnected) {
         const disconnectInfo = this._disconnectedConnections.get(connectionId);
+        console.log(`[SSH Lite] Disconnect handler - connectionId: ${connectionId}, isManualDisconnect: ${disconnectInfo?.isManualDisconnect}`);
         if (!disconnectInfo?.isManualDisconnect) {
           // Unexpected disconnect - start auto-reconnect
+          console.log(`[SSH Lite] Starting auto-reconnect for: ${connectionId}`);
           this.startReconnect(connectionId, host);
         } else {
           // Manual disconnect - remove from maps
+          console.log(`[SSH Lite] Manual disconnect, cleaning up: ${connectionId}`);
           this._connections.delete(connectionId);
           this._disconnectedConnections.delete(connectionId);
         }
@@ -137,16 +141,20 @@ export class ConnectionManager {
 
     // Listen to state changes
     connection.onStateChange((state) => {
+      console.log(`[SSH Lite] State change (withCred) for ${connectionId}: ${state}`);
       this._onConnectionStateChange.fire({ connection, state });
 
       // Handle unexpected disconnect - start auto-reconnect
       if (state === ConnectionState.Disconnected) {
         const disconnectInfo = this._disconnectedConnections.get(connectionId);
+        console.log(`[SSH Lite] Disconnect handler (withCred) - connectionId: ${connectionId}, isManualDisconnect: ${disconnectInfo?.isManualDisconnect}`);
         if (!disconnectInfo?.isManualDisconnect) {
           // Unexpected disconnect - start auto-reconnect with credential
+          console.log(`[SSH Lite] Starting auto-reconnect (withCred) for: ${connectionId}`);
           this.startReconnect(connectionId, host, credential);
         } else {
           // Manual disconnect - remove from maps
+          console.log(`[SSH Lite] Manual disconnect (withCred), cleaning up: ${connectionId}`);
           this._connections.delete(connectionId);
           this._disconnectedConnections.delete(connectionId);
         }
@@ -366,21 +374,34 @@ export class ConnectionManager {
    * Disconnect a specific connection
    */
   async disconnect(connectionId: string): Promise<void> {
+    console.log(`[SSH Lite] disconnect() called for: ${connectionId}`);
+
     // Mark as manual disconnect to prevent auto-reconnect
+    // IMPORTANT: Set this BEFORE calling connection.disconnect() so the state change
+    // handler can see it. Do NOT call stopReconnect() before disconnect() because
+    // stopReconnect() deletes the entry from _disconnectedConnections.
     const disconnectInfo = this._disconnectedConnections.get(connectionId) || {
       host: this._connections.get(connectionId)?.host!,
       reconnectAttempts: 0,
       isManualDisconnect: true,
     };
     disconnectInfo.isManualDisconnect = true;
-    this._disconnectedConnections.set(connectionId, disconnectInfo);
 
-    // Stop any pending reconnect
-    this.stopReconnect(connectionId);
+    // Clear any pending reconnect timer (but don't delete the entry yet)
+    if (disconnectInfo.reconnectTimer) {
+      clearTimeout(disconnectInfo.reconnectTimer);
+      disconnectInfo.reconnectTimer = undefined;
+    }
+
+    this._disconnectedConnections.set(connectionId, disconnectInfo);
+    console.log(`[SSH Lite] Set isManualDisconnect=true for: ${connectionId}`);
 
     const connection = this._connections.get(connectionId);
     if (connection) {
+      console.log(`[SSH Lite] Calling connection.disconnect() for: ${connectionId}`);
       await connection.disconnect();
+      console.log(`[SSH Lite] connection.disconnect() returned for: ${connectionId}`);
+      // Now safe to clean up - state change handler already checked isManualDisconnect
       this._connections.delete(connectionId);
       this._disconnectedConnections.delete(connectionId);
       this._onDidChangeConnections.fire();
@@ -397,7 +418,7 @@ export class ConnectionManager {
    * Disconnect all connections
    */
   async disconnectAll(): Promise<void> {
-    // Mark all as manual disconnect
+    // Mark all as manual disconnect (but don't delete entries yet)
     for (const connectionId of this._connections.keys()) {
       const disconnectInfo = this._disconnectedConnections.get(connectionId) || {
         host: this._connections.get(connectionId)?.host!,
@@ -405,14 +426,21 @@ export class ConnectionManager {
         isManualDisconnect: true,
       };
       disconnectInfo.isManualDisconnect = true;
+
+      // Clear timer but don't delete entry
+      if (disconnectInfo.reconnectTimer) {
+        clearTimeout(disconnectInfo.reconnectTimer);
+        disconnectInfo.reconnectTimer = undefined;
+      }
+
       this._disconnectedConnections.set(connectionId, disconnectInfo);
-      this.stopReconnect(connectionId);
     }
 
     const disconnectPromises = Array.from(this._connections.values()).map((conn) =>
       conn.disconnect()
     );
     await Promise.all(disconnectPromises);
+    // Now safe to clean up
     this._connections.clear();
     this._disconnectedConnections.clear();
     this._onDidChangeConnections.fire();
@@ -480,5 +508,8 @@ export class ConnectionManager {
     this._onDidChangeConnections.dispose();
     this._onConnectionStateChange.dispose();
     this._onReconnecting.dispose();
+
+    // Reset singleton instance to ensure clean state on reload
+    ConnectionManager._instance = undefined as unknown as ConnectionManager;
   }
 }
