@@ -1,10 +1,12 @@
 import * as vscode from 'vscode';
 import { FileService } from '../services/FileService';
 import { ConnectionManager } from '../connection/ConnectionManager';
+import { normalizeLocalPath } from '../utils/helpers';
 
 /**
  * Provides file decorations for SSH temp files:
- * Grayed-out tab decoration for SSH temp files without active connection (file:// URIs)
+ * - Upload state badge (↑ uploading, ✗ failed) on tab
+ * - Grayed-out tab decoration for SSH temp files without active connection (file:// URIs)
  */
 export class SSHFileDecorationProvider implements vscode.FileDecorationProvider {
   private readonly _onDidChangeFileDecorations = new vscode.EventEmitter<vscode.Uri | vscode.Uri[] | undefined>();
@@ -27,6 +29,13 @@ export class SSHFileDecorationProvider implements vscode.FileDecorationProvider 
       })
     );
 
+    // Subscribe to upload state changes (uploading/failed badges)
+    this.disposables.push(
+      fileService.onUploadStateChanged(() => {
+        this._onDidChangeFileDecorations.fire(undefined);
+      })
+    );
+
     // Subscribe to connection state changes (connect/disconnect/drop)
     this.disposables.push(
       connectionManager.onDidChangeConnections(() => {
@@ -43,11 +52,28 @@ export class SSHFileDecorationProvider implements vscode.FileDecorationProvider 
   provideFileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {
     // Handle file:// URIs — gray out SSH temp files that are not live-refreshing
     if (uri.scheme === 'file') {
-      const filePath = uri.fsPath;
+      const filePath = normalizeLocalPath(uri.fsPath);
 
       // Only decorate files in the SSH temp directory
       if (!filePath.startsWith(this.tempDir)) {
         return undefined;
+      }
+
+      // Upload state badges take priority
+      if (this.fileService.isFileUploading(filePath)) {
+        return {
+          badge: '↑',
+          color: new vscode.ThemeColor('charts.yellow'),
+          tooltip: 'Uploading to server...',
+        };
+      }
+
+      if (this.fileService.isFileUploadFailed(filePath)) {
+        return {
+          badge: '✗',
+          color: new vscode.ThemeColor('errorForeground'),
+          tooltip: 'Upload failed — save again to retry',
+        };
       }
 
       // Check if this file has an active mapping

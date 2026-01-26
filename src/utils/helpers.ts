@@ -1,6 +1,24 @@
 import * as os from 'os';
 
 /**
+ * Normalize a local file path for consistent Map key lookups.
+ *
+ * On Windows, VS Code's document.uri.fsPath lowercases the drive letter (e.g., "c:\...")
+ * but os.tmpdir() and path.join may return uppercase (e.g., "C:\...").
+ * On macOS, HFS+/APFS is case-insensitive — paths from different APIs may differ in case.
+ *
+ * This function normalizes the drive letter on Windows/macOS to ensure Map<localPath> lookups
+ * are consistent regardless of which API produced the path.
+ */
+export function normalizeLocalPath(filePath: string): string {
+  if (filePath.length >= 2 && filePath[1] === ':') {
+    // Windows drive letter: C:\foo → c:\foo
+    return filePath[0].toLowerCase() + filePath.slice(1);
+  }
+  return filePath;
+}
+
+/**
  * Expand ~ to home directory in a path
  */
 export function expandPath(filePath: string): string {

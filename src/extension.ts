@@ -22,7 +22,7 @@ import { SearchPanel } from './webviews/SearchPanel';
 import { SSHFileDecorationProvider } from './providers/FileDecorationProvider';
 import { ProgressiveFileContentProvider } from './providers/ProgressiveFileContentProvider';
 import { PROGRESSIVE_PREVIEW_SCHEME } from './types/progressive';
-import { formatFileSize, formatRelativeTime } from './utils/helpers';
+import { formatFileSize, formatRelativeTime, normalizeLocalPath } from './utils/helpers';
 
 let outputChannel: vscode.OutputChannel;
 
@@ -210,22 +210,23 @@ export function activate(context: vscode.ExtensionContext): void {
 
     for (const doc of openDocs) {
       // Check if this is an SSH file
-      const isInSshTempDir = doc.uri.fsPath.includes(sshTempDir) ||
-                             doc.uri.fsPath.includes('ssh-lite');
-      const hasSshPrefix = doc.uri.fsPath.includes('[SSH]');
+      const fsPath = normalizeLocalPath(doc.uri.fsPath);
+      const isInSshTempDir = fsPath.includes(sshTempDir) ||
+                             fsPath.includes('ssh-lite');
+      const hasSshPrefix = fsPath.includes('[SSH]');
 
       if ((isInSshTempDir || hasSshPrefix) && !doc.isUntitled) {
         // Check if we have an active connection for it
-        const mapping = fileService.getFileMapping(doc.uri.fsPath);
+        const mapping = fileService.getFileMapping(fsPath);
         if (!mapping) {
           // No mapping = orphaned file from previous session
-          const hostInfo = parseHostInfoFromPath(doc.uri.fsPath);
+          const hostInfo = parseHostInfoFromPath(fsPath);
           if (hostInfo) {
-            orphanedSshFiles.set(doc.uri.fsPath, {
+            orphanedSshFiles.set(fsPath, {
               remotePath: '', // We don't know the remote path yet
               hostHash: hostInfo.hostHash,
             });
-            log(`Detected orphaned SSH file: ${doc.uri.fsPath} (hostHash: ${hostInfo.hostHash})`);
+            log(`Detected orphaned SSH file: ${fsPath} (hostHash: ${hostInfo.hostHash})`);
           }
         }
       }
@@ -267,7 +268,7 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
 
-    const filePath = editor.document.uri.fsPath;
+    const filePath = normalizeLocalPath(editor.document.uri.fsPath);
     const mapping = fileService.getFileMapping(filePath);
 
     // Set context for showing/hiding reconnect button
@@ -509,7 +510,7 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
-      const localPath = editor.document.uri.fsPath;
+      const localPath = normalizeLocalPath(editor.document.uri.fsPath);
       const orphanInfo = orphanedSshFiles.get(localPath);
 
       if (!orphanInfo) {
@@ -1357,7 +1358,7 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
-      const localPath = activeEditor.document.uri.fsPath;
+      const localPath = normalizeLocalPath(activeEditor.document.uri.fsPath);
       log(`revealInTree: localPath=${localPath}`);
 
       // Try to get mapping from FileService
@@ -2374,7 +2375,8 @@ async function autoReconnectFromOpenFiles(
   // Find all open text documents that are remote files (in temp directory)
   // Check both workspace.textDocuments and visible editors for better coverage
   const remoteDocuments = vscode.workspace.textDocuments.filter((doc) => {
-    return doc.uri.scheme === 'file' && doc.uri.fsPath.startsWith(tempDir);
+    const fp = normalizeLocalPath(doc.uri.fsPath);
+    return doc.uri.scheme === 'file' && fp.startsWith(tempDir);
   });
 
   // Also check tab groups for restored tabs that might not be in textDocuments yet
@@ -2382,9 +2384,9 @@ async function autoReconnectFromOpenFiles(
   for (const tabGroup of vscode.window.tabGroups.all) {
     for (const tab of tabGroup.tabs) {
       if (tab.input instanceof vscode.TabInputText) {
-        const uri = tab.input.uri;
-        if (uri.scheme === 'file' && uri.fsPath.startsWith(tempDir)) {
-          tabPaths.add(uri.fsPath);
+        const fp = normalizeLocalPath(tab.input.uri.fsPath);
+        if (tab.input.uri.scheme === 'file' && fp.startsWith(tempDir)) {
+          tabPaths.add(fp);
         }
       }
     }
@@ -2393,7 +2395,7 @@ async function autoReconnectFromOpenFiles(
   // Combine both sources
   const allRemotePaths = new Set<string>();
   for (const doc of remoteDocuments) {
-    allRemotePaths.add(doc.uri.fsPath);
+    allRemotePaths.add(normalizeLocalPath(doc.uri.fsPath));
   }
   for (const path of tabPaths) {
     allRemotePaths.add(path);

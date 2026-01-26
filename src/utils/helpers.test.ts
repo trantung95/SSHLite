@@ -1,5 +1,6 @@
 import * as os from 'os';
 import {
+  normalizeLocalPath,
   expandPath,
   validatePort,
   formatFileSize,
@@ -8,6 +9,119 @@ import {
 } from './helpers';
 
 describe('helpers', () => {
+  describe('normalizeLocalPath', () => {
+    describe('Windows drive letter normalization', () => {
+      it('should lowercase uppercase drive letter', () => {
+        expect(normalizeLocalPath('C:\\Users\\test\\file.ts')).toBe('c:\\Users\\test\\file.ts');
+      });
+
+      it('should keep already-lowercase drive letter unchanged', () => {
+        expect(normalizeLocalPath('c:\\Users\\test\\file.ts')).toBe('c:\\Users\\test\\file.ts');
+      });
+
+      it('should handle various drive letters (D:, E:, etc.)', () => {
+        expect(normalizeLocalPath('D:\\Data\\file.ts')).toBe('d:\\Data\\file.ts');
+        expect(normalizeLocalPath('E:\\Projects\\ssh-lite')).toBe('e:\\Projects\\ssh-lite');
+        expect(normalizeLocalPath('Z:\\Network\\share')).toBe('z:\\Network\\share');
+      });
+
+      it('should only lowercase the drive letter, not the rest of the path', () => {
+        expect(normalizeLocalPath('C:\\Users\\John\\Documents\\MyFile.TS'))
+          .toBe('c:\\Users\\John\\Documents\\MyFile.TS');
+      });
+
+      it('should handle drive letter with forward slashes', () => {
+        // Some APIs return forward slashes on Windows
+        expect(normalizeLocalPath('C:/Users/test/file.ts')).toBe('c:/Users/test/file.ts');
+      });
+
+      it('should handle drive letter only (root)', () => {
+        expect(normalizeLocalPath('C:\\')).toBe('c:\\');
+        expect(normalizeLocalPath('D:\\')).toBe('d:\\');
+      });
+    });
+
+    describe('Unix paths (no normalization needed)', () => {
+      it('should return Unix paths unchanged', () => {
+        expect(normalizeLocalPath('/home/user/file.ts')).toBe('/home/user/file.ts');
+      });
+
+      it('should return macOS temp dir unchanged', () => {
+        expect(normalizeLocalPath('/var/folders/zz/abc123/T/ssh-lite'))
+          .toBe('/var/folders/zz/abc123/T/ssh-lite');
+      });
+
+      it('should return Linux temp dir unchanged', () => {
+        expect(normalizeLocalPath('/tmp/ssh-lite/conn1/file.ts'))
+          .toBe('/tmp/ssh-lite/conn1/file.ts');
+      });
+
+      it('should handle root path', () => {
+        expect(normalizeLocalPath('/')).toBe('/');
+      });
+    });
+
+    describe('edge cases', () => {
+      it('should handle empty string', () => {
+        expect(normalizeLocalPath('')).toBe('');
+      });
+
+      it('should handle single character', () => {
+        expect(normalizeLocalPath('a')).toBe('a');
+      });
+
+      it('should not modify paths with colon in non-drive position', () => {
+        // Unix paths can technically have colons (unlikely but possible)
+        expect(normalizeLocalPath('/home/user/file:backup.ts'))
+          .toBe('/home/user/file:backup.ts');
+      });
+
+      it('should handle UNC paths (no drive letter)', () => {
+        // UNC paths like \\server\share don't have drive letters
+        expect(normalizeLocalPath('\\\\server\\share\\file.ts'))
+          .toBe('\\\\server\\share\\file.ts');
+      });
+    });
+
+    describe('real-world Windows path case mismatch scenario', () => {
+      it('should make os.tmpdir and VS Code fsPath match', () => {
+        // Simulate: os.tmpdir() returns "C:\\Users\\user\\AppData\\Local\\Temp"
+        // VS Code's document.uri.fsPath returns "c:\\Users\\user\\AppData\\Local\\Temp"
+        const osTmpDir = 'C:\\Users\\user\\AppData\\Local\\Temp';
+        const vscodeFsPath = 'c:\\Users\\user\\AppData\\Local\\Temp';
+
+        const normalizedTmpDir = normalizeLocalPath(osTmpDir);
+        const normalizedFsPath = normalizeLocalPath(vscodeFsPath);
+
+        expect(normalizedTmpDir).toBe(normalizedFsPath);
+      });
+
+      it('should make path.join(tmpdir, ...) and fsPath match', () => {
+        const osTmpDir = 'C:\\Users\\user\\AppData\\Local\\Temp';
+        const joined = osTmpDir + '\\ssh-lite\\conn1\\file.ts';
+        const fsPath = 'c:\\Users\\user\\AppData\\Local\\Temp\\ssh-lite\\conn1\\file.ts';
+
+        expect(normalizeLocalPath(joined)).toBe(normalizeLocalPath(fsPath));
+      });
+
+      it('should ensure startsWith works after normalization', () => {
+        const tempDir = normalizeLocalPath('C:\\Users\\user\\AppData\\Local\\Temp\\ssh-lite');
+        const filePath = normalizeLocalPath('c:\\Users\\user\\AppData\\Local\\Temp\\ssh-lite\\conn1\\file.ts');
+
+        expect(filePath.startsWith(tempDir)).toBe(true);
+      });
+
+      it('should ensure Map lookup works after normalization', () => {
+        const map = new Map<string, string>();
+        const internalPath = normalizeLocalPath('C:\\Users\\user\\AppData\\Local\\Temp\\ssh-lite\\conn1\\file.ts');
+        map.set(internalPath, 'remote:/path/file.ts');
+
+        const externalPath = normalizeLocalPath('c:\\Users\\user\\AppData\\Local\\Temp\\ssh-lite\\conn1\\file.ts');
+        expect(map.get(externalPath)).toBe('remote:/path/file.ts');
+      });
+    });
+  });
+
   describe('expandPath', () => {
     it('should expand ~ to home directory', () => {
       const result = expandPath('~/.ssh/id_rsa');

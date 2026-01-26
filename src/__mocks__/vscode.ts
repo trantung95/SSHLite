@@ -105,6 +105,34 @@ export interface Command {
   arguments?: unknown[];
 }
 
+// MarkdownString mock
+export class MarkdownString {
+  value: string;
+  isTrusted?: boolean;
+  supportThemeIcons?: boolean;
+  supportHtml?: boolean;
+
+  constructor(value?: string, supportThemeIcons?: boolean) {
+    this.value = value || '';
+    this.supportThemeIcons = supportThemeIcons;
+  }
+
+  appendText(value: string): MarkdownString {
+    this.value += value;
+    return this;
+  }
+
+  appendMarkdown(value: string): MarkdownString {
+    this.value += value;
+    return this;
+  }
+
+  appendCodeblock(value: string, language?: string): MarkdownString {
+    this.value += `\`\`\`${language || ''}\n${value}\n\`\`\``;
+    return this;
+  }
+}
+
 // ThemeIcon mock
 export class ThemeIcon {
   constructor(public readonly id: string, public readonly color?: ThemeColor) {}
@@ -196,6 +224,7 @@ export const workspace = {
     save: jest.fn().mockResolvedValue(true),
   }),
   onDidSaveTextDocument: new EventEmitter<unknown>().event,
+  onDidCloseTextDocument: new EventEmitter<unknown>().event,
   onDidChangeConfiguration: new EventEmitter<unknown>().event,
   fs: {
     readFile: jest.fn(),
@@ -260,6 +289,13 @@ export const window = {
     dispose: jest.fn(),
   }),
   registerWebviewViewProvider: jest.fn(),
+  tabGroups: {
+    all: [],
+    activeTabGroup: { tabs: [] },
+    onDidChangeTabs: new EventEmitter<unknown>().event,
+    onDidChangeTabGroups: new EventEmitter<unknown>().event,
+    close: jest.fn(),
+  },
 };
 
 // Commands mock

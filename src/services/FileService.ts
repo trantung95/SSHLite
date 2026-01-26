@@ -12,7 +12,7 @@ import { ProgressiveDownloadManager } from './ProgressiveDownloadManager';
 import { PriorityQueueService, PreloadPriority } from './PriorityQueueService';
 import { ActivityService } from './ActivityService';
 import { CommandGuard } from './CommandGuard';
-import { formatFileSize } from '../utils/helpers';
+import { formatFileSize, normalizeLocalPath } from '../utils/helpers';
 import { isLikelyBinary, DEFAULT_PROGRESSIVE_CONFIG } from '../types/progressive';
 
 /**
@@ -125,8 +125,20 @@ export class FileService {
   private readonly _onFileMappingsChanged = new vscode.EventEmitter<void>();
   public readonly onFileMappingsChanged = this._onFileMappingsChanged.event;
 
+  // Track upload state for tab decorations (uploading badge, failed badge)
+  private uploadingFiles: Set<string> = new Set(); // localPath values currently uploading
+  private failedUploadFiles: Set<string> = new Set(); // localPath values that failed last upload
+  private readonly _onUploadStateChanged = new vscode.EventEmitter<void>();
+  public readonly onUploadStateChanged = this._onUploadStateChanged.event;
+
+  // Track upload spinner disposables to dismiss them on completion
+  private uploadSpinners: Map<string, vscode.Disposable> = new Map();
+
   private constructor() {
-    this.tempDir = path.join(os.tmpdir(), 'ssh-lite');
+    // Normalize temp dir path so Map<localPath> lookups match document.uri.fsPath.
+    // On Windows, os.tmpdir() returns uppercase drive letter (C:\...) but VS Code
+    // lowercases it (c:\...). normalizeLocalPath handles this cross-platform.
+    this.tempDir = normalizeLocalPath(path.join(os.tmpdir(), 'ssh-lite'));
     this.backupDir = path.join(this.tempDir, 'backups');
     this.ensureTempDir();
     this.ensureBackupDir();
@@ -157,7 +169,7 @@ export class FileService {
 
     // Also update when documents are closed
     vscode.workspace.onDidCloseTextDocument((doc) => {
-      const localPath = doc.uri.fsPath;
+      const localPath = normalizeLocalPath(doc.uri.fsPath);
       const mapping = this.fileMappings.get(localPath);
       if (mapping) {
         // Flush any pending upload immediately so edits aren't lost
@@ -185,7 +197,7 @@ export class FileService {
         // Check if tab has a text document input
         if (tab.input && typeof tab.input === 'object' && 'uri' in tab.input) {
           const uri = (tab.input as { uri: vscode.Uri }).uri;
-          const localPath = uri.fsPath;
+          const localPath = normalizeLocalPath(uri.fsPath);
           const mapping = this.fileMappings.get(localPath);
           if (mapping) {
             this.openSshFiles.add(mapping.remotePath);
@@ -242,7 +254,7 @@ export class FileService {
         return;
       }
 
-      const localPath = editor.document.uri.fsPath;
+      const localPath = normalizeLocalPath(editor.document.uri.fsPath);
       const mapping = this.fileMappings.get(localPath);
 
       if (!mapping) {
@@ -506,7 +518,8 @@ export class FileService {
     this.debounceTimers.set(debounceKey, setTimeout(async () => {
       this.debounceTimers.delete(debounceKey);
 
-      // Refresh the file immediately
+      // Refresh the file — skips automatically if document is dirty (user editing)
+      // Resumes on next event after document becomes clean (upload success or Ctrl+Z)
       await this.refreshSingleFile(localPath, mapping, true);
 
       vscode.window.setStatusBarMessage(`$(zap) File updated (real-time watch)`, 1500);
@@ -766,6 +779,20 @@ export class FileService {
    */
   getFileMapping(localPath: string): FileMapping | undefined {
     return this.fileMappings.get(localPath);
+  }
+
+  /**
+   * Check if a file is currently being uploaded to the remote server
+   */
+  isFileUploading(localPath: string): boolean {
+    return this.uploadingFiles.has(localPath);
+  }
+
+  /**
+   * Check if a file's last upload failed
+   */
+  isFileUploadFailed(localPath: string): boolean {
+    return this.failedUploadFiles.has(localPath);
   }
 
   /**
@@ -1773,11 +1800,14 @@ export class FileService {
    * Handle file save event
    */
   private handleFileSave(document: vscode.TextDocument): void {
-    const localPath = document.uri.fsPath;
+    const localPath = normalizeLocalPath(document.uri.fsPath);
+
+    console.log(`[SSH Lite Save] onDidSaveTextDocument fired: ${path.basename(localPath)}`);
 
     // Check if we should skip this save (used after loading to clear dirty state)
     if (this.skipNextSave.has(localPath)) {
       this.skipNextSave.delete(localPath);
+      console.log(`[SSH Lite Save] SKIPPED: skipNextSave was set for ${path.basename(localPath)}`);
       return;
     }
 
@@ -1785,18 +1815,47 @@ export class FileService {
     const autoUpload = config.get<boolean>('autoUploadOnSave', true);
 
     if (!autoUpload) {
+      console.log(`[SSH Lite Save] SKIPPED: autoUploadOnSave is disabled`);
       return;
     }
 
-    const mapping = this.fileMappings.get(localPath);
+    let mapping = this.fileMappings.get(localPath);
 
     if (!mapping) {
-      return;
+      // Check for case mismatch (Windows: document.uri.fsPath may lowercase drive letter)
+      const mapKeys = Array.from(this.fileMappings.keys());
+      const matchIgnoreCase = mapKeys.find(k => k.toLowerCase() === localPath.toLowerCase());
+      if (matchIgnoreCase) {
+        console.log(`[SSH Lite Save] Case mismatch fixed: fsPath="${localPath}" vs mapKey="${matchIgnoreCase}"`);
+        mapping = this.fileMappings.get(matchIgnoreCase)!;
+        // Re-register with normalized key so future lookups work
+        this.fileMappings.set(localPath, mapping);
+      } else {
+        console.log(`[SSH Lite Save] SKIPPED: no file mapping for ${localPath} (${mapKeys.length} mappings registered)`);
+        return;
+      }
     }
 
     // Capture content immediately at save time - do NOT defer getText() into the
     // setTimeout callback, because the document may be disposed (tab closed) by then
     const textContent = document.getText();
+
+    const fileName = path.basename(mapping.remotePath);
+
+    console.log(`[SSH Lite Save] Uploading ${fileName} (${textContent.length} chars) to ${mapping.connectionId}:${mapping.remotePath}`);
+
+    // Show immediate status bar feedback (store disposable to dismiss on completion)
+    const prevSpinner = this.uploadSpinners.get(localPath);
+    if (prevSpinner) { prevSpinner.dispose(); }
+    this.uploadSpinners.set(
+      localPath,
+      vscode.window.setStatusBarMessage(`$(sync~spin) Uploading ${fileName}...`, 30000)
+    );
+
+    // Track upload state for tab decoration (↑ badge while uploading)
+    this.uploadingFiles.add(localPath);
+    this.failedUploadFiles.delete(localPath); // Clear previous failure on new save attempt
+    this._onUploadStateChanged.fire();
 
     // Debounce uploads
     const debounceMs = config.get<number>('uploadDebounceMs', 500);
@@ -1805,14 +1864,19 @@ export class FileService {
     const existingPending = this.pendingUploads.get(localPath);
     if (existingPending) {
       clearTimeout(existingPending.timer);
+      console.log(`[SSH Lite Save] Cancelled previous pending upload for ${fileName}`);
     }
 
     const uploadFn = async () => {
+      console.log(`[SSH Lite Save] Debounce fired, starting upload for ${fileName}`);
       this.pendingUploads.delete(localPath);
       const uploadPromise = this.uploadFileWithAudit(mapping, textContent);
       this.pendingUploadPromises.set(localPath, uploadPromise);
       try {
         await uploadPromise;
+        console.log(`[SSH Lite Save] Upload completed for ${fileName}`);
+      } catch (err) {
+        console.log(`[SSH Lite Save] Upload FAILED for ${fileName}: ${(err as Error).message}`);
       } finally {
         this.pendingUploadPromises.delete(localPath);
       }
@@ -1850,10 +1914,21 @@ export class FileService {
     const connectionManager = ConnectionManager.getInstance();
     const connection = connectionManager.getConnection(mapping.connectionId);
 
+    console.log(`[SSH Lite Save] uploadFileWithAudit: ${path.basename(mapping.remotePath)}, connection=${connection ? 'active' : 'NULL'}, content=${newContent.length} chars`);
+
     if (!connection) {
+      const fileName = path.basename(mapping.remotePath);
+      console.log(`[SSH Lite Save] FAILED: no connection for ${mapping.connectionId}`);
       vscode.window.showWarningMessage(
-        `Cannot upload: connection to ${mapping.connectionId} is no longer active`
+        `Cannot save ${fileName}: connection to ${mapping.connectionId} is no longer active`
       );
+      this.uploadSpinners.get(mapping.localPath)?.dispose();
+      this.uploadSpinners.delete(mapping.localPath);
+      vscode.window.setStatusBarMessage(`$(error) Save failed: ${fileName} (disconnected)`, 5000);
+      // Mark upload failed — tab shows ✗ badge via FileDecorationProvider
+      this.uploadingFiles.delete(mapping.localPath);
+      this.failedUploadFiles.add(mapping.localPath);
+      this._onUploadStateChanged.fire();
       return;
     }
 
@@ -1897,13 +1972,21 @@ export class FileService {
       });
 
       if (!selected || selected.value === 'cancel') {
+        this.uploadSpinners.get(mapping.localPath)?.dispose();
+        this.uploadSpinners.delete(mapping.localPath);
         vscode.window.setStatusBarMessage(`$(x) Upload cancelled`, 2000);
+        this.uploadingFiles.delete(mapping.localPath);
+        this._onUploadStateChanged.fire();
         return;
       }
 
       if (selected.value === 'diff') {
         // Show diff before upload
         await this.showUploadDiff(mapping, newContent);
+        this.uploadSpinners.get(mapping.localPath)?.dispose();
+        this.uploadSpinners.delete(mapping.localPath);
+        this.uploadingFiles.delete(mapping.localPath);
+        this._onUploadStateChanged.fire();
         return; // User can save again after reviewing
       }
     }
@@ -1921,11 +2004,13 @@ export class FileService {
 
     try {
       const content = Buffer.from(newContent, 'utf-8');
+      console.log(`[SSH Lite Save] Writing ${content.length} bytes to ${connection.host.name}:${mapping.remotePath}`);
       // Use CommandGuard for activity tracking
       await this.commandGuard.writeFile(connection, mapping.remotePath, content, {
         description: `Save: ${path.basename(mapping.remotePath)}`,
         detail: `${formatFileSize(content.length)} to ${connection.host.name}`,
       });
+      console.log(`[SSH Lite Save] Write SUCCESS for ${path.basename(mapping.remotePath)}`);
 
       // Log to audit trail with diff
       this.auditService.logEdit(
@@ -1944,22 +2029,33 @@ export class FileService {
       mapping.lastRemoteSize = content.length;
       mapping.lastSyncTime = Date.now();
 
-      // Show info notification with revert option
+      // Clear upload state — upload succeeded, tab badge removed
+      this.uploadingFiles.delete(mapping.localPath);
+      this.failedUploadFiles.delete(mapping.localPath);
+      this._onUploadStateChanged.fire();
+
+      // Dismiss spinner before showing success message
+      this.uploadSpinners.get(mapping.localPath)?.dispose();
+      this.uploadSpinners.delete(mapping.localPath);
+
+      // Show success notification with filename
+      const fileName = path.basename(mapping.remotePath);
+      vscode.window.setStatusBarMessage(
+        `$(cloud-upload) Saved ${fileName} to ${connection.host.name}`,
+        5000
+      );
+
+      // Offer revert if backups available
       const backups = this.getBackupHistory(connection.id, mapping.remotePath);
       if (backups.length > 0) {
         vscode.window.showInformationMessage(
-          `$(cloud-upload) Uploaded ${path.basename(mapping.remotePath)} to ${connection.host.name}`,
+          `Saved ${fileName} to ${connection.host.name}`,
           'Revert'
         ).then((action) => {
           if (action === 'Revert') {
             this.showRevertPicker(connection, mapping.remotePath);
           }
         });
-      } else {
-        vscode.window.setStatusBarMessage(
-          `$(cloud-upload) Uploaded to ${path.basename(mapping.remotePath)}`,
-          3000
-        );
       }
     } catch (error) {
       // Log failed upload
@@ -1974,7 +2070,16 @@ export class FileService {
         false,
         (error as Error).message
       );
-      vscode.window.showErrorMessage(`Failed to upload file: ${(error as Error).message}`);
+      // Mark upload failed — tab shows ✗ badge via FileDecorationProvider
+      this.uploadingFiles.delete(mapping.localPath);
+      this.failedUploadFiles.add(mapping.localPath);
+      this._onUploadStateChanged.fire();
+      // Dismiss spinner before showing error message
+      this.uploadSpinners.get(mapping.localPath)?.dispose();
+      this.uploadSpinners.delete(mapping.localPath);
+      const fileName = path.basename(mapping.remotePath);
+      vscode.window.showErrorMessage(`Failed to save ${fileName}: ${(error as Error).message}`);
+      vscode.window.setStatusBarMessage(`$(error) Save failed: ${fileName}`, 5000);
     }
   }
 
@@ -2093,7 +2198,7 @@ export class FileService {
     }
 
     const activeEditor = vscode.window.activeTextEditor;
-    const focusedPath = activeEditor?.document.uri.fsPath;
+    const focusedPath = activeEditor ? normalizeLocalPath(activeEditor.document.uri.fsPath) : undefined;
 
     // Group mappings by connectionId for parallel refresh
     // Create snapshot to avoid concurrent modification during iteration
@@ -2164,6 +2269,13 @@ export class FileService {
     const connection = connectionManager.getConnection(mapping.connectionId);
 
     if (!connection) {
+      return;
+    }
+
+    // Skip refresh if document has local edits (user is editing) or upload is pending/in-flight
+    // Don't fetch from server while user is actively working on the file
+    const openDoc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === localPath);
+    if (openDoc?.isDirty || this.pendingUploads.has(localPath) || this.pendingUploadPromises.has(localPath) || this.uploadingFiles.has(localPath)) {
       return;
     }
 
@@ -2521,7 +2633,22 @@ export class FileService {
         return;
       }
 
-      // Unknown state - just show the document
+      // Document has real content but no mapping (e.g., mapping was deleted by cleanupConnection
+      // after disconnect+reconnect, or by auto-cleanup). Recreate the mapping so saves work.
+      const existingContent = existingDoc.getText();
+      const mapping: FileMapping = {
+        connectionId: connection.id,
+        remotePath: remoteFile.path,
+        localPath,
+        lastSyncTime: Date.now(),
+        lastRemoteModTime: remoteFile.modifiedTime,
+        lastRemoteSize: remoteFile.size,
+        originalContent: existingContent,
+        remoteFile,
+        connection,
+      };
+      this.fileMappings.set(localPath, mapping);
+      this.saveFileMetadata(localPath, remoteFile.path, connection.id);
       await vscode.window.showTextDocument(existingDoc, { preview: false });
       return;
     }
@@ -2593,6 +2720,10 @@ export class FileService {
         // Save document - VS Code writes to disk and clears dirty state
         // Don't manually write to disk, let VS Code handle it to avoid conflict detection
         await document.save();
+
+        // Safety: ensure skipNextSave is consumed even if onDidSaveTextDocument didn't fire
+        // (can happen if document wasn't actually dirty — e.g., VS Code cached document with same content)
+        this.skipNextSave.delete(localPath);
 
         vscode.window.setStatusBarMessage(`$(check) Downloaded ${remoteFile.name}`, 3000);
 
@@ -2750,6 +2881,9 @@ export class FileService {
 
           // Save document
           await document.save();
+
+          // Safety: ensure skipNextSave is consumed even if onDidSaveTextDocument didn't fire
+          this.skipNextSave.delete(localPath);
 
           progress.report({ message: 'Complete!' });
 
@@ -3764,6 +3898,7 @@ export class FileService {
     }
 
     this._onFileMappingsChanged.dispose();
+    this._onUploadStateChanged.dispose();
 
     for (const timer of this.debounceTimers.values()) {
       clearTimeout(timer);
@@ -3774,6 +3909,11 @@ export class FileService {
       clearTimeout(pending.timer);
     }
     this.pendingUploads.clear();
+
+    for (const spinner of this.uploadSpinners.values()) {
+      spinner.dispose();
+    }
+    this.uploadSpinners.clear();
 
     // Reset singleton instance to ensure clean state on reload
     FileService._instance = undefined as unknown as FileService;

@@ -13,7 +13,7 @@ import {
   isLikelyBinary,
   loadProgressiveConfig,
 } from '../types/progressive';
-import { formatFileSize } from '../utils/helpers';
+import { formatFileSize, normalizeLocalPath } from '../utils/helpers';
 
 /**
  * Manages progressive file downloads with real progress tracking
@@ -454,7 +454,7 @@ export class ProgressiveDownloadManager {
    */
   public cancelDownloadByUri(uri: vscode.Uri): boolean {
     const uriString = uri.toString();
-    const fsPath = uri.fsPath;
+    const fsPath = normalizeLocalPath(uri.fsPath);
     const scheme = uri.scheme;
 
     // Snapshot to prevent concurrent modification during iteration

@@ -1,0 +1,34 @@
+# SSH test servers for integration testing
+# Usage: docker compose -f test-docker/docker-compose.yml up -d
+# Cleanup: docker compose -f test-docker/docker-compose.yml down
+
+services:
+  # Server 1: "Production" - port 2201
+  ssh-server-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.sshd
+    container_name: sshlite-test-server-1
+    ports:
+      - "2201:22"
+    hostname: prod-server
+
+  # Server 2: "Staging" - port 2202
+  ssh-server-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.sshd
+    container_name: sshlite-test-server-2
+    ports:
+      - "2202:22"
+    hostname: staging-server
+
+  # Server 3: "Dev" - port 2203
+  ssh-server-3:
+    build:
+      context: .
+      dockerfile: Dockerfile.sshd
+    container_name: sshlite-test-server-3
+    ports:
+      - "2203:22"
+    hostname: dev-server

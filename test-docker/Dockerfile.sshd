@@ -1,0 +1,37 @@
+FROM alpine:3.19
+
+RUN apk add --no-cache openssh-server bash coreutils findutils grep
+
+# Create test users
+RUN adduser -D -s /bin/bash testuser && echo "testuser:testpass" | chpasswd
+RUN adduser -D -s /bin/bash admin && echo "admin:adminpass" | chpasswd
+
+# Generate host keys
+RUN ssh-keygen -A
+
+# Configure sshd: allow password auth, no PAM
+RUN sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && \
+    echo "UsePAM no" >> /etc/ssh/sshd_config && \
+    echo "Subsystem sftp /usr/lib/ssh/sftp-server" >> /etc/ssh/sshd_config
+
+# Create test directories and files for each user
+RUN mkdir -p /home/testuser/projects/src && \
+    echo 'console.log("hello world");' > /home/testuser/projects/src/app.ts && \
+    echo '{"name":"test"}' > /home/testuser/projects/package.json && \
+    echo 'TODO: fix bug' > /home/testuser/projects/src/todo.ts && \
+    mkdir -p /home/testuser/logs && \
+    echo '[2024-01-01] Server started' > /home/testuser/logs/app.log && \
+    chown -R testuser:testuser /home/testuser
+
+RUN mkdir -p /home/admin/configs && \
+    echo 'server.port=8080' > /home/admin/configs/server.conf && \
+    echo 'db.host=localhost' > /home/admin/configs/db.conf && \
+    mkdir -p /home/admin/scripts && \
+    echo '#!/bin/bash\necho "deploy complete"' > /home/admin/scripts/deploy.sh && \
+    chmod +x /home/admin/scripts/deploy.sh && \
+    chown -R admin:admin /home/admin
+
+EXPOSE 22
+
+CMD ["/usr/sbin/sshd", "-D", "-e"]

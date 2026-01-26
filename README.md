@@ -1,6 +1,6 @@
 # SSH Lite - Lightweight SSH Client for VS Code
 
-![Version](https://img.shields.io/badge/version-0.1.8-blue)
+![Version](https://img.shields.io/badge/version-0.2.0-blue)
 ![Beta](https://img.shields.io/badge/status-BETA-orange)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-1.85.0+-purple)
@@ -33,8 +33,13 @@ Unlike VS Code's official Remote-SSH extension that installs a heavy VS Code Ser
 - **Auto-Save Credentials** - Enter password once, auto-saved for next time
 - **SSH Config Support** - Reads from `~/.ssh/config` automatically
 - **Multiple Connections** - Connect to multiple servers simultaneously
+- **Auto-Reconnect** - Automatic reconnection on unexpected disconnect
+- **Live File Refresh** - Auto-refresh opened files from remote server
+- **Upload State Badges** - Tab badge shows upload progress (↑) and failures (✗)
+- **File Search** - Search across remote files with webview panel
+- **Filename Filter** - Filter file tree with highlighting
+- **Activity Panel** - Track all file operations in real-time
 - **Server Monitoring** - Quick status, diagnose slowness, check services
-- **Audit Trail** - Track all file operations with diff support
 - **Large File Handling** - Smart handling for files >100MB
 
 ### Simple & Fast
@@ -164,6 +169,32 @@ Contributions welcome! Please submit Pull Requests on GitHub.
 Apache-2.0 License
 
 ## Release Notes
+
+### 0.2.0 (Beta)
+- **Upload state tracking** - Tab badges show upload progress (↑ yellow) and failures (✗ red) via FileDecorationProvider
+- **Reliable file save** - Replaced SFTP stream with writeFile API for confirmed server-side writes (no more false failures)
+- **Cross-platform path normalization** - Fixed Windows drive letter case mismatch between VS Code and OS APIs
+- **Save notification fix** - Status bar correctly shows upload result instead of spinner
+- **Activity panel** - Real-time tracking of all SSH operations
+- **Multi-server grouping** - Hosts grouped by host:port in sidebar
+- **Search auto-cancel** - Previous search cancelled when starting new one
+- **Comprehensive test suite** - 674 tests (587 mock + 87 Docker e2e)
+
+### 0.1.9 (Beta)
+- Fix disconnect auto-reconnect behavior
+- Fix sidebar icon issues
+- Security hardening and LITE principles compliance
+
+### 0.1.8 (Beta)
+- Add Banh Mi Easter egg
+
+### 0.1.7 (Beta)
+- Auto-reconnect on unexpected connection drop
+- Live file tracking and auto-refresh
+- UX improvements
+
+### 0.1.6 (Beta)
+- Fix marketplace packaging issues
 
 ### 0.1.5 (Beta)
 - Fix extension activation issue (commands not found)

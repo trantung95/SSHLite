@@ -845,19 +845,33 @@ export class SSHConnection implements ISSHConnection {
     logSFTPOperation(this.host.name, 'WRITE', remotePath, `${content.length} bytes`);
     const sftp = await this.getSFTP();
 
+    const WRITE_TIMEOUT_MS = 60_000; // 60 second timeout for slow servers
+
+    // Use sftp.writeFile() instead of createWriteStream — the callback fires only
+    // after the file is fully written AND the SFTP handle is closed on the server.
+    // createWriteStream's 'finish' event fires when data is flushed to the SSH socket,
+    // which can be before the server confirms the close, causing false failures.
     return new Promise((resolve, reject) => {
-      const stream = sftp.createWriteStream(remotePath);
+      let settled = false;
 
-      stream.on('finish', () => {
-        resolve();
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          reject(new SFTPError('Write timed out after 60 seconds', new Error('SFTP write timeout')));
+        }
+      }, WRITE_TIMEOUT_MS);
+
+      sftp.writeFile(remotePath, content, (err) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          if (err) {
+            reject(new SFTPError(`Failed to write file: ${err.message}`, err));
+          } else {
+            resolve();
+          }
+        }
       });
-
-      stream.on('error', (err: Error) => {
-        stream.destroy();
-        reject(new SFTPError(`Failed to write file: ${err.message}`, err));
-      });
-
-      stream.end(content);
     });
   }
 
