@@ -2,15 +2,17 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { SSHConnection } from '../connection/SSHConnection';
 import { formatFileSize, formatRelativeTime } from '../utils/helpers';
+import { ActivityService } from '../services/ActivityService';
 
 /**
- * Search scope - a folder to search in
+ * Search scope - a folder or file to search in
  */
 export interface SearchScope {
   id: string; // connection.id + ":" + path
   path: string;
   connection: SSHConnection;
   displayName: string; // connection.host.name + ": " + path
+  isFile?: boolean; // true if searching within a single file
 }
 
 /**
@@ -35,7 +37,9 @@ type WebviewMessage =
   | { type: 'removeScope'; index: number }
   | { type: 'clearScopes' }
   | { type: 'openResult'; result: WebviewSearchResult; line?: number }
+  | { type: 'revealInTree'; result: WebviewSearchResult }
   | { type: 'increaseLimit' }
+  | { type: 'cancelSearch' }
   | { type: 'ready' };
 
 /**
@@ -50,9 +54,11 @@ export class SearchPanel {
   private searchScopes: SearchScope[] = [];
   private isSearching: boolean = false;
   private lastSearchQuery: string = '';
+  private searchAbortController: AbortController | null = null;
 
   // Callbacks
-  private openFileCallback?: (connectionId: string, remotePath: string, line?: number) => Promise<void>;
+  private openFileCallback?: (connectionId: string, remotePath: string, line?: number, searchQuery?: string) => Promise<void>;
+  private connectionResolver?: (connectionId: string) => SSHConnection | undefined;
 
   private constructor() {}
 
@@ -69,8 +75,16 @@ export class SearchPanel {
   /**
    * Set callback for opening files
    */
-  public setOpenFileCallback(callback: (connectionId: string, remotePath: string, line?: number) => Promise<void>): void {
+  public setOpenFileCallback(callback: (connectionId: string, remotePath: string, line?: number, searchQuery?: string) => Promise<void>): void {
     this.openFileCallback = callback;
+  }
+
+  /**
+   * Set callback to resolve a connection ID to a fresh SSHConnection.
+   * Used to avoid stale connection references after auto-reconnect.
+   */
+  public setConnectionResolver(resolver: (connectionId: string) => SSHConnection | undefined): void {
+    this.connectionResolver = resolver;
   }
 
   /**
@@ -127,9 +141,9 @@ export class SearchPanel {
   }
 
   /**
-   * Add a search scope
+   * Add a search scope (folder or file)
    */
-  public addScope(scopePath: string, connection: SSHConnection): void {
+  public addScope(scopePath: string, connection: SSHConnection, isFile?: boolean): void {
     const id = `${connection.id}:${scopePath}`;
 
     // Check for duplicate
@@ -142,6 +156,7 @@ export class SearchPanel {
       path: scopePath,
       connection,
       displayName: `${connection.host.name}: ${scopePath}`,
+      isFile: isFile || false,
     });
 
     this.sendState();
@@ -163,6 +178,29 @@ export class SearchPanel {
   public clearScopes(): void {
     this.searchScopes = [];
     this.sendState();
+  }
+
+  /**
+   * Cancel ongoing search
+   */
+  public cancelSearch(): void {
+    if (this.searchAbortController) {
+      this.searchAbortController.abort();
+      this.searchAbortController = null;
+    }
+    if (this.isSearching) {
+      this.isSearching = false;
+      this.sendState();
+      this.postMessage({ type: 'searchCancelled' });
+      vscode.window.setStatusBarMessage('$(x) Search cancelled', 2000);
+    }
+  }
+
+  /**
+   * Check if search is in progress
+   */
+  public isSearchInProgress(): boolean {
+    return this.isSearching;
   }
 
   /**
@@ -190,6 +228,7 @@ export class SearchPanel {
         path: s.path,
         displayName: s.displayName,
         connectionId: s.connection.id,
+        isFile: s.isFile || false,
       })),
       isSearching: this.isSearching,
     });
@@ -214,12 +253,24 @@ export class SearchPanel {
 
       case 'openResult':
         if (this.openFileCallback) {
-          await this.openFileCallback(message.result.connectionId, message.result.path, message.line);
+          await this.openFileCallback(message.result.connectionId, message.result.path, message.line, this.lastSearchQuery);
         }
+        break;
+
+      case 'revealInTree':
+        // Trigger the reveal command with the result
+        vscode.commands.executeCommand('sshLite.revealSearchResultInTree', {
+          path: message.result.path,
+          connectionId: message.result.connectionId,
+        });
         break;
 
       case 'increaseLimit':
         await this.increaseSearchLimit();
+        break;
+
+      case 'cancelSearch':
+        this.cancelSearch();
         break;
 
       case 'ready':
@@ -240,8 +291,8 @@ export class SearchPanel {
       value: String(currentLimit * 2),
       validateInput: (value) => {
         const num = parseInt(value, 10);
-        if (isNaN(num) || num < 100 || num > 50000) {
-          return 'Please enter a number between 100 and 50000';
+        if (isNaN(num) || num < 1) {
+          return 'Please enter a positive number';
         }
         return null;
       },
@@ -269,13 +320,27 @@ export class SearchPanel {
       return;
     }
 
+    // Cancel any existing search
+    if (this.searchAbortController) {
+      this.searchAbortController.abort();
+    }
+    this.searchAbortController = new AbortController();
+    const signal = this.searchAbortController.signal;
+
     this.isSearching = true;
     this.lastSearchQuery = query;
     this.postMessage({ type: 'searching', query });
 
+    console.log(`[SSH Lite Search] Starting search for "${query}" across ${this.searchScopes.length} scope(s):`,
+      this.searchScopes.map(s => `${s.displayName} (connection: ${s.connection.id})`));
+
     // Get configurable limit from settings
     const config = vscode.workspace.getConfiguration('sshLite');
     const maxResults = config.get<number>('searchMaxResults', 2000);
+
+    // Track search activities
+    const activityService = ActivityService.getInstance();
+    const activityIds: string[] = [];
 
     try {
       // Deduplicate scopes (same connection+path)
@@ -287,30 +352,76 @@ export class SearchPanel {
       }
 
       // Search each scope in parallel
+      const failedScopes: string[] = [];
       const searchPromises = Array.from(uniqueScopes.values()).map(async (scope) => {
+        // Check if cancelled before starting
+        if (signal.aborted) return [];
+
+        // Resolve fresh connection to avoid stale references after auto-reconnect
+        const connection = this.connectionResolver
+          ? (this.connectionResolver(scope.connection.id) || scope.connection)
+          : scope.connection;
+
+        // Start activity tracking for this scope
+        const activityId = activityService.startActivity(
+          'search',
+          connection.id,
+          connection.host.name,
+          `Search: "${query.substring(0, 30)}${query.length > 30 ? '...' : ''}"`,
+          {
+            detail: `in ${scope.path}`,
+            cancellable: true,
+            onCancel: () => {
+              if (this.searchAbortController) {
+                this.searchAbortController.abort();
+              }
+            },
+          }
+        );
+        activityIds.push(activityId);
+
         try {
-          const results = await scope.connection.searchFiles(scope.path, query, {
+          const results = await connection.searchFiles(scope.path, query, {
             searchContent: true,
             caseSensitive,
             regex,
             filePattern: includePattern || '*',
             excludePattern: excludePattern || undefined,
             maxResults,
+            signal,
           });
 
-          return results.map((r) => ({
+          // Check if cancelled after search completed
+          if (signal.aborted) {
+            activityService.cancelActivity(activityId);
+            return [];
+          }
+
+          const mappedResults = results.map((r) => ({
             ...r,
             modified: r.modified ? r.modified.getTime() : undefined,
-            connectionId: scope.connection.id,
-            connectionName: scope.connection.host.name,
+            connectionId: connection.id,
+            connectionName: connection.host.name,
           }));
-        } catch {
-          // Search failed for this scope, continue with others
+
+          console.log(`[SSH Lite Search] Scope "${scope.displayName}" returned ${mappedResults.length} results`);
+          activityService.completeActivity(activityId, `${mappedResults.length} results`);
+          return mappedResults;
+        } catch (error) {
+          console.log(`[SSH Lite Search] Scope "${scope.displayName}" FAILED: ${(error as Error).message}`);
+          activityService.failActivity(activityId, (error as Error).message);
+          failedScopes.push(`${scope.displayName}: ${(error as Error).message}`);
           return [];
         }
       });
 
       const allResults = (await Promise.all(searchPromises)).flat();
+      console.log(`[SSH Lite Search] All scopes complete. Total results: ${allResults.length}, Failed: ${failedScopes.length}`);
+
+      // Check if cancelled during search
+      if (signal.aborted) {
+        return;
+      }
 
       // Deduplicate results (same file+line from overlapping scopes)
       const seen = new Set<string>();
@@ -323,12 +434,35 @@ export class SearchPanel {
 
       // Check if we hit the limit
       const hitLimit = uniqueResults.length >= maxResults;
-      this.postMessage({ type: 'results', results: uniqueResults, query, hitLimit, limit: maxResults });
+
+      // Send scope server info for multi-server grouping (even if some servers returned zero results)
+      const scopeServerMap = new Map<string, string>();
+      for (const scope of this.searchScopes) {
+        scopeServerMap.set(scope.connection.id, scope.connection.host.name);
+      }
+      const scopeServers = Array.from(scopeServerMap.entries()).map(([id, name]) => ({ id, name }));
+
+      this.postMessage({ type: 'results', results: uniqueResults, query, hitLimit, limit: maxResults, scopeServers });
+
+      // Notify user about failed scopes so failures aren't silently swallowed
+      if (failedScopes.length > 0) {
+        vscode.window.showWarningMessage(
+          `Search failed for ${failedScopes.length} scope(s): ${failedScopes.join('; ')}`
+        );
+      }
     } catch (error) {
-      this.postMessage({ type: 'error', message: (error as Error).message });
+      if (!signal.aborted) {
+        this.postMessage({ type: 'error', message: (error as Error).message });
+      }
+      // Mark any remaining activities as failed
+      for (const id of activityIds) {
+        activityService.failActivity(id, 'Search error');
+      }
     } finally {
-      this.isSearching = false;
-      this.sendState();
+      if (!signal.aborted) {
+        this.isSearching = false;
+        this.sendState();
+      }
     }
   }
 
@@ -375,13 +509,47 @@ export class SearchPanel {
       width: 100%;
       height: 100%;
       display: flex;
-      flex-direction: column;
+      flex-direction: row;
       margin: 0;
     }
 
     .controls-section {
-      max-width: 600px;
-      border-bottom: 1px solid var(--vscode-panel-border);
+      width: 350px;
+      min-width: 200px;
+      max-width: 80vw;
+      border-right: none;
+      overflow-y: auto;
+      flex-shrink: 0;
+    }
+
+    .resizer {
+      width: 5px;
+      background: var(--vscode-panel-border);
+      cursor: ew-resize;
+      flex-shrink: 0;
+      position: relative;
+    }
+
+    .resizer::after {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      width: 3px;
+      height: 30px;
+      background: var(--vscode-scrollbarSlider-background);
+      border-radius: 2px;
+    }
+
+    .resizer:hover,
+    .resizer.dragging {
+      background: var(--vscode-focusBorder);
+    }
+
+    .resizer:hover::after,
+    .resizer.dragging::after {
+      background: var(--vscode-button-background);
     }
 
     .search-container {
@@ -402,7 +570,6 @@ export class SearchPanel {
       background: var(--vscode-input-background);
       border: 1px solid var(--vscode-input-border);
       border-radius: 2px;
-      max-width: 400px;
     }
 
     .search-input-wrapper:focus-within {
@@ -504,7 +671,6 @@ export class SearchPanel {
       padding: 3px 6px;
       font-size: 12px;
       outline: none;
-      max-width: 300px;
     }
 
     .pattern-input:focus {
@@ -600,7 +766,9 @@ export class SearchPanel {
     .results-section {
       flex: 1;
       overflow-y: auto;
+      overflow-x: hidden;
       padding: 0;
+      min-width: 0;
     }
 
     .results-header {
@@ -610,7 +778,128 @@ export class SearchPanel {
       border-bottom: 1px solid var(--vscode-panel-border);
       position: sticky;
       top: 0;
+      z-index: 2;
       background: var(--vscode-sideBar-background);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .results-count {
+      flex: 1;
+    }
+
+    .view-toggle-btn {
+      background: transparent;
+      border: none;
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+      font-size: 14px;
+      padding: 2px 6px;
+      border-radius: 3px;
+      margin-left: 8px;
+    }
+
+    .view-toggle-btn:hover {
+      background: var(--vscode-toolbar-hoverBackground);
+      color: var(--vscode-foreground);
+    }
+
+    .view-toggle-btn.active {
+      color: var(--vscode-textLink-foreground);
+    }
+
+    /* Tree view styles */
+    .tree-node {
+      user-select: none;
+    }
+
+    .tree-folder {
+      cursor: pointer;
+    }
+
+    .tree-folder-header {
+      display: flex;
+      align-items: center;
+      padding: 2px 4px;
+      padding-left: calc(var(--indent, 0) * 16px + 4px);
+    }
+
+    .tree-folder-header:hover {
+      background: var(--vscode-list-hoverBackground);
+    }
+
+    .tree-folder-icon {
+      margin-right: 4px;
+      font-size: 12px;
+    }
+
+    .tree-folder-name {
+      font-size: 12px;
+    }
+
+    .tree-folder-count {
+      margin-left: 8px;
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .tree-folder-children {
+      display: none;
+    }
+
+    .tree-folder-children.expanded {
+      display: block;
+    }
+
+    .tree-file {
+      display: flex;
+      align-items: center;
+      padding: 2px 4px;
+      padding-left: calc(var(--indent, 0) * 16px + 4px);
+      cursor: pointer;
+    }
+
+    .tree-file:hover {
+      background: var(--vscode-list-hoverBackground);
+    }
+
+    .tree-file-icon {
+      margin-right: 4px;
+      font-size: 12px;
+    }
+
+    .tree-file-name {
+      font-size: 12px;
+    }
+
+    .tree-file-count {
+      margin-left: 8px;
+      font-size: 11px;
+      color: var(--vscode-badge-background);
+      background: var(--vscode-badge-foreground);
+      border-radius: 8px;
+      padding: 0 6px;
+    }
+
+    .tree-matches {
+      display: none;
+      padding-left: calc(var(--indent, 0) * 16px + 20px);
+    }
+
+    .tree-matches.expanded {
+      display: block;
+    }
+
+    .tree-match-item {
+      display: flex;
+      padding: 1px 4px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .tree-match-item:hover {
+      background: var(--vscode-list-hoverBackground);
     }
 
     .searching {
@@ -651,6 +940,59 @@ export class SearchPanel {
       font-weight: 500;
     }
 
+    .server-tag {
+      font-size: 10px;
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+      padding: 1px 5px;
+      border-radius: 3px;
+      margin-right: 4px;
+      white-space: nowrap;
+    }
+
+    .server-group {
+      border-bottom: 1px solid var(--vscode-panel-border);
+    }
+
+    .server-header {
+      display: flex;
+      align-items: center;
+      padding: 6px 4px;
+      cursor: pointer;
+      background: var(--vscode-sideBar-background);
+      font-weight: 600;
+      position: sticky;
+      top: 33px;
+      z-index: 1;
+    }
+
+    .server-header:hover {
+      background: var(--vscode-list-hoverBackground);
+    }
+
+    .server-icon {
+      margin-right: 6px;
+    }
+
+    .server-name {
+      font-size: 13px;
+    }
+
+    .server-count {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+      margin-left: 8px;
+    }
+
+    .server-files {
+      display: none;
+      padding-left: 12px;
+    }
+
+    .server-files.expanded {
+      display: block;
+    }
+
     .file-path {
       flex: 1;
       font-size: 11px;
@@ -665,6 +1007,27 @@ export class SearchPanel {
       font-size: 11px;
       color: var(--vscode-descriptionForeground);
       margin-left: 8px;
+    }
+
+    .reveal-btn {
+      background: transparent;
+      border: none;
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+      font-size: 12px;
+      padding: 0 4px;
+      margin-left: 4px;
+      opacity: 0;
+      transition: opacity 0.1s;
+    }
+
+    .file-header:hover .reveal-btn,
+    .tree-file:hover .reveal-btn {
+      opacity: 1;
+    }
+
+    .reveal-btn:hover {
+      color: var(--vscode-textLink-foreground);
     }
 
     .chevron {
@@ -734,6 +1097,15 @@ export class SearchPanel {
       cursor: not-allowed;
     }
 
+    .cancel-btn {
+      background: var(--vscode-button-secondaryBackground, #3a3d41);
+      color: var(--vscode-button-secondaryForeground, #fff);
+    }
+
+    .cancel-btn:hover {
+      background: var(--vscode-button-secondaryHoverBackground, #45494e);
+    }
+
     .limit-warning {
       color: var(--vscode-editorWarning-foreground, #cca700);
       font-size: 11px;
@@ -761,6 +1133,7 @@ export class SearchPanel {
             <button id="regexBtn" class="toggle-btn" title="Use Regular Expression">.*</button>
           </div>
           <button id="searchBtn" class="search-btn" title="Search (Enter)">&#128269;</button>
+          <button id="cancelBtn" class="search-btn cancel-btn" title="Cancel Search" style="display: none;">&#x2715;</button>
         </div>
         <div class="pattern-section">
           <div class="pattern-toggle" id="patternToggle">
@@ -791,6 +1164,8 @@ export class SearchPanel {
       </div>
     </div>
 
+    <div class="resizer" id="resizer"></div>
+
     <div class="results-section">
       <div id="resultsHeader" class="results-header" style="display: none;"></div>
       <div id="resultsContainer"></div>
@@ -803,10 +1178,14 @@ export class SearchPanel {
     // State
     let scopes = [];
     let results = [];
+    let scopeServers = []; // Servers from search scopes (for multi-server grouping)
     let currentQuery = '';
     let caseSensitive = false;
     let useRegex = false;
     let expandedFiles = new Set();
+    let viewMode = 'list'; // 'list' or 'tree'
+    let expandedTreeNodes = new Set();
+    let treeViewFirstExpand = true; // Flag to auto-expand all tree nodes on first switch to tree view
 
     // Elements
     const searchInput = document.getElementById('searchInput');
@@ -815,6 +1194,7 @@ export class SearchPanel {
     const caseSensitiveBtn = document.getElementById('caseSensitiveBtn');
     const regexBtn = document.getElementById('regexBtn');
     const searchBtn = document.getElementById('searchBtn');
+    const cancelBtn = document.getElementById('cancelBtn');
     const clearScopesBtn = document.getElementById('clearScopesBtn');
     const scopeList = document.getElementById('scopeList');
     const resultsHeader = document.getElementById('resultsHeader');
@@ -822,6 +1202,8 @@ export class SearchPanel {
     const patternToggle = document.getElementById('patternToggle');
     const patternChevron = document.getElementById('patternChevron');
     const patternFields = document.getElementById('patternFields');
+    const resizer = document.getElementById('resizer');
+    const controlsSection = document.querySelector('.controls-section');
 
     // Initialize
     function init() {
@@ -835,6 +1217,11 @@ export class SearchPanel {
       // Search button click
       searchBtn.addEventListener('click', () => {
         performSearch();
+      });
+
+      // Cancel button click
+      cancelBtn.addEventListener('click', () => {
+        vscode.postMessage({ type: 'cancelSearch' });
       });
 
       // Pattern toggle (collapsible)
@@ -874,6 +1261,37 @@ export class SearchPanel {
         vscode.postMessage({ type: 'clearScopes' });
       });
 
+      // Resizer drag functionality (horizontal - width resize)
+      let isResizing = false;
+      let startX = 0;
+      let startWidth = 0;
+
+      resizer.addEventListener('mousedown', (e) => {
+        isResizing = true;
+        startX = e.clientX;
+        startWidth = controlsSection.offsetWidth;
+        resizer.classList.add('dragging');
+        document.body.style.cursor = 'ew-resize';
+        document.body.style.userSelect = 'none';
+        e.preventDefault();
+      });
+
+      document.addEventListener('mousemove', (e) => {
+        if (!isResizing) return;
+        const deltaX = e.clientX - startX;
+        const newWidth = Math.max(200, Math.min(window.innerWidth * 0.8, startWidth + deltaX));
+        controlsSection.style.width = newWidth + 'px';
+      });
+
+      document.addEventListener('mouseup', () => {
+        if (isResizing) {
+          isResizing = false;
+          resizer.classList.remove('dragging');
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+        }
+      });
+
       // Notify extension we're ready
       vscode.postMessage({ type: 'ready' });
     }
@@ -899,13 +1317,13 @@ export class SearchPanel {
     // Render scopes
     function renderScopes() {
       if (scopes.length === 0) {
-        scopeList.innerHTML = '<div class="no-scopes">No folders selected. Click search icon on a folder to add.</div>';
+        scopeList.innerHTML = '<div class="no-scopes">No folders or files selected. Click search icon on a folder or file to add.</div>';
         return;
       }
 
       scopeList.innerHTML = scopes.map((scope, index) => \`
         <div class="scope-item">
-          <span class="scope-icon">📁</span>
+          <span class="scope-icon">\${scope.isFile ? '📄' : '📁'}</span>
           <span class="scope-path" title="\${escapeHtml(scope.displayName)}">\${escapeHtml(scope.displayName)}</span>
           <button class="scope-remove" data-index="\${index}" title="Remove">×</button>
         </div>
@@ -948,24 +1366,84 @@ export class SearchPanel {
       const fileCount = fileGroups.length;
       const matchCount = results.length;
 
-      resultsHeader.style.display = 'block';
-      if (hitLimit) {
-        resultsHeader.innerHTML = \`\${matchCount} result\${matchCount !== 1 ? 's' : ''} in \${fileCount} file\${fileCount !== 1 ? 's' : ''} <span class="limit-warning" title="Click to increase limit">⚠️ Limit \${limit} reached - <a href="#" id="increaseLimitLink">increase limit</a></span>\`;
-        // Add click handler for increase limit link
-        setTimeout(() => {
-          const link = document.getElementById('increaseLimitLink');
-          if (link) {
-            link.addEventListener('click', (e) => {
-              e.preventDefault();
-              vscode.postMessage({ type: 'increaseLimit' });
-            });
-          }
-        }, 0);
-      } else {
-        resultsHeader.textContent = \`\${matchCount} result\${matchCount !== 1 ? 's' : ''} in \${fileCount} file\${fileCount !== 1 ? 's' : ''}\`;
-      }
+      // Determine multi-server mode from scope servers (not just results)
+      // This ensures server grouping appears even if one server returned zero results
+      const multiServer = scopeServers.length > 1;
 
-      resultsContainer.innerHTML = fileGroups.map((group, index) => {
+      // Count results per server for summary display
+      const serverCounts = {};
+      for (const result of results) {
+        const sKey = result.connectionId;
+        if (!serverCounts[sKey]) {
+          serverCounts[sKey] = { name: result.connectionName, count: 0 };
+        }
+        serverCounts[sKey].count++;
+      }
+      const serverNames = multiServer ? scopeServers : Object.values(serverCounts);
+
+      // Render header with view toggle buttons
+      resultsHeader.style.display = 'flex';
+      let limitWarning = '';
+      if (hitLimit) {
+        limitWarning = \` <span class="limit-warning" title="Click to increase limit">⚠️ Limit \${limit} reached - <a href="#" id="increaseLimitLink">increase limit</a></span>\`;
+      }
+      // Show per-server counts when results span multiple servers
+      let serverSummary = '';
+      if (multiServer) {
+        serverSummary = ' (' + scopeServers.map(s => {
+          const count = serverCounts[s.id] ? serverCounts[s.id].count : 0;
+          return escapeHtml(s.name) + ': ' + count;
+        }).join(', ') + ')';
+      }
+      resultsHeader.innerHTML = \`
+        <span class="results-count">\${matchCount} result\${matchCount !== 1 ? 's' : ''} in \${fileCount} file\${fileCount !== 1 ? 's' : ''}\${serverSummary}\${limitWarning}</span>
+        <button id="listViewBtn" class="view-toggle-btn \${viewMode === 'list' ? 'active' : ''}" title="List View">☰</button>
+        <button id="treeViewBtn" class="view-toggle-btn \${viewMode === 'tree' ? 'active' : ''}" title="Tree View">🌲</button>
+      \`;
+
+      // Add view toggle handlers
+      setTimeout(() => {
+        const listBtn = document.getElementById('listViewBtn');
+        const treeBtn = document.getElementById('treeViewBtn');
+        const limitLink = document.getElementById('increaseLimitLink');
+
+        if (listBtn) {
+          listBtn.addEventListener('click', () => {
+            viewMode = 'list';
+            renderResults(hitLimit, limit);
+          });
+        }
+        if (treeBtn) {
+          treeBtn.addEventListener('click', () => {
+            const wasListMode = viewMode === 'list';
+            viewMode = 'tree';
+            // If switching from list to tree for the first time, expand all nodes
+            if (wasListMode && treeViewFirstExpand) {
+              treeViewFirstExpand = false;
+              expandAllTreeNodes(fileGroups);
+            }
+            renderResults(hitLimit, limit);
+          });
+        }
+        if (limitLink) {
+          limitLink.addEventListener('click', (e) => {
+            e.preventDefault();
+            vscode.postMessage({ type: 'increaseLimit' });
+          });
+        }
+      }, 0);
+
+      // Render based on view mode
+      if (viewMode === 'tree') {
+        renderTreeView(fileGroups, multiServer);
+      } else {
+        renderListView(fileGroups, multiServer);
+      }
+    }
+
+    // Render list view (default)
+    function renderListView(fileGroups, multiServer) {
+      function renderFileGroup(group) {
         const fileName = group.path.split('/').pop();
         const dirPath = group.path.substring(0, group.path.length - fileName.length - 1) || '/';
         const fileKey = group.connectionId + ':' + group.path;
@@ -973,26 +1451,84 @@ export class SearchPanel {
 
         return \`
           <div class="file-group" data-file-key="\${escapeHtml(fileKey)}">
-            <div class="file-header" data-file-key="\${escapeHtml(fileKey)}">
+            <div class="file-header" data-file-key="\${escapeHtml(fileKey)}" data-path="\${escapeHtml(group.path)}" data-connection="\${escapeHtml(group.connectionId)}">
               <span class="chevron \${isExpanded ? '' : 'collapsed'}">▼</span>
               <span class="file-icon">📄</span>
               <span class="file-name">\${escapeHtml(fileName)}</span>
               <span class="file-path">\${escapeHtml(dirPath)}</span>
               <span class="file-count">\${group.matches.length}</span>
+              <button class="reveal-btn" title="Reveal in File Tree" data-path="\${escapeHtml(group.path)}" data-connection="\${escapeHtml(group.connectionId)}">📍</button>
             </div>
             <div class="match-list \${isExpanded ? 'expanded' : ''}" data-file-key="\${escapeHtml(fileKey)}">
               \${group.matches.map(match => \`
                 <div class="match-item" data-path="\${escapeHtml(match.path)}" data-connection="\${escapeHtml(match.connectionId)}" data-line="\${match.line || ''}">
                   <span class="match-line">\${match.line || ''}</span>
-                  <span class="match-text">\${escapeHtml(match.match || '')}</span>
+                  <span class="match-text">\${highlightMatch(match.match || '', currentQuery, caseSensitive)}</span>
                 </div>
               \`).join('')}
             </div>
           </div>
         \`;
-      }).join('');
+      }
 
-      // Add click handlers
+      if (multiServer) {
+        // Group file groups by server - pre-populate from scopeServers so all servers appear
+        const serverGroups = {};
+        for (const ss of scopeServers) {
+          serverGroups[ss.id] = { name: ss.name, id: ss.id, files: [] };
+        }
+        for (const group of fileGroups) {
+          if (!serverGroups[group.connectionId]) {
+            serverGroups[group.connectionId] = { name: group.connectionName, id: group.connectionId, files: [] };
+          }
+          serverGroups[group.connectionId].files.push(group);
+        }
+
+        resultsContainer.innerHTML = Object.values(serverGroups).map(server => {
+          const serverKey = 'server:' + server.id;
+          const isServerExpanded = !expandedFiles.has(serverKey + ':collapsed');
+          const totalMatches = server.files.reduce((sum, f) => sum + f.matches.length, 0);
+
+          return \`
+            <div class="server-group" data-server-key="\${escapeHtml(serverKey)}">
+              <div class="server-header" data-server-key="\${escapeHtml(serverKey)}">
+                <span class="chevron \${isServerExpanded ? '' : 'collapsed'}">▼</span>
+                <span class="server-icon">🖥️</span>
+                <span class="server-name">\${escapeHtml(server.name)}</span>
+                <span class="server-count">\${totalMatches} result\${totalMatches !== 1 ? 's' : ''} in \${server.files.length} file\${server.files.length !== 1 ? 's' : ''}</span>
+              </div>
+              <div class="server-files \${isServerExpanded ? 'expanded' : ''}" data-server-key="\${escapeHtml(serverKey)}">
+                \${server.files.length > 0 ? server.files.map(group => renderFileGroup(group)).join('') : '<div class="no-results" style="padding: 8px 16px;">No results</div>'}
+              </div>
+            </div>
+          \`;
+        }).join('');
+      } else {
+        resultsContainer.innerHTML = fileGroups.map(group => renderFileGroup(group)).join('');
+      }
+
+      // Add click handlers for server headers (toggle expand/collapse)
+      resultsContainer.querySelectorAll('.server-header').forEach(header => {
+        header.addEventListener('click', () => {
+          const serverKey = header.dataset.serverKey;
+          const serverGroup = header.closest('.server-group');
+          const serverFiles = serverGroup.querySelector('.server-files');
+          const chevron = header.querySelector('.chevron');
+          const collapseKey = serverKey + ':collapsed';
+
+          if (expandedFiles.has(collapseKey)) {
+            expandedFiles.delete(collapseKey);
+            serverFiles.classList.add('expanded');
+            chevron.classList.remove('collapsed');
+          } else {
+            expandedFiles.add(collapseKey);
+            serverFiles.classList.remove('expanded');
+            chevron.classList.add('collapsed');
+          }
+        });
+      });
+
+      // Add click handlers for file headers (toggle expand/collapse)
       resultsContainer.querySelectorAll('.file-header').forEach(header => {
         header.addEventListener('click', (e) => {
           const fileKey = header.dataset.fileKey;
@@ -1012,8 +1548,274 @@ export class SearchPanel {
         });
       });
 
-      resultsContainer.querySelectorAll('.match-item').forEach(item => {
-        item.addEventListener('click', () => {
+      // Add click handlers for reveal buttons
+      resultsContainer.querySelectorAll('.reveal-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const path = btn.dataset.path;
+          const connectionId = btn.dataset.connection;
+          vscode.postMessage({
+            type: 'revealInTree',
+            result: { path, connectionId }
+          });
+        });
+      });
+
+      addMatchClickHandlers();
+    }
+
+    // Build tree structure from file groups
+    function buildTree(fileGroups) {
+      const tree = {};
+
+      for (const group of fileGroups) {
+        const parts = group.path.split('/').filter(Boolean);
+        let current = tree;
+
+        // Build directory structure
+        for (let i = 0; i < parts.length - 1; i++) {
+          const part = parts[i];
+          if (!current[part]) {
+            current[part] = { _isDir: true, _children: {}, _matches: [], _connectionId: group.connectionId };
+          }
+          current = current[part]._children;
+        }
+
+        // Add file
+        const fileName = parts[parts.length - 1] || group.path;
+        current[fileName] = {
+          _isDir: false,
+          _path: group.path,
+          _connectionId: group.connectionId,
+          _matches: group.matches
+        };
+      }
+
+      return tree;
+    }
+
+    // Count matches in a tree node recursively
+    function countTreeMatches(node) {
+      if (!node._isDir) {
+        return node._matches ? node._matches.length : 0;
+      }
+      let count = 0;
+      for (const key of Object.keys(node._children)) {
+        count += countTreeMatches(node._children[key]);
+      }
+      return count;
+    }
+
+    // Expand all tree nodes to FILE level (used when first switching to tree view)
+    // Only expands directories, not files - so matches inside files stay collapsed
+    function expandAllTreeNodes(fileGroups) {
+      const tree = buildTree(fileGroups);
+
+      function collectDirectoryKeys(name, node, parentPath) {
+        const nodePath = parentPath ? parentPath + '/' + name : name;
+        const nodeKey = (node._connectionId || '') + ':' + nodePath;
+
+        // Only expand directories, not files
+        // Files stay collapsed so their matches don't show
+        if (node._isDir) {
+          expandedTreeNodes.add(nodeKey);
+          for (const childName of Object.keys(node._children)) {
+            collectDirectoryKeys(childName, node._children[childName], nodePath);
+          }
+        }
+        // Don't add file nodes - they stay collapsed
+      }
+
+      // Collect directory node keys from root level
+      for (const name of Object.keys(tree)) {
+        collectDirectoryKeys(name, tree[name], '');
+      }
+    }
+
+    // Render tree view
+    function renderTreeView(fileGroups, multiServer) {
+      function renderNode(name, node, indent, parentPath) {
+        const nodePath = parentPath ? parentPath + '/' + name : name;
+        const nodeKey = (node._connectionId || '') + ':' + nodePath;
+        const isExpanded = expandedTreeNodes.has(nodeKey);
+
+        if (node._isDir) {
+          const matchCount = countTreeMatches(node);
+          const childrenHtml = Object.keys(node._children)
+            .sort((a, b) => {
+              // Directories first, then files
+              const aIsDir = node._children[a]._isDir;
+              const bIsDir = node._children[b]._isDir;
+              if (aIsDir && !bIsDir) return -1;
+              if (!aIsDir && bIsDir) return 1;
+              return a.localeCompare(b);
+            })
+            .map(childName => renderNode(childName, node._children[childName], indent + 1, nodePath))
+            .join('');
+
+          return \`
+            <div class="tree-node tree-folder" data-node-key="\${escapeHtml(nodeKey)}">
+              <div class="tree-folder-header" style="--indent: \${indent};" data-node-key="\${escapeHtml(nodeKey)}">
+                <span class="chevron \${isExpanded ? '' : 'collapsed'}">▼</span>
+                <span class="tree-folder-icon">\${isExpanded ? '📂' : '📁'}</span>
+                <span class="tree-folder-name">\${escapeHtml(name)}</span>
+                <span class="tree-folder-count">(\${matchCount})</span>
+              </div>
+              <div class="tree-folder-children \${isExpanded ? 'expanded' : ''}" data-node-key="\${escapeHtml(nodeKey)}">
+                \${childrenHtml}
+              </div>
+            </div>
+          \`;
+        } else {
+          // File node
+          const matchCount = node._matches ? node._matches.length : 0;
+          const matchesHtml = node._matches ? node._matches.map(match => \`
+            <div class="tree-match-item" data-path="\${escapeHtml(match.path)}" data-connection="\${escapeHtml(match.connectionId)}" data-line="\${match.line || ''}">
+              <span class="match-line">\${match.line || ''}</span>
+              <span class="match-text">\${highlightMatch(match.match || '', currentQuery, caseSensitive)}</span>
+            </div>
+          \`).join('') : '';
+
+          return \`
+            <div class="tree-node" data-node-key="\${escapeHtml(nodeKey)}">
+              <div class="tree-file" style="--indent: \${indent};" data-node-key="\${escapeHtml(nodeKey)}" data-path="\${escapeHtml(node._path)}" data-connection="\${escapeHtml(node._connectionId)}">
+                <span class="chevron \${isExpanded ? '' : 'collapsed'}">▼</span>
+                <span class="tree-file-icon">📄</span>
+                <span class="tree-file-name">\${escapeHtml(name)}</span>
+                <span class="tree-file-count">\${matchCount}</span>
+                <button class="reveal-btn" title="Reveal in File Tree" data-path="\${escapeHtml(node._path)}" data-connection="\${escapeHtml(node._connectionId)}">📍</button>
+              </div>
+              <div class="tree-matches \${isExpanded ? 'expanded' : ''}" style="--indent: \${indent};" data-node-key="\${escapeHtml(nodeKey)}">
+                \${matchesHtml}
+              </div>
+            </div>
+          \`;
+        }
+      }
+
+      // Render a tree structure into HTML
+      function renderTree(tree) {
+        return Object.keys(tree)
+          .sort((a, b) => {
+            const aIsDir = tree[a]._isDir;
+            const bIsDir = tree[b]._isDir;
+            if (aIsDir && !bIsDir) return -1;
+            if (!aIsDir && bIsDir) return 1;
+            return a.localeCompare(b);
+          })
+          .map(name => renderNode(name, tree[name], 0, ''))
+          .join('');
+      }
+
+      if (multiServer) {
+        // Group file groups by server - pre-populate from scopeServers so all servers appear
+        const serverGroups = {};
+        for (const ss of scopeServers) {
+          serverGroups[ss.id] = { name: ss.name, id: ss.id, files: [] };
+        }
+        for (const group of fileGroups) {
+          if (!serverGroups[group.connectionId]) {
+            serverGroups[group.connectionId] = { name: group.connectionName, id: group.connectionId, files: [] };
+          }
+          serverGroups[group.connectionId].files.push(group);
+        }
+
+        resultsContainer.innerHTML = Object.values(serverGroups).map(server => {
+          const serverKey = 'server:' + server.id;
+          const isServerExpanded = !expandedFiles.has(serverKey + ':collapsed');
+          const totalMatches = server.files.reduce((sum, f) => sum + f.matches.length, 0);
+          const serverTree = buildTree(server.files);
+
+          return \`
+            <div class="server-group" data-server-key="\${escapeHtml(serverKey)}">
+              <div class="server-header" data-server-key="\${escapeHtml(serverKey)}">
+                <span class="chevron \${isServerExpanded ? '' : 'collapsed'}">▼</span>
+                <span class="server-icon">🖥️</span>
+                <span class="server-name">\${escapeHtml(server.name)}</span>
+                <span class="server-count">\${totalMatches} result\${totalMatches !== 1 ? 's' : ''} in \${server.files.length} file\${server.files.length !== 1 ? 's' : ''}</span>
+              </div>
+              <div class="server-files \${isServerExpanded ? 'expanded' : ''}" data-server-key="\${escapeHtml(serverKey)}">
+                \${server.files.length > 0 ? renderTree(serverTree) : '<div class="no-results" style="padding: 8px 16px;">No results</div>'}
+              </div>
+            </div>
+          \`;
+        }).join('');
+      } else {
+        const tree = buildTree(fileGroups);
+        resultsContainer.innerHTML = renderTree(tree);
+      }
+
+      // Add server header click handlers
+      resultsContainer.querySelectorAll('.server-header').forEach(header => {
+        header.addEventListener('click', () => {
+          const serverKey = header.dataset.serverKey;
+          const serverGroup = header.closest('.server-group');
+          const serverFiles = serverGroup.querySelector('.server-files');
+          const chevron = header.querySelector('.chevron');
+          const collapseKey = serverKey + ':collapsed';
+
+          if (expandedFiles.has(collapseKey)) {
+            expandedFiles.delete(collapseKey);
+            serverFiles.classList.add('expanded');
+            chevron.classList.remove('collapsed');
+          } else {
+            expandedFiles.add(collapseKey);
+            serverFiles.classList.remove('expanded');
+            chevron.classList.add('collapsed');
+          }
+        });
+      });
+
+      // Add tree click handlers
+      resultsContainer.querySelectorAll('.tree-folder-header').forEach(header => {
+        header.addEventListener('click', (e) => {
+          const nodeKey = header.dataset.nodeKey;
+          const folder = header.closest('.tree-folder');
+          const children = folder.querySelector('.tree-folder-children');
+          const chevron = header.querySelector('.chevron');
+          const icon = header.querySelector('.tree-folder-icon');
+
+          if (expandedTreeNodes.has(nodeKey)) {
+            expandedTreeNodes.delete(nodeKey);
+            children.classList.remove('expanded');
+            chevron.classList.add('collapsed');
+            icon.textContent = '📁';
+          } else {
+            expandedTreeNodes.add(nodeKey);
+            children.classList.add('expanded');
+            chevron.classList.remove('collapsed');
+            icon.textContent = '📂';
+          }
+        });
+      });
+
+      resultsContainer.querySelectorAll('.tree-file').forEach(file => {
+        file.addEventListener('click', (e) => {
+          const nodeKey = file.dataset.nodeKey;
+          const node = file.closest('.tree-node');
+          const matches = node.querySelector('.tree-matches');
+          const chevron = file.querySelector('.chevron');
+
+          if (expandedTreeNodes.has(nodeKey)) {
+            expandedTreeNodes.delete(nodeKey);
+            matches.classList.remove('expanded');
+            chevron.classList.add('collapsed');
+          } else {
+            expandedTreeNodes.add(nodeKey);
+            matches.classList.add('expanded');
+            chevron.classList.remove('collapsed');
+          }
+        });
+      });
+
+      addMatchClickHandlers();
+    }
+
+    // Add click handlers for match items (shared by both views)
+    function addMatchClickHandlers() {
+      resultsContainer.querySelectorAll('.match-item, .tree-match-item').forEach(item => {
+        item.addEventListener('click', (e) => {
+          e.stopPropagation();
           const path = item.dataset.path;
           const connectionId = item.dataset.connection;
           const line = item.dataset.line ? parseInt(item.dataset.line) : undefined;
@@ -1022,6 +1824,19 @@ export class SearchPanel {
             type: 'openResult',
             result: { path, connectionId },
             line
+          });
+        });
+      });
+
+      // Add click handlers for reveal buttons (shared by both views)
+      resultsContainer.querySelectorAll('.reveal-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const path = btn.dataset.path;
+          const connectionId = btn.dataset.connection;
+          vscode.postMessage({
+            type: 'revealInTree',
+            result: { path, connectionId }
           });
         });
       });
@@ -1052,6 +1867,29 @@ export class SearchPanel {
       return div.innerHTML;
     }
 
+    // Highlight search query in match text
+    function highlightMatch(text, query, isCaseSensitive) {
+      if (!query || !text) {
+        return escapeHtml(text);
+      }
+
+      // Escape query for regex special chars if not using regex mode
+      const escapedQuery = query.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\$&');
+      const flags = isCaseSensitive ? 'g' : 'gi';
+      const regex = new RegExp('(' + escapedQuery + ')', flags);
+
+      // Split text by matches and rebuild with highlights
+      const parts = text.split(regex);
+      return parts.map((part, i) => {
+        const escaped = escapeHtml(part);
+        // Odd indices are matches (due to capture group)
+        if (i % 2 === 1) {
+          return '<span class="match-highlight">' + escaped + '</span>';
+        }
+        return escaped;
+      }).join('');
+    }
+
     // Handle messages from extension
     window.addEventListener('message', (event) => {
       const message = event.data;
@@ -1060,21 +1898,48 @@ export class SearchPanel {
         case 'state':
           scopes = message.scopes || [];
           renderScopes();
+          // Update button visibility based on search state
+          if (message.isSearching) {
+            searchBtn.style.display = 'none';
+            cancelBtn.style.display = 'inline-block';
+          } else {
+            searchBtn.style.display = 'inline-block';
+            cancelBtn.style.display = 'none';
+          }
           break;
 
         case 'searching':
           showSearching(message.query);
+          // Show cancel button, hide search button
+          searchBtn.style.display = 'none';
+          cancelBtn.style.display = 'inline-block';
           break;
 
         case 'results':
           results = message.results || [];
           currentQuery = message.query || '';
+          scopeServers = message.scopeServers || [];
           renderResults(message.hitLimit, message.limit);
+          // Hide cancel button, show search button
+          searchBtn.style.display = 'inline-block';
+          cancelBtn.style.display = 'none';
+          break;
+
+        case 'searchCancelled':
+          // Search was cancelled - show "Search cancelled" message
+          resultsHeader.style.display = 'none';
+          resultsContainer.innerHTML = '<div class="no-results">Search cancelled</div>';
+          // Hide cancel button, show search button
+          searchBtn.style.display = 'inline-block';
+          cancelBtn.style.display = 'none';
           break;
 
         case 'error':
           resultsHeader.style.display = 'none';
           resultsContainer.innerHTML = '<div class="no-results">Error: ' + escapeHtml(message.message) + '</div>';
+          // Hide cancel button, show search button
+          searchBtn.style.display = 'inline-block';
+          cancelBtn.style.display = 'none';
           break;
 
         case 'focusInput':

@@ -27,8 +27,14 @@ function getOutputChannel(): vscode.OutputChannel {
 
 function logSSHCommand(host: string, command: string): void {
   const timestamp = new Date().toISOString();
-  const shortCmd = command.length > 200 ? command.substring(0, 200) + '...' : command;
-  getOutputChannel().appendLine(`[${timestamp}] [SSH ${host}] $ ${shortCmd}`);
+  // Log the FULL command for debugging - no truncation
+  getOutputChannel().appendLine(`[${timestamp}] [SSH ${host}] $ ${command}`);
+}
+
+function logSFTPOperation(host: string, operation: string, path: string, detail?: string): void {
+  const timestamp = new Date().toISOString();
+  const detailStr = detail ? ` (${detail})` : '';
+  getOutputChannel().appendLine(`[${timestamp}] [SFTP ${host}] ${operation}: ${path}${detailStr}`);
 }
 
 // Known hosts storage key
@@ -591,6 +597,7 @@ export class SSHConnection implements ISSHConnection {
    * List files in a remote directory
    */
   async listFiles(remotePath: string): Promise<IRemoteFile[]> {
+    logSFTPOperation(this.host.name, 'LIST', remotePath);
     const sftp = await this.getSFTP();
     const expandedPath = remotePath === '~' ? '.' : remotePath;
 
@@ -709,6 +716,7 @@ export class SSHConnection implements ISSHConnection {
    * Read a remote file
    */
   async readFile(remotePath: string): Promise<Buffer> {
+    logSFTPOperation(this.host.name, 'READ', remotePath);
     const sftp = await this.getSFTP();
 
     return new Promise((resolve, reject) => {
@@ -834,6 +842,7 @@ export class SSHConnection implements ISSHConnection {
    * Write content to a remote file
    */
   async writeFile(remotePath: string, content: Buffer): Promise<void> {
+    logSFTPOperation(this.host.name, 'WRITE', remotePath, `${content.length} bytes`);
     const sftp = await this.getSFTP();
 
     return new Promise((resolve, reject) => {
@@ -1183,6 +1192,7 @@ export class SSHConnection implements ISSHConnection {
       filePattern?: string; // File glob pattern (e.g., *.ts)
       excludePattern?: string; // Exclude pattern (e.g., node_modules, *.test.ts)
       maxResults?: number;
+      signal?: AbortSignal; // Abort signal to cancel the search
     } = {}
   ): Promise<Array<{ path: string; line?: number; match?: string; size?: number; modified?: Date; permissions?: string }>> {
     if (this.state !== ConnectionState.Connected || !this._client) {
@@ -1196,10 +1206,16 @@ export class SSHConnection implements ISSHConnection {
       filePattern = '*',
       excludePattern = '',
       maxResults = 2000,
+      signal,
     } = options;
 
-    // Validate maxResults to prevent command injection (must be positive integer, max 50000)
-    const validatedMaxResults = Math.max(1, Math.min(Math.floor(Number(maxResults) || 2000), 50000));
+    // Check if already aborted before starting
+    if (signal?.aborted) {
+      return [];
+    }
+
+    // Validate maxResults to prevent command injection (must be positive integer, 0 = unlimited)
+    const validatedMaxResults = maxResults === 0 ? 0 : Math.max(1, Math.floor(Number(maxResults) || 2000));
 
     // Escape for single quotes (most secure shell escaping)
     // Single quotes prevent ALL shell expansion except single quotes themselves
@@ -1233,11 +1249,14 @@ export class SSHConnection implements ISSHConnection {
     }
 
     let command: string;
+    const headLimit = validatedMaxResults > 0 ? ` | head -${validatedMaxResults}` : '';
     if (searchContent) {
       // Use grep for content search
       // -r: recursive, -n: line numbers, -H: show filename, -F: fixed string (literal, not regex)
       // --include: file pattern filter, --exclude/--exclude-dir: exclude patterns
-      command = `grep -rnH ${fixedStringFlag} ${caseFlag} --include='${escapedFilePattern}'${excludeFlags} -m ${validatedMaxResults} '${escapedPattern}' '${escapedSearchPath}' 2>/dev/null | head -${validatedMaxResults}`;
+      // -- signals end of options, allowing patterns that start with dash (e.g., -lfsms-)
+      const grepMaxFlag = validatedMaxResults > 0 ? `-m ${validatedMaxResults}` : '';
+      command = `grep -rnH ${fixedStringFlag} ${caseFlag} --include='${escapedFilePattern}'${excludeFlags} ${grepMaxFlag} -- '${escapedPattern}' '${escapedSearchPath}' 2>/dev/null${headLimit}`;
     } else {
       // Use find for filename search
       const findCaseFlag = caseSensitive ? '-name' : '-iname';
@@ -1250,7 +1269,7 @@ export class SSHConnection implements ISSHConnection {
           findExcludes += ` ! -path '*/${escapedEp}/*' ! -name '${escapedEp}'`;
         }
       }
-      command = `find '${escapedSearchPath}' -type f ${findCaseFlag} '*${escapedPattern}*'${findExcludes} 2>/dev/null | head -${validatedMaxResults}`;
+      command = `find '${escapedSearchPath}' -type f ${findCaseFlag} '*${escapedPattern}*'${findExcludes} 2>/dev/null${headLimit}`;
     }
 
     // Log the search command
@@ -1261,6 +1280,21 @@ export class SSHConnection implements ISSHConnection {
         if (err) {
           reject(new SFTPError(`Search failed: ${err.message}`, err));
           return;
+        }
+
+        // Register abort handler to kill the remote process
+        let aborted = false;
+        const onAbort = () => {
+          aborted = true;
+          stream.close();
+        };
+        if (signal) {
+          if (signal.aborted) {
+            stream.close();
+            resolve([]);
+            return;
+          }
+          signal.addEventListener('abort', onAbort, { once: true });
         }
 
         let output = '';
@@ -1275,6 +1309,16 @@ export class SSHConnection implements ISSHConnection {
         });
 
         stream.on('close', async () => {
+          // Clean up abort listener
+          if (signal) {
+            signal.removeEventListener('abort', onAbort);
+          }
+
+          // If aborted, return empty results
+          if (aborted) {
+            resolve([]);
+            return;
+          }
           const results: Array<{ path: string; line?: number; match?: string; size?: number; modified?: Date; permissions?: string }> = [];
           const uniquePaths = new Set<string>();
 
@@ -1359,6 +1403,17 @@ export class SSHConnection implements ISSHConnection {
               result.permissions = stats.permissions;
             }
           }
+
+          // Sort results: by path alphabetically, then by line number
+          results.sort((a, b) => {
+            const pathCompare = a.path.localeCompare(b.path);
+            if (pathCompare !== 0) return pathCompare;
+            // Same file - sort by line number
+            if (a.line !== undefined && b.line !== undefined) {
+              return a.line - b.line;
+            }
+            return 0;
+          });
 
           resolve(results);
         });

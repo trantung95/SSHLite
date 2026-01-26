@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { SSHConnection } from './SSHConnection';
 import { IHostConfig, ConnectionState } from '../types';
 import { SavedCredential, CredentialService } from '../services/CredentialService';
+import { ActivityService } from '../services/ActivityService';
 
 /**
  * Info about a disconnected connection that we should try to reconnect
@@ -105,8 +106,20 @@ export class ConnectionManager {
     this._connections.set(connectionId, connection);
     this._onDidChangeConnections.fire();
 
+    // Track connection activity
+    const activityService = ActivityService.getInstance();
+    const activityId = activityService.startActivity(
+      'connect',
+      connectionId,
+      host.name,
+      `Connect: ${host.name}`,
+      { detail: `${host.username}@${host.host}:${host.port}` }
+    );
+
     try {
       await connection.connect();
+      // Complete activity tracking
+      activityService.completeActivity(activityId, 'Connected');
       // Update context for VS Code when clauses
       await vscode.commands.executeCommand(
         'setContext',
@@ -115,6 +128,8 @@ export class ConnectionManager {
       );
       return connection;
     } catch (error) {
+      // Fail activity tracking
+      activityService.failActivity(activityId, (error as Error).message);
       this._connections.delete(connectionId);
       this._onDidChangeConnections.fire();
       throw error;
@@ -167,8 +182,20 @@ export class ConnectionManager {
     this._connections.set(connectionId, connection);
     this._onDidChangeConnections.fire();
 
+    // Track connection activity
+    const activityService = ActivityService.getInstance();
+    const activityId = activityService.startActivity(
+      'connect',
+      connectionId,
+      host.name,
+      `Connect: ${host.name}`,
+      { detail: `${host.username}@${host.host}:${host.port} (${credential.label})` }
+    );
+
     try {
       await connection.connect();
+      // Complete activity tracking
+      activityService.completeActivity(activityId, 'Connected');
       // Update context for VS Code when clauses
       await vscode.commands.executeCommand(
         'setContext',
@@ -177,6 +204,8 @@ export class ConnectionManager {
       );
       return connection;
     } catch (error) {
+      // Fail activity tracking
+      activityService.failActivity(activityId, (error as Error).message);
       this._connections.delete(connectionId);
       this._onDidChangeConnections.fire();
       throw error;
@@ -398,12 +427,30 @@ export class ConnectionManager {
 
     const connection = this._connections.get(connectionId);
     if (connection) {
+      // Track disconnect activity
+      const activityService = ActivityService.getInstance();
+      const activityId = activityService.startActivity(
+        'disconnect',
+        connectionId,
+        connection.host.name,
+        `Disconnect: ${connection.host.name}`,
+        { detail: `${connection.host.username}@${connection.host.host}:${connection.host.port}` }
+      );
+
       console.log(`[SSH Lite] Calling connection.disconnect() for: ${connectionId}`);
       await connection.disconnect();
       console.log(`[SSH Lite] connection.disconnect() returned for: ${connectionId}`);
-      // Now safe to clean up - state change handler already checked isManualDisconnect
-      this._connections.delete(connectionId);
-      this._disconnectedConnections.delete(connectionId);
+
+      // Complete activity tracking
+      activityService.completeActivity(activityId, 'Disconnected');
+
+      // NOTE: Do NOT delete from _disconnectedConnections here!
+      // The SSH2 'close' event fires asynchronously AFTER this method returns.
+      // If we delete the entry now, the state handler won't see isManualDisconnect=true
+      // and will trigger auto-reconnect. The state handler will clean up when
+      // the 'close' event fires and it sees isManualDisconnect=true.
+
+      // Only fire connection change event - state handler will clean up maps
       this._onDidChangeConnections.fire();
       // Update context for VS Code when clauses
       await vscode.commands.executeCommand(
@@ -440,9 +487,11 @@ export class ConnectionManager {
       conn.disconnect()
     );
     await Promise.all(disconnectPromises);
-    // Now safe to clean up
-    this._connections.clear();
-    this._disconnectedConnections.clear();
+
+    // NOTE: Do NOT clear _disconnectedConnections or _connections here!
+    // The SSH2 'close' events fire asynchronously AFTER disconnect() returns.
+    // Each state handler will clean up its own entry when it sees isManualDisconnect=true.
+
     this._onDidChangeConnections.fire();
     await vscode.commands.executeCommand('setContext', 'sshLite.hasConnections', false);
   }

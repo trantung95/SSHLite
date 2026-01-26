@@ -196,14 +196,14 @@ export class ProgressiveFileContentProvider implements vscode.TextDocumentConten
     // Stop any existing follower
     this.stopTailFollow(uri);
 
-    // Start polling for new content using priority queue with LOW priority
+    // Start polling for new content using priority queue with MEDIUM priority
     const intervalId = setInterval(async () => {
       try {
         // Use priority queue to avoid overwhelming the server
         await this.priorityQueue.enqueue(
           parsed.connectionId,
           `tail-follow:${key}`,
-          PreloadPriority.LOW, // Priority 3 - runs when 3+ slots available
+          PreloadPriority.MEDIUM, // Priority 2 - runs when 2+ slots available
           async () => {
             await this.updatePreviewContent(uri, connection);
           }

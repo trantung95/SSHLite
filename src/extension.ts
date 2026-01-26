@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { ConnectionManager } from './connection/ConnectionManager';
 import { SSHConnection, setGlobalState } from './connection/SSHConnection';
 import { HostService } from './services/HostService';
@@ -10,12 +11,15 @@ import { AuditService } from './services/AuditService';
 import { ServerMonitorService, showMonitorQuickPick } from './services/ServerMonitorService';
 import { FolderHistoryService } from './services/FolderHistoryService';
 import { ProgressiveDownloadManager } from './services/ProgressiveDownloadManager';
-import { HostTreeProvider, HostTreeItem, CredentialTreeItem, PinnedFolderTreeItem, setExtensionPath } from './providers/HostTreeProvider';
+import { HostTreeProvider, ServerTreeItem, UserCredentialTreeItem, CredentialTreeItem, PinnedFolderTreeItem, setExtensionPath } from './providers/HostTreeProvider';
 import { SavedCredential, PinnedFolder } from './services/CredentialService';
 import { IHostConfig, ConnectionState } from './types';
 import { FileTreeProvider, FileTreeItem, ConnectionTreeItem, setFileTreeExtensionPath } from './providers/FileTreeProvider';
 import { PortForwardTreeProvider, PortForwardTreeItem } from './providers/PortForwardTreeProvider';
+import { ActivityTreeProvider, ActivityTreeItem, ServerGroupTreeItem } from './providers/ActivityTreeProvider';
+import { ActivityService } from './services/ActivityService';
 import { SearchPanel } from './webviews/SearchPanel';
+import { SSHFileDecorationProvider } from './providers/FileDecorationProvider';
 import { ProgressiveFileContentProvider } from './providers/ProgressiveFileContentProvider';
 import { PROGRESSIVE_PREVIEW_SCHEME } from './types/progressive';
 import { formatFileSize, formatRelativeTime } from './utils/helpers';
@@ -85,6 +89,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const hostTreeProvider = new HostTreeProvider();
   const fileTreeProvider = new FileTreeProvider();
   const portForwardTreeProvider = new PortForwardTreeProvider();
+  const activityTreeProvider = new ActivityTreeProvider();
+  const activityService = ActivityService.getInstance();
 
   // Initialize progressive download system for large files
   const progressiveContentProvider = ProgressiveFileContentProvider.getInstance();
@@ -102,7 +108,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // Wire up port forward service with its tree provider
   portForwardService.setTreeProvider(portForwardTreeProvider);
 
-  // Register tree views
+  // Register tree views (showCollapseAll: false - we provide custom toggle buttons)
   const hostTreeView = vscode.window.createTreeView('sshLite.hosts', {
     treeDataProvider: hostTreeProvider,
     showCollapseAll: false,
@@ -110,7 +116,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const fileTreeView = vscode.window.createTreeView('sshLite.fileExplorer', {
     treeDataProvider: fileTreeProvider,
-    showCollapseAll: true,
+    showCollapseAll: false,
     dragAndDropController: fileTreeProvider,
     canSelectMany: true,
   });
@@ -119,6 +125,55 @@ export function activate(context: vscode.ExtensionContext): void {
     treeDataProvider: portForwardTreeProvider,
     showCollapseAll: false,
   });
+
+  const activityTreeView = vscode.window.createTreeView('sshLite.activity', {
+    treeDataProvider: activityTreeProvider,
+    showCollapseAll: false,
+  });
+
+  // Register file decoration provider for live-refresh tab indicators
+  const fileDecorationProvider = new SSHFileDecorationProvider(fileService, connectionManager);
+  context.subscriptions.push(
+    vscode.window.registerFileDecorationProvider(fileDecorationProvider),
+    fileDecorationProvider
+  );
+
+  // Initialize expand/collapse toggle state for all tree views (all start collapsed)
+  vscode.commands.executeCommand('setContext', 'sshLite.hosts.expanded', false);
+  vscode.commands.executeCommand('setContext', 'sshLite.fileExplorer.expanded', false);
+  vscode.commands.executeCommand('setContext', 'sshLite.activity.expanded', false);
+  vscode.commands.executeCommand('setContext', 'sshLite.portForwards.expanded', false);
+
+  // Track expand/collapse events for file tree to preserve expansion state
+  context.subscriptions.push(
+    fileTreeView.onDidExpandElement((e) => {
+      fileTreeProvider.trackExpand(e.element);
+      // When any item is expanded, show collapse button
+      vscode.commands.executeCommand('setContext', 'sshLite.fileExplorer.expanded', true);
+    }),
+    fileTreeView.onDidCollapseElement((e) => {
+      fileTreeProvider.trackCollapse(e.element);
+    })
+  );
+
+  // Track expand events for other tree views to update toggle state
+  context.subscriptions.push(
+    hostTreeView.onDidExpandElement(() => {
+      vscode.commands.executeCommand('setContext', 'sshLite.hosts.expanded', true);
+    }),
+    activityTreeView.onDidExpandElement(() => {
+      vscode.commands.executeCommand('setContext', 'sshLite.activity.expanded', true);
+    }),
+    portForwardTreeView.onDidExpandElement(() => {
+      vscode.commands.executeCommand('setContext', 'sshLite.portForwards.expanded', true);
+    })
+  );
+
+  // Force initial refresh of host tree to ensure clean state on VS Code restart
+  // This clears any cached icons from previous session
+  setTimeout(() => {
+    hostTreeProvider.refresh();
+  }, 100);
 
   // Track orphaned SSH files from previous session (read-only until reconnected)
   // Maps local file path -> { remotePath, hostInfo (parsed from path) }
@@ -208,6 +263,7 @@ export function activate(context: vscode.ExtensionContext): void {
     if (!editor) {
       sshFileInfoStatusBar.hide();
       vscode.commands.executeCommand('setContext', 'sshLite.isConnectedFile', false);
+      vscode.commands.executeCommand('setContext', 'sshLite.hasActiveRemoteFile', false);
       return;
     }
 
@@ -217,6 +273,21 @@ export function activate(context: vscode.ExtensionContext): void {
     // Set context for showing/hiding reconnect button
     const isConnected = !!mapping;
     vscode.commands.executeCommand('setContext', 'sshLite.isConnectedFile', isConnected);
+
+    // Determine if this is a remote file (for reveal in tree button)
+    // Check mapping first, then fall back to temp path structure
+    let isRemoteFile = isConnected;
+    if (!isRemoteFile) {
+      const tempDir = fileService.getTempDir();
+      if (filePath.startsWith(tempDir)) {
+        const segments = filePath.substring(tempDir.length).split(/[/\\]/).filter(s => s.length > 0);
+        if (segments.length >= 2) {
+          const connectionId = segments[0];
+          isRemoteFile = !!connectionManager.getConnection(connectionId);
+        }
+      }
+    }
+    vscode.commands.executeCommand('setContext', 'sshLite.hasActiveRemoteFile', isRemoteFile);
 
     if (mapping) {
       // Handle cases where remoteFile or connection might be undefined (preloaded files)
@@ -301,9 +372,30 @@ export function activate(context: vscode.ExtensionContext): void {
   // Register commands
   const commands = [
     // Host commands
-    vscode.commands.registerCommand('sshLite.connect', async (item?: HostTreeItem) => {
+    vscode.commands.registerCommand('sshLite.connect', async (item?: ServerTreeItem) => {
       try {
-        let hostConfig = item?.hostConfig;
+        let hostConfig: IHostConfig | undefined;
+
+        if (item instanceof ServerTreeItem) {
+          // From server tree - if multiple users, show picker; otherwise use first
+          if (item.hosts.length === 1) {
+            hostConfig = item.hosts[0];
+          } else {
+            const selected = await vscode.window.showQuickPick(
+              item.hosts.map((h) => ({
+                label: h.username,
+                description: credentialService.listCredentials(h.id).length > 0 ? 'Password saved' : 'No password saved',
+                host: h,
+              })),
+              {
+                placeHolder: 'Select user to connect as',
+                ignoreFocusOut: true,
+              }
+            );
+            if (!selected) return;
+            hostConfig = selected.host;
+          }
+        }
 
         if (!hostConfig) {
           // Show quick pick to select host
@@ -369,33 +461,44 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
 
-    vscode.commands.registerCommand('sshLite.disconnect', async (item?: HostTreeItem | ConnectionTreeItem) => {
-      let connection: SSHConnection | undefined;
+    vscode.commands.registerCommand('sshLite.disconnect', async (item?: ServerTreeItem | ConnectionTreeItem) => {
+      let connections: SSHConnection[] = [];
 
       if (item instanceof ConnectionTreeItem) {
-        // From file explorer
-        connection = item.connection;
-      } else if (item?.hostConfig) {
-        // From host tree
-        connection = connectionManager.getConnection(item.hostConfig.id);
+        // From file explorer - single connection
+        connections = [item.connection];
+      } else if (item instanceof ServerTreeItem) {
+        // From server tree - find all connections for this server
+        for (const host of item.hosts) {
+          const conn = connectionManager.getConnection(host.id);
+          if (conn) {
+            connections.push(conn);
+          }
+        }
       }
 
-      if (!connection) {
+      if (connections.length === 0) {
         return;
       }
 
-      logCommand('disconnect', connection.host.name);
+      // Disconnect all connections for this server
+      for (const connection of connections) {
+        logCommand('disconnect', connection.host.name);
 
-      // Clean up resources
-      fileService.cleanupConnection(connection.id);
-      terminalService.closeTerminalsForConnection(connection.id);
-      await portForwardService.stopAllForwardsForConnection(connection.id);
-      fileTreeProvider.clearCache(connection.id);
+        // Clean up resources
+        fileService.cleanupConnection(connection.id);
+        terminalService.closeTerminalsForConnection(connection.id);
+        await portForwardService.stopAllForwardsForConnection(connection.id);
+        fileTreeProvider.clearCache(connection.id);
+        fileTreeProvider.clearExpansionState(connection.id);
 
-      await connectionManager.disconnect(connection.id);
-      logResult('disconnect', true, connection.host.name);
+        await connectionManager.disconnect(connection.id);
+        logResult('disconnect', true, connection.host.name);
+      }
+
       // Auto-dismiss disconnect success (non-blocking UX)
-      vscode.window.setStatusBarMessage(`$(check) Disconnected from ${connection.host.name}`, 3000);
+      const serverName = connections[0].host.name;
+      vscode.window.setStatusBarMessage(`$(check) Disconnected from ${serverName}`, 3000);
     }),
 
     // Reconnect orphaned SSH file - connects to server and enables editing
@@ -567,33 +670,45 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
 
-    vscode.commands.registerCommand('sshLite.editHost', async (item?: HostTreeItem) => {
-      if (!item?.hostConfig || item.hostConfig.source !== 'saved') {
+    vscode.commands.registerCommand('sshLite.editHost', async (item?: ServerTreeItem) => {
+      if (!item) return;
+
+      // Find the first saved host for this server to edit
+      const savedHost = item.hosts.find(h => h.source === 'saved');
+      if (!savedHost) {
+        vscode.window.setStatusBarMessage('$(info) SSH config hosts must be edited in ~/.ssh/config', 5000);
         return;
       }
 
-      const host = await hostService.promptEditHost(item.hostConfig);
+      const host = await hostService.promptEditHost(savedHost);
       if (host) {
         hostTreeProvider.refresh();
         vscode.window.setStatusBarMessage(`$(check) Updated host: ${host.name}`, 3000);
       }
     }),
 
-    vscode.commands.registerCommand('sshLite.removeHost', async (item?: HostTreeItem) => {
-      if (!item?.hostConfig || item.hostConfig.source !== 'saved') {
+    vscode.commands.registerCommand('sshLite.removeHost', async (item?: ServerTreeItem) => {
+      if (!item) return;
+
+      // Find saved hosts for this server
+      const savedHosts = item.hosts.filter(h => h.source === 'saved');
+      if (savedHosts.length === 0) {
+        vscode.window.setStatusBarMessage('$(info) SSH config hosts must be edited in ~/.ssh/config', 5000);
         return;
       }
 
       const confirm = await vscode.window.showWarningMessage(
-        `Remove host "${item.hostConfig.name}"?`,
+        `Remove all saved users for "${item.primaryHost.name}"?`,
         { modal: true },
         'Remove'
       );
 
       if (confirm === 'Remove') {
-        await hostService.removeHost(item.hostConfig.id);
+        for (const host of savedHosts) {
+          await hostService.removeHost(host.id);
+        }
         hostTreeProvider.refresh();
-        vscode.window.setStatusBarMessage(`$(check) Removed host: ${item.hostConfig.name}`, 3000);
+        vscode.window.setStatusBarMessage(`$(check) Removed saved users for: ${item.primaryHost.name}`, 3000);
       }
     }),
 
@@ -666,14 +781,15 @@ export function activate(context: vscode.ExtensionContext): void {
 
       const currentPath = fileTreeProvider.getCurrentPath(connection.id);
       if (currentPath === '/') {
-        vscode.window.showInformationMessage('Already at root');
+        vscode.window.setStatusBarMessage('$(info) Already at root', 2000);
         return;
       }
 
       // Get parent path
-      const parentPath = currentPath === '~' ? '/' : (require('path').posix.dirname(currentPath) || '/');
+      const parentPath = currentPath === '~' ? '/' : (path.posix.dirname(currentPath) || '/');
       fileTreeProvider.setCurrentPath(connection.id, parentPath);
       log(`Navigated to parent: ${parentPath}`);
+      vscode.window.setStatusBarMessage(`$(arrow-up) Navigated to ${parentPath}`, 2000);
     }),
 
     vscode.commands.registerCommand('sshLite.goToHome', async (item?: ConnectionTreeItem | FileTreeItem) => {
@@ -691,6 +807,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
       fileTreeProvider.setCurrentPath(connection.id, '~');
       log('Navigated to home directory');
+      vscode.window.setStatusBarMessage('$(home) Navigated to ~', 2000);
     }),
 
     vscode.commands.registerCommand('sshLite.goToRoot', async (item?: ConnectionTreeItem | FileTreeItem) => {
@@ -708,6 +825,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
       fileTreeProvider.setCurrentPath(connection.id, '/');
       log('Navigated to root directory');
+      vscode.window.setStatusBarMessage('$(folder) Navigated to /', 2000);
     }),
 
     // File commands
@@ -741,6 +859,31 @@ export function activate(context: vscode.ExtensionContext): void {
         fileTreeProvider.refresh();
       } catch (error) {
         logResult('downloadFile', false, (error as Error).message);
+      }
+    }),
+
+    // Copy path to clipboard
+    vscode.commands.registerCommand('sshLite.copyPath', async (item?: FileTreeItem) => {
+      if (!item) {
+        return;
+      }
+      await vscode.env.clipboard.writeText(item.file.path);
+      vscode.window.setStatusBarMessage(`$(check) Copied: ${item.file.path}`, 2000);
+    }),
+
+    // Copy host to clipboard
+    vscode.commands.registerCommand('sshLite.copyHost', async (item?: ServerTreeItem | CredentialTreeItem) => {
+      let hostname: string | undefined;
+
+      if (item instanceof ServerTreeItem) {
+        hostname = item.primaryHost.host;
+      } else if (item instanceof CredentialTreeItem) {
+        hostname = item.hostConfig.host;
+      }
+
+      if (hostname) {
+        await vscode.env.clipboard.writeText(hostname);
+        vscode.window.setStatusBarMessage(`$(check) Copied: ${hostname}`, 2000);
       }
     }),
 
@@ -836,6 +979,38 @@ export function activate(context: vscode.ExtensionContext): void {
 
     vscode.commands.registerCommand('sshLite.refreshFiles', () => {
       fileTreeProvider.refresh();
+    }),
+
+    // Expand all tree nodes for a specific view
+    // After expanding, toggle the button to show "Collapse All"
+    vscode.commands.registerCommand('sshLite.expandAll', async (viewId?: string) => {
+      await vscode.commands.executeCommand('list.expandRecursively');
+      // Set context to show collapse button instead
+      if (viewId) {
+        await vscode.commands.executeCommand('setContext', `sshLite.${viewId}.expanded`, true);
+      } else {
+        // If no viewId, set all to expanded
+        await vscode.commands.executeCommand('setContext', 'sshLite.hosts.expanded', true);
+        await vscode.commands.executeCommand('setContext', 'sshLite.fileExplorer.expanded', true);
+        await vscode.commands.executeCommand('setContext', 'sshLite.activity.expanded', true);
+        await vscode.commands.executeCommand('setContext', 'sshLite.portForwards.expanded', true);
+      }
+    }),
+
+    // Collapse all tree nodes for a specific view
+    // After collapsing, toggle the button to show "Expand All"
+    vscode.commands.registerCommand('sshLite.collapseAll', async (viewId?: string) => {
+      await vscode.commands.executeCommand('list.collapseAll');
+      // Set context to show expand button instead
+      if (viewId) {
+        await vscode.commands.executeCommand('setContext', `sshLite.${viewId}.expanded`, false);
+      } else {
+        // If no viewId, set all to collapsed
+        await vscode.commands.executeCommand('setContext', 'sshLite.hosts.expanded', false);
+        await vscode.commands.executeCommand('setContext', 'sshLite.fileExplorer.expanded', false);
+        await vscode.commands.executeCommand('setContext', 'sshLite.activity.expanded', false);
+        await vscode.commands.executeCommand('setContext', 'sshLite.portForwards.expanded', false);
+      }
     }),
 
     // Filter files in tree view
@@ -956,10 +1131,15 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       });
 
-      // Add all connections' current paths as default scopes if no scopes exist
-      const connections = connectionManager.getAllConnections();
-      for (const conn of connections) {
-        searchPanel.addScope(fileTreeProvider.getCurrentPath(conn.id), conn);
+      // Set connection resolver to avoid stale references after auto-reconnect
+      searchPanel.setConnectionResolver((connectionId) => connectionManager.getConnection(connectionId));
+
+      // Add all connections' current paths as default scopes only if no scopes exist
+      if (!searchPanel.hasScopes()) {
+        const connections = connectionManager.getAllConnections();
+        for (const conn of connections) {
+          searchPanel.addScope(fileTreeProvider.getCurrentPath(conn.id), conn);
+        }
       }
 
       searchPanel.show();
@@ -971,24 +1151,36 @@ export function activate(context: vscode.ExtensionContext): void {
       const searchPanel = SearchPanel.getInstance();
 
       // Set callback for opening files
-      searchPanel.setOpenFileCallback(async (connectionId: string, remotePath: string, line?: number) => {
+      searchPanel.setOpenFileCallback(async (connectionId: string, remotePath: string, line?: number, searchQuery?: string) => {
         const connection = connectionManager.getConnection(connectionId);
         if (!connection) {
           vscode.window.showErrorMessage('Connection not found');
           return;
         }
 
-        const remoteFile = {
-          name: remotePath.split('/').pop() || remotePath,
-          path: remotePath,
-          isDirectory: false,
-          size: 0,
-          modifiedTime: Date.now(),
-          connectionId,
-        };
+        // Check if file is already open in VS Code (includes hidden tabs, not just visible)
+        const localPath = fileService.getLocalFilePath(connectionId, remotePath);
+        const existingDocument = vscode.workspace.textDocuments.find(
+          (d) => d.uri.fsPath === localPath
+        );
 
-        await fileService.openRemoteFile(connection, remoteFile);
+        if (existingDocument) {
+          // File already open - just focus and jump to line (no reload needed)
+          await vscode.window.showTextDocument(existingDocument, { preview: false });
+        } else {
+          // File not open - download and open
+          const remoteFile = {
+            name: remotePath.split('/').pop() || remotePath,
+            path: remotePath,
+            isDirectory: false,
+            size: 0,
+            modifiedTime: Date.now(),
+            connectionId,
+          };
+          await fileService.openRemoteFile(connection, remoteFile);
+        }
 
+        // Jump to line and highlight search match
         if (line) {
           setTimeout(async () => {
             const editor = vscode.window.activeTextEditor;
@@ -996,20 +1188,38 @@ export function activate(context: vscode.ExtensionContext): void {
               const position = new vscode.Position(line - 1, 0);
               editor.selection = new vscode.Selection(position, position);
               editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+
+              // Highlight the search query if provided
+              if (searchQuery) {
+                const lineText = editor.document.lineAt(line - 1).text;
+                const matchIndex = lineText.toLowerCase().indexOf(searchQuery.toLowerCase());
+                if (matchIndex >= 0) {
+                  const startPos = new vscode.Position(line - 1, matchIndex);
+                  const endPos = new vscode.Position(line - 1, matchIndex + searchQuery.length);
+                  editor.selection = new vscode.Selection(startPos, endPos);
+                }
+              }
             }
           }, 300);
         }
       });
+
+      // Set connection resolver to avoid stale references after auto-reconnect
+      searchPanel.setConnectionResolver((connectionId) => connectionManager.getConnection(connectionId));
 
       // Add the selected scope (don't clear existing scopes to allow multiple)
       if (item instanceof ConnectionTreeItem) {
         const searchPath = fileTreeProvider.getCurrentPath(item.connection.id);
         searchPanel.addScope(searchPath, item.connection);
       } else if (item instanceof FileTreeItem) {
-        const searchPath = item.file.isDirectory
-          ? item.file.path
-          : item.file.path.substring(0, item.file.path.lastIndexOf('/')) || '/';
-        searchPanel.addScope(searchPath, item.connection);
+        // For files, add the file directly as search scope
+        // For folders, add the folder itself
+        if (item.file.isDirectory) {
+          searchPanel.addScope(item.file.path, item.connection, false);
+        } else {
+          // Add file directly - grep can search within a single file
+          searchPanel.addScope(item.file.path, item.connection, true);
+        }
       } else {
         // No item - add all connections' current paths (only if no scopes exist)
         if (!searchPanel.hasScopes()) {
@@ -1022,6 +1232,55 @@ export function activate(context: vscode.ExtensionContext): void {
 
       searchPanel.show();
       searchPanel.focusSearchInput();
+    }),
+
+    // Cancel search - cancels all ongoing search processes
+    vscode.commands.registerCommand('sshLite.cancelSearch', () => {
+      const searchPanel = SearchPanel.getInstance();
+      searchPanel.cancelSearch();
+    }),
+
+    // Activity commands
+    vscode.commands.registerCommand('sshLite.cancelActivity', (item?: ActivityTreeItem) => {
+      if (item && item.activity) {
+        activityService.cancelActivity(item.activity.id);
+        vscode.window.setStatusBarMessage(`$(stop) Cancelled: ${item.activity.description}`, 2000);
+      }
+    }),
+
+    vscode.commands.registerCommand('sshLite.cancelAllActivities', () => {
+      const runningCount = activityService.getRunningActivities().length;
+      if (runningCount === 0) {
+        vscode.window.setStatusBarMessage('$(check) No running activities to cancel', 2000);
+        return;
+      }
+      activityService.cancelAll();
+      vscode.window.setStatusBarMessage(`$(stop) Cancelled ${runningCount} activities`, 2000);
+    }),
+
+    vscode.commands.registerCommand('sshLite.cancelServerActivities', (item?: ServerGroupTreeItem) => {
+      if (item && item.connectionId) {
+        const activities = activityService.getActivitiesForConnection(item.connectionId)
+          .filter(a => a.status === 'running');
+        if (activities.length === 0) {
+          vscode.window.setStatusBarMessage(`$(check) No running activities for ${item.serverName}`, 2000);
+          return;
+        }
+        activityService.cancelAllForConnection(item.connectionId);
+        vscode.window.setStatusBarMessage(`$(stop) Cancelled ${activities.length} activities for ${item.serverName}`, 2000);
+      }
+    }),
+
+    vscode.commands.registerCommand('sshLite.clearActivities', () => {
+      activityService.clearAll();
+      vscode.window.setStatusBarMessage('$(clear-all) Activities cleared', 2000);
+    }),
+
+    vscode.commands.registerCommand('sshLite.toggleActivityGrouping', () => {
+      const currentMode = activityTreeProvider.getGroupingMode();
+      const newMode = currentMode === 'server' ? 'type' : 'server';
+      activityTreeProvider.setGroupingMode(newMode);
+      vscode.window.setStatusBarMessage(`$(list-tree) Grouping by ${newMode}`, 2000);
     }),
 
     // Filter files by name in folder (highlights in tree)
@@ -1038,85 +1297,41 @@ export function activate(context: vscode.ExtensionContext): void {
       });
 
       if (pattern) {
-        fileTreeProvider.setFilenameFilter(pattern, item.file.path, item.connection);
+        await fileTreeProvider.setFilenameFilter(pattern, item.file.path, item.connection);
         vscode.commands.executeCommand('setContext', 'sshLite.hasFilenameFilter', true);
         vscode.window.setStatusBarMessage(`$(filter) Filtering: ${pattern} in ${item.file.name}`, 0);
       }
     }),
 
-    // Clear filename filter
-    vscode.commands.registerCommand('sshLite.clearFilenameFilter', () => {
+    // Clear filename filter (can be triggered from tree view navigation bar or folder inline icon)
+    vscode.commands.registerCommand('sshLite.clearFilenameFilter', (_item?: FileTreeItem) => {
       fileTreeProvider.clearFilenameFilter();
       vscode.commands.executeCommand('setContext', 'sshLite.hasFilenameFilter', false);
       vscode.window.setStatusBarMessage('$(filter) Filter cleared', 2000);
     }),
 
-    // Search in file (opens terminal with grep command)
-    vscode.commands.registerCommand('sshLite.searchInFile', async (item?: FileTreeItem) => {
-      if (!item || item.file.isDirectory) {
-        vscode.window.showWarningMessage('Select a file to search');
+    // Reveal search result in file tree
+    vscode.commands.registerCommand('sshLite.revealSearchResultInTree', async (result?: { path: string; connectionId: string }) => {
+      if (!result || !result.path || !result.connectionId) {
+        vscode.window.showWarningMessage('No search result selected');
         return;
       }
 
-      const connection = item.connection;
-      const filePath = item.file.path;
-
-      // Ask for search pattern
-      const searchPattern = await vscode.window.showInputBox({
-        prompt: `Search pattern in ${item.file.name}`,
-        placeHolder: 'Enter search pattern (regex supported)...',
-        title: 'Search in File',
-      });
-
-      if (!searchPattern) {
+      const connection = connectionManager.getConnection(result.connectionId);
+      if (!connection) {
+        vscode.window.showErrorMessage('Connection not found');
         return;
       }
 
-      // Ask for search options
-      const options = await vscode.window.showQuickPick(
-        [
-          { label: '$(search) Basic Search', description: 'Case-insensitive search', value: 'basic' },
-          { label: '$(regex) Regex Search', description: 'Use regular expression', value: 'regex' },
-          { label: '$(list-ordered) With Line Numbers', description: 'Show line numbers', value: 'lines' },
-          { label: '$(code) With Context', description: 'Show 3 lines of context', value: 'context' },
-        ],
-        {
-          placeHolder: 'Select search mode',
-          title: 'Search Options',
-        }
-      );
-
-      if (!options) {
-        return;
+      // Navigate to parent folder and reveal the file
+      const treeItem = await fileTreeProvider.revealFile(result.connectionId, result.path);
+      if (treeItem) {
+        // Reveal in tree view with focus
+        await fileTreeView.reveal(treeItem, { select: true, focus: true, expand: true });
+        vscode.window.setStatusBarMessage(`$(target) Revealed ${treeItem.file.name} in tree`, 3000);
+      } else {
+        vscode.window.showWarningMessage('Could not reveal file in tree');
       }
-
-      // Build grep command based on options
-      let grepCmd = 'grep';
-      const escapedPattern = searchPattern.replace(/'/g, "'\\''");
-      const escapedPath = filePath.replace(/'/g, "'\\''");
-
-      switch (options.value) {
-        case 'basic':
-          grepCmd = `grep -i '${escapedPattern}' '${escapedPath}'`;
-          break;
-        case 'regex':
-          grepCmd = `grep -E '${escapedPattern}' '${escapedPath}'`;
-          break;
-        case 'lines':
-          grepCmd = `grep -in '${escapedPattern}' '${escapedPath}'`;
-          break;
-        case 'context':
-          grepCmd = `grep -in -C 3 '${escapedPattern}' '${escapedPath}'`;
-          break;
-      }
-
-      // Open terminal and run the grep command
-      const terminalService = TerminalService.getInstance();
-      const terminal = await terminalService.createTerminal(connection);
-      terminal.show();
-      terminal.sendText(grepCmd);
-
-      log(`Search in file: ${grepCmd}`);
     }),
 
     // Cancel preloading operations
@@ -1217,7 +1432,7 @@ export function activate(context: vscode.ExtensionContext): void {
       } else if (item instanceof FileTreeItem) {
         connection = item.connection;
         // If it's a file, cd to its parent directory
-        targetPath = item.file.isDirectory ? item.file.path : require('path').posix.dirname(item.file.path);
+        targetPath = item.file.isDirectory ? item.file.path : path.posix.dirname(item.file.path);
       } else {
         return;
       }
@@ -1231,15 +1446,18 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     // Terminal commands
-    vscode.commands.registerCommand('sshLite.openTerminal', async (item?: HostTreeItem | ConnectionTreeItem) => {
+    vscode.commands.registerCommand('sshLite.openTerminal', async (item?: ServerTreeItem | ConnectionTreeItem) => {
       let connection: SSHConnection | undefined;
 
       if (item instanceof ConnectionTreeItem) {
         // From file explorer
         connection = item.connection;
-      } else if (item?.hostConfig) {
-        // From host tree
-        connection = connectionManager.getConnection(item.hostConfig.id);
+      } else if (item instanceof ServerTreeItem) {
+        // From server tree - find first connected user
+        for (const host of item.hosts) {
+          connection = connectionManager.getConnection(host.id);
+          if (connection) break;
+        }
       }
 
       if (!connection) {
@@ -1320,10 +1538,20 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     // Monitor commands
-    vscode.commands.registerCommand('sshLite.monitor', async (item?: HostTreeItem) => {
-      const connection = item?.hostConfig
-        ? connectionManager.getConnection(item.hostConfig.id)
-        : await selectConnection(connectionManager);
+    vscode.commands.registerCommand('sshLite.monitor', async (item?: ServerTreeItem | ConnectionTreeItem) => {
+      let connection: SSHConnection | undefined;
+      if (item instanceof ConnectionTreeItem) {
+        connection = item.connection;
+      } else if (item instanceof ServerTreeItem) {
+        // Find first connected user for this server
+        for (const host of item.hosts) {
+          connection = connectionManager.getConnection(host.id);
+          if (connection) break;
+        }
+      }
+      if (!connection) {
+        connection = await selectConnection(connectionManager);
+      }
 
       if (!connection) {
         vscode.window.showWarningMessage('No active connection selected');
@@ -1333,10 +1561,19 @@ export function activate(context: vscode.ExtensionContext): void {
       await showMonitorQuickPick(connection);
     }),
 
-    vscode.commands.registerCommand('sshLite.quickStatus', async (item?: HostTreeItem) => {
-      const connection = item?.hostConfig
-        ? connectionManager.getConnection(item.hostConfig.id)
-        : await selectConnection(connectionManager);
+    vscode.commands.registerCommand('sshLite.quickStatus', async (item?: ServerTreeItem | ConnectionTreeItem) => {
+      let connection: SSHConnection | undefined;
+      if (item instanceof ConnectionTreeItem) {
+        connection = item.connection;
+      } else if (item instanceof ServerTreeItem) {
+        for (const host of item.hosts) {
+          connection = connectionManager.getConnection(host.id);
+          if (connection) break;
+        }
+      }
+      if (!connection) {
+        connection = await selectConnection(connectionManager);
+      }
 
       if (!connection) {
         vscode.window.showWarningMessage('No active connection selected');
@@ -1346,10 +1583,19 @@ export function activate(context: vscode.ExtensionContext): void {
       await monitorService.quickStatus(connection);
     }),
 
-    vscode.commands.registerCommand('sshLite.diagnoseSlowness', async (item?: HostTreeItem) => {
-      const connection = item?.hostConfig
-        ? connectionManager.getConnection(item.hostConfig.id)
-        : await selectConnection(connectionManager);
+    vscode.commands.registerCommand('sshLite.diagnoseSlowness', async (item?: ServerTreeItem | ConnectionTreeItem) => {
+      let connection: SSHConnection | undefined;
+      if (item instanceof ConnectionTreeItem) {
+        connection = item.connection;
+      } else if (item instanceof ServerTreeItem) {
+        for (const host of item.hosts) {
+          connection = connectionManager.getConnection(host.id);
+          if (connection) break;
+        }
+      }
+      if (!connection) {
+        connection = await selectConnection(connectionManager);
+      }
 
       if (!connection) {
         vscode.window.showWarningMessage('No active connection selected');
@@ -1359,126 +1605,166 @@ export function activate(context: vscode.ExtensionContext): void {
       await monitorService.diagnoseSlowness(connection);
     }),
 
-    // Simple credential clear command
-    vscode.commands.registerCommand('sshLite.clearCredentials', async (item?: HostTreeItem) => {
-      if (!item?.hostConfig) {
-        vscode.window.showWarningMessage('Select a host first');
+    // Clear all credentials for a server
+    vscode.commands.registerCommand('sshLite.clearCredentials', async (item?: ServerTreeItem) => {
+      if (!item) {
+        vscode.window.showWarningMessage('Select a server first');
         return;
       }
 
       const confirm = await vscode.window.showWarningMessage(
-        `Clear saved credentials for ${item.hostConfig.name}?`,
-        'Clear'
+        `Clear all saved passwords for ${item.primaryHost.name}?`,
+        'Clear All'
       );
 
-      if (confirm === 'Clear') {
-        await credentialService.deleteAll(item.hostConfig.id);
+      if (confirm === 'Clear All') {
+        // Clear credentials for all users on this server
+        for (const host of item.hosts) {
+          await credentialService.deleteAll(host.id);
+        }
         hostTreeProvider.refresh();
-        vscode.window.setStatusBarMessage('$(check) Credentials cleared', 3000);
+        vscode.window.setStatusBarMessage('$(check) All passwords cleared', 3000);
       }
     }),
 
-    // Add credential command
-    vscode.commands.registerCommand('sshLite.addCredential', async (hostConfig?: IHostConfig) => {
-      log(`addCredential: called with hostConfig=${hostConfig ? JSON.stringify({ id: hostConfig.id, name: hostConfig.name }) : 'undefined'}`);
-      if (!hostConfig) {
-        vscode.window.showWarningMessage('Select a host first');
+    // Add credential/user command - handles ServerTreeItem from new tree structure
+    vscode.commands.registerCommand('sshLite.addCredential', async (serverItem?: ServerTreeItem) => {
+      log(`addCredential: called with serverItem=${serverItem ? serverItem.serverKey : 'undefined'}`);
+      if (!serverItem) {
+        vscode.window.showWarningMessage('Select a server first');
         return;
       }
 
-      // Ask for credential type
-      const typeChoice = await vscode.window.showQuickPick(
-        [
-          { label: 'Password', description: 'Use password authentication', type: 'password' as const },
-          { label: 'Private Key', description: 'Use SSH private key', type: 'privateKey' as const },
-        ],
-        {
-          placeHolder: 'Select authentication type',
-          ignoreFocusOut: true,
-        }
-      );
+      // Get server info from the first host
+      const templateHost = serverItem.primaryHost;
+      const [host, portStr] = serverItem.serverKey.split(':');
+      const port = parseInt(portStr, 10);
 
-      if (!typeChoice) return;
-
-      // Ask for label
-      const label = await vscode.window.showInputBox({
-        prompt: 'Enter a name for this credential',
-        placeHolder: 'e.g., Work Password, Personal Key',
+      // Ask for username
+      const username = await vscode.window.showInputBox({
+        prompt: `Enter username for ${host}`,
+        placeHolder: 'e.g., root, admin, ubuntu',
         ignoreFocusOut: true,
       });
 
-      if (!label) return;
+      if (!username) return;
 
-      if (typeChoice.type === 'password') {
-        // Ask for password
+      // Check if this username already exists for this server
+      const existingHost = serverItem.hosts.find(h => h.username === username);
+      if (existingHost) {
+        vscode.window.showWarningMessage(`User "${username}" already exists for this server`);
+        return;
+      }
+
+      // Ask for password
+      const password = await vscode.window.showInputBox({
+        prompt: `Enter password for ${username}@${host}`,
+        password: true,
+        ignoreFocusOut: true,
+      });
+
+      if (!password) return;
+
+      // Create a new saved host with this username
+      const newHostId = `${host}:${port}:${username}`;
+      const newHost: IHostConfig = {
+        id: newHostId,
+        name: templateHost.name, // Use same display name as the server
+        host: host,
+        port: port,
+        username: username,
+        source: 'saved',
+      };
+
+      log(`addCredential: Adding new user "${username}" for server ${serverItem.serverKey}`);
+      try {
+        // Save the host
+        hostService.saveHost(newHost);
+
+        // Save the credential (password)
+        const cred = await credentialService.addCredential(newHostId, 'Default', 'password', password);
+        log(`addCredential: Success - created host ${newHostId} with credential ${cred.id}`);
+
+        hostTreeProvider.refresh();
+        vscode.window.setStatusBarMessage(`$(check) User "${username}" added`, 3000);
+      } catch (error) {
+        log(`addCredential: Error - ${(error as Error).message}`);
+        vscode.window.showErrorMessage(`Failed to add user: ${(error as Error).message}`);
+      }
+    }),
+
+    // Save password for existing user credential
+    vscode.commands.registerCommand('sshLite.savePassword', async (item?: UserCredentialTreeItem) => {
+      if (!item) {
+        vscode.window.showWarningMessage('Select a user first');
+        return;
+      }
+
+      const hostConfig = item.hostConfig;
+
+      // Ask for password
+      const password = await vscode.window.showInputBox({
+        prompt: `Enter password for ${hostConfig.username}@${hostConfig.host}`,
+        password: true,
+        ignoreFocusOut: true,
+      });
+
+      if (!password) return;
+
+      log(`savePassword: Saving password for ${hostConfig.username}@${hostConfig.host}`);
+      try {
+        if (item.credential) {
+          // Update existing credential
+          await credentialService.updateCredentialPassword(hostConfig.id, item.credential.id, password);
+        } else {
+          // Create new credential
+          await credentialService.addCredential(hostConfig.id, 'Default', 'password', password);
+        }
+        hostTreeProvider.refresh();
+        vscode.window.setStatusBarMessage(`$(check) Password saved for ${hostConfig.username}`, 3000);
+      } catch (error) {
+        log(`savePassword: Error - ${(error as Error).message}`);
+        vscode.window.showErrorMessage(`Failed to save password: ${(error as Error).message}`);
+      }
+    }),
+
+    // Connect with specific credential
+    vscode.commands.registerCommand('sshLite.connectWithCredential', async (hostConfig?: IHostConfig, credential?: SavedCredential | null) => {
+      if (!hostConfig) {
+        vscode.window.showWarningMessage('Invalid host selection');
+        return;
+      }
+
+      // If no credential, prompt for password first
+      let effectiveCredential = credential;
+      if (!effectiveCredential) {
         const password = await vscode.window.showInputBox({
-          prompt: 'Enter password',
+          prompt: `Enter password for ${hostConfig.username}@${hostConfig.host}`,
           password: true,
           ignoreFocusOut: true,
         });
 
         if (!password) return;
 
-        log(`addCredential: Adding password credential "${label}" for host ${hostConfig.id}`);
+        // Save the credential for next time
         try {
-          const cred = await credentialService.addCredential(hostConfig.id, label, 'password', password);
-          log(`addCredential: Success - created credential ${cred.id}`);
+          effectiveCredential = await credentialService.addCredential(hostConfig.id, 'Default', 'password', password);
           hostTreeProvider.refresh();
-          vscode.window.setStatusBarMessage(`$(check) Credential "${label}" added`, 3000);
         } catch (error) {
-          log(`addCredential: Error - ${(error as Error).message}`);
-          vscode.window.showErrorMessage(`Failed to add credential: ${(error as Error).message}`);
+          log(`Failed to save credential: ${(error as Error).message}`);
+          // Continue anyway with a temporary credential object
+          effectiveCredential = {
+            id: 'temp',
+            label: 'Temporary',
+            type: 'password',
+          };
+          // Store in session only
+          credentialService.setSessionCredential(hostConfig.id, 'temp', password);
         }
-      } else {
-        // Ask for private key path
-        const keyUri = await vscode.window.showOpenDialog({
-          canSelectFiles: true,
-          canSelectFolders: false,
-          canSelectMany: false,
-          title: 'Select Private Key File',
-          filters: { 'All Files': ['*'] },
-        });
-
-        if (!keyUri || keyUri.length === 0) return;
-
-        const keyPath = keyUri[0].fsPath;
-
-        // Check if key is encrypted and ask for passphrase
-        const fs = require('fs');
-        const keyContent = fs.readFileSync(keyPath, 'utf-8');
-        let passphrase = '';
-
-        if (keyContent.includes('ENCRYPTED')) {
-          const pass = await vscode.window.showInputBox({
-            prompt: 'Enter passphrase for private key (leave empty if none)',
-            password: true,
-            ignoreFocusOut: true,
-          });
-          passphrase = pass || '';
-        }
-
-        log(`addCredential: Adding privateKey credential "${label}" for host ${hostConfig.id}, keyPath=${keyPath}`);
-        try {
-          const cred = await credentialService.addCredential(hostConfig.id, label, 'privateKey', passphrase, keyPath);
-          log(`addCredential: Success - created credential ${cred.id}`);
-          hostTreeProvider.refresh();
-          vscode.window.setStatusBarMessage(`$(check) Credential "${label}" added`, 3000);
-        } catch (error) {
-          log(`addCredential: Error - ${(error as Error).message}`);
-          vscode.window.showErrorMessage(`Failed to add credential: ${(error as Error).message}`);
-        }
-      }
-    }),
-
-    // Connect with specific credential
-    vscode.commands.registerCommand('sshLite.connectWithCredential', async (hostConfig?: IHostConfig, credential?: SavedCredential) => {
-      if (!hostConfig || !credential) {
-        vscode.window.showWarningMessage('Invalid credential selection');
-        return;
       }
 
       try {
-        log(`Connecting to ${hostConfig.name} with credential "${credential.label}"...`);
+        log(`Connecting to ${hostConfig.name} with credential "${effectiveCredential.label}"...`);
         await vscode.window.withProgress(
           {
             location: vscode.ProgressLocation.Notification,
@@ -1486,7 +1772,7 @@ export function activate(context: vscode.ExtensionContext): void {
             cancellable: false,
           },
           async () => {
-            await connectionManager.connectWithCredential(hostConfig!, credential!);
+            await connectionManager.connectWithCredential(hostConfig!, effectiveCredential!);
           }
         );
 
@@ -1498,7 +1784,7 @@ export function activate(context: vscode.ExtensionContext): void {
         const errMsg = (error as Error).message;
         const isAuthError = errMsg.includes('authentication') || errMsg.includes('password') || errMsg.includes('Permission denied') || errMsg.includes('All configured authentication methods failed');
 
-        if (isAuthError && credential.type === 'password') {
+        if (isAuthError && effectiveCredential.type === 'password') {
           // Authentication failed - offer to retry with new password
           const action = await vscode.window.showErrorMessage(
             `Connection failed: ${errMsg}`,
@@ -1517,11 +1803,11 @@ export function activate(context: vscode.ExtensionContext): void {
             if (newPassword) {
               try {
                 // Update the credential with new password
-                await credentialService.updateCredentialPassword(hostConfig.id, credential.id, newPassword);
-                log(`Updated password for credential "${credential.label}"`);
+                await credentialService.updateCredentialPassword(hostConfig.id, effectiveCredential.id, newPassword);
+                log(`Updated password for credential "${effectiveCredential.label}"`);
 
                 // Retry connection with updated credential
-                const updatedCredential = { ...credential };
+                const updatedCredential = { ...effectiveCredential };
                 await vscode.window.withProgress(
                   {
                     location: vscode.ProgressLocation.Notification,
@@ -1557,18 +1843,23 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
 
-    // Delete credential command
-    vscode.commands.registerCommand('sshLite.deleteCredential', async (item?: CredentialTreeItem) => {
+    // Delete credential command (removes saved password for a user)
+    vscode.commands.registerCommand('sshLite.deleteCredential', async (item?: UserCredentialTreeItem) => {
       if (!item) {
         log('deleteCredential: No item provided');
-        vscode.window.showWarningMessage('Select a credential to delete');
+        vscode.window.showWarningMessage('Select a user to delete password');
         return;
       }
 
-      log(`deleteCredential: Deleting credential "${item.credential.label}" for host "${item.hostConfig.name}" (hostId: ${item.hostConfig.id})`);
+      if (!item.credential) {
+        vscode.window.showInformationMessage('No saved password to delete');
+        return;
+      }
+
+      log(`deleteCredential: Deleting credential for user "${item.hostConfig.username}" (hostId: ${item.hostConfig.id})`);
 
       const confirm = await vscode.window.showWarningMessage(
-        `Delete credential "${item.credential.label}"?`,
+        `Delete saved password for "${item.hostConfig.username}"?`,
         'Delete'
       );
 
@@ -1576,11 +1867,11 @@ export function activate(context: vscode.ExtensionContext): void {
         try {
           await credentialService.deleteCredential(item.hostConfig.id, item.credential.id);
           hostTreeProvider.refresh();
-          vscode.window.setStatusBarMessage('$(check) Credential deleted', 3000);
+          vscode.window.setStatusBarMessage('$(check) Password deleted', 3000);
           log('deleteCredential: Success');
         } catch (error) {
           log(`deleteCredential: Error - ${(error as Error).message}`);
-          vscode.window.showErrorMessage(`Failed to delete credential: ${(error as Error).message}`);
+          vscode.window.showErrorMessage(`Failed to delete password: ${(error as Error).message}`);
         }
       }
     }),
@@ -1645,50 +1936,62 @@ export function activate(context: vscode.ExtensionContext): void {
       const connection = item.connection;
       const remotePath = item.file.path;
 
-      // Use host config ID (same as connection.id but more explicit)
+      // Use host config ID
       const hostId = connection.host.id;
 
-      // Get all credentials for this host
-      const credentials = credentialService.listCredentials(hostId);
-      if (credentials.length === 0) {
-        vscode.window.showWarningMessage(`No saved credentials for "${connection.host.name}". Add a credential first from SSH Hosts.`);
+      // Use the credential from the connection (no need to ask user - connection already knows)
+      const connectionCredential = connection.credential;
+      if (!connectionCredential) {
+        vscode.window.showWarningMessage('No credential associated with this connection');
         return;
       }
 
-      // Let user select which credential to pin to
-      const credentialChoice = await vscode.window.showQuickPick(
-        credentials.map((c) => ({
-          label: c.label,
-          description: c.type === 'password' ? 'Password' : 'Private Key',
-          credential: c,
-        })),
-        {
-          placeHolder: 'Select credential to pin this folder to',
-          ignoreFocusOut: true,
-        }
-      );
+      // Ask for a name for this pinned folder using createInputBox for button support
+      const name = await new Promise<string | undefined>((resolve) => {
+        const inputBox = vscode.window.createInputBox();
+        inputBox.prompt = 'Name for pinned folder';
+        inputBox.value = item.file.name;
+        inputBox.placeholder = 'e.g., Logs, Config, Projects';
+        inputBox.ignoreFocusOut = true;
 
-      if (!credentialChoice) return;
+        // Add Save button (checkmark icon)
+        const saveButton: vscode.QuickInputButton = {
+          iconPath: new vscode.ThemeIcon('check'),
+          tooltip: 'Save',
+        };
+        inputBox.buttons = [saveButton];
 
-      // Ask for a name for this pinned folder
-      const name = await vscode.window.showInputBox({
-        prompt: 'Enter a name for this pinned folder',
-        value: item.file.name,
-        placeHolder: 'e.g., Logs, Config, Projects',
-        ignoreFocusOut: true,
+        inputBox.onDidAccept(() => {
+          resolve(inputBox.value);
+          inputBox.dispose();
+        });
+
+        inputBox.onDidTriggerButton((button) => {
+          if (button === saveButton) {
+            resolve(inputBox.value);
+            inputBox.dispose();
+          }
+        });
+
+        inputBox.onDidHide(() => {
+          resolve(undefined);
+          inputBox.dispose();
+        });
+
+        inputBox.show();
       });
 
       if (!name) return;
 
       await credentialService.addPinnedFolder(
         hostId,
-        credentialChoice.credential.id,
+        connectionCredential.id,
         name,
         remotePath
       );
 
       hostTreeProvider.refresh();
-      vscode.window.setStatusBarMessage(`$(check) Pinned "${name}" to ${credentialChoice.credential.label}`, 3000);
+      vscode.window.setStatusBarMessage(`$(check) Pinned "${name}" to ${connectionCredential.label}`, 3000);
     }),
 
     // Connect to pinned folder
@@ -1704,6 +2007,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
       try {
         log(`Connecting to ${hostConfig.name} and navigating to ${pinnedFolder.remotePath}...`);
+        let connection: SSHConnection | undefined;
         await vscode.window.withProgress(
           {
             location: vscode.ProgressLocation.Notification,
@@ -1711,12 +2015,11 @@ export function activate(context: vscode.ExtensionContext): void {
             cancellable: false,
           },
           async () => {
-            await connectionManager.connectWithCredential(hostConfig!, credential!);
+            connection = await connectionManager.connectWithCredential(hostConfig!, credential!);
           }
         );
 
-        // Navigate to the pinned folder
-        const connection = connectionManager.getConnection(hostConfig.id);
+        // Navigate to the pinned folder using the returned connection
         if (connection) {
           fileTreeProvider.setCurrentPath(connection.id, pinnedFolder.remotePath);
         }
@@ -1785,15 +2088,18 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     // Clear temp files for specific server
-    vscode.commands.registerCommand('sshLite.clearTempFilesForConnection', async (item?: HostTreeItem | ConnectionTreeItem) => {
+    vscode.commands.registerCommand('sshLite.clearTempFilesForConnection', async (item?: ServerTreeItem | ConnectionTreeItem) => {
       let connection: SSHConnection | undefined;
 
       if (item instanceof ConnectionTreeItem) {
         // From file explorer
         connection = item.connection;
-      } else if (item?.hostConfig) {
-        // From host tree
-        connection = connectionManager.getConnection(item.hostConfig.id);
+      } else if (item instanceof ServerTreeItem) {
+        // From server tree - find first connected user
+        for (const host of item.hosts) {
+          connection = connectionManager.getConnection(host.id);
+          if (connection) break;
+        }
       }
 
       if (!connection) {
@@ -1871,6 +2177,16 @@ export function activate(context: vscode.ExtensionContext): void {
       await fileService.showServerBackupPicker(item.connection, item.file.path);
     }),
 
+    // Show changes (diff between server backup and current file)
+    vscode.commands.registerCommand('sshLite.showChanges', async (item?: FileTreeItem) => {
+      if (!item || item.file.isDirectory) {
+        vscode.window.showWarningMessage('Select a file to view changes');
+        return;
+      }
+
+      await fileService.showChanges(item.connection, item.file.path);
+    }),
+
     // Show combined backup logs (local + server)
     vscode.commands.registerCommand('sshLite.showBackupLogs', async (item?: FileTreeItem) => {
       if (!item || item.file.isDirectory) {
@@ -1882,15 +2198,19 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     // Show all backups UI for a connection
-    vscode.commands.registerCommand('sshLite.showAllBackups', async (connection?: SSHConnection | HostTreeItem | ConnectionTreeItem) => {
+    vscode.commands.registerCommand('sshLite.showAllBackups', async (connection?: SSHConnection | ServerTreeItem | ConnectionTreeItem) => {
       let conn: SSHConnection | undefined;
 
       if (connection instanceof SSHConnection) {
         conn = connection;
       } else if (connection instanceof ConnectionTreeItem) {
         conn = connection.connection;
-      } else if (connection && 'hostConfig' in connection) {
-        conn = connectionManager.getConnection((connection as HostTreeItem).hostConfig?.id || '');
+      } else if (connection instanceof ServerTreeItem) {
+        // Find first connected user for this server
+        for (const host of connection.hosts) {
+          conn = connectionManager.getConnection(host.id);
+          if (conn) break;
+        }
       } else {
         conn = await selectConnection(connectionManager);
       }
@@ -1904,13 +2224,17 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     // Open server backup folder
-    vscode.commands.registerCommand('sshLite.openServerBackupFolder', async (item?: HostTreeItem | ConnectionTreeItem) => {
+    vscode.commands.registerCommand('sshLite.openServerBackupFolder', async (item?: ServerTreeItem | ConnectionTreeItem) => {
       let connection: SSHConnection | undefined;
 
       if (item instanceof ConnectionTreeItem) {
         connection = item.connection;
-      } else if (item?.hostConfig) {
-        connection = connectionManager.getConnection(item.hostConfig.id);
+      } else if (item instanceof ServerTreeItem) {
+        // Find first connected user for this server
+        for (const host of item.hosts) {
+          connection = connectionManager.getConnection(host.id);
+          if (connection) break;
+        }
       } else {
         connection = await selectConnection(connectionManager);
       }
@@ -1968,47 +2292,16 @@ export function activate(context: vscode.ExtensionContext): void {
     hostTreeView,
     fileTreeView,
     portForwardTreeView,
+    activityTreeView,
     hostTreeProvider,
     fileTreeProvider,
     portForwardTreeProvider,
+    activityTreeProvider,
     ...commands
   );
 
   // Set initial context
   vscode.commands.executeCommand('setContext', 'sshLite.hasConnections', false);
-  vscode.commands.executeCommand('setContext', 'sshLite.hasActiveRemoteFile', false);
-
-  // Update context when active editor changes
-  const updateActiveFileContext = () => {
-    const activeEditor = vscode.window.activeTextEditor;
-    if (!activeEditor) {
-      vscode.commands.executeCommand('setContext', 'sshLite.hasActiveRemoteFile', false);
-      return;
-    }
-
-    const localPath = activeEditor.document.uri.fsPath;
-    const mapping = fileService.getMappingForLocalPath(localPath);
-
-    // Also check temp path structure
-    let isRemoteFile = !!mapping;
-    if (!isRemoteFile) {
-      const tempDir = fileService.getTempDir();
-      if (localPath.startsWith(tempDir)) {
-        const segments = localPath.substring(tempDir.length).split(/[/\\]/).filter(s => s.length > 0);
-        if (segments.length >= 2) {
-          const connectionId = segments[0];
-          isRemoteFile = !!connectionManager.getConnection(connectionId);
-        }
-      }
-    }
-
-    vscode.commands.executeCommand('setContext', 'sshLite.hasActiveRemoteFile', isRemoteFile);
-  };
-
-  // Listen for editor changes
-  context.subscriptions.push(
-    vscode.window.onDidChangeActiveTextEditor(updateActiveFileContext)
-  );
 
   // Cancel downloads when document/tab is closed
   context.subscriptions.push(
@@ -2020,9 +2313,6 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     })
   );
-
-  // Update on activation
-  updateActiveFileContext();
 
   // Auto-reconnect if there are open remote files from previous session
   // Check periodically until connected or timeout (2 minutes)

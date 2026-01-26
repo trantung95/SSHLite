@@ -3,6 +3,17 @@ import { SSHConnection } from '../connection/SSHConnection';
 import { TerminalService } from './TerminalService';
 
 /**
+ * Zombie process info
+ */
+interface ZombieProcessInfo {
+  pid: number;
+  ppid: number;
+  user: string;
+  command: string;
+  state: string;
+}
+
+/**
  * Server status snapshot
  */
 export interface ServerStatus {
@@ -20,6 +31,7 @@ export interface ServerStatus {
   topProcesses: ProcessInfo[];
   networkConnections: number;
   zombieProcesses: number;
+  zombieProcessList: ZombieProcessInfo[];
 }
 
 interface DiskUsage {
@@ -36,6 +48,10 @@ interface ProcessInfo {
   user: string;
   cpu: number;
   mem: number;
+  vsz: number;  // Virtual memory size in KB
+  rss: number;  // Resident set size in KB
+  stat: string; // Process state
+  time: string; // CPU time
   command: string;
 }
 
@@ -447,8 +463,7 @@ export class ServerMonitorService {
   }
 
   /**
-   * Open a live monitoring webview panel with periodic refresh
-   * LITE compliant: User triggers initial load, user clicks refresh button
+   * Open a live monitoring webview panel with auto-refresh countdown
    */
   async openLiveMonitorPanel(connection: SSHConnection): Promise<void> {
     const panel = vscode.window.createWebviewPanel(
@@ -463,42 +478,112 @@ export class ServerMonitorService {
 
     // Track if panel is disposed
     let isDisposed = false;
+    let currentSortBy = 'cpu';
+    let autoRefreshInterval = 60; // seconds
+    let autoRefreshEnabled = true;
+    let autoRefreshTimer: NodeJS.Timeout | undefined;
+    let processCount = 10; // number of top processes to show
+
     panel.onDidDispose(() => {
       isDisposed = true;
+      if (autoRefreshTimer) {
+        clearTimeout(autoRefreshTimer);
+      }
     });
 
     // Function to fetch and display status
-    const refreshStatus = async () => {
+    const refreshStatus = async (showLoading: boolean = false) => {
       if (isDisposed) return;
 
       try {
-        const status = await this.fetchServerStatus(connection);
-        panel.webview.html = this.getMonitorWebviewContent(status, connection.host.name);
+        // Send loading state to webview
+        if (showLoading) {
+          panel.webview.postMessage({ command: 'refreshing', isRefreshing: true });
+        }
+
+        const status = await this.fetchServerStatus(connection, currentSortBy, processCount);
+
+        if (!isDisposed) {
+          panel.webview.postMessage({
+            command: 'updateStatus',
+            status,
+            sortBy: currentSortBy,
+            autoRefreshInterval,
+            autoRefreshEnabled,
+            hostName: connection.host.name
+          });
+        }
       } catch (error) {
         if (!isDisposed) {
-          panel.webview.html = this.getMonitorErrorContent((error as Error).message, connection.host.name);
+          panel.webview.postMessage({
+            command: 'error',
+            message: (error as Error).message,
+            hostName: connection.host.name
+          });
         }
       }
     };
 
-    // Handle messages from webview (refresh button clicks)
+    // Schedule next auto-refresh
+    const scheduleAutoRefresh = () => {
+      if (autoRefreshTimer) {
+        clearTimeout(autoRefreshTimer);
+      }
+      if (autoRefreshEnabled && !isDisposed) {
+        autoRefreshTimer = setTimeout(async () => {
+          await refreshStatus(true);
+          scheduleAutoRefresh();
+        }, autoRefreshInterval * 1000);
+      }
+    };
+
+    // Handle messages from webview
     panel.webview.onDidReceiveMessage(async (message) => {
       if (message.command === 'refresh') {
-        await refreshStatus();
+        await refreshStatus(true);
+        // Reset countdown after manual refresh
+        scheduleAutoRefresh();
       } else if (message.command === 'openTerminal') {
         await this.watchLiveTerminal(connection);
+      } else if (message.command === 'setSortBy') {
+        currentSortBy = message.sortBy;
+        await refreshStatus(true);
+        scheduleAutoRefresh();
+      } else if (message.command === 'setAutoRefresh') {
+        autoRefreshEnabled = message.enabled;
+        autoRefreshInterval = message.interval || autoRefreshInterval;
+        if (autoRefreshEnabled) {
+          scheduleAutoRefresh();
+        } else if (autoRefreshTimer) {
+          clearTimeout(autoRefreshTimer);
+        }
+      } else if (message.command === 'setProcessCount') {
+        processCount = message.count;
+        await refreshStatus(true);
+        scheduleAutoRefresh();
       }
     });
 
-    // Initial load
-    panel.webview.html = this.getMonitorLoadingContent(connection.host.name);
-    await refreshStatus();
+    // Initial load with full HTML
+    panel.webview.html = this.getMonitorWebviewContent(null, connection.host.name, currentSortBy, autoRefreshInterval, autoRefreshEnabled);
+    await refreshStatus(false);
+    scheduleAutoRefresh();
   }
 
   /**
    * Fetch server status data
+   * @param sortBy - Sort processes by: cpu, mem, vsz, rss (default: cpu)
    */
-  private async fetchServerStatus(connection: SSHConnection): Promise<ServerStatus> {
+  private async fetchServerStatus(connection: SSHConnection, sortBy: string = 'cpu', processCount: number = 10): Promise<ServerStatus> {
+    // Map sort options to ps sort flags
+    const sortMap: { [key: string]: string } = {
+      'cpu': '-%cpu',
+      'mem': '-%mem',
+      'vsz': '-vsz',
+      'rss': '-rss',
+    };
+    const sortFlag = sortMap[sortBy] || '-%cpu';
+
     const result = await connection.exec(`
       echo "===HOSTNAME==="
       hostname
@@ -510,14 +595,14 @@ export class ServerMonitorService {
       free -b 2>/dev/null || vm_stat 2>/dev/null
       echo "===DISK==="
       df -h | grep -E '^/dev'
-      echo "===TOP_CPU==="
-      ps aux --sort=-%cpu 2>/dev/null | head -6 || ps aux | head -6
-      echo "===TOP_MEM==="
-      ps aux --sort=-%mem 2>/dev/null | head -6 || ps aux | head -6
+      echo "===TOP_PROCS==="
+      ps aux --sort=${sortFlag} 2>/dev/null | head -${processCount + 1} || ps aux | head -${processCount + 1}
       echo "===CONNECTIONS==="
       ss -tuln 2>/dev/null | wc -l || netstat -tuln 2>/dev/null | wc -l
       echo "===ZOMBIES==="
       ps aux 2>/dev/null | grep -c ' Z ' || echo "0"
+      echo "===ZOMBIE_LIST==="
+      ps -eo pid,ppid,user,stat,comm 2>/dev/null | grep ' Z' | head -10 || echo ""
     `);
 
     return this.parseServerStatus(result);
@@ -543,6 +628,7 @@ export class ServerMonitorService {
       topProcesses: [],
       networkConnections: 0,
       zombieProcesses: 0,
+      zombieProcessList: [],
     };
 
     for (let i = 1; i < sections.length; i += 2) {
@@ -573,6 +659,7 @@ export class ServerMonitorService {
         case 'DISK':
           status.diskUsage = this.parseDiskUsage(content);
           break;
+        case 'TOP_PROCS':
         case 'TOP_CPU':
         case 'TOP_MEM':
           const procs = this.parseProcessList(content);
@@ -589,10 +676,37 @@ export class ServerMonitorService {
         case 'ZOMBIES':
           status.zombieProcesses = Math.max(0, (parseInt(content, 10) || 0) - 1);
           break;
+        case 'ZOMBIE_LIST':
+          status.zombieProcessList = this.parseZombieList(content);
+          break;
       }
     }
 
     return status;
+  }
+
+  /**
+   * Parse zombie process list
+   */
+  private parseZombieList(content: string): ZombieProcessInfo[] {
+    const zombies: ZombieProcessInfo[] = [];
+    const lines = content.split('\n');
+
+    for (const line of lines) {
+      const parts = line.trim().split(/\s+/);
+      // Format: PID PPID USER STAT COMMAND
+      if (parts.length >= 5 && parts[3].includes('Z')) {
+        zombies.push({
+          pid: parseInt(parts[0], 10) || 0,
+          ppid: parseInt(parts[1], 10) || 0,
+          user: parts[2],
+          state: parts[3],
+          command: parts.slice(4).join(' '),
+        });
+      }
+    }
+
+    return zombies;
   }
 
   /**
@@ -640,7 +754,8 @@ export class ServerMonitorService {
   }
 
   /**
-   * Parse process list from ps output
+   * Parse process list from ps aux output
+   * Format: USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND
    */
   private parseProcessList(content: string): ProcessInfo[] {
     const procs: ProcessInfo[] = [];
@@ -648,62 +763,35 @@ export class ServerMonitorService {
 
     for (const line of lines) {
       const parts = line.trim().split(/\s+/);
+      // ps aux format: USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND...
       if (parts.length >= 11) {
         procs.push({
           pid: parseInt(parts[1], 10) || 0,
           user: parts[0],
           cpu: parseFloat(parts[2]) || 0,
           mem: parseFloat(parts[3]) || 0,
-          command: parts.slice(10).join(' ').substring(0, 50),
+          vsz: parseInt(parts[4], 10) || 0,
+          rss: parseInt(parts[5], 10) || 0,
+          stat: parts[7],
+          time: parts[9],
+          command: parts.slice(10).join(' '),
         });
       }
     }
 
-    return procs.slice(0, 5);
+    return procs;
   }
 
   /**
-   * Generate webview HTML for monitor panel
+   * Generate webview HTML for monitor panel with auto-refresh countdown
    */
-  private getMonitorWebviewContent(status: ServerStatus, hostName: string): string {
-    const formatBytes = (bytes: number): string => {
-      if (bytes === 0) return '0 B';
-      const k = 1024;
-      const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-      const i = Math.floor(Math.log(bytes) / Math.log(k));
-      return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-    };
-
-    const getStatusColor = (percent: number): string => {
-      if (percent >= 90) return '#f44336';
-      if (percent >= 70) return '#ff9800';
-      return '#4caf50';
-    };
-
-    const diskRows = status.diskUsage.map(d => `
-      <tr>
-        <td>${d.mountPoint}</td>
-        <td>${d.size}</td>
-        <td>${d.used} / ${d.available}</td>
-        <td>
-          <div class="progress-bar">
-            <div class="progress-fill" style="width: ${d.percent}%; background: ${getStatusColor(d.percent)}"></div>
-          </div>
-          <span>${d.percent}%</span>
-        </td>
-      </tr>
-    `).join('');
-
-    const processRows = status.topProcesses.map(p => `
-      <tr>
-        <td>${p.pid}</td>
-        <td>${p.user}</td>
-        <td>${p.cpu.toFixed(1)}%</td>
-        <td>${p.mem.toFixed(1)}%</td>
-        <td class="cmd">${p.command}</td>
-      </tr>
-    `).join('');
-
+  private getMonitorWebviewContent(
+    status: ServerStatus | null,
+    hostName: string,
+    sortBy: string = 'cpu',
+    autoRefreshInterval: number = 60,
+    autoRefreshEnabled: boolean = true
+  ): string {
     return `<!DOCTYPE html>
 <html>
 <head>
@@ -728,10 +816,14 @@ export class ServerMonitorService {
     .header h1 {
       margin: 0;
       font-size: 1.4em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
     .header-actions {
       display: flex;
       gap: 8px;
+      align-items: center;
     }
     button {
       background: var(--vscode-button-background);
@@ -741,6 +833,9 @@ export class ServerMonitorService {
       cursor: pointer;
       border-radius: 2px;
       font-size: 13px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
     }
     button:hover {
       background: var(--vscode-button-hoverBackground);
@@ -749,9 +844,27 @@ export class ServerMonitorService {
       background: var(--vscode-button-secondaryBackground);
       color: var(--vscode-button-secondaryForeground);
     }
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
     .timestamp {
       color: var(--vscode-descriptionForeground);
       font-size: 0.9em;
+    }
+    .countdown {
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.85em;
+      min-width: 100px;
+      text-align: right;
+    }
+    .spinner {
+      display: inline-block;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
     }
     .grid {
       display: grid;
@@ -808,10 +921,20 @@ export class ServerMonitorService {
       text-transform: uppercase;
       font-size: 0.85em;
     }
+    th.sortable {
+      cursor: pointer;
+      user-select: none;
+    }
+    th.sortable:hover {
+      color: var(--vscode-foreground);
+    }
+    th.sorted {
+      color: var(--vscode-textLink-foreground);
+    }
     .cmd {
       font-family: var(--vscode-editor-font-family);
       font-size: 0.9em;
-      max-width: 300px;
+      max-width: 400px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -832,62 +955,142 @@ export class ServerMonitorService {
     .danger {
       color: #f44336;
     }
+    .zombie-details {
+      background: var(--vscode-inputValidation-warningBackground);
+      border: 1px solid var(--vscode-inputValidation-warningBorder);
+      border-radius: 4px;
+      padding: 12px;
+      margin-top: 8px;
+    }
+    .zombie-details table {
+      margin-top: 8px;
+    }
+    .refreshing-indicator {
+      display: none;
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.85em;
+      align-items: center;
+      gap: 4px;
+    }
+    .refreshing-indicator.visible {
+      display: inline-flex;
+    }
+    select {
+      background: var(--vscode-dropdown-background);
+      color: var(--vscode-dropdown-foreground);
+      border: 1px solid var(--vscode-dropdown-border);
+      padding: 4px 8px;
+      border-radius: 2px;
+      font-size: 13px;
+    }
+    .sort-label {
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.85em;
+      margin-right: 4px;
+    }
+    .hidden { display: none; }
   </style>
 </head>
 <body>
   <div class="header">
     <div>
-      <h1>📊 ${hostName}</h1>
-      <div class="timestamp">Last updated: ${status.timestamp}</div>
+      <h1>📊 <span id="hostName">${hostName}</span></h1>
+      <div class="timestamp">Last updated: <span id="timestamp">Loading...</span> <span class="refreshing-indicator" id="refreshingIndicator"><span class="spinner">⟳</span> Updating...</span></div>
     </div>
     <div class="header-actions">
-      <button onclick="refresh()">↻ Refresh</button>
+      <span class="countdown" id="countdown"></span>
+      <button onclick="toggleAutoRefresh()" id="pauseBtn" class="secondary">${autoRefreshEnabled ? '⏸ Pause' : '▶ Resume'}</button>
+      <button onclick="refresh()" id="refreshBtn">↻ Refresh</button>
       <button class="secondary" onclick="openTerminal()">▶ Live Terminal (htop)</button>
     </div>
   </div>
 
-  <div class="grid">
+  <div class="grid" id="statsGrid">
     <div class="card">
       <h3>Load Average</h3>
-      <div class="value">${status.loadAverage.split(' ')[0] || 'N/A'}</div>
-      <div class="sub">${status.loadAverage}</div>
+      <div class="value" id="loadValue">-</div>
+      <div class="sub" id="loadSub">-</div>
     </div>
     <div class="card">
       <h3>Memory</h3>
-      <div class="value" style="color: ${getStatusColor(status.memoryPercent)}">${status.memoryPercent}%</div>
-      <div class="sub">${formatBytes(status.memoryUsed)} / ${formatBytes(status.memoryTotal)}</div>
+      <div class="value" id="memValue">-</div>
+      <div class="sub" id="memSub">-</div>
     </div>
     <div class="card">
       <h3>Swap</h3>
-      <div class="value">${status.swapTotal > 0 ? Math.round((status.swapUsed / status.swapTotal) * 100) + '%' : 'N/A'}</div>
-      <div class="sub">${formatBytes(status.swapUsed)} / ${formatBytes(status.swapTotal)}</div>
+      <div class="value" id="swapValue">-</div>
+      <div class="sub" id="swapSub">-</div>
     </div>
     <div class="card">
       <h3>Connections</h3>
-      <div class="value">${status.networkConnections}</div>
+      <div class="value" id="connValue">-</div>
       <div class="sub">Network listeners</div>
     </div>
   </div>
 
-  ${status.zombieProcesses > 0 ? `
-  <div class="section">
-    <div class="danger">⚠️ ${status.zombieProcesses} zombie process${status.zombieProcesses > 1 ? 'es' : ''} detected</div>
+  <div class="section hidden" id="zombieSection">
+    <div class="danger" id="zombieWarning"></div>
+    <div class="zombie-details" id="zombieDetails">
+      <strong>Zombie Process Details:</strong>
+      <table>
+        <thead>
+          <tr><th>PID</th><th>Parent PID</th><th>User</th><th>State</th><th>Command</th></tr>
+        </thead>
+        <tbody id="zombieTableBody"></tbody>
+      </table>
+      <div style="margin-top: 8px; font-size: 0.85em; color: var(--vscode-descriptionForeground);">
+        💡 Zombie processes are terminated processes waiting to be cleaned up by their parent.
+        Kill the parent process (PPID) to remove them.
+      </div>
+    </div>
   </div>
-  ` : ''}
 
   <div class="section">
     <h2>💾 Disk Usage</h2>
     <table>
-      <tr><th>Mount</th><th>Size</th><th>Used / Free</th><th>Usage</th></tr>
-      ${diskRows}
+      <thead>
+        <tr><th>Mount</th><th>Size</th><th>Used / Free</th><th>Usage</th></tr>
+      </thead>
+      <tbody id="diskTableBody"></tbody>
     </table>
   </div>
 
   <div class="section">
-    <h2>⚡ Top Processes</h2>
+    <h2>
+      ⚡ Top Processes
+      <span style="margin-left: auto; display: flex; align-items: center; gap: 8px;">
+        <span class="sort-label">Show:</span>
+        <select id="processCountSelect" onchange="changeProcessCount(this.value)">
+          <option value="5">5</option>
+          <option value="10" selected>10</option>
+          <option value="15">15</option>
+          <option value="20">20</option>
+          <option value="50">50</option>
+        </select>
+        <span class="sort-label">Sort by:</span>
+        <select id="sortSelect" onchange="changeSortBy(this.value)">
+          <option value="cpu" ${sortBy === 'cpu' ? 'selected' : ''}>CPU %</option>
+          <option value="mem" ${sortBy === 'mem' ? 'selected' : ''}>Memory %</option>
+          <option value="vsz" ${sortBy === 'vsz' ? 'selected' : ''}>Virtual Size</option>
+          <option value="rss" ${sortBy === 'rss' ? 'selected' : ''}>Resident Size</option>
+        </select>
+      </span>
+    </h2>
     <table>
-      <tr><th>PID</th><th>User</th><th>CPU</th><th>MEM</th><th>Command</th></tr>
-      ${processRows}
+      <thead>
+        <tr>
+          <th>PID</th>
+          <th>User</th>
+          <th class="sortable" onclick="changeSortBy('cpu')">CPU</th>
+          <th class="sortable" onclick="changeSortBy('mem')">MEM</th>
+          <th class="sortable" onclick="changeSortBy('vsz')">VSZ</th>
+          <th class="sortable" onclick="changeSortBy('rss')">RSS</th>
+          <th>State</th>
+          <th>Time</th>
+          <th>Command</th>
+        </tr>
+      </thead>
+      <tbody id="processTableBody"></tbody>
     </table>
   </div>
 
@@ -897,12 +1100,196 @@ export class ServerMonitorService {
 
   <script>
     const vscode = acquireVsCodeApi();
+    let autoRefreshInterval = ${autoRefreshInterval};
+    let countdownValue = autoRefreshInterval;
+    let autoRefreshEnabled = ${autoRefreshEnabled};
+    let countdownInterval = null;
+    let currentSortBy = '${sortBy}';
+    let processCount = 10;
+
+    function formatBytes(bytes) {
+      if (bytes === 0) return '0 B';
+      const k = 1024;
+      const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+
+    function formatKB(kb) {
+      if (kb < 1024) return kb + ' KB';
+      if (kb < 1024 * 1024) return (kb / 1024).toFixed(1) + ' MB';
+      return (kb / (1024 * 1024)).toFixed(1) + ' GB';
+    }
+
+    function getStatusColor(percent) {
+      if (percent >= 90) return '#f44336';
+      if (percent >= 70) return '#ff9800';
+      return '#4caf50';
+    }
+
+    function startCountdown() {
+      if (countdownInterval) clearInterval(countdownInterval);
+      countdownValue = autoRefreshInterval;
+      updateCountdownDisplay();
+
+      if (autoRefreshEnabled) {
+        countdownInterval = setInterval(() => {
+          countdownValue--;
+          updateCountdownDisplay();
+          if (countdownValue <= 0) {
+            countdownValue = autoRefreshInterval;
+          }
+        }, 1000);
+      }
+    }
+
+    function updateCountdownDisplay() {
+      const el = document.getElementById('countdown');
+      if (autoRefreshEnabled) {
+        el.textContent = 'Next refresh: ' + countdownValue + 's';
+      } else {
+        el.textContent = 'Paused';
+      }
+    }
+
     function refresh() {
       vscode.postMessage({ command: 'refresh' });
     }
+
     function openTerminal() {
       vscode.postMessage({ command: 'openTerminal' });
     }
+
+    function changeSortBy(sortBy) {
+      currentSortBy = sortBy;
+      document.getElementById('sortSelect').value = sortBy;
+      vscode.postMessage({ command: 'setSortBy', sortBy: sortBy });
+    }
+
+    function changeProcessCount(count) {
+      processCount = parseInt(count, 10);
+      vscode.postMessage({ command: 'setProcessCount', count: processCount });
+    }
+
+    function toggleAutoRefresh() {
+      autoRefreshEnabled = !autoRefreshEnabled;
+      const btn = document.getElementById('pauseBtn');
+      btn.textContent = autoRefreshEnabled ? '⏸ Pause' : '▶ Resume';
+      vscode.postMessage({
+        command: 'setAutoRefresh',
+        enabled: autoRefreshEnabled,
+        interval: autoRefreshInterval
+      });
+      if (!autoRefreshEnabled) {
+        if (countdownInterval) clearInterval(countdownInterval);
+        updateCountdownDisplay();
+      } else {
+        startCountdown();
+      }
+    }
+
+    function updateStatus(status) {
+      document.getElementById('timestamp').textContent = status.timestamp;
+
+      // Load average
+      const loadParts = (status.loadAverage || '').split(' ');
+      document.getElementById('loadValue').textContent = loadParts[0] || 'N/A';
+      document.getElementById('loadSub').textContent = status.loadAverage || '-';
+
+      // Memory
+      document.getElementById('memValue').textContent = status.memoryPercent + '%';
+      document.getElementById('memValue').style.color = getStatusColor(status.memoryPercent);
+      document.getElementById('memSub').textContent = formatBytes(status.memoryUsed) + ' / ' + formatBytes(status.memoryTotal);
+
+      // Swap
+      const swapPercent = status.swapTotal > 0 ? Math.round((status.swapUsed / status.swapTotal) * 100) : 0;
+      document.getElementById('swapValue').textContent = status.swapTotal > 0 ? swapPercent + '%' : 'N/A';
+      document.getElementById('swapValue').style.color = getStatusColor(swapPercent);
+      document.getElementById('swapSub').textContent = formatBytes(status.swapUsed) + ' / ' + formatBytes(status.swapTotal);
+
+      // Connections
+      document.getElementById('connValue').textContent = status.networkConnections;
+
+      // Zombie processes
+      const zombieSection = document.getElementById('zombieSection');
+      if (status.zombieProcesses > 0) {
+        zombieSection.classList.remove('hidden');
+        document.getElementById('zombieWarning').textContent =
+          '⚠️ ' + status.zombieProcesses + ' zombie process' + (status.zombieProcesses > 1 ? 'es' : '') + ' detected';
+
+        const zombieBody = document.getElementById('zombieTableBody');
+        zombieBody.innerHTML = (status.zombieProcessList || []).map(z =>
+          '<tr><td>' + z.pid + '</td><td>' + z.ppid + '</td><td>' + z.user + '</td><td>' + z.state + '</td><td>' + z.command + '</td></tr>'
+        ).join('');
+      } else {
+        zombieSection.classList.add('hidden');
+      }
+
+      // Disk usage
+      const diskBody = document.getElementById('diskTableBody');
+      diskBody.innerHTML = (status.diskUsage || []).map(d =>
+        '<tr>' +
+        '<td>' + d.mountPoint + '</td>' +
+        '<td>' + d.size + '</td>' +
+        '<td>' + d.used + ' / ' + d.available + '</td>' +
+        '<td><div class="progress-bar"><div class="progress-fill" style="width: ' + d.percent + '%; background: ' + getStatusColor(d.percent) + '"></div></div><span>' + d.percent + '%</span></td>' +
+        '</tr>'
+      ).join('');
+
+      // Processes
+      const procBody = document.getElementById('processTableBody');
+      procBody.innerHTML = (status.topProcesses || []).map(p =>
+        '<tr>' +
+        '<td>' + p.pid + '</td>' +
+        '<td>' + p.user + '</td>' +
+        '<td>' + p.cpu.toFixed(1) + '%</td>' +
+        '<td>' + p.mem.toFixed(1) + '%</td>' +
+        '<td>' + formatKB(p.vsz) + '</td>' +
+        '<td>' + formatKB(p.rss) + '</td>' +
+        '<td>' + (p.stat || '-') + '</td>' +
+        '<td>' + (p.time || '-') + '</td>' +
+        '<td class="cmd">' + p.command + '</td>' +
+        '</tr>'
+      ).join('');
+
+      // Reset countdown
+      startCountdown();
+    }
+
+    function showLoading(show) {
+      const indicator = document.getElementById('refreshingIndicator');
+      const btn = document.getElementById('refreshBtn');
+      if (show) {
+        indicator.classList.add('visible');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner">⟳</span> Refreshing...';
+      } else {
+        indicator.classList.remove('visible');
+        btn.disabled = false;
+        btn.innerHTML = '↻ Refresh';
+      }
+    }
+
+    // Handle messages from extension
+    window.addEventListener('message', event => {
+      const message = event.data;
+      switch (message.command) {
+        case 'updateStatus':
+          showLoading(false);
+          updateStatus(message.status);
+          break;
+        case 'refreshing':
+          showLoading(message.isRefreshing);
+          break;
+        case 'error':
+          showLoading(false);
+          document.getElementById('timestamp').textContent = 'Error: ' + message.message;
+          break;
+      }
+    });
+
+    // Start countdown on load
+    startCountdown();
   </script>
 </body>
 </html>`;

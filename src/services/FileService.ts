@@ -10,6 +10,8 @@ import { AuditService } from './AuditService';
 import { FolderHistoryService } from './FolderHistoryService';
 import { ProgressiveDownloadManager } from './ProgressiveDownloadManager';
 import { PriorityQueueService, PreloadPriority } from './PriorityQueueService';
+import { ActivityService } from './ActivityService';
+import { CommandGuard } from './CommandGuard';
 import { formatFileSize } from '../utils/helpers';
 import { isLikelyBinary, DEFAULT_PROGRESSIVE_CONFIG } from '../types/progressive';
 
@@ -75,6 +77,8 @@ export class FileService {
   private folderHistoryService: FolderHistoryService;
   private skipNextSave: Set<string> = new Set(); // Paths to skip upload on next save
   private activeDownloads: Set<string> = new Set(); // Track paths currently being downloaded
+  private pendingUploads: Map<string, { timer: NodeJS.Timeout; uploadFn: () => Promise<void> }> = new Map(); // Pending debounced uploads
+  private pendingUploadPromises: Map<string, Promise<void>> = new Map(); // In-flight upload promises
 
   private autoCleanupTimer: NodeJS.Timeout | null = null;
 
@@ -88,8 +92,12 @@ export class FileService {
   // Priority queue service for file preloading
   private priorityQueue: PriorityQueueService;
 
+  // Command guard for activity tracking (man in the middle)
+  private commandGuard: CommandGuard;
+
   // File watcher state - now tracks ALL open SSH files, not just the active one
   private currentWatchedFile: { localPath: string; remotePath: string; connectionId: string } | null = null;
+  private currentWatchActivityId: string | null = null; // Activity tracking for file monitoring
   private openSshFiles: Set<string> = new Set(); // Set of remotePath values for files open in tabs
   private fileChangeSubscriptions: Map<string, vscode.Disposable> = new Map(); // connectionId -> subscription
   private focusedFilePollTimer: NodeJS.Timeout | null = null; // Fast polling for focused file when no native watch
@@ -113,6 +121,10 @@ export class FileService {
   private readonly _onFileLoadingChanged = new vscode.EventEmitter<{ remotePath: string; isLoading: boolean }>();
   public readonly onFileLoadingChanged = this._onFileLoadingChanged.event;
 
+  // Track file mapping changes for live-refresh tab decorations
+  private readonly _onFileMappingsChanged = new vscode.EventEmitter<void>();
+  public readonly onFileMappingsChanged = this._onFileMappingsChanged.event;
+
   private constructor() {
     this.tempDir = path.join(os.tmpdir(), 'ssh-lite');
     this.backupDir = path.join(this.tempDir, 'backups');
@@ -125,6 +137,7 @@ export class FileService {
     this.auditService = AuditService.getInstance();
     this.folderHistoryService = FolderHistoryService.getInstance();
     this.priorityQueue = PriorityQueueService.getInstance();
+    this.commandGuard = CommandGuard.getInstance();
     this.startGlobalRefreshTimer();
     this.startAutoCleanupTimer();
   }
@@ -144,8 +157,14 @@ export class FileService {
 
     // Also update when documents are closed
     vscode.workspace.onDidCloseTextDocument((doc) => {
-      const mapping = this.fileMappings.get(doc.uri.fsPath);
+      const localPath = doc.uri.fsPath;
+      const mapping = this.fileMappings.get(localPath);
       if (mapping) {
+        // Flush any pending upload immediately so edits aren't lost
+        // (fire-and-forget: the promise is tracked in pendingUploadPromises
+        // and awaited by openRemoteFile if the file is reopened)
+        this.flushPendingUpload(localPath);
+
         // Re-scan to update the set
         this.updateOpenFilesSet();
       }
@@ -269,6 +288,16 @@ export class FileService {
     // Fire event for UI updates (tree highlighting)
     this._onWatchedFileChanged.fire(this.currentWatchedFile);
 
+    // Start activity tracking for file monitoring
+    const activityService = ActivityService.getInstance();
+    this.currentWatchActivityId = activityService.startActivity(
+      'monitor',
+      connection.id,
+      connection.host.name,
+      `Watch: ${path.basename(mapping.remotePath)}`,
+      { detail: mapping.remotePath, cancellable: false }
+    );
+
     // Try to start native file watcher
     const watchStarted = await connection.watchFile(mapping.remotePath);
 
@@ -354,7 +383,13 @@ export class FileService {
 
       // Check if connection is still valid
       if (!connection) {
-        // Connection lost - clear watched state
+        // Connection lost - fail activity tracking
+        if (this.currentWatchActivityId) {
+          const activityService = ActivityService.getInstance();
+          activityService.failActivity(this.currentWatchActivityId, 'Connection lost');
+          this.currentWatchActivityId = null;
+        }
+        // Clear watched state
         this.currentWatchedFile = null;
         this.usingNativeWatch = false;
         this._onWatchedFileChanged.fire(null);
@@ -374,7 +409,13 @@ export class FileService {
             // Connection still works, update activity
             this.updateWatchActivity();
           }).catch(() => {
-            // Connection failed - clear watched state
+            // Connection failed - fail activity tracking
+            if (this.currentWatchActivityId) {
+              const activityService = ActivityService.getInstance();
+              activityService.failActivity(this.currentWatchActivityId, 'Connection timeout');
+              this.currentWatchActivityId = null;
+            }
+            // Clear watched state
             this.currentWatchedFile = null;
             this.usingNativeWatch = false;
             this._onWatchedFileChanged.fire(null);
@@ -419,6 +460,13 @@ export class FileService {
 
     if (connection && this.usingNativeWatch) {
       await connection.unwatchFile(this.currentWatchedFile.remotePath);
+    }
+
+    // Complete activity tracking for file monitoring
+    if (this.currentWatchActivityId) {
+      const activityService = ActivityService.getInstance();
+      activityService.completeActivity(this.currentWatchActivityId, 'Stopped');
+      this.currentWatchActivityId = null;
     }
 
     this.currentWatchedFile = null;
@@ -529,11 +577,11 @@ export class FileService {
 
       const fileAge = now - mapping.lastSyncTime;
       if (fileAge > maxAge) {
-        // Clear any pending debounce timer
-        const timer = this.debounceTimers.get(localPath);
-        if (timer) {
-          clearTimeout(timer);
-          this.debounceTimers.delete(localPath);
+        // Clear any pending upload timer
+        const pending = this.pendingUploads.get(localPath);
+        if (pending) {
+          clearTimeout(pending.timer);
+          this.pendingUploads.delete(localPath);
         }
 
         // Delete the temp file
@@ -627,10 +675,10 @@ export class FileService {
     // Create snapshot to avoid concurrent modification during iteration
     const localPaths = Array.from(this.fileMappings.keys());
     for (const localPath of localPaths) {
-      const timer = this.debounceTimers.get(localPath);
-      if (timer) {
-        clearTimeout(timer);
-        this.debounceTimers.delete(localPath);
+      const pending = this.pendingUploads.get(localPath);
+      if (pending) {
+        clearTimeout(pending.timer);
+        this.pendingUploads.delete(localPath);
       }
 
       try {
@@ -673,10 +721,10 @@ export class FileService {
     const mappingsSnapshot = Array.from(this.fileMappings.entries());
     for (const [localPath, mapping] of mappingsSnapshot) {
       if (mapping.connectionId === connectionId) {
-        const timer = this.debounceTimers.get(localPath);
-        if (timer) {
-          clearTimeout(timer);
-          this.debounceTimers.delete(localPath);
+        const pending = this.pendingUploads.get(localPath);
+        if (pending) {
+          clearTimeout(pending.timer);
+          this.pendingUploads.delete(localPath);
         }
 
         try {
@@ -780,6 +828,7 @@ export class FileService {
     };
 
     this.fileMappings.set(localPath, mapping);
+    this._onFileMappingsChanged.fire();
 
     // Save metadata to disk for recovery after VS Code restart
     this.saveFileMetadata(localPath, remoteFile.path, connection.id);
@@ -822,7 +871,7 @@ export class FileService {
    * Uses connection subdirectories to avoid collisions while keeping original filenames.
    * Adds [SSH] prefix to filename for easy identification in tabs.
    */
-  private getLocalFilePath(connectionId: string, remotePath: string): string {
+  public getLocalFilePath(connectionId: string, remotePath: string): string {
     // Create a short hash of connection ID for subdirectory
     const connHash = crypto
       .createHash('md5')
@@ -1042,8 +1091,8 @@ export class FileService {
           // Update editor content if open
           const document = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === localPath);
           if (document) {
-            this.skipNextSave.add(localPath);
             // Revert document to reload from disk
+            // Note: revert does NOT trigger onDidSaveTextDocument, so no skipNextSave needed
             await vscode.commands.executeCommand('workbench.action.files.revert', document.uri);
           }
           mapping.originalContent = backup.content;
@@ -1095,6 +1144,10 @@ export class FileService {
       // Verify backup was created
       const verifyResult = await connection.exec(`test -f "${backupPath}" && echo "ok" || echo "fail"`).catch(() => 'fail');
       if (verifyResult.trim() === 'ok') {
+        // Append to index file for cross-session change tracking
+        await connection.exec(
+          `echo "${remotePath}|${backupPath}" >> ${SERVER_BACKUP_FOLDER}/.ssh-lite-index 2>/dev/null || true`
+        );
         vscode.window.setStatusBarMessage(`$(archive) Server backup: ${backupFileName}`, 2000);
         return backupPath;
       }
@@ -1160,7 +1213,7 @@ export class FileService {
     const backups = await this.listAllServerBackups(connection);
 
     if (backups.length === 0) {
-      vscode.window.showInformationMessage(`No backups found on ${connection.host.name}`);
+      vscode.window.setStatusBarMessage(`$(info) No backups found on ${connection.host.name}`, 3000);
       return;
     }
 
@@ -1280,7 +1333,7 @@ export class FileService {
         await connection.exec(`mkdir -p "${path.dirname(targetPath)}" && cp "${backup.path}" "${targetPath}"`);
       }
 
-      vscode.window.showInformationMessage(`Restored "${originalName}" to ${targetPath}`);
+      vscode.window.setStatusBarMessage(`$(check) Restored "${originalName}" to ${targetPath}`, 3000);
     } catch (error) {
       vscode.window.showErrorMessage(`Failed to restore: ${(error as Error).message}`);
     }
@@ -1368,6 +1421,28 @@ export class FileService {
   }
 
   /**
+   * Show changes for a file (diff between server backup and current version)
+   */
+  async showChanges(connection: SSHConnection, remotePath: string): Promise<void> {
+    // First check if there's a mapping with a server backup path
+    for (const mapping of this.fileMappings.values()) {
+      if (mapping.connectionId === connection.id && mapping.remotePath === remotePath && mapping.serverBackupPath) {
+        await this.showServerBackupDiff(connection, remotePath, mapping.serverBackupPath);
+        return;
+      }
+    }
+
+    // Fallback: list server backups and use the earliest one (original)
+    const backups = await this.listServerBackups(connection, remotePath);
+    if (backups.length > 0) {
+      const earliest = backups[backups.length - 1]; // oldest = original
+      await this.showServerBackupDiff(connection, remotePath, earliest.path);
+    } else {
+      vscode.window.showInformationMessage('No backup found for this file');
+    }
+  }
+
+  /**
    * Restore a file from server backup
    */
   async restoreFromServerBackup(connection: SSHConnection, remotePath: string, backupPath: string): Promise<boolean> {
@@ -1392,8 +1467,8 @@ export class FileService {
 
           const document = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === localPath);
           if (document) {
-            this.skipNextSave.add(localPath);
             // Revert document to reload from disk
+            // Note: revert does NOT trigger onDidSaveTextDocument, so no skipNextSave needed
             await vscode.commands.executeCommand('workbench.action.files.revert', document.uri);
           }
           mapping.originalContent = contentStr;
@@ -1416,7 +1491,7 @@ export class FileService {
     const backups = await this.listServerBackups(connection, remotePath);
 
     if (backups.length === 0) {
-      vscode.window.showInformationMessage(`No server backups found for ${path.basename(remotePath)}`);
+      vscode.window.setStatusBarMessage(`$(info) No server backups found for ${path.basename(remotePath)}`, 3000);
       return;
     }
 
@@ -1470,7 +1545,7 @@ export class FileService {
     const serverBackups = await this.listServerBackups(connection, remotePath);
 
     if (localBackups.length === 0 && serverBackups.length === 0) {
-      vscode.window.showInformationMessage(`No backups found for ${fileName}`);
+      vscode.window.setStatusBarMessage(`$(info) No backups found for ${fileName}`, 3000);
       return;
     }
 
@@ -1600,7 +1675,7 @@ export class FileService {
       const result = await connection.exec(`ls -lh ${SERVER_BACKUP_FOLDER} 2>/dev/null || echo "No backups found"`);
 
       if (result.includes('No backups found') || result.trim() === '') {
-        vscode.window.showInformationMessage(`No server backups found on ${connection.host.name}`);
+        vscode.window.setStatusBarMessage(`$(info) No server backups found on ${connection.host.name}`, 3000);
         return;
       }
 
@@ -1719,20 +1794,53 @@ export class FileService {
       return;
     }
 
+    // Capture content immediately at save time - do NOT defer getText() into the
+    // setTimeout callback, because the document may be disposed (tab closed) by then
+    const textContent = document.getText();
+
     // Debounce uploads
     const debounceMs = config.get<number>('uploadDebounceMs', 500);
-    const existingTimer = this.debounceTimers.get(localPath);
 
-    if (existingTimer) {
-      clearTimeout(existingTimer);
+    // Cancel any existing pending upload for this file
+    const existingPending = this.pendingUploads.get(localPath);
+    if (existingPending) {
+      clearTimeout(existingPending.timer);
     }
 
-    const timer = setTimeout(async () => {
-      this.debounceTimers.delete(localPath);
-      await this.uploadFileWithAudit(mapping, document.getText());
-    }, debounceMs);
+    const uploadFn = async () => {
+      this.pendingUploads.delete(localPath);
+      const uploadPromise = this.uploadFileWithAudit(mapping, textContent);
+      this.pendingUploadPromises.set(localPath, uploadPromise);
+      try {
+        await uploadPromise;
+      } finally {
+        this.pendingUploadPromises.delete(localPath);
+      }
+    };
 
-    this.debounceTimers.set(localPath, timer);
+    const timer = setTimeout(uploadFn, debounceMs);
+    this.pendingUploads.set(localPath, { timer, uploadFn });
+  }
+
+  /**
+   * Flush any pending debounced upload for a file (run it immediately)
+   * Called when a document is closed to ensure edits are uploaded before the tab is gone
+   */
+  private async flushPendingUpload(localPath: string): Promise<void> {
+    // First: flush any debounced upload that hasn't fired yet
+    const pending = this.pendingUploads.get(localPath);
+    if (pending) {
+      clearTimeout(pending.timer);
+      this.pendingUploads.delete(localPath);
+      await pending.uploadFn();
+      return;
+    }
+
+    // Second: wait for any in-flight upload to complete
+    const inFlight = this.pendingUploadPromises.get(localPath);
+    if (inFlight) {
+      await inFlight;
+    }
   }
 
   /**
@@ -1813,7 +1921,11 @@ export class FileService {
 
     try {
       const content = Buffer.from(newContent, 'utf-8');
-      await connection.writeFile(mapping.remotePath, content);
+      // Use CommandGuard for activity tracking
+      await this.commandGuard.writeFile(connection, mapping.remotePath, content, {
+        description: `Save: ${path.basename(mapping.remotePath)}`,
+        detail: `${formatFileSize(content.length)} to ${connection.host.name}`,
+      });
 
       // Log to audit trail with diff
       this.auditService.logEdit(
@@ -1901,7 +2013,7 @@ export class FileService {
     const backups = this.getBackupHistory(connection.id, remotePath);
 
     if (backups.length === 0) {
-      vscode.window.showInformationMessage('No backups available for this file');
+      vscode.window.setStatusBarMessage('$(info) No backups available for this file', 3000);
       return;
     }
 
@@ -2133,10 +2245,8 @@ export class FileService {
           this.ensureTempDir();
           fs.writeFileSync(localPath, content);
 
-          // Skip the upload on save - we're syncing FROM remote, not TO remote
-          this.skipNextSave.add(localPath);
-
           // Revert document to reload from disk (safer than WorkspaceEdit + save)
+          // Note: revert does NOT trigger onDidSaveTextDocument, so no skipNextSave needed
           await vscode.commands.executeCommand('workbench.action.files.revert', document.uri);
 
           // Update mapping after successful refresh
@@ -2229,10 +2339,8 @@ export class FileService {
         // Write to disk first as Buffer
         fs.writeFileSync(localPath, content);
 
-        // Skip the upload on save - we're syncing FROM remote
-        this.skipNextSave.add(localPath);
-
         // Revert document to reload from disk (safer than WorkspaceEdit + save)
+        // Note: revert does NOT trigger onDidSaveTextDocument, so no skipNextSave needed
         await vscode.commands.executeCommand('workbench.action.files.revert', document.uri);
       } else {
         // Document not open in editor - just update the file on disk
@@ -2276,10 +2384,8 @@ export class FileService {
       // Refresh the document in VS Code
       const document = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === localPath);
       if (document) {
-        // Skip the upload on save - we're syncing FROM remote
-        this.skipNextSave.add(localPath);
-
         // Revert document to reload from disk (safer than WorkspaceEdit + save)
+        // Note: revert does NOT trigger onDidSaveTextDocument, so no skipNextSave needed
         await vscode.commands.executeCommand('workbench.action.files.revert', document.uri);
       }
 
@@ -2339,9 +2445,24 @@ export class FileService {
    * Uses progressive download for large text files (>threshold)
    */
   async openRemoteFile(connection: SSHConnection, remoteFile: IRemoteFile): Promise<void> {
+    const activityService = ActivityService.getInstance();
+
     // Check for very large files (>100MB) - use old large file handler
     if (remoteFile.size >= LARGE_FILE_THRESHOLD) {
-      await this.handleLargeFile(connection, remoteFile);
+      const activityId = activityService.startActivity(
+        'download',
+        connection.id,
+        connection.host.name,
+        `Open: ${remoteFile.name}`,
+        { detail: `Large file (${formatFileSize(remoteFile.size)})` }
+      );
+      try {
+        await this.handleLargeFile(connection, remoteFile);
+        activityService.completeActivity(activityId, 'Opened');
+      } catch (error) {
+        activityService.failActivity(activityId, (error as Error).message);
+        throw error;
+      }
       return;
     }
 
@@ -2351,7 +2472,20 @@ export class FileService {
     if (progressiveThreshold > 0 &&
         remoteFile.size >= progressiveThreshold &&
         !isLikelyBinary(remoteFile.name)) {
-      await this.openFileWithProgressiveDownload(connection, remoteFile);
+      const activityId = activityService.startActivity(
+        'download',
+        connection.id,
+        connection.host.name,
+        `Open: ${remoteFile.name}`,
+        { detail: `Progressive (${formatFileSize(remoteFile.size)})` }
+      );
+      try {
+        await this.openFileWithProgressiveDownload(connection, remoteFile);
+        activityService.completeActivity(activityId, 'Opened');
+      } catch (error) {
+        activityService.failActivity(activityId, (error as Error).message);
+        throw error;
+      }
       return;
     }
 
@@ -2392,6 +2526,10 @@ export class FileService {
       return;
     }
 
+    // Wait for any pending upload to complete before re-downloading
+    // This prevents a race where: save → debounce → close → reopen → download old content
+    await this.flushPendingUpload(localPath);
+
     // Acquire lock to prevent concurrent operations on the same file
     const releaseLock = await this.acquireFileLock(localPath);
 
@@ -2426,6 +2564,16 @@ export class FileService {
       // Mark download as active
       this.activeDownloads.add(localPath);
 
+      // Track activity via CommandGuard
+      const activityService = ActivityService.getInstance();
+      const activityId = activityService.startActivity(
+        'download',
+        connection.id,
+        connection.host.name,
+        `Open: ${remoteFile.name}`,
+        { detail: `${fileSizeStr}` }
+      );
+
       try {
         const content = await connection.readFile(remoteFile.path);
         const contentStr = content.toString('utf-8');
@@ -2447,6 +2595,9 @@ export class FileService {
         await document.save();
 
         vscode.window.setStatusBarMessage(`$(check) Downloaded ${remoteFile.name}`, 3000);
+
+        // Complete activity tracking
+        activityService.completeActivity(activityId, 'Opened');
 
         // Store mapping with original content for audit
         const mapping: FileMapping = {
@@ -2500,17 +2651,36 @@ export class FileService {
         // Mark download as failed
         this.activeDownloads.delete(localPath);
 
-        // Download failed - show error in the placeholder tab
+        // Fail activity tracking
+        activityService.failActivity(activityId, (downloadError as Error).message);
+
+        // Download failed - close the placeholder tab cleanly (don't leave dirty document)
         vscode.window.setStatusBarMessage(`$(error) Download failed: ${remoteFile.name}`, 5000);
 
-        const errorContent = `// Failed to download ${remoteFile.name}\n// Error: ${(downloadError as Error).message}\n// \n// Close this tab and try again.`;
-        const fullRange = new vscode.Range(
-          document.positionAt(0),
-          document.positionAt(document.getText().length)
-        );
-        const edit = new vscode.WorkspaceEdit();
-        edit.replace(document.uri, fullRange, errorContent);
-        await vscode.workspace.applyEdit(edit);
+        // Close the editor tab by reverting to prevent save dialog
+        // First revert to match saved content (the placeholder), then close
+        try {
+          // Find and close the editor tab for this document
+          const editors = vscode.window.visibleTextEditors;
+          const editor = editors.find(e => e.document.uri.fsPath === localPath);
+          if (editor) {
+            // Revert the document to match the saved placeholder content
+            await vscode.commands.executeCommand('workbench.action.files.revert', document.uri);
+            // Close the tab
+            await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+          }
+        } catch {
+          // Ignore close errors
+        }
+
+        // Clean up the placeholder file
+        if (fs.existsSync(localPath)) {
+          try {
+            fs.unlinkSync(localPath);
+          } catch {
+            // Ignore cleanup errors
+          }
+        }
 
         throw downloadError; // Re-throw to be caught by outer catch
       }
@@ -3004,6 +3174,18 @@ export class FileService {
       return;
     }
 
+    const activityService = ActivityService.getInstance();
+    const activityId = activityService.startActivity(
+      'download',
+      connection.id,
+      connection.host.name,
+      `Download: ${remoteFile.name}`,
+      {
+        detail: formatFileSize(remoteFile.size),
+        cancellable: false,
+      }
+    );
+
     try {
       const fileSizeStr = formatFileSize(remoteFile.size);
       await vscode.window.withProgress(
@@ -3014,6 +3196,7 @@ export class FileService {
         },
         async (progress) => {
           progress.report({ increment: 10, message: 'Starting download...' });
+          activityService.updateProgress(activityId, 10);
 
           // Start download with progress simulation
           const downloadPromise = connection.readFile(remoteFile.path);
@@ -3024,6 +3207,7 @@ export class FileService {
               const increment = Math.min(5, 80 - currentProgress);
               currentProgress += increment;
               progress.report({ increment, message: `Downloading... ${currentProgress}%` });
+              activityService.updateProgress(activityId, currentProgress);
             }
           }, 200);
 
@@ -3031,6 +3215,7 @@ export class FileService {
           clearInterval(progressInterval);
 
           progress.report({ increment: 90 - currentProgress, message: 'Saving file...' });
+          activityService.updateProgress(activityId, 90, 'Saving file...');
           fs.writeFileSync(saveUri.fsPath, content);
           progress.report({ increment: 10, message: 'Complete!' });
         }
@@ -3047,8 +3232,10 @@ export class FileService {
         success: true,
       });
 
+      activityService.completeActivity(activityId, 'Saved');
       vscode.window.setStatusBarMessage(`$(check) Downloaded ${remoteFile.name}`, 3000);
     } catch (error) {
+      activityService.failActivity(activityId, (error as Error).message);
       vscode.window.showErrorMessage(`Failed to download file: ${(error as Error).message}`);
     }
   }
@@ -3143,6 +3330,19 @@ export class FileService {
     const fileName = path.basename(localPath);
     const remotePath = `${remoteFolderPath}/${fileName}`;
 
+    const activityService = ActivityService.getInstance();
+    const fileSize = fs.statSync(localPath).size;
+    const activityId = activityService.startActivity(
+      'upload',
+      connection.id,
+      connection.host.name,
+      `Upload: ${fileName}`,
+      {
+        detail: formatFileSize(fileSize),
+        cancellable: false,
+      }
+    );
+
     try {
       await vscode.window.withProgress(
         {
@@ -3152,6 +3352,7 @@ export class FileService {
         },
         async () => {
           const content = fs.readFileSync(localPath);
+          activityService.updateProgress(activityId, 50, 'Uploading...');
           await connection.writeFile(remotePath, content);
         }
       );
@@ -3163,12 +3364,14 @@ export class FileService {
         username: connection.host.username,
         remotePath,
         localPath,
-        fileSize: fs.statSync(localPath).size,
+        fileSize,
         success: true,
       });
 
+      activityService.completeActivity(activityId, 'Done');
       vscode.window.setStatusBarMessage(`$(check) Uploaded ${fileName}`, 3000);
     } catch (error) {
+      activityService.failActivity(activityId, (error as Error).message);
       vscode.window.showErrorMessage(`Failed to upload file: ${(error as Error).message}`);
     }
   }
@@ -3222,16 +3425,9 @@ export class FileService {
         success: true,
       });
 
-      // Show notification with backup path and option to view backups
+      // Show non-blocking status bar message
       if (backupPath) {
-        const viewBackups = await vscode.window.showInformationMessage(
-          `Deleted "${remoteFile.name}". Backup saved.`,
-          'View Backups',
-          'OK'
-        );
-        if (viewBackups === 'View Backups') {
-          vscode.commands.executeCommand('sshLite.showAllBackups', connection);
-        }
+        vscode.window.setStatusBarMessage(`$(check) Deleted ${remoteFile.name} (backup saved)`, 3000);
       } else {
         vscode.window.setStatusBarMessage(`$(check) Deleted ${remoteFile.name}`, 3000);
       }
@@ -3509,11 +3705,11 @@ export class FileService {
     const mappingsSnapshot = Array.from(this.fileMappings.entries());
     for (const [localPath, mapping] of mappingsSnapshot) {
       if (mapping.connectionId === connectionId) {
-        // Clear any pending debounce timer
-        const timer = this.debounceTimers.get(localPath);
-        if (timer) {
-          clearTimeout(timer);
-          this.debounceTimers.delete(localPath);
+        // Clear any pending upload timer
+        const pending = this.pendingUploads.get(localPath);
+        if (pending) {
+          clearTimeout(pending.timer);
+          this.pendingUploads.delete(localPath);
         }
 
         // Try to delete the temp file
@@ -3527,6 +3723,9 @@ export class FileService {
         this.fileMappings.delete(localPath);
       }
     }
+
+    // Notify decoration provider that mappings changed
+    this._onFileMappingsChanged.fire();
   }
 
   /**
@@ -3564,9 +3763,19 @@ export class FileService {
       this.configChangeListener.dispose();
     }
 
+    this._onFileMappingsChanged.dispose();
+
     for (const timer of this.debounceTimers.values()) {
       clearTimeout(timer);
     }
     this.debounceTimers.clear();
+
+    for (const pending of this.pendingUploads.values()) {
+      clearTimeout(pending.timer);
+    }
+    this.pendingUploads.clear();
+
+    // Reset singleton instance to ensure clean state on reload
+    FileService._instance = undefined as unknown as FileService;
   }
 }

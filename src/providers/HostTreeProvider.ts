@@ -40,8 +40,9 @@ export class ServerTreeItem extends vscode.TreeItem {
     this.hosts = hosts;
     this.isConnected = isConnected;
 
-    // Unique ID that includes connection state to prevent VS Code icon caching issues
-    this.id = `server:${serverKey}:${isConnected ? 'connected' : 'disconnected'}`;
+    // Stable ID - don't include connection state to preserve expansion state
+    // VS Code uses ID to track tree item identity; changing ID resets expansion
+    this.id = `server:${serverKey}`;
 
     // Description shows host:port only (no username)
     this.description = serverKey;
