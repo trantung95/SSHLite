@@ -1,4 +1,5 @@
-import { IRemoteFile } from '../types';
+import { IRemoteFile, ConnectionState } from '../types';
+import * as vscode from 'vscode';
 
 /**
  * Test implementation of matchesFilter logic
@@ -201,5 +202,146 @@ describe('FileTreeProvider - matchesFilter', () => {
       expect(matchesFilter(createMockFile('app.test.spec.ts'), '*.spec.ts')).toBe(true);
       expect(matchesFilter(createMockFile('app.test.spec.ts'), '*spec*')).toBe(true);
     });
+  });
+});
+
+/**
+ * Connection reorder algorithm — extracted from FileTreeProvider.handleDrop
+ * for unit testing the drag/drop reorder logic.
+ */
+function reorderConnections(
+  currentOrder: string[],
+  draggedIds: string[],
+  targetIndex: number,
+): string[] {
+  // Remove dragged items from current order
+  const newOrder = currentOrder.filter((id) => !draggedIds.includes(id));
+
+  // Adjust target index if items were removed before it
+  let adjustedIndex = targetIndex;
+  for (const draggedId of draggedIds) {
+    const originalIndex = currentOrder.indexOf(draggedId);
+    if (originalIndex !== -1 && originalIndex < targetIndex) {
+      adjustedIndex--;
+    }
+  }
+
+  // Insert dragged items at new position
+  newOrder.splice(Math.max(0, adjustedIndex), 0, ...draggedIds);
+  return newOrder;
+}
+
+describe('FileTreeProvider - drag/drop connection reorder', () => {
+  const order = ['conn-A', 'conn-B', 'conn-C', 'conn-D', 'conn-E'];
+
+  describe('single item drag', () => {
+    it('should move item forward (A → position of D)', () => {
+      const result = reorderConnections(order, ['conn-A'], 3);
+      // A removed from index 0, target adjusted 3→2, insert at 2
+      expect(result).toEqual(['conn-B', 'conn-C', 'conn-A', 'conn-D', 'conn-E']);
+    });
+
+    it('should move item backward (D → position of B)', () => {
+      const result = reorderConnections(order, ['conn-D'], 1);
+      // D removed from index 3, target stays 1 (removal was after target)
+      expect(result).toEqual(['conn-A', 'conn-D', 'conn-B', 'conn-C', 'conn-E']);
+    });
+
+    it('should move item to end (B → end)', () => {
+      const result = reorderConnections(order, ['conn-B'], 5);
+      // B removed from index 1, target adjusted 5→4, insert at 4
+      expect(result).toEqual(['conn-A', 'conn-C', 'conn-D', 'conn-E', 'conn-B']);
+    });
+
+    it('should move item to beginning (E → position 0)', () => {
+      const result = reorderConnections(order, ['conn-E'], 0);
+      expect(result).toEqual(['conn-E', 'conn-A', 'conn-B', 'conn-C', 'conn-D']);
+    });
+
+    it('should keep order when dropped on same position', () => {
+      // conn-C is at index 2, dropping it at index 2 should be no-op
+      const result = reorderConnections(order, ['conn-C'], 2);
+      expect(result).toEqual(['conn-A', 'conn-B', 'conn-C', 'conn-D', 'conn-E']);
+    });
+  });
+
+  describe('multi-item drag', () => {
+    it('should move two adjacent items forward', () => {
+      const result = reorderConnections(order, ['conn-A', 'conn-B'], 4);
+      // A(0), B(1) removed, target adjusted 4→2, insert at 2
+      expect(result).toEqual(['conn-C', 'conn-D', 'conn-A', 'conn-B', 'conn-E']);
+    });
+
+    it('should move two non-adjacent items backward', () => {
+      const result = reorderConnections(order, ['conn-C', 'conn-E'], 0);
+      expect(result).toEqual(['conn-C', 'conn-E', 'conn-A', 'conn-B', 'conn-D']);
+    });
+
+    it('should move all items to end (no-op for all)', () => {
+      const result = reorderConnections(order, ['conn-A', 'conn-B', 'conn-C', 'conn-D', 'conn-E'], 5);
+      expect(result).toEqual(['conn-A', 'conn-B', 'conn-C', 'conn-D', 'conn-E']);
+    });
+  });
+
+  describe('edge cases', () => {
+    it('should handle empty drag list', () => {
+      const result = reorderConnections(order, [], 2);
+      expect(result).toEqual(order);
+    });
+
+    it('should handle single item list', () => {
+      const result = reorderConnections(['conn-A'], ['conn-A'], 0);
+      expect(result).toEqual(['conn-A']);
+    });
+
+    it('should handle dragging item not in list', () => {
+      const result = reorderConnections(order, ['conn-X'], 2);
+      // conn-X not in order, so it gets inserted at position 2
+      expect(result).toEqual(['conn-A', 'conn-B', 'conn-X', 'conn-C', 'conn-D', 'conn-E']);
+    });
+
+    it('should clamp negative target index to 0', () => {
+      const result = reorderConnections(order, ['conn-C'], -1);
+      expect(result[0]).toBe('conn-C');
+    });
+  });
+});
+
+describe('FileTreeProvider - handleDrag filtering', () => {
+  /**
+   * handleDrag only allows ConnectionTreeItem instances.
+   * Simulate the filtering logic.
+   */
+  function filterDraggableItems(items: Array<{ type: string; id: string }>): string[] {
+    return items
+      .filter(item => item.type === 'connection')
+      .map(item => item.id);
+  }
+
+  it('should only allow connection items to be dragged', () => {
+    const items = [
+      { type: 'connection', id: 'conn-1' },
+      { type: 'file', id: 'file-1' },
+      { type: 'connection', id: 'conn-2' },
+      { type: 'folder', id: 'folder-1' },
+    ];
+    expect(filterDraggableItems(items)).toEqual(['conn-1', 'conn-2']);
+  });
+
+  it('should return empty array when no connection items', () => {
+    const items = [
+      { type: 'file', id: 'file-1' },
+      { type: 'folder', id: 'folder-1' },
+    ];
+    expect(filterDraggableItems(items)).toEqual([]);
+  });
+
+  it('should handle single connection item', () => {
+    const items = [{ type: 'connection', id: 'conn-1' }];
+    expect(filterDraggableItems(items)).toEqual(['conn-1']);
+  });
+
+  it('should handle empty item list', () => {
+    expect(filterDraggableItems([])).toEqual([]);
   });
 });

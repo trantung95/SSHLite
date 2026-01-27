@@ -1,0 +1,57 @@
+FROM rockylinux:9
+
+RUN dnf install -y --allowerasing \
+    openssh-server \
+    bash \
+    coreutils \
+    findutils \
+    grep \
+    procps-ng \
+    net-tools \
+    passwd \
+    && dnf clean all
+
+# Generate host keys
+RUN ssh-keygen -A
+
+# Create test users: testuser (password + key), admin (password), keyuser (key-only)
+RUN useradd -m -s /bin/bash testuser && echo "testpass" | passwd --stdin testuser
+RUN useradd -m -s /bin/bash admin && echo "adminpass" | passwd --stdin admin
+RUN useradd -m -s /bin/bash keyuser && passwd -d keyuser
+
+# Configure sshd: enable password + pubkey auth (Rocky 9 uses sshd_config.d includes)
+RUN sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && \
+    echo "PasswordAuthentication yes" > /etc/ssh/sshd_config.d/99-password-auth.conf && \
+    echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config.d/99-password-auth.conf && \
+    find /etc/ssh/sshd_config.d/ -name "*.conf" -exec sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/g' {} + 2>/dev/null; true
+
+# Create test directories and files for testuser
+RUN mkdir -p /home/testuser/projects/src && \
+    echo 'console.log("hello world");' > /home/testuser/projects/src/app.ts && \
+    echo '{"name":"test"}' > /home/testuser/projects/package.json && \
+    echo 'TODO: fix bug' > /home/testuser/projects/src/todo.ts && \
+    mkdir -p /home/testuser/logs && \
+    echo '[2024-01-01] Server started' > /home/testuser/logs/app.log && \
+    chown -R testuser:testuser /home/testuser
+
+# Create test directories and files for admin
+RUN mkdir -p /home/admin/configs && \
+    echo 'server.port=8080' > /home/admin/configs/server.conf && \
+    echo 'db.host=localhost' > /home/admin/configs/db.conf && \
+    mkdir -p /home/admin/scripts && \
+    printf '#!/bin/bash\necho "deploy complete"' > /home/admin/scripts/deploy.sh && \
+    chmod +x /home/admin/scripts/deploy.sh && \
+    chown -R admin:admin /home/admin
+
+# Create home for keyuser
+RUN mkdir -p /home/keyuser && chown -R keyuser:keyuser /home/keyuser
+
+COPY entrypoint-keys.sh /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
+
+EXPOSE 22
+
+ENTRYPOINT ["/entrypoint.sh"]

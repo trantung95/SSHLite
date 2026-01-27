@@ -1,6 +1,6 @@
 # SSH Lite - Lightweight SSH Client for VS Code
 
-![Version](https://img.shields.io/badge/version-0.2.0-blue)
+![Version](https://img.shields.io/badge/version-0.2.1-blue)
 ![Beta](https://img.shields.io/badge/status-BETA-orange)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-1.85.0+-purple)
@@ -8,6 +8,8 @@
 > **BETA VERSION** - This extension is in active development. Please report any issues on [GitHub](https://github.com/trantung95/SSHLite/issues).
 
 **The ultimate lightweight SSH extension for Visual Studio Code!** Connect to remote servers, browse files, open terminals, and forward ports - all **without installing anything on the remote server**. Perfect for small VMs, shared hosting, and resource-constrained environments.
+
+![SSH Lite Overview](docs/images/feature-overview.png)
 
 ## Why SSH Lite?
 
@@ -23,29 +25,56 @@ Unlike VS Code's official Remote-SSH extension that installs a heavy VS Code Ser
 
 ## Features
 
-### Core Features
-- **Remote File Browser** - Browse, edit, upload, download files via SFTP
-- **Integrated Terminal** - Multiple SSH terminals per connection
-- **Port Forwarding** - Forward local ports to remote services
-- **File Transfer** - Upload/download files and folders
+### Connect & Manage Hosts
+Manage multiple SSH servers from the sidebar. Auto-detect SSH keys, save passwords, pin folders, and connect with one click. Reads `~/.ssh/config` automatically.
 
-### Smart Features
-- **Auto-Save Credentials** - Enter password once, auto-saved for next time
-- **SSH Config Support** - Reads from `~/.ssh/config` automatically
-- **Multiple Connections** - Connect to multiple servers simultaneously
-- **Auto-Reconnect** - Automatic reconnection on unexpected disconnect
-- **Live File Refresh** - Auto-refresh opened files from remote server
-- **Upload State Badges** - Tab badge shows upload progress (↑) and failures (✗)
-- **File Search** - Search across remote files with webview panel
-- **Filename Filter** - Filter file tree with highlighting
-- **Activity Panel** - Track all file operations in real-time
-- **Server Monitoring** - Quick status, diagnose slowness, check services
-- **Large File Handling** - Smart handling for files >100MB
+![Connect & Manage Hosts](docs/images/feature-connect.png)
 
-### Simple & Fast
-- **One-click connect** - Just click a host to connect
-- **No configuration needed** - Works out of the box
-- **Minimal prompts** - Credentials auto-saved, no extra questions
+### Remote File Browser
+Browse, edit, upload, and download files via SFTP. Upload state badges on editor tabs show sync status (✓ synced, ↑ uploading, ✗ failed). Filter files, right-click for full context menu.
+
+![Remote File Browser](docs/images/feature-file-browser.png)
+
+### Search Across Servers
+Search files across multiple remote servers simultaneously with regex support. Include/exclude patterns, scoped search, and results grouped by server.
+
+![Search Across Servers](docs/images/feature-search.png)
+
+### Integrated SSH Terminals
+Open multiple SSH terminals per connection — no re-authentication needed. Full terminal emulation with VS Code integration.
+
+![Integrated SSH Terminals](docs/images/feature-terminal.png)
+
+### Port Forwarding & Server Monitor
+Forward remote ports to localhost. Monitor server health with CPU, memory, disk, top processes, and diagnostics — all from the Output panel.
+
+![Port Forwarding & Server Monitor](docs/images/feature-port-forward.png)
+
+### All Features
+
+**Core**
+- Remote File Browser — Browse, edit, upload, download files via SFTP
+- Integrated Terminal — Multiple SSH terminals per connection
+- Port Forwarding — Forward local ports to remote services
+- File Transfer — Upload/download files and folders
+
+**Smart**
+- Auto-Save Credentials — Enter password once, auto-saved for next time
+- SSH Config Support — Reads from `~/.ssh/config` automatically
+- Multiple Connections — Connect to multiple servers simultaneously
+- Auto-Reconnect — Automatic reconnection on unexpected disconnect
+- Live File Refresh — Auto-refresh opened files from remote server
+- Upload State Badges — Tab badge shows upload progress (↑) and failures (✗)
+- File Search — Search across remote files with webview panel
+- Filename Filter — Filter file tree with highlighting
+- Activity Panel — Track all file operations in real-time
+- Server Monitoring — Quick status, diagnose slowness, check services
+- Large File Handling — Smart handling for files >100MB
+
+**Simple & Fast**
+- One-click connect — Just click a host to connect
+- No configuration needed — Works out of the box
+- Minimal prompts — Credentials auto-saved, no extra questions
 
 ## Quick Start
 
@@ -169,6 +198,16 @@ Contributions welcome! Please submit Pull Requests on GitHub.
 Apache-2.0 License
 
 ## Release Notes
+
+### 0.2.1 (Beta)
+- **Comprehensive regression test suite** - 727 tests (30 suites) covering all features
+- **Extracted extension helpers** - `parseHostInfoFromPath`, `isInSshTempDir`, `hasSshPrefix` as testable exports
+- **Real API upload state tests** - Tests actual FileService `isFileUploading`/`isFileUploadFailed` public methods
+- **Progressive download tests** - Full coverage for ProgressiveDownloadManager (threshold, state, cancel, cleanup)
+- **Binary file detection tests** - `isLikelyBinary`, `parsePreviewUri`, `createPreviewUri` coverage
+- **WriteFile timeout pattern tests** - Settled guard, double-settle prevention, callback race conditions
+- **Drag-and-drop connection reorder** - Tests for sidebar connection drag/drop reorder algorithm
+- **Orphaned file detection tests** - Tests real helper functions for startup SSH file detection
 
 ### 0.2.0 (Beta)
 - **Upload state tracking** - Tab badges show upload progress (↑ yellow) and failures (✗ red) via FileDecorationProvider

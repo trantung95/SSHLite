@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  production:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVER_NAME: production
+    container_name: sshlite-production
+    hostname: prod-server
+    ports:
+      - "2222:22"
+    environment:
+      - SERVER_ROLE=production
+
+  staging:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVER_NAME: staging
+    container_name: sshlite-staging
+    hostname: staging-server
+    ports:
+      - "2223:22"
+    environment:
+      - SERVER_ROLE=staging

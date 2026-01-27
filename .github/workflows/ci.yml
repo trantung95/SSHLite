@@ -1,0 +1,85 @@
+name: CI - Multi-OS Integration Tests
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  # Unit tests run on all 3 client OS to validate path handling, mocked logic, etc.
+  unit-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm test
+
+  # Integration tests require Docker (Linux containers), so run on ubuntu only.
+  # Tests extension logic against 5 server OS: Alpine, Ubuntu, Debian, Fedora, Rocky Linux.
+  # Tests auth methods: password, RSA key, Ed25519 key, encrypted key, keyboard-interactive.
+  integration-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+
+      - name: Generate test SSH keys
+        run: bash test-docker/generate-test-keys.sh
+
+      - name: Build and start Docker containers
+        run: docker compose -f test-docker/docker-compose.ci.yml up -d --build
+        timeout-minutes: 10
+
+      - name: Wait for SSH readiness on all 5 OS
+        run: npx ts-node test-docker/wait-for-ssh.ts
+        timeout-minutes: 3
+
+      - name: Run multi-OS extension logic tests
+        run: npx jest --config jest.ci.config.js --no-coverage --forceExit
+        timeout-minutes: 10
+
+      - name: Stop containers
+        if: always()
+        run: docker compose -f test-docker/docker-compose.ci.yml down
+
+  # Also run existing raw ssh2 Docker tests
+  docker-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run test:docker
+
+  # Run existing multi-OS raw ssh2 tests
+  multios-raw-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run test:multios

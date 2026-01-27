@@ -1,0 +1,59 @@
+# Multi-OS SSH servers for CI integration tests.
+# All containers support password auth + SSH key auth.
+# Ports 2230-2234 (separate from dev multi-OS on 2210-2214).
+
+services:
+  ci-alpine:
+    build:
+      context: .
+      dockerfile: Dockerfile.sshd-keys
+    container_name: sshlite-ci-alpine
+    ports:
+      - "2230:22"
+    volumes:
+      - ./test-keys:/test-keys:ro
+    hostname: ci-alpine
+
+  ci-ubuntu:
+    build:
+      context: .
+      dockerfile: Dockerfile.ubuntu-keys
+    container_name: sshlite-ci-ubuntu
+    ports:
+      - "2231:22"
+    volumes:
+      - ./test-keys:/test-keys:ro
+    hostname: ci-ubuntu
+
+  ci-debian:
+    build:
+      context: .
+      dockerfile: Dockerfile.debian-keys
+    container_name: sshlite-ci-debian
+    ports:
+      - "2232:22"
+    volumes:
+      - ./test-keys:/test-keys:ro
+    hostname: ci-debian
+
+  ci-fedora:
+    build:
+      context: .
+      dockerfile: Dockerfile.fedora-keys
+    container_name: sshlite-ci-fedora
+    ports:
+      - "2233:22"
+    volumes:
+      - ./test-keys:/test-keys:ro
+    hostname: ci-fedora
+
+  ci-rocky:
+    build:
+      context: .
+      dockerfile: Dockerfile.rocky-keys
+    container_name: sshlite-ci-rocky
+    ports:
+      - "2234:22"
+    volumes:
+      - ./test-keys:/test-keys:ro
+    hostname: ci-rocky

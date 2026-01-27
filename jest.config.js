@@ -5,7 +5,7 @@ module.exports = {
   roots: ['<rootDir>/src'],
   testMatch: ['**/*.test.ts'],
   // Exclude Docker integration tests (run separately via jest.docker.config.js)
-  testPathIgnorePatterns: ['/node_modules/', 'docker-ssh\\.test\\.ts'],
+  testPathIgnorePatterns: ['/node_modules/', 'docker-ssh\\.test\\.ts', 'multi-os-ssh\\.test\\.ts', 'multios-.*\\.test\\.ts'],
   moduleFileExtensions: ['ts', 'js', 'json'],
   collectCoverageFrom: [
     'src/**/*.ts',

@@ -2,7 +2,7 @@
   "name": "ssh-lite",
   "displayName": "SSH Lite - Remote File Browser & Terminal",
   "description": "Lightweight SSH client for VS Code. Browse remote files, edit and save, open terminals, port forwarding - all without installing anything on remote servers. Perfect for VPS, cloud servers (AWS/Azure/GCP), and Linux administration.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "hybr8",
   "engines": {
     "vscode": "^1.85.0"
@@ -1181,7 +1181,12 @@
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "test:docker": "jest --config jest.docker.config.js --no-coverage",
+    "test:multios": "jest --config jest.multios.config.js --no-coverage",
     "test:all": "jest --no-coverage && npm run test:docker",
+    "test:all:os": "jest --no-coverage && npm run test:docker && npm run test:multios",
+    "test:ci": "jest --config jest.ci.config.js --no-coverage",
+    "test:ci:setup": "bash test-docker/generate-test-keys.sh && docker compose -f test-docker/docker-compose.ci.yml up -d --build",
+    "test:ci:teardown": "docker compose -f test-docker/docker-compose.ci.yml down",
     "clean": "node -e \"const fs=require('fs');const rm=p=>{if(fs.existsSync(p)){fs.rmSync(p,{recursive:true,force:true});console.log('Deleted:',p)}};rm('out');rm('node_modules');rm('*.vsix');\""
   },
   "dependencies": {
@@ -1197,6 +1202,7 @@
     "@typescript-eslint/parser": "^6.0.0",
     "eslint": "^8.56.0",
     "jest": "^30.2.0",
+    "puppeteer": "^24.36.0",
     "ts-jest": "^29.4.6",
     "typescript": "^5.3.0"
   }

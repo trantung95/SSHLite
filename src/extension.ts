@@ -23,6 +23,7 @@ import { SSHFileDecorationProvider } from './providers/FileDecorationProvider';
 import { ProgressiveFileContentProvider } from './providers/ProgressiveFileContentProvider';
 import { PROGRESSIVE_PREVIEW_SCHEME } from './types/progressive';
 import { formatFileSize, formatRelativeTime, normalizeLocalPath } from './utils/helpers';
+import { parseHostInfoFromPath as parseHostInfo, isInSshTempDir, hasSshPrefix } from './utils/extensionHelpers';
 
 let outputChannel: vscode.OutputChannel;
 
@@ -184,23 +185,9 @@ export function activate(context: vscode.ExtensionContext): void {
     return orphanedSshFiles.has(localPath);
   };
 
-  // Parse host info from SSH temp file path
-  // Path format: {tempDir}/{hostHash}/[SSH] filename
+  // Parse host info from SSH temp file path (delegates to extracted helper)
   const parseHostInfoFromPath = (filePath: string): { hostHash: string; fileName: string } | null => {
-    const sshTempDir = fileService.getTempDir();
-    if (!filePath.includes(sshTempDir) && !filePath.includes('ssh-lite')) {
-      return null;
-    }
-
-    // Extract the hash directory and filename
-    const pathParts = filePath.split(/[/\\]/);
-    const sshIndex = pathParts.findIndex(p => p.includes('[SSH]'));
-    if (sshIndex > 0) {
-      const hostHash = pathParts[sshIndex - 1];
-      const fileName = pathParts[sshIndex].replace('[SSH] ', '');
-      return { hostHash, fileName };
-    }
-    return null;
+    return parseHostInfo(filePath, fileService.getTempDir());
   };
 
   // Detect orphaned SSH files on startup
@@ -211,11 +198,8 @@ export function activate(context: vscode.ExtensionContext): void {
     for (const doc of openDocs) {
       // Check if this is an SSH file
       const fsPath = normalizeLocalPath(doc.uri.fsPath);
-      const isInSshTempDir = fsPath.includes(sshTempDir) ||
-                             fsPath.includes('ssh-lite');
-      const hasSshPrefix = fsPath.includes('[SSH]');
 
-      if ((isInSshTempDir || hasSshPrefix) && !doc.isUntitled) {
+      if ((isInSshTempDir(fsPath, sshTempDir) || hasSshPrefix(fsPath)) && !doc.isUntitled) {
         // Check if we have an active connection for it
         const mapping = fileService.getFileMapping(fsPath);
         if (!mapping) {

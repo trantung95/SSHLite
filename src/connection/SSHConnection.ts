@@ -921,6 +921,24 @@ export class SSHConnection implements ISSHConnection {
   }
 
   /**
+   * Rename or move a remote file/directory.
+   * SFTP rename works as both rename and move — changing the path moves the file.
+   */
+  async rename(oldPath: string, newPath: string): Promise<void> {
+    const sftp = await this.getSFTP();
+
+    return new Promise((resolve, reject) => {
+      sftp.rename(oldPath, newPath, (err) => {
+        if (err) {
+          reject(new SFTPError(`Failed to rename ${oldPath} to ${newPath}: ${err.message}`, err));
+          return;
+        }
+        resolve();
+      });
+    });
+  }
+
+  /**
    * Read tail portion of a remote file starting from a specific byte offset
    * Used for efficient incremental file updates (e.g., growing log files)
    * @param remotePath - Path to remote file

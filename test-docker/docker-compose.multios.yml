@@ -1,0 +1,56 @@
+# Multi-OS SSH test servers for cross-platform integration testing
+# Tests SSH behavior across Alpine, Ubuntu, Debian, Fedora, and Rocky Linux
+#
+# Usage: docker compose -f test-docker/docker-compose.multios.yml up -d --build
+# Cleanup: docker compose -f test-docker/docker-compose.multios.yml down
+
+services:
+  # Alpine 3.19 (musl libc, ash shell, BusyBox utilities)
+  ssh-alpine:
+    build:
+      context: .
+      dockerfile: Dockerfile.sshd
+    container_name: sshlite-os-alpine
+    ports:
+      - "2210:22"
+    hostname: alpine-server
+
+  # Ubuntu 22.04 LTS (glibc, bash, GNU coreutils)
+  ssh-ubuntu:
+    build:
+      context: .
+      dockerfile: Dockerfile.ubuntu
+    container_name: sshlite-os-ubuntu
+    ports:
+      - "2211:22"
+    hostname: ubuntu-server
+
+  # Debian 12 Bookworm (glibc, bash, GNU coreutils)
+  ssh-debian:
+    build:
+      context: .
+      dockerfile: Dockerfile.debian
+    container_name: sshlite-os-debian
+    ports:
+      - "2212:22"
+    hostname: debian-server
+
+  # Fedora 40 (glibc, bash, GNU coreutils, dnf-based)
+  ssh-fedora:
+    build:
+      context: .
+      dockerfile: Dockerfile.fedora
+    container_name: sshlite-os-fedora
+    ports:
+      - "2213:22"
+    hostname: fedora-server
+
+  # Rocky Linux 9 (RHEL-compatible, glibc, bash, GNU coreutils)
+  ssh-rocky:
+    build:
+      context: .
+      dockerfile: Dockerfile.rocky
+    container_name: sshlite-os-rocky
+    ports:
+      - "2214:22"
+    hostname: rocky-server

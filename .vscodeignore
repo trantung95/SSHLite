@@ -13,4 +13,7 @@ vsc-extension-quickstart.md
 .git/**
 .claude-workflow.md
 .claude/**
+test-docker/**
+jest.*.config.js
+jest.config.js
 nul
