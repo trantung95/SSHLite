@@ -16,6 +16,8 @@ export interface IHostConfig {
   username: string;
   /** Path to private key file */
   privateKeyPath?: string;
+  /** Short label for editor tab prefix (e.g. "PRD", "DEV"). When set, tabs show [label] instead of [SSH]. */
+  tabLabel?: string;
   /** Source of this host config */
   source: 'ssh-config' | 'saved';
 }

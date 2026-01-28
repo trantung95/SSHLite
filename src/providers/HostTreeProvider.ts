@@ -211,6 +211,9 @@ export class HostTreeProvider implements vscode.TreeDataProvider<TreeItemType> {
   private connectionManager: ConnectionManager;
   private credentialService: CredentialService;
 
+  // Filter pattern for host tree (matches against name, host, username)
+  private filterPattern: string = '';
+
   constructor() {
     this.hostService = HostService.getInstance();
     this.connectionManager = ConnectionManager.getInstance();
@@ -227,6 +230,74 @@ export class HostTreeProvider implements vscode.TreeDataProvider<TreeItemType> {
    */
   refresh(): void {
     this._onDidChangeTreeData.fire();
+  }
+
+  /**
+   * Set filter pattern for the host tree.
+   * Matches against host display name, hostname, and username.
+   * Supports glob-like patterns: * (any chars), ? (single char)
+   * Empty string clears the filter.
+   */
+  setFilter(pattern: string): void {
+    this.filterPattern = pattern.toLowerCase();
+    this.refresh();
+  }
+
+  /**
+   * Get current filter pattern
+   */
+  getFilter(): string {
+    return this.filterPattern;
+  }
+
+  /**
+   * Clear the filter
+   */
+  clearFilter(): void {
+    this.filterPattern = '';
+    this.refresh();
+  }
+
+  /**
+   * Check if a server (group of hosts) matches the current filter pattern.
+   * Matches against: display name, host:port, and all usernames.
+   */
+  private matchesFilter(serverKey: string, hosts: IHostConfig[]): boolean {
+    if (!this.filterPattern) {
+      return true; // No filter, show all
+    }
+
+    const pattern = this.filterPattern;
+    const hasGlobWildcards = pattern.includes('*') || pattern.includes('?');
+
+    // Collect all searchable strings for this server
+    const searchStrings = [
+      serverKey.toLowerCase(), // host:port
+    ];
+    for (const host of hosts) {
+      searchStrings.push(host.name.toLowerCase());
+      searchStrings.push(host.host.toLowerCase());
+      searchStrings.push(host.username.toLowerCase());
+    }
+
+    if (!hasGlobWildcards) {
+      // Plain text: case-insensitive substring match
+      return searchStrings.some((s) => s.includes(pattern));
+    }
+
+    // Convert glob pattern to regex
+    const regexPattern = pattern
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .replace(/\*/g, '.*')
+      .replace(/\?/g, '.');
+
+    try {
+      const regex = new RegExp(regexPattern, 'i');
+      return searchStrings.some((s) => regex.test(s));
+    } catch {
+      // If regex is invalid, fall back to simple includes
+      return searchStrings.some((s) => s.includes(pattern));
+    }
   }
 
   /**
@@ -284,9 +355,13 @@ export class HostTreeProvider implements vscode.TreeDataProvider<TreeItemType> {
       serverMap.get(key)!.push(host);
     }
 
-    // Create server items
+    // Create server items (applying filter if active)
     const items: ServerTreeItem[] = [];
     for (const [serverKey, serverHosts] of serverMap) {
+      // Apply filter
+      if (!this.matchesFilter(serverKey, serverHosts)) {
+        continue;
+      }
       // Check if any username for this server is connected
       const isConnected = serverHosts.some(h => connectedIds.has(h.id));
       items.push(new ServerTreeItem(serverKey, serverHosts, isConnected));

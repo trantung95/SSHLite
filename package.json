@@ -2,7 +2,7 @@
   "name": "ssh-lite",
   "displayName": "SSH Lite - Remote File Browser & Terminal",
   "description": "Lightweight SSH client for VS Code. Browse remote files, edit and save, open terminals, port forwarding - all without installing anything on remote servers. Perfect for VPS, cloud servers (AWS/Azure/GCP), and Linux administration.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publisher": "hybr8",
   "engines": {
     "vscode": "^1.85.0"
@@ -151,6 +151,18 @@
         "icon": "$(trash)"
       },
       {
+        "command": "sshLite.renameHost",
+        "title": "Rename Host",
+        "category": "SSH Lite",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "sshLite.setTabLabel",
+        "title": "Set Tab Label",
+        "category": "SSH Lite",
+        "icon": "$(tag)"
+      },
+      {
         "command": "sshLite.refreshHosts",
         "title": "Refresh Hosts",
         "category": "SSH Lite",
@@ -203,6 +215,18 @@
         "title": "Delete",
         "category": "SSH Lite",
         "icon": "$(trash)"
+      },
+      {
+        "command": "sshLite.renameRemote",
+        "title": "Rename",
+        "category": "SSH Lite",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "sshLite.moveRemote",
+        "title": "Move To...",
+        "category": "SSH Lite",
+        "icon": "$(move)"
       },
       {
         "command": "sshLite.createFolder",
@@ -409,6 +433,18 @@
         "icon": "$(clear-all)"
       },
       {
+        "command": "sshLite.filterHosts",
+        "title": "Filter Hosts",
+        "category": "SSH Lite",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "sshLite.clearHostFilter",
+        "title": "Clear Host Filter",
+        "category": "SSH Lite",
+        "icon": "$(close)"
+      },
+      {
         "command": "sshLite.filterFiles",
         "title": "Filter Files",
         "category": "SSH Lite",
@@ -529,6 +565,12 @@
         "icon": "$(expand-all)"
       },
       {
+        "command": "sshLite.expandFirstLevel",
+        "title": "Expand to First Level",
+        "category": "SSH Lite",
+        "icon": "$(fold-down)"
+      },
+      {
         "command": "sshLite.collapseAll",
         "title": "Collapse All",
         "category": "SSH Lite",
@@ -573,6 +615,16 @@
           "command": "sshLite.refreshHosts",
           "when": "view == sshLite.hosts",
           "group": "navigation@2"
+        },
+        {
+          "command": "sshLite.filterHosts",
+          "when": "view == sshLite.hosts && !sshLite.hasHostFilter",
+          "group": "navigation@3"
+        },
+        {
+          "command": "sshLite.clearHostFilter",
+          "when": "view == sshLite.hosts && sshLite.hasHostFilter",
+          "group": "navigation@3"
         },
         {
           "command": "sshLite.goToPath",
@@ -662,42 +714,62 @@
         },
         {
           "command": "sshLite.expandAll",
-          "when": "view == sshLite.hosts && !sshLite.hosts.expanded",
+          "when": "view == sshLite.hosts && sshLite.hosts.expandState == 0",
+          "group": "navigation@99"
+        },
+        {
+          "command": "sshLite.expandFirstLevel",
+          "when": "view == sshLite.hosts && sshLite.hosts.expandState == 1",
           "group": "navigation@99"
         },
         {
           "command": "sshLite.collapseAll",
-          "when": "view == sshLite.hosts && sshLite.hosts.expanded",
+          "when": "view == sshLite.hosts && sshLite.hosts.expandState == 2",
           "group": "navigation@99"
         },
         {
           "command": "sshLite.expandAll",
-          "when": "view == sshLite.fileExplorer && !sshLite.fileExplorer.expanded",
+          "when": "view == sshLite.fileExplorer && sshLite.fileExplorer.expandState == 0",
+          "group": "navigation@99"
+        },
+        {
+          "command": "sshLite.expandFirstLevel",
+          "when": "view == sshLite.fileExplorer && sshLite.fileExplorer.expandState == 1",
           "group": "navigation@99"
         },
         {
           "command": "sshLite.collapseAll",
-          "when": "view == sshLite.fileExplorer && sshLite.fileExplorer.expanded",
+          "when": "view == sshLite.fileExplorer && sshLite.fileExplorer.expandState == 2",
           "group": "navigation@99"
         },
         {
           "command": "sshLite.expandAll",
-          "when": "view == sshLite.activity && !sshLite.activity.expanded",
+          "when": "view == sshLite.activity && sshLite.activity.expandState == 0",
+          "group": "navigation@99"
+        },
+        {
+          "command": "sshLite.expandFirstLevel",
+          "when": "view == sshLite.activity && sshLite.activity.expandState == 1",
           "group": "navigation@99"
         },
         {
           "command": "sshLite.collapseAll",
-          "when": "view == sshLite.activity && sshLite.activity.expanded",
+          "when": "view == sshLite.activity && sshLite.activity.expandState == 2",
           "group": "navigation@99"
         },
         {
           "command": "sshLite.expandAll",
-          "when": "view == sshLite.portForwards && !sshLite.portForwards.expanded",
+          "when": "view == sshLite.portForwards && sshLite.portForwards.expandState == 0",
+          "group": "navigation@99"
+        },
+        {
+          "command": "sshLite.expandFirstLevel",
+          "when": "view == sshLite.portForwards && sshLite.portForwards.expandState == 1",
           "group": "navigation@99"
         },
         {
           "command": "sshLite.collapseAll",
-          "when": "view == sshLite.portForwards && sshLite.portForwards.expanded",
+          "when": "view == sshLite.portForwards && sshLite.portForwards.expandState == 2",
           "group": "navigation@99"
         }
       ],
@@ -731,6 +803,16 @@
           "command": "sshLite.removeHost",
           "when": "view == sshLite.hosts && viewItem == savedServer",
           "group": "1_modify@2"
+        },
+        {
+          "command": "sshLite.renameHost",
+          "when": "view == sshLite.hosts && viewItem == savedServer",
+          "group": "1_modify@3"
+        },
+        {
+          "command": "sshLite.setTabLabel",
+          "when": "view == sshLite.hosts && viewItem == savedServer",
+          "group": "1_modify@4"
         },
         {
           "command": "sshLite.clearCredentials",
@@ -926,6 +1008,16 @@
           "command": "sshLite.deleteRemote",
           "when": "view == sshLite.fileExplorer && viewItem =~ /^(file|folder)/",
           "group": "2_modify@1"
+        },
+        {
+          "command": "sshLite.renameRemote",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^(file|folder)/",
+          "group": "2_modify@2"
+        },
+        {
+          "command": "sshLite.moveRemote",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^(file|folder)/",
+          "group": "2_modify@3"
         },
         {
           "command": "sshLite.stopForward",
@@ -1169,6 +1261,11 @@
         "key": "ctrl+shift+s",
         "mac": "cmd+shift+s",
         "when": "view == sshLite.fileExplorer && sshLite.hasConnections"
+      },
+      {
+        "command": "sshLite.renameRemote",
+        "key": "f2",
+        "when": "focusedView == sshLite.fileExplorer && listFocus"
       }
     ]
   },

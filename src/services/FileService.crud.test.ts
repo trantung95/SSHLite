@@ -25,6 +25,7 @@ jest.mock('os', () => ({
 }));
 
 const mockDeleteFile = jest.fn().mockResolvedValue(undefined);
+const mockRename = jest.fn().mockResolvedValue(undefined);
 const mockMkdir = jest.fn().mockResolvedValue(undefined);
 const mockExec = jest.fn().mockResolvedValue('');
 const mockWriteFile = jest.fn().mockResolvedValue(undefined);
@@ -41,6 +42,7 @@ const mockConnection = {
   listFiles: mockListFiles,
   exec: mockExec,
   deleteFile: mockDeleteFile,
+  rename: mockRename,
   mkdir: mockMkdir,
   stat: mockStat,
   searchFiles: jest.fn().mockResolvedValue([]),
@@ -303,6 +305,169 @@ describe('FileService - CRUD Operations (Actual)', () => {
       const path2 = service.getLocalFilePath('conn-1', '/src/b.ts');
 
       expect(path1).not.toBe(path2);
+    });
+
+    it('should use [user@host] prefix when connectionId has host:port:user format', () => {
+      const localPath = service.getLocalFilePath('10.0.1.5:22:admin', '/var/log/app.log');
+      expect(localPath).toContain('[admin@10.0.1.5]');
+    });
+
+    it('should use [tabLabel] prefix when registered', () => {
+      service.registerConnectionTabLabel('myhost:22:deploy', 'PRD');
+      const localPath = service.getLocalFilePath('myhost:22:deploy', '/app/config.ts');
+      expect(localPath).toContain('[PRD]');
+      expect(localPath).not.toContain('[deploy@myhost]');
+    });
+
+    it('should fall back to [SSH] for non-standard connectionId format', () => {
+      const localPath = service.getLocalFilePath('simple-id', '/src/test.ts');
+      expect(localPath).toContain('[SSH]');
+    });
+  });
+
+  describe('renameRemote (actual method)', () => {
+    it('should return undefined when user cancels input', async () => {
+      (vscode.window.showInputBox as jest.Mock).mockResolvedValue(undefined);
+
+      const file = createMockRemoteFile('test.ts', { path: '/home/user/test.ts' });
+      const result = await service.renameRemote(mockConnection as any, file);
+
+      expect(result).toBeUndefined();
+      expect(mockRename).not.toHaveBeenCalled();
+    });
+
+    it('should rename file and return new path', async () => {
+      (vscode.window.showInputBox as jest.Mock).mockResolvedValue('renamed.ts');
+
+      const file = createMockRemoteFile('test.ts', { path: '/home/user/test.ts' });
+      const result = await service.renameRemote(mockConnection as any, file);
+
+      expect(result).toBe('/home/user/renamed.ts');
+      expect(mockRename).toHaveBeenCalledWith('/home/user/test.ts', '/home/user/renamed.ts');
+    });
+
+    it('should log audit on successful rename', async () => {
+      (vscode.window.showInputBox as jest.Mock).mockResolvedValue('new-name.ts');
+
+      const file = createMockRemoteFile('test.ts', { path: '/home/user/test.ts' });
+      await service.renameRemote(mockConnection as any, file);
+
+      expect(mockAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'rename',
+          remotePath: '/home/user/test.ts',
+          success: true,
+        })
+      );
+    });
+
+    it('should handle rename failure gracefully', async () => {
+      (vscode.window.showInputBox as jest.Mock).mockResolvedValue('taken-name.ts');
+      mockRename.mockRejectedValueOnce(new Error('File already exists'));
+
+      const file = createMockRemoteFile('test.ts', { path: '/home/user/test.ts' });
+      const result = await service.renameRemote(mockConnection as any, file);
+
+      expect(result).toBeUndefined();
+      expect(vscode.window.showErrorMessage).toHaveBeenCalled();
+    });
+
+    it('should select name without extension for files', async () => {
+      (vscode.window.showInputBox as jest.Mock).mockResolvedValue('new.ts');
+
+      const file = createMockRemoteFile('test.ts', { path: '/home/user/test.ts' });
+      await service.renameRemote(mockConnection as any, file);
+
+      const options = (vscode.window.showInputBox as jest.Mock).mock.calls[0][0];
+      // "test" = 4 chars, dot at index 4
+      expect(options.valueSelection).toEqual([0, 4]);
+    });
+
+    it('should select full name for folders', async () => {
+      (vscode.window.showInputBox as jest.Mock).mockResolvedValue('new-folder');
+
+      const folder = createMockRemoteFile('my-folder', { path: '/home/user/my-folder', isDirectory: true });
+      await service.renameRemote(mockConnection as any, folder);
+
+      const options = (vscode.window.showInputBox as jest.Mock).mock.calls[0][0];
+      expect(options.valueSelection).toEqual([0, 'my-folder'.length]);
+    });
+
+    it('should validate input rejects empty, slashes, and unchanged name', async () => {
+      (vscode.window.showInputBox as jest.Mock).mockResolvedValue('valid');
+
+      const file = createMockRemoteFile('test.ts', { path: '/home/user/test.ts' });
+      await service.renameRemote(mockConnection as any, file);
+
+      const validate = (vscode.window.showInputBox as jest.Mock).mock.calls[0][0].validateInput;
+      expect(validate('')).toBeTruthy();
+      expect(validate('  ')).toBeTruthy();
+      expect(validate('my/file')).toBeTruthy();
+      expect(validate('my\\file')).toBeTruthy();
+      expect(validate('test.ts')).toBeTruthy(); // unchanged
+      expect(validate('new-name.ts')).toBeNull(); // valid
+    });
+  });
+
+  describe('moveRemote (actual method)', () => {
+    it('should return undefined when user cancels input', async () => {
+      (vscode.window.showInputBox as jest.Mock).mockResolvedValue(undefined);
+
+      const file = createMockRemoteFile('test.ts', { path: '/home/user/test.ts' });
+      const result = await service.moveRemote(mockConnection as any, file);
+
+      expect(result).toBeUndefined();
+      expect(mockRename).not.toHaveBeenCalled();
+    });
+
+    it('should move file to new path', async () => {
+      (vscode.window.showInputBox as jest.Mock).mockResolvedValue('/var/www/test.ts');
+
+      const file = createMockRemoteFile('test.ts', { path: '/home/user/test.ts' });
+      const result = await service.moveRemote(mockConnection as any, file);
+
+      expect(result).toBe('/var/www/test.ts');
+      expect(mockRename).toHaveBeenCalledWith('/home/user/test.ts', '/var/www/test.ts');
+    });
+
+    it('should log audit with move action', async () => {
+      (vscode.window.showInputBox as jest.Mock).mockResolvedValue('/new/location/test.ts');
+
+      const file = createMockRemoteFile('test.ts', { path: '/home/user/test.ts' });
+      await service.moveRemote(mockConnection as any, file);
+
+      expect(mockAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'move',
+          remotePath: '/home/user/test.ts',
+          success: true,
+        })
+      );
+    });
+
+    it('should handle move failure gracefully', async () => {
+      (vscode.window.showInputBox as jest.Mock).mockResolvedValue('/nonexistent/dir/test.ts');
+      mockRename.mockRejectedValueOnce(new Error('No such directory'));
+
+      const file = createMockRemoteFile('test.ts', { path: '/home/user/test.ts' });
+      const result = await service.moveRemote(mockConnection as any, file);
+
+      expect(result).toBeUndefined();
+      expect(vscode.window.showErrorMessage).toHaveBeenCalled();
+    });
+
+    it('should validate input rejects relative paths, unchanged, and folder-into-self', async () => {
+      (vscode.window.showInputBox as jest.Mock).mockResolvedValue('/other/path');
+
+      const dir = createMockRemoteFile('projects', { path: '/home/user/projects', isDirectory: true });
+      await service.moveRemote(mockConnection as any, dir);
+
+      const validate = (vscode.window.showInputBox as jest.Mock).mock.calls[0][0].validateInput;
+      expect(validate('')).toBeTruthy();
+      expect(validate('relative/path')).toBeTruthy(); // not absolute
+      expect(validate('/home/user/projects')).toBeTruthy(); // unchanged
+      expect(validate('/home/user/projects/subdir')).toBeTruthy(); // folder into itself
+      expect(validate('/other/projects')).toBeNull(); // valid
     });
   });
 });

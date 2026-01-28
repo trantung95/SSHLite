@@ -154,6 +154,7 @@ export class HostService {
       port?: number;
       username: string;
       privateKeyPath?: string;
+      tabLabel?: string;
     }>>('hosts', []);
 
     return savedHosts.map((host) => ({
@@ -163,6 +164,7 @@ export class HostService {
       port: host.port || 22,
       username: host.username,
       privateKeyPath: host.privateKeyPath ? expandPath(host.privateKeyPath) : undefined,
+      tabLabel: host.tabLabel,
       source: 'saved' as const,
     }));
   }
@@ -178,6 +180,7 @@ export class HostService {
       port?: number;
       username: string;
       privateKeyPath?: string;
+      tabLabel?: string;
     }>>('hosts', []);
 
     // Check for duplicate
@@ -191,6 +194,7 @@ export class HostService {
       port: host.port,
       username: host.username,
       privateKeyPath: host.privateKeyPath,
+      tabLabel: host.tabLabel,
     };
 
     if (existingIndex >= 0) {
@@ -223,6 +227,64 @@ export class HostService {
     );
 
     await config.update('hosts', filtered, vscode.ConfigurationTarget.Global);
+  }
+
+  /**
+   * Rename a saved host's display name
+   */
+  async renameHost(hostId: string, newName: string): Promise<void> {
+    const config = vscode.workspace.getConfiguration('sshLite');
+    const savedHosts = config.get<Array<{
+      name: string;
+      host: string;
+      port?: number;
+      username: string;
+      privateKeyPath?: string;
+      tabLabel?: string;
+    }>>('hosts', []);
+
+    const [hostAddr, portStr, username] = hostId.split(':');
+    const port = parseInt(portStr, 10);
+
+    const host = savedHosts.find(
+      (h) => h.host === hostAddr && (h.port || 22) === port && h.username === username
+    );
+
+    if (host) {
+      host.name = newName;
+      await config.update('hosts', savedHosts, vscode.ConfigurationTarget.Global);
+    }
+  }
+
+  /**
+   * Set or clear the tab label for a saved host
+   */
+  async setTabLabel(hostId: string, tabLabel: string | undefined): Promise<void> {
+    const config = vscode.workspace.getConfiguration('sshLite');
+    const savedHosts = config.get<Array<{
+      name: string;
+      host: string;
+      port?: number;
+      username: string;
+      privateKeyPath?: string;
+      tabLabel?: string;
+    }>>('hosts', []);
+
+    const [hostAddr, portStr, username] = hostId.split(':');
+    const port = parseInt(portStr, 10);
+
+    const host = savedHosts.find(
+      (h) => h.host === hostAddr && (h.port || 22) === port && h.username === username
+    );
+
+    if (host) {
+      if (tabLabel) {
+        host.tabLabel = tabLabel;
+      } else {
+        delete host.tabLabel;
+      }
+      await config.update('hosts', savedHosts, vscode.ConfigurationTarget.Global);
+    }
   }
 
   /**

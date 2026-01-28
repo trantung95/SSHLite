@@ -169,17 +169,32 @@ describe('FileService - Upload State Tracking (Actual)', () => {
   });
 
   describe('refresh skip during download', () => {
-    it('should track active downloads via file mapping', () => {
+    it('should track active downloads via activeDownloads map', () => {
       const localPath = '/tmp/ssh-lite/abc/[ssh] file.ts';
       const remotePath = '/remote/file.ts';
 
-      // isFileDownloading checks mappings: remotePath -> localPath -> activeDownloads
-      setMapping(localPath, remotePath, 'test-host:22:testuser');
-      const activeDownloads = (service as any).activeDownloads as Set<string>;
-      activeDownloads.add(localPath);
+      // isFileDownloading checks activeDownloads map for matching remotePath
+      const activeDownloads = (service as any).activeDownloads as Map<string, { connectionId: string; remotePath: string }>;
+      activeDownloads.set(localPath, { connectionId: 'test-host:22:testuser', remotePath });
 
       expect(service.isFileDownloading(remotePath)).toBe(true);
       expect(service.isFileDownloading('/remote/other.ts')).toBe(false);
+    });
+
+    it('should return download info for active downloads via getActiveDownloadInfo', () => {
+      const localPath = '/tmp/ssh-lite/abc/[ssh] config.yaml';
+      const remotePath = '/etc/config.yaml';
+      const connectionId = 'server:22:admin';
+
+      const activeDownloads = (service as any).activeDownloads as Map<string, { connectionId: string; remotePath: string }>;
+      activeDownloads.set(localPath, { connectionId, remotePath });
+
+      const info = service.getActiveDownloadInfo(localPath);
+      expect(info).toEqual({ connectionId, remotePath });
+    });
+
+    it('should return undefined from getActiveDownloadInfo for non-downloading paths', () => {
+      expect(service.getActiveDownloadInfo('/tmp/ssh-lite/abc/[ssh] missing.ts')).toBeUndefined();
     });
   });
 

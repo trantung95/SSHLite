@@ -206,6 +206,203 @@ describe('FileTreeProvider - matchesFilter', () => {
 });
 
 /**
+ * Test implementation of matchesFilenameFilter logic
+ * Mirrors the per-folder filename filter that hides non-matching files
+ */
+function matchesFilenameFilter(
+  file: IRemoteFile,
+  filterPattern: string,
+  filterBasePath: string,
+  filterConnectionId: string,
+  highlightedPaths: Set<string>
+): boolean {
+  if (!filterPattern || filterConnectionId !== file.connectionId) {
+    return true; // No filter active or different connection
+  }
+  if (!file.path.startsWith(filterBasePath)) {
+    return true; // File not under filtered folder
+  }
+  if (file.isDirectory) {
+    return true; // Always show directories for navigation
+  }
+  // Check if highlighted by server search
+  if (highlightedPaths.has(file.path)) {
+    return true;
+  }
+  // Local pattern match fallback (mirrors shouldHighlightByFilter)
+  const fileName = file.name.toLowerCase();
+  const pattern = filterPattern.toLowerCase();
+  const hasGlobWildcards = pattern.includes('*') || pattern.includes('?');
+  if (!hasGlobWildcards) {
+    return fileName.includes(pattern);
+  }
+  const regexPattern = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*/g, '.*')
+    .replace(/\?/g, '.');
+  try {
+    const regex = new RegExp(`^${regexPattern}$`, 'i');
+    return regex.test(fileName);
+  } catch {
+    return fileName.includes(pattern);
+  }
+}
+
+// Helper to create mock file with specific path and connection
+function createFileInDir(name: string, dirPath: string, connectionId: string = 'conn1', isDirectory = false): IRemoteFile {
+  return {
+    name,
+    path: `${dirPath}/${name}`,
+    isDirectory,
+    size: 1024,
+    modifiedTime: Date.now(),
+    connectionId,
+  };
+}
+
+describe('FileTreeProvider - matchesFilenameFilter', () => {
+  const connId = 'conn1';
+  const basePath = '/opt/logs';
+
+  it('should show all files when no filter is active', () => {
+    const file = createFileInDir('app.log', basePath, connId);
+    expect(matchesFilenameFilter(file, '', basePath, connId, new Set())).toBe(true);
+  });
+
+  it('should show all files for a different connection', () => {
+    const file = createFileInDir('app.log', basePath, 'other-conn');
+    expect(matchesFilenameFilter(file, '*uat*', basePath, connId, new Set())).toBe(true);
+  });
+
+  it('should show files outside the filtered base path', () => {
+    const file = createFileInDir('app.log', '/opt/data', connId);
+    expect(matchesFilenameFilter(file, '*uat*', basePath, connId, new Set())).toBe(true);
+  });
+
+  it('should always show directories for navigation', () => {
+    const dir = createFileInDir('subdir', basePath, connId, true);
+    expect(matchesFilenameFilter(dir, '*uat*', basePath, connId, new Set())).toBe(true);
+  });
+
+  it('should hide non-matching files with *uat* pattern', () => {
+    const matching = createFileInDir('commsengine-uat-20260113.log', basePath, connId);
+    const nonMatching = createFileInDir('auto-resolve-conv-dev20260112.log', basePath, connId);
+
+    expect(matchesFilenameFilter(matching, '*uat*', basePath, connId, new Set())).toBe(true);
+    expect(matchesFilenameFilter(nonMatching, '*uat*', basePath, connId, new Set())).toBe(false);
+  });
+
+  it('should show files that are in highlightedPaths even if pattern does not match locally', () => {
+    const file = createFileInDir('special-file.log', basePath, connId);
+    const highlighted = new Set([`${basePath}/special-file.log`]);
+    expect(matchesFilenameFilter(file, '*uat*', basePath, connId, highlighted)).toBe(true);
+  });
+
+  it('should handle plain text filter (no globs)', () => {
+    const matching = createFileInDir('uat-config.yaml', basePath, connId);
+    const nonMatching = createFileInDir('prod-config.yaml', basePath, connId);
+
+    expect(matchesFilenameFilter(matching, 'uat', basePath, connId, new Set())).toBe(true);
+    expect(matchesFilenameFilter(nonMatching, 'uat', basePath, connId, new Set())).toBe(false);
+  });
+
+  it('should be case-insensitive', () => {
+    const file = createFileInDir('UAT-config.yaml', basePath, connId);
+    expect(matchesFilenameFilter(file, '*uat*', basePath, connId, new Set())).toBe(true);
+  });
+});
+
+/**
+ * Test implementation of isEmptyAfterFilter logic
+ * Mirrors the per-folder check that grays out folders with no matching descendants
+ */
+function isEmptyAfterFilter(
+  folderPath: string,
+  connectionId: string,
+  filterPattern: string,
+  filterBasePath: string,
+  filterConnectionId: string,
+  highlightedPaths: Set<string>
+): boolean {
+  if (!filterPattern || filterConnectionId !== connectionId) {
+    return false;
+  }
+  if (!folderPath.startsWith(filterBasePath)) {
+    return false;
+  }
+  // Don't gray out the base path itself
+  if (folderPath === filterBasePath) {
+    return false;
+  }
+  return !highlightedPaths.has(folderPath);
+}
+
+describe('FileTreeProvider - isEmptyAfterFilter', () => {
+  const connId = 'conn1';
+  const basePath = '/opt/logs';
+
+  it('should return false when no filter is active', () => {
+    const result = isEmptyAfterFilter('/opt/logs/subdir', connId, '', basePath, connId, new Set());
+    expect(result).toBe(false);
+  });
+
+  it('should return false for a different connection', () => {
+    const highlighted = new Set([basePath]);
+    const result = isEmptyAfterFilter('/opt/logs/subdir', 'other-conn', '*uat*', basePath, connId, highlighted);
+    expect(result).toBe(false);
+  });
+
+  it('should return false for folders outside basePath', () => {
+    const highlighted = new Set([basePath]);
+    const result = isEmptyAfterFilter('/opt/data/subdir', connId, '*uat*', basePath, connId, highlighted);
+    expect(result).toBe(false);
+  });
+
+  it('should return false for the basePath itself', () => {
+    const highlighted = new Set([basePath]);
+    const result = isEmptyAfterFilter(basePath, connId, '*uat*', basePath, connId, highlighted);
+    expect(result).toBe(false);
+  });
+
+  it('should return true for folders under basePath not in highlightedPaths', () => {
+    const highlighted = new Set([basePath, '/opt/logs/has-matches']);
+    const result = isEmptyAfterFilter('/opt/logs/empty-folder', connId, '*uat*', basePath, connId, highlighted);
+    expect(result).toBe(true);
+  });
+
+  it('should return false for folders in highlightedPaths (has matching descendants)', () => {
+    const highlighted = new Set([basePath, '/opt/logs/archive']);
+    const result = isEmptyAfterFilter('/opt/logs/archive', connId, '*uat*', basePath, connId, highlighted);
+    expect(result).toBe(false);
+  });
+
+  it('should work at nested depths', () => {
+    const highlighted = new Set([
+      basePath,
+      '/opt/logs/archive',
+      '/opt/logs/archive/2024',
+      '/opt/logs/archive/2024/uat-jan.log',
+    ]);
+
+    // Folder with matching descendants at nested depth
+    expect(isEmptyAfterFilter('/opt/logs/archive/2024', connId, '*uat*', basePath, connId, highlighted)).toBe(false);
+
+    // Empty nested folder (no matching descendants)
+    expect(isEmptyAfterFilter('/opt/logs/archive/2023', connId, '*uat*', basePath, connId, highlighted)).toBe(true);
+
+    // Empty top-level folder
+    expect(isEmptyAfterFilter('/opt/logs/empty', connId, '*uat*', basePath, connId, highlighted)).toBe(true);
+  });
+
+  it('should gray multiple empty folders in the same tree', () => {
+    const highlighted = new Set([basePath, '/opt/logs/active']);
+    expect(isEmptyAfterFilter('/opt/logs/empty1', connId, '*uat*', basePath, connId, highlighted)).toBe(true);
+    expect(isEmptyAfterFilter('/opt/logs/empty2', connId, '*uat*', basePath, connId, highlighted)).toBe(true);
+    expect(isEmptyAfterFilter('/opt/logs/active', connId, '*uat*', basePath, connId, highlighted)).toBe(false);
+  });
+});
+
+/**
  * Connection reorder algorithm — extracted from FileTreeProvider.handleDrop
  * for unit testing the drag/drop reorder logic.
  */

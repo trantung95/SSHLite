@@ -325,7 +325,8 @@ export class SearchPanel {
       this.searchAbortController.abort();
     }
     this.searchAbortController = new AbortController();
-    const signal = this.searchAbortController.signal;
+    const abortController = this.searchAbortController; // capture for closures
+    const signal = abortController.signal;
 
     this.isSearching = true;
     this.lastSearchQuery = query;
@@ -372,9 +373,7 @@ export class SearchPanel {
             detail: `in ${scope.path}`,
             cancellable: true,
             onCancel: () => {
-              if (this.searchAbortController) {
-                this.searchAbortController.abort();
-              }
+              abortController.abort();
             },
           }
         );
@@ -511,6 +510,8 @@ export class SearchPanel {
       display: flex;
       flex-direction: row;
       margin: 0;
+      min-height: 0;
+      overflow: hidden;
     }
 
     .controls-section {
@@ -769,6 +770,8 @@ export class SearchPanel {
       overflow-x: hidden;
       padding: 0;
       min-width: 0;
+      min-height: 0;
+      height: 100%;
     }
 
     .results-header {
@@ -1186,6 +1189,7 @@ export class SearchPanel {
     let viewMode = 'list'; // 'list' or 'tree'
     let expandedTreeNodes = new Set();
     let treeViewFirstExpand = true; // Flag to auto-expand all tree nodes on first switch to tree view
+    let searchExpandState = 2; // 0=collapsed, 1=all expanded, 2=file level (default)
 
     // Elements
     const searchInput = document.getElementById('searchInput');
@@ -1397,16 +1401,26 @@ export class SearchPanel {
       }
       resultsHeader.innerHTML = \`
         <span class="results-count">\${matchCount} result\${matchCount !== 1 ? 's' : ''} in \${fileCount} file\${fileCount !== 1 ? 's' : ''}\${serverSummary}\${limitWarning}</span>
+        <button id="expandToggleBtn" class="view-toggle-btn" title="\${getExpandToggleTitle()}">\${getExpandToggleIcon()}</button>
         <button id="listViewBtn" class="view-toggle-btn \${viewMode === 'list' ? 'active' : ''}" title="List View">☰</button>
-        <button id="treeViewBtn" class="view-toggle-btn \${viewMode === 'tree' ? 'active' : ''}" title="Tree View">🌲</button>
+        <button id="treeViewBtn" class="view-toggle-btn \${viewMode === 'tree' ? 'active' : ''}" title="Tree View"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="vertical-align: middle;"><path d="M1 2h6v1.5H1zm4 4h6v1.5H5zm0 4h6v1.5H5zM3 3.5h1.5v3H3zm0 4h1.5v3H3z"/></svg></button>
       \`;
 
       // Add view toggle handlers
       setTimeout(() => {
         const listBtn = document.getElementById('listViewBtn');
         const treeBtn = document.getElementById('treeViewBtn');
+        const expandToggle = document.getElementById('expandToggleBtn');
         const limitLink = document.getElementById('increaseLimitLink');
 
+        if (expandToggle) {
+          expandToggle.addEventListener('click', () => {
+            // Cycle: 0 → 1 (expand all) → 2 (file level) → 0 (collapse all)
+            const nextState = (searchExpandState + 1) % 3;
+            applySearchExpandState(nextState, fileGroups);
+            renderResults(hitLimit, limit);
+          });
+        }
         if (listBtn) {
           listBtn.addEventListener('click', () => {
             viewMode = 'list';
@@ -1630,6 +1644,76 @@ export class SearchPanel {
       for (const name of Object.keys(tree)) {
         collectDirectoryKeys(name, tree[name], '');
       }
+    }
+
+    // Collect tree node keys for expand state (dirs only, or dirs + files)
+    function collectTreeKeys(fileGroups, includeFiles) {
+      const tree = buildTree(fileGroups);
+      function collect(name, node, parentPath) {
+        const nodePath = parentPath ? parentPath + '/' + name : name;
+        const nodeKey = (node._connectionId || '') + ':' + nodePath;
+        if (node._isDir) {
+          expandedTreeNodes.add(nodeKey);
+          for (const childName of Object.keys(node._children)) {
+            collect(childName, node._children[childName], nodePath);
+          }
+        } else if (includeFiles) {
+          expandedTreeNodes.add(nodeKey);
+        }
+      }
+      for (const name of Object.keys(tree)) {
+        collect(name, tree[name], '');
+      }
+    }
+
+    // Apply search expand state: 0=collapsed, 1=all expanded, 2=file level
+    function applySearchExpandState(state, fileGroups) {
+      searchExpandState = state;
+      expandedTreeNodes.clear();
+      expandedFiles.clear();
+
+      if (viewMode === 'tree') {
+        if (state === 0) {
+          // Collapse all: servers collapsed + tree collapsed
+          for (const server of scopeServers) {
+            expandedFiles.add('server:' + server.id + ':collapsed');
+          }
+        } else if (state === 1) {
+          // Expand all: servers expanded + dirs + files
+          collectTreeKeys(fileGroups, true);
+        } else {
+          // File level: servers expanded + dirs only
+          collectTreeKeys(fileGroups, false);
+        }
+      } else {
+        // List view
+        if (state === 0) {
+          // Collapse all: servers collapsed + files collapsed
+          for (const server of scopeServers) {
+            expandedFiles.add('server:' + server.id + ':collapsed');
+          }
+        } else if (state === 1) {
+          // Expand all: servers expanded + file match lists expanded
+          for (const group of fileGroups) {
+            expandedFiles.add(group.connectionId + ':' + group.path);
+          }
+        }
+        // State 2: files clear = servers expanded, file match lists collapsed
+      }
+    }
+
+    // Get expand toggle button icon based on current state
+    function getExpandToggleIcon() {
+      if (searchExpandState === 0) return '⊞';  // expand all
+      if (searchExpandState === 1) return '≡';   // to file level
+      return '⊟';                                // collapse all
+    }
+
+    // Get expand toggle button tooltip based on current state
+    function getExpandToggleTitle() {
+      if (searchExpandState === 0) return 'Expand All';
+      if (searchExpandState === 1) return 'Collapse to File Level';
+      return 'Collapse All';
     }
 
     // Render tree view
@@ -1905,6 +1989,10 @@ export class SearchPanel {
           } else {
             searchBtn.style.display = 'inline-block';
             cancelBtn.style.display = 'none';
+            // Clear stale "Searching..." message when no search is running
+            if (resultsContainer.querySelector('.searching')) {
+              resultsContainer.innerHTML = '';
+            }
           }
           break;
 
@@ -1919,6 +2007,11 @@ export class SearchPanel {
           results = message.results || [];
           currentQuery = message.query || '';
           scopeServers = message.scopeServers || [];
+          // Reset expand state for new results (file level = default)
+          searchExpandState = 2;
+          expandedFiles.clear();
+          expandedTreeNodes.clear();
+          treeViewFirstExpand = true;
           renderResults(message.hitLimit, message.limit);
           // Hide cancel button, show search button
           searchBtn.style.display = 'inline-block';

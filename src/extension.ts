@@ -21,7 +21,7 @@ import { ActivityService } from './services/ActivityService';
 import { SearchPanel } from './webviews/SearchPanel';
 import { SSHFileDecorationProvider } from './providers/FileDecorationProvider';
 import { ProgressiveFileContentProvider } from './providers/ProgressiveFileContentProvider';
-import { PROGRESSIVE_PREVIEW_SCHEME } from './types/progressive';
+import { PROGRESSIVE_PREVIEW_SCHEME, parsePreviewUri } from './types/progressive';
 import { formatFileSize, formatRelativeTime, normalizeLocalPath } from './utils/helpers';
 import { parseHostInfoFromPath as parseHostInfo, isInSshTempDir, hasSshPrefix } from './utils/extensionHelpers';
 
@@ -139,18 +139,26 @@ export function activate(context: vscode.ExtensionContext): void {
     fileDecorationProvider
   );
 
-  // Initialize expand/collapse toggle state for all tree views (all start collapsed)
-  vscode.commands.executeCommand('setContext', 'sshLite.hosts.expanded', false);
-  vscode.commands.executeCommand('setContext', 'sshLite.fileExplorer.expanded', false);
-  vscode.commands.executeCommand('setContext', 'sshLite.activity.expanded', false);
-  vscode.commands.executeCommand('setContext', 'sshLite.portForwards.expanded', false);
+  // When filename filter is auto-cleared (e.g., during reveal-in-tree), sync decoration provider
+  fileTreeProvider.setOnFilterCleared(() => {
+    fileDecorationProvider.clearFilteredFolder();
+    vscode.commands.executeCommand('setContext', 'sshLite.hasFilenameFilter', false);
+    vscode.window.setStatusBarMessage('$(filter) Filter cleared (file revealed)', 2000);
+  });
+
+  // Initialize 3-state expand/collapse for all tree views (all start collapsed = state 0)
+  // State 0 = collapsed, State 1 = fully expanded, State 2 = first level expanded
+  vscode.commands.executeCommand('setContext', 'sshLite.hosts.expandState', 0);
+  vscode.commands.executeCommand('setContext', 'sshLite.fileExplorer.expandState', 0);
+  vscode.commands.executeCommand('setContext', 'sshLite.activity.expandState', 0);
+  vscode.commands.executeCommand('setContext', 'sshLite.portForwards.expandState', 0);
 
   // Track expand/collapse events for file tree to preserve expansion state
   context.subscriptions.push(
     fileTreeView.onDidExpandElement((e) => {
       fileTreeProvider.trackExpand(e.element);
-      // When any item is expanded, show collapse button
-      vscode.commands.executeCommand('setContext', 'sshLite.fileExplorer.expanded', true);
+      // When any item is expanded, set state to 1 (next click → first level)
+      vscode.commands.executeCommand('setContext', 'sshLite.fileExplorer.expandState', 1);
     }),
     fileTreeView.onDidCollapseElement((e) => {
       fileTreeProvider.trackCollapse(e.element);
@@ -160,13 +168,13 @@ export function activate(context: vscode.ExtensionContext): void {
   // Track expand events for other tree views to update toggle state
   context.subscriptions.push(
     hostTreeView.onDidExpandElement(() => {
-      vscode.commands.executeCommand('setContext', 'sshLite.hosts.expanded', true);
+      vscode.commands.executeCommand('setContext', 'sshLite.hosts.expandState', 1);
     }),
     activityTreeView.onDidExpandElement(() => {
-      vscode.commands.executeCommand('setContext', 'sshLite.activity.expanded', true);
+      vscode.commands.executeCommand('setContext', 'sshLite.activity.expandState', 1);
     }),
     portForwardTreeView.onDidExpandElement(() => {
-      vscode.commands.executeCommand('setContext', 'sshLite.portForwards.expanded', true);
+      vscode.commands.executeCommand('setContext', 'sshLite.portForwards.expandState', 1);
     })
   );
 
@@ -701,6 +709,70 @@ export function activate(context: vscode.ExtensionContext): void {
       hostTreeProvider.refresh();
     }),
 
+    vscode.commands.registerCommand('sshLite.renameHost', async (item?: ServerTreeItem) => {
+      if (!item) {
+        return;
+      }
+      const savedHost = item.hosts.find(h => h.source === 'saved');
+      if (!savedHost) {
+        vscode.window.setStatusBarMessage('$(info) SSH config hosts must be renamed in ~/.ssh/config', 5000);
+        return;
+      }
+
+      const newName = await vscode.window.showInputBox({
+        prompt: 'Enter new display name',
+        value: savedHost.name,
+        ignoreFocusOut: true,
+        validateInput: (value) => {
+          if (!value || value.trim().length === 0) {
+            return 'Name cannot be empty';
+          }
+          return null;
+        },
+      });
+
+      if (!newName) {
+        return;
+      }
+
+      await hostService.renameHost(savedHost.id, newName.trim());
+      hostTreeProvider.refresh();
+      vscode.window.setStatusBarMessage(`$(check) Renamed host to: ${newName.trim()}`, 3000);
+    }),
+
+    vscode.commands.registerCommand('sshLite.setTabLabel', async (item?: ServerTreeItem) => {
+      if (!item) {
+        return;
+      }
+      const savedHost = item.hosts.find(h => h.source === 'saved');
+      if (!savedHost) {
+        vscode.window.setStatusBarMessage('$(info) Tab labels can only be set for saved hosts', 5000);
+        return;
+      }
+
+      const label = await vscode.window.showInputBox({
+        prompt: 'Short label for editor tabs (e.g. PRD, DEV, STG). Leave empty to clear.',
+        value: savedHost.tabLabel || '',
+        placeHolder: 'PRD',
+        ignoreFocusOut: true,
+      });
+
+      if (label === undefined) {
+        return; // cancelled
+      }
+
+      const trimmed = label.trim() || undefined;
+      await hostService.setTabLabel(savedHost.id, trimmed);
+      if (trimmed) {
+        fileService.registerConnectionTabLabel(savedHost.id, trimmed);
+      }
+      hostTreeProvider.refresh();
+      vscode.window.setStatusBarMessage(
+        trimmed ? `$(check) Tab label set to: [${trimmed}]` : '$(check) Tab label cleared',
+        3000
+      );
+    }),
+
     // Navigation commands
     vscode.commands.registerCommand('sshLite.goToPath', async (connectionOrItem?: SSHConnection | ConnectionTreeItem | FileTreeItem | IHostConfig, pathArg?: string) => {
       let connection: SSHConnection | undefined;
@@ -962,40 +1034,95 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
 
+    vscode.commands.registerCommand('sshLite.renameRemote', async (item?: FileTreeItem) => {
+      if (!item) {
+        return;
+      }
+
+      logCommand('renameRemote', item.file.path);
+      const newPath = await fileService.renameRemote(item.connection, item.file);
+      if (newPath) {
+        logResult('renameRemote', true, `${item.file.name} → ${newPath}`);
+        const parentDir = item.file.path.substring(0, item.file.path.lastIndexOf('/'));
+        fileTreeProvider.refreshFolder(item.connection.id, parentDir);
+      } else {
+        logResult('renameRemote', false, 'Cancelled or failed');
+      }
+    }),
+
+    vscode.commands.registerCommand('sshLite.moveRemote', async (item?: FileTreeItem) => {
+      if (!item) {
+        return;
+      }
+
+      logCommand('moveRemote', item.file.path);
+      const newPath = await fileService.moveRemote(item.connection, item.file);
+      if (newPath) {
+        logResult('moveRemote', true, `${item.file.path} → ${newPath}`);
+        const oldParent = item.file.path.substring(0, item.file.path.lastIndexOf('/'));
+        const newParent = newPath.substring(0, newPath.lastIndexOf('/'));
+        fileTreeProvider.refreshFolder(item.connection.id, oldParent);
+        if (oldParent !== newParent) {
+          fileTreeProvider.refreshFolder(item.connection.id, newParent);
+        }
+      } else {
+        logResult('moveRemote', false, 'Cancelled or failed');
+      }
+    }),
+
     vscode.commands.registerCommand('sshLite.refreshFiles', () => {
       fileTreeProvider.refresh();
     }),
 
-    // Expand all tree nodes for a specific view
-    // After expanding, toggle the button to show "Collapse All"
-    vscode.commands.registerCommand('sshLite.expandAll', async (viewId?: string) => {
+    // 3-state expand/collapse rotation: Expand All → First Level → Collapse All
+    // State 0 = collapsed → expandAll → State 1
+    // State 1 = fully expanded → expandFirstLevel → State 2
+    // State 2 = first level → collapseAll → State 0
+
+    // State 0 → 1: Expand all tree nodes recursively
+    vscode.commands.registerCommand('sshLite.expandAll', async () => {
       await vscode.commands.executeCommand('list.expandRecursively');
-      // Set context to show collapse button instead
-      if (viewId) {
-        await vscode.commands.executeCommand('setContext', `sshLite.${viewId}.expanded`, true);
-      } else {
-        // If no viewId, set all to expanded
-        await vscode.commands.executeCommand('setContext', 'sshLite.hosts.expanded', true);
-        await vscode.commands.executeCommand('setContext', 'sshLite.fileExplorer.expanded', true);
-        await vscode.commands.executeCommand('setContext', 'sshLite.activity.expanded', true);
-        await vscode.commands.executeCommand('setContext', 'sshLite.portForwards.expanded', true);
-      }
+      vscode.commands.executeCommand('setContext', 'sshLite.hosts.expandState', 1);
+      vscode.commands.executeCommand('setContext', 'sshLite.fileExplorer.expandState', 1);
+      vscode.commands.executeCommand('setContext', 'sshLite.activity.expandState', 1);
+      vscode.commands.executeCommand('setContext', 'sshLite.portForwards.expandState', 1);
     }),
 
-    // Collapse all tree nodes for a specific view
-    // After collapsing, toggle the button to show "Expand All"
-    vscode.commands.registerCommand('sshLite.collapseAll', async (viewId?: string) => {
+    // State 1 → 2: Collapse all, then expand only the first level (top items)
+    vscode.commands.registerCommand('sshLite.expandFirstLevel', async () => {
       await vscode.commands.executeCommand('list.collapseAll');
-      // Set context to show expand button instead
-      if (viewId) {
-        await vscode.commands.executeCommand('setContext', `sshLite.${viewId}.expanded`, false);
-      } else {
-        // If no viewId, set all to collapsed
-        await vscode.commands.executeCommand('setContext', 'sshLite.hosts.expanded', false);
-        await vscode.commands.executeCommand('setContext', 'sshLite.fileExplorer.expanded', false);
-        await vscode.commands.executeCommand('setContext', 'sshLite.activity.expanded', false);
-        await vscode.commands.executeCommand('setContext', 'sshLite.portForwards.expanded', false);
+
+      // Expand top-level items one level in each tree view
+      const treeViews = [
+        { view: hostTreeView, provider: hostTreeProvider },
+        { view: fileTreeView, provider: fileTreeProvider },
+        { view: activityTreeView, provider: activityTreeProvider },
+        { view: portForwardTreeView, provider: portForwardTreeProvider },
+      ];
+      for (const { view, provider } of treeViews) {
+        try {
+          const topItems = await Promise.resolve(provider.getChildren());
+          if (topItems) {
+            for (const item of topItems) {
+              try { await view.reveal(item, { expand: 1, select: false, focus: false }); } catch { /* item may not be revealable */ }
+            }
+          }
+        } catch { /* provider may fail */ }
       }
+
+      vscode.commands.executeCommand('setContext', 'sshLite.hosts.expandState', 2);
+      vscode.commands.executeCommand('setContext', 'sshLite.fileExplorer.expandState', 2);
+      vscode.commands.executeCommand('setContext', 'sshLite.activity.expandState', 2);
+      vscode.commands.executeCommand('setContext', 'sshLite.portForwards.expandState', 2);
+    }),
+
+    // State 2 → 0: Collapse all tree nodes
+    vscode.commands.registerCommand('sshLite.collapseAll', async () => {
+      await vscode.commands.executeCommand('list.collapseAll');
+      vscode.commands.executeCommand('setContext', 'sshLite.hosts.expandState', 0);
+      vscode.commands.executeCommand('setContext', 'sshLite.fileExplorer.expandState', 0);
+      vscode.commands.executeCommand('setContext', 'sshLite.activity.expandState', 0);
+      vscode.commands.executeCommand('setContext', 'sshLite.portForwards.expandState', 0);
     }),
 
     // Filter files in tree view
@@ -1027,6 +1154,40 @@ export function activate(context: vscode.ExtensionContext): void {
       fileTreeProvider.clearFilter();
       logResult('clearFilter', true);
       vscode.window.setStatusBarMessage('$(filter) Filter cleared', 2000);
+    }),
+
+    // Filter hosts in SSH Hosts panel
+    vscode.commands.registerCommand('sshLite.filterHosts', async () => {
+      logCommand('filterHosts');
+      const currentFilter = hostTreeProvider.getFilter();
+      const input = await vscode.window.showInputBox({
+        prompt: 'Filter hosts by name, hostname, or username',
+        placeHolder: 'server name, 10.0.0.*, admin, etc.',
+        value: currentFilter,
+        title: 'Filter Hosts',
+      });
+
+      if (input !== undefined) {
+        hostTreeProvider.setFilter(input);
+        if (input) {
+          logResult('filterHosts', true, `Pattern: "${input}"`);
+          vscode.commands.executeCommand('setContext', 'sshLite.hasHostFilter', true);
+          vscode.window.setStatusBarMessage(`$(filter) Host filter: ${input}`, 3000);
+        } else {
+          logResult('filterHosts', true, 'Filter cleared');
+          vscode.commands.executeCommand('setContext', 'sshLite.hasHostFilter', false);
+          vscode.window.setStatusBarMessage('$(filter) Host filter cleared', 2000);
+        }
+      }
+    }),
+
+    // Clear host filter
+    vscode.commands.registerCommand('sshLite.clearHostFilter', () => {
+      logCommand('clearHostFilter');
+      hostTreeProvider.clearFilter();
+      logResult('clearHostFilter', true);
+      vscode.commands.executeCommand('setContext', 'sshLite.hasHostFilter', false);
+      vscode.window.setStatusBarMessage('$(filter) Host filter cleared', 2000);
     }),
 
     // Search server for current filter (user-triggered, LITE)
@@ -1141,6 +1302,11 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!connection) {
           vscode.window.showErrorMessage('Connection not found');
           return;
+        }
+
+        // Register tab label so getLocalFilePath uses the right prefix
+        if (connection.host.tabLabel) {
+          fileService.registerConnectionTabLabel(connectionId, connection.host.tabLabel);
         }
 
         // Check if file is already open in VS Code (includes hidden tabs, not just visible)
@@ -1283,15 +1449,21 @@ export function activate(context: vscode.ExtensionContext): void {
 
       if (pattern) {
         await fileTreeProvider.setFilenameFilter(pattern, item.file.path, item.connection);
+        fileDecorationProvider.setFilteredFolder(item.connection.id, item.file.path);
+        // Pass highlighted paths to decoration provider for empty folder graying
+        const filterState = fileTreeProvider.getFilenameFilterState();
+        if (filterState) {
+          fileDecorationProvider.setFilenameFilterPaths(filterState.highlightedPaths, filterState.basePath, filterState.connectionId);
+        }
         vscode.commands.executeCommand('setContext', 'sshLite.hasFilenameFilter', true);
         vscode.window.setStatusBarMessage(`$(filter) Filtering: ${pattern} in ${item.file.name}`, 0);
       }
     }),
 
     // Clear filename filter (can be triggered from tree view navigation bar or folder inline icon)
+    // Note: clearFilenameFilter() invokes the onFilterCleared callback which clears decoration + context
     vscode.commands.registerCommand('sshLite.clearFilenameFilter', (_item?: FileTreeItem) => {
       fileTreeProvider.clearFilenameFilter();
-      vscode.commands.executeCommand('setContext', 'sshLite.hasFilenameFilter', false);
       vscode.window.setStatusBarMessage('$(filter) Filter cleared', 2000);
     }),
 
@@ -1342,36 +1514,57 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
-      const localPath = normalizeLocalPath(activeEditor.document.uri.fsPath);
-      log(`revealInTree: localPath=${localPath}`);
+      const uri = activeEditor.document.uri;
+      let mapping: { connectionId: string; remotePath: string } | undefined;
 
-      // Try to get mapping from FileService
-      let mapping = fileService.getMappingForLocalPath(localPath);
+      // 1. Check for progressive preview files (ssh-lite-preview:// scheme)
+      if (uri.scheme === PROGRESSIVE_PREVIEW_SCHEME) {
+        const parsed = parsePreviewUri(uri);
+        if (parsed) {
+          mapping = { connectionId: parsed.connectionId, remotePath: parsed.remotePath };
+          log(`revealInTree: Parsed progressive preview URI - connectionId=${mapping.connectionId}, remotePath=${mapping.remotePath}`);
+        }
+      }
 
-      // If not found, try to extract from temp path structure
-      // Temp files are stored as: tempDir/connectionId/remote/path/to/file.txt
       if (!mapping) {
-        const tempDir = fileService.getTempDir();
-        if (localPath.startsWith(tempDir)) {
-          const relativePath = localPath.substring(tempDir.length);
-          // Split by path separator and get connectionId (first segment after tempDir)
-          const segments = relativePath.split(/[/\\]/).filter(s => s.length > 0);
-          if (segments.length >= 2) {
-            const connectionId = segments[0];
-            const remotePath = '/' + segments.slice(1).join('/');
-            log(`revealInTree: Extracted from path - connectionId=${connectionId}, remotePath=${remotePath}`);
+        const localPath = normalizeLocalPath(uri.fsPath);
+        log(`revealInTree: localPath=${localPath}`);
 
-            // Verify connection exists
-            const connection = connectionManager.getConnection(connectionId);
-            if (connection) {
-              mapping = { connectionId, remotePath };
+        // 2. Try to get mapping from FileService (completed downloads)
+        mapping = fileService.getMappingForLocalPath(localPath);
+
+        // 3. Check active downloads (files still loading)
+        if (!mapping) {
+          mapping = fileService.getActiveDownloadInfo(localPath);
+          if (mapping) {
+            log(`revealInTree: Found active download - connectionId=${mapping.connectionId}, remotePath=${mapping.remotePath}`);
+          }
+        }
+
+        // 4. Fallback: try to extract from temp path structure
+        if (!mapping) {
+          const tempDir = fileService.getTempDir();
+          if (localPath.startsWith(tempDir)) {
+            const relativePath = localPath.substring(tempDir.length);
+            // Split by path separator and get connectionId (first segment after tempDir)
+            const segments = relativePath.split(/[/\\]/).filter(s => s.length > 0);
+            if (segments.length >= 2) {
+              const connectionId = segments[0];
+              const remotePath = '/' + segments.slice(1).join('/');
+              log(`revealInTree: Extracted from path - connectionId=${connectionId}, remotePath=${remotePath}`);
+
+              // Verify connection exists
+              const connection = connectionManager.getConnection(connectionId);
+              if (connection) {
+                mapping = { connectionId, remotePath };
+              }
             }
           }
         }
       }
 
       if (!mapping) {
-        log(`revealInTree: No mapping found for ${localPath}`);
+        log(`revealInTree: No mapping found for ${uri.toString()}`);
         vscode.window.showInformationMessage('Current file is not a remote SSH file');
         return;
       }

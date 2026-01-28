@@ -565,6 +565,50 @@ describe('SSHConnection - Actual Class', () => {
         // The command should still be a grep command, not hijacked
         expect(capturedCommand).toMatch(/^grep /);
       });
+
+      it('should apply both --exclude and --exclude-dir for glob patterns in content search', async () => {
+        await connection.searchFiles('/home', 'test', {
+          searchContent: true,
+          excludePattern: '*uat*',
+        });
+        // Both flags must be present so *uat* excludes files AND directories
+        expect(capturedCommand).toContain("--exclude='*uat*'");
+        expect(capturedCommand).toContain("--exclude-dir='*uat*'");
+      });
+
+      it('should apply both --exclude and --exclude-dir for dotted patterns too', async () => {
+        await connection.searchFiles('/home', 'test', {
+          searchContent: true,
+          excludePattern: '*.log',
+        });
+        expect(capturedCommand).toContain("--exclude='*.log'");
+        expect(capturedCommand).toContain("--exclude-dir='*.log'");
+      });
+
+      it('should handle multiple comma-separated exclude patterns', async () => {
+        await connection.searchFiles('/home', 'test', {
+          searchContent: true,
+          excludePattern: '*uat*, *.tmp, node_modules',
+        });
+        expect(capturedCommand).toContain("--exclude='*uat*'");
+        expect(capturedCommand).toContain("--exclude-dir='*uat*'");
+        expect(capturedCommand).toContain("--exclude='*.tmp'");
+        expect(capturedCommand).toContain("--exclude-dir='*.tmp'");
+        expect(capturedCommand).toContain("--exclude='node_modules'");
+        expect(capturedCommand).toContain("--exclude-dir='node_modules'");
+      });
+
+      it('should apply find excludes for filename search with glob patterns', async () => {
+        await connection.searchFiles('/home', 'test', {
+          searchContent: false,
+          excludePattern: '*uat*',
+        });
+        // find uses ! -name for file exclusion and ! -path for directory exclusion
+        expect(capturedCommand).toContain("! -name '*uat*'");
+        expect(capturedCommand).toContain("! -path '*/*uat*/*'");
+        // Should be a find command, not grep
+        expect(capturedCommand).toMatch(/^find /);
+      });
     });
   });
 

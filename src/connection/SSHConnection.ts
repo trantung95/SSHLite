@@ -1270,12 +1270,9 @@ export class SSHConnection implements ISSHConnection {
         if (searchContent) {
           // Escape the exclude pattern for shell safety
           const escapedEp = escapeForSingleQuotes(ep);
-          // For grep: --exclude for files, --exclude-dir for directories
-          if (ep.includes('/') || !ep.includes('.')) {
-            excludeFlags += ` --exclude-dir='${escapedEp}'`;
-          } else {
-            excludeFlags += ` --exclude='${escapedEp}'`;
-          }
+          // Always apply both --exclude (files) and --exclude-dir (directories)
+          // so patterns like *uat* exclude both files and directories matching the glob
+          excludeFlags += ` --exclude='${escapedEp}' --exclude-dir='${escapedEp}'`;
         }
       }
     }

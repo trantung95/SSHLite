@@ -14,6 +14,7 @@ import { ActivityService } from './ActivityService';
 import { CommandGuard } from './CommandGuard';
 import { formatFileSize, normalizeLocalPath } from '../utils/helpers';
 import { isLikelyBinary, DEFAULT_PROGRESSIVE_CONFIG } from '../types/progressive';
+import { registerTabLabel, getConnectionPrefix } from '../utils/connectionPrefix';
 
 /**
  * Large file size threshold (100MB default)
@@ -76,7 +77,7 @@ export class FileService {
   private auditService: AuditService;
   private folderHistoryService: FolderHistoryService;
   private skipNextSave: Set<string> = new Set(); // Paths to skip upload on next save
-  private activeDownloads: Set<string> = new Set(); // Track paths currently being downloaded
+  private activeDownloads: Map<string, { connectionId: string; remotePath: string }> = new Map(); // Track paths currently being downloaded
   private pendingUploads: Map<string, { timer: NodeJS.Timeout; uploadFn: () => Promise<void> }> = new Map(); // Pending debounced uploads
   private pendingUploadPromises: Map<string, Promise<void>> = new Map(); // In-flight upload promises
 
@@ -821,13 +822,22 @@ export class FileService {
    * Check if a file is currently being downloaded
    */
   isFileDownloading(remotePath: string): boolean {
-    // Check by remotePath - need to find the local path first
-    for (const [localPath, mapping] of this.fileMappings) {
-      if (mapping.remotePath === remotePath && this.activeDownloads.has(localPath)) {
+    // Check activeDownloads map directly (stores connectionId + remotePath)
+    for (const [, info] of this.activeDownloads) {
+      if (info.remotePath === remotePath) {
         return true;
       }
     }
     return false;
+  }
+
+  /**
+   * Get connection info for a file that is currently being downloaded.
+   * Returns the connectionId and remotePath if the local path has an active download,
+   * or undefined if not downloading.
+   */
+  getActiveDownloadInfo(localPath: string): { connectionId: string; remotePath: string } | undefined {
+    return this.activeDownloads.get(localPath);
   }
 
   /**
@@ -894,9 +904,17 @@ export class FileService {
   }
 
   /**
+   * Register a tab label for a connection (from IHostConfig.tabLabel).
+   * When set, editor tabs show [tabLabel] instead of [user@host].
+   */
+  public registerConnectionTabLabel(connectionId: string, tabLabel: string): void {
+    registerTabLabel(connectionId, tabLabel);
+  }
+
+  /**
    * Get local temp file path for a remote file.
    * Uses connection subdirectories to avoid collisions while keeping original filenames.
-   * Adds [SSH] prefix to filename for easy identification in tabs.
+   * Filename prefix: [tabLabel] if set, otherwise [user@host] for server identification.
    */
   public getLocalFilePath(connectionId: string, remotePath: string): string {
     // Create a short hash of connection ID for subdirectory
@@ -913,10 +931,11 @@ export class FileService {
       fs.mkdirSync(connDir, { recursive: true });
     }
 
-    // Use original filename with [SSH] prefix for easy identification in tabs
+    // Use [tabLabel] or [user@host] prefix for server identification in tabs
+    const prefix = getConnectionPrefix(connectionId);
     const fileName = path.basename(remotePath);
-    const sshFileName = `[SSH] ${fileName}`;
-    return path.join(connDir, sshFileName);
+    const prefixedFileName = `[${prefix}] ${fileName}`;
+    return path.join(connDir, prefixedFileName);
   }
 
   /**
@@ -972,13 +991,9 @@ export class FileService {
    */
   getRemotePathFromMetadata(localPath: string): { remotePath: string; connectionId: string } | undefined {
     try {
-      // Extract connection hash from local path
-      const pathParts = localPath.split(/[/\\]/);
-      const sshIndex = pathParts.findIndex(p => p.includes('[SSH]'));
-      if (sshIndex <= 0) return undefined;
-
-      const connHash = pathParts[sshIndex - 1];
-      const metadataPath = this.getMetadataFilePath(connHash);
+      // Find metadata in the parent directory (the connection hash directory)
+      const connDirName = path.basename(path.dirname(localPath));
+      const metadataPath = this.getMetadataFilePath(connDirName);
 
       if (!fs.existsSync(metadataPath)) return undefined;
 
@@ -2557,6 +2572,11 @@ export class FileService {
    * Uses progressive download for large text files (>threshold)
    */
   async openRemoteFile(connection: SSHConnection, remoteFile: IRemoteFile): Promise<void> {
+    // Register tab label for this connection (used in filename prefix)
+    if (connection.host.tabLabel) {
+      this.registerConnectionTabLabel(connection.id, connection.host.tabLabel);
+    }
+
     const activityService = ActivityService.getInstance();
 
     // Check for very large files (>100MB) - use old large file handler
@@ -2688,8 +2708,8 @@ export class FileService {
       const fileSizeStr = formatFileSize(remoteFile.size);
       vscode.window.setStatusBarMessage(`$(sync~spin) Downloading ${remoteFile.name} (${fileSizeStr})...`, 30000);
 
-      // Mark download as active
-      this.activeDownloads.add(localPath);
+      // Mark download as active (store connection info so reveal-in-tree works during loading)
+      this.activeDownloads.set(localPath, { connectionId: connection.id, remotePath: remoteFile.path });
 
       // Track activity via CommandGuard
       const activityService = ActivityService.getInstance();
@@ -2860,8 +2880,8 @@ export class FileService {
       async (progress) => {
         progress.report({ message: `Downloading (${formatFileSize(remoteFile.size)})...` });
 
-        // Mark download as active
-        this.activeDownloads.add(localPath);
+        // Mark download as active (store connection info so reveal-in-tree works during loading)
+        this.activeDownloads.set(localPath, { connectionId: connection.id, remotePath: remoteFile.path });
 
         try {
           const content = await connection.readFile(remoteFile.path);
@@ -3667,6 +3687,162 @@ export class FileService {
     } catch (error) {
       vscode.window.showErrorMessage(`Failed to create folder: ${(error as Error).message}`);
       return undefined;
+    }
+  }
+
+  /**
+   * Rename a remote file or folder (SFTP rename - instant, zero data transfer)
+   */
+  async renameRemote(connection: SSHConnection, remoteFile: IRemoteFile): Promise<string | undefined> {
+    const typeLabel = remoteFile.isDirectory ? 'folder' : 'file';
+    const oldName = remoteFile.name;
+    const parentDir = remoteFile.path.substring(0, remoteFile.path.lastIndexOf('/'));
+
+    const newName = await vscode.window.showInputBox({
+      prompt: `Rename ${typeLabel}`,
+      value: oldName,
+      valueSelection: remoteFile.isDirectory
+        ? [0, oldName.length]
+        : [0, oldName.lastIndexOf('.') > 0 ? oldName.lastIndexOf('.') : oldName.length],
+      ignoreFocusOut: true,
+      validateInput: (value) => {
+        if (!value || value.trim().length === 0) {
+          return 'Name cannot be empty';
+        }
+        if (value.includes('/') || value.includes('\\')) {
+          return 'Name cannot contain slashes';
+        }
+        if (value.trim() === oldName) {
+          return 'Name is unchanged';
+        }
+        return null;
+      },
+    });
+
+    if (!newName) {
+      return undefined;
+    }
+
+    const newPath = `${parentDir}/${newName.trim()}`;
+
+    try {
+      await connection.rename(remoteFile.path, newPath);
+      this.updateFileMappingsAfterRename(connection.id, remoteFile.path, newPath, remoteFile.isDirectory);
+
+      this.auditService.log({
+        action: 'rename',
+        connectionId: connection.id,
+        hostName: connection.host.name,
+        username: connection.host.username,
+        remotePath: remoteFile.path,
+        localPath: newPath,
+        success: true,
+      });
+
+      vscode.window.setStatusBarMessage(`$(check) Renamed ${oldName} → ${newName.trim()}`, 3000);
+      return newPath;
+    } catch (error) {
+      this.auditService.log({
+        action: 'rename',
+        connectionId: connection.id,
+        hostName: connection.host.name,
+        username: connection.host.username,
+        remotePath: remoteFile.path,
+        success: false,
+        error: (error as Error).message,
+      });
+      vscode.window.showErrorMessage(`Failed to rename: ${(error as Error).message}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * Move a remote file or folder to a new location (SFTP rename - instant, zero data transfer)
+   */
+  async moveRemote(connection: SSHConnection, remoteFile: IRemoteFile): Promise<string | undefined> {
+    const typeLabel = remoteFile.isDirectory ? 'folder' : 'file';
+
+    const newPath = await vscode.window.showInputBox({
+      prompt: `Move ${typeLabel} to new path`,
+      value: remoteFile.path,
+      ignoreFocusOut: true,
+      validateInput: (value) => {
+        if (!value || value.trim().length === 0) {
+          return 'Path cannot be empty';
+        }
+        if (!value.startsWith('/')) {
+          return 'Path must be absolute (start with /)';
+        }
+        if (value.trim() === remoteFile.path) {
+          return 'Path is unchanged';
+        }
+        if (remoteFile.isDirectory && value.trim().startsWith(remoteFile.path + '/')) {
+          return 'Cannot move a folder into itself';
+        }
+        return null;
+      },
+    });
+
+    if (!newPath) {
+      return undefined;
+    }
+
+    const trimmedPath = newPath.trim();
+
+    try {
+      await connection.rename(remoteFile.path, trimmedPath);
+      this.updateFileMappingsAfterRename(connection.id, remoteFile.path, trimmedPath, remoteFile.isDirectory);
+
+      this.auditService.log({
+        action: 'move',
+        connectionId: connection.id,
+        hostName: connection.host.name,
+        username: connection.host.username,
+        remotePath: remoteFile.path,
+        localPath: trimmedPath,
+        success: true,
+      });
+
+      const newDir = trimmedPath.substring(0, trimmedPath.lastIndexOf('/'));
+      vscode.window.setStatusBarMessage(`$(check) Moved ${remoteFile.name} → ${newDir}/`, 3000);
+      return trimmedPath;
+    } catch (error) {
+      this.auditService.log({
+        action: 'move',
+        connectionId: connection.id,
+        hostName: connection.host.name,
+        username: connection.host.username,
+        remotePath: remoteFile.path,
+        success: false,
+        error: (error as Error).message,
+      });
+      vscode.window.showErrorMessage(`Failed to move: ${(error as Error).message}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * Update file mappings after a rename/move so open tabs track the new remote path.
+   */
+  private updateFileMappingsAfterRename(
+    connectionId: string,
+    oldPath: string,
+    newPath: string,
+    isDirectory: boolean
+  ): void {
+    for (const [, mapping] of this.fileMappings) {
+      if (mapping.connectionId !== connectionId) {
+        continue;
+      }
+      if (isDirectory) {
+        if (mapping.remotePath.startsWith(oldPath + '/')) {
+          mapping.remotePath = newPath + mapping.remotePath.substring(oldPath.length);
+        }
+      } else {
+        if (mapping.remotePath === oldPath) {
+          mapping.remotePath = newPath;
+        }
+      }
     }
   }
 

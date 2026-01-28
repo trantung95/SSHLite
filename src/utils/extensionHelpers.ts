@@ -44,11 +44,13 @@ export function isInSshTempDir(fsPath: string, sshTempDir: string): boolean {
 }
 
 /**
- * Check if a file path has the [SSH] prefix in its filename.
+ * Check if a file path has an SSH Lite prefix in its filename.
+ * Detects [SSH], [user@host], or [tabLabel] prefixes.
  *
  * @param fsPath - The file path to check
- * @returns true if the path contains [SSH] prefix
+ * @returns true if the filename has a bracketed prefix (e.g. [SSH], [admin@host], [PRD])
  */
 export function hasSshPrefix(fsPath: string): boolean {
-  return fsPath.includes('[SSH]');
+  const basename = fsPath.split(/[/\\]/).pop() || '';
+  return basename.startsWith('[') && basename.includes('] ');
 }

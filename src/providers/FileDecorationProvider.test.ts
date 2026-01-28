@@ -289,6 +289,185 @@ describe('SSHFileDecorationProvider', () => {
     });
   });
 
+  describe('filtered folder decoration (ssh:// scheme)', () => {
+    function sshUri(connectionId: string, path: string) {
+      return {
+        scheme: 'ssh',
+        toString: () => `ssh://${connectionId}${path}`,
+      } as any;
+    }
+
+    it('should return undefined for ssh:// URIs when no filter is set', () => {
+      const uri = sshUri('host:22:user', '/var/log');
+      const decoration = provider.provideFileDecoration(uri);
+      expect(decoration).toBeUndefined();
+    });
+
+    it('should highlight the filtered folder with blue color and F badge', () => {
+      provider.setFilteredFolder('host:22:user', '/var/log');
+
+      const uri = sshUri('host:22:user', '/var/log');
+      const decoration = provider.provideFileDecoration(uri);
+
+      expect(decoration).toBeDefined();
+      expect(decoration!.badge).toBe('F');
+      expect(decoration!.tooltip).toBe('Filtered folder');
+    });
+
+    it('should not highlight non-matching ssh:// URIs', () => {
+      provider.setFilteredFolder('host:22:user', '/var/log');
+
+      const uri = sshUri('host:22:user', '/var/log/subdir');
+      const decoration = provider.provideFileDecoration(uri);
+
+      expect(decoration).toBeUndefined();
+    });
+
+    it('should not highlight folders from a different connection', () => {
+      provider.setFilteredFolder('host:22:user', '/var/log');
+
+      const uri = sshUri('other:22:admin', '/var/log');
+      const decoration = provider.provideFileDecoration(uri);
+
+      expect(decoration).toBeUndefined();
+    });
+
+    it('should clear filtered folder decoration', () => {
+      provider.setFilteredFolder('host:22:user', '/var/log');
+      provider.clearFilteredFolder();
+
+      const uri = sshUri('host:22:user', '/var/log');
+      const decoration = provider.provideFileDecoration(uri);
+
+      expect(decoration).toBeUndefined();
+    });
+
+    it('should update when filtered folder changes', () => {
+      provider.setFilteredFolder('host:22:user', '/var/log');
+
+      const oldUri = sshUri('host:22:user', '/var/log');
+      const newUri = sshUri('host:22:user', '/etc');
+
+      // Old folder should stop being highlighted after change
+      provider.setFilteredFolder('host:22:user', '/etc');
+      expect(provider.provideFileDecoration(oldUri)).toBeUndefined();
+      expect(provider.provideFileDecoration(newUri)).toBeDefined();
+      expect(provider.provideFileDecoration(newUri)!.badge).toBe('F');
+    });
+
+    it('should not affect file:// URI decorations', () => {
+      provider.setFilteredFolder('host:22:user', '/var/log');
+
+      // Regular file outside temp dir — still undefined
+      const fileUri = { scheme: 'file', fsPath: '/home/user/file.ts' } as any;
+      expect(provider.provideFileDecoration(fileUri)).toBeUndefined();
+
+      // SSH temp file — still gets orphaned decoration
+      const sshTempUri = { scheme: 'file', fsPath: `${tempDir}/conn1/file.ts` } as any;
+      fileService.getFileMapping.mockReturnValue(undefined);
+      const decoration = provider.provideFileDecoration(sshTempUri);
+      expect(decoration).toBeDefined();
+      expect(decoration!.tooltip).toContain('Not connected');
+    });
+  });
+
+  describe('empty folder graying (ssh:// scheme)', () => {
+    function sshUri(connectionId: string, path: string) {
+      return {
+        scheme: 'ssh',
+        toString: () => `ssh://${connectionId}${path}`,
+      } as any;
+    }
+
+    it('should return undefined when no filter paths are set', () => {
+      const uri = sshUri('host:22:user', '/var/log/empty');
+      expect(provider.provideFileDecoration(uri)).toBeUndefined();
+    });
+
+    it('should gray out folders under basePath not in highlighted paths', () => {
+      const highlighted = new Set(['/var/log', '/var/log/active']);
+      provider.setFilenameFilterPaths(highlighted, '/var/log', 'host:22:user');
+
+      const emptyUri = sshUri('host:22:user', '/var/log/empty');
+      const decoration = provider.provideFileDecoration(emptyUri);
+
+      expect(decoration).toBeDefined();
+      expect(decoration!.tooltip).toBe('No matching files in this folder');
+    });
+
+    it('should not gray out folders in highlighted paths', () => {
+      const highlighted = new Set(['/var/log', '/var/log/active']);
+      provider.setFilenameFilterPaths(highlighted, '/var/log', 'host:22:user');
+
+      const activeUri = sshUri('host:22:user', '/var/log/active');
+      const decoration = provider.provideFileDecoration(activeUri);
+
+      expect(decoration).toBeUndefined();
+    });
+
+    it('should not gray out folders outside basePath', () => {
+      const highlighted = new Set(['/var/log']);
+      provider.setFilenameFilterPaths(highlighted, '/var/log', 'host:22:user');
+
+      const outsideUri = sshUri('host:22:user', '/opt/data/folder');
+      const decoration = provider.provideFileDecoration(outsideUri);
+
+      expect(decoration).toBeUndefined();
+    });
+
+    it('should not gray out folders from a different connection', () => {
+      const highlighted = new Set(['/var/log']);
+      provider.setFilenameFilterPaths(highlighted, '/var/log', 'host:22:user');
+
+      const otherConnUri = sshUri('other:22:admin', '/var/log/empty');
+      const decoration = provider.provideFileDecoration(otherConnUri);
+
+      expect(decoration).toBeUndefined();
+    });
+
+    it('should prioritize filtered folder blue badge over empty graying', () => {
+      const highlighted = new Set(['/var/log']);
+      provider.setFilteredFolder('host:22:user', '/var/log');
+      provider.setFilenameFilterPaths(highlighted, '/var/log', 'host:22:user');
+
+      const baseUri = sshUri('host:22:user', '/var/log');
+      const decoration = provider.provideFileDecoration(baseUri);
+
+      expect(decoration).toBeDefined();
+      expect(decoration!.badge).toBe('F');
+    });
+
+    it('should clear empty folder graying when clearFilteredFolder is called', () => {
+      const highlighted = new Set(['/var/log']);
+      provider.setFilteredFolder('host:22:user', '/var/log');
+      provider.setFilenameFilterPaths(highlighted, '/var/log', 'host:22:user');
+
+      provider.clearFilteredFolder();
+
+      const emptyUri = sshUri('host:22:user', '/var/log/empty');
+      expect(provider.provideFileDecoration(emptyUri)).toBeUndefined();
+    });
+
+    it('should work at nested depths', () => {
+      const highlighted = new Set([
+        '/var/log',
+        '/var/log/archive',
+        '/var/log/archive/2024',
+      ]);
+      provider.setFilenameFilterPaths(highlighted, '/var/log', 'host:22:user');
+
+      // Highlighted ancestor directory — should NOT be grayed
+      const activeUri = sshUri('host:22:user', '/var/log/archive/2024');
+      expect(provider.provideFileDecoration(activeUri)).toBeUndefined();
+
+      // Empty nested folder — SHOULD be grayed
+      const emptyUri = sshUri('host:22:user', '/var/log/archive/2023');
+      const decoration = provider.provideFileDecoration(emptyUri);
+      expect(decoration).toBeDefined();
+      expect(decoration!.tooltip).toBe('No matching files in this folder');
+    });
+  });
+
   describe('event subscriptions', () => {
     it('should subscribe to file mapping changes', () => {
       expect(fileService.onFileMappingsChanged).toHaveBeenCalled();

@@ -345,6 +345,124 @@ describe('HostTreeProvider', () => {
     });
   });
 
+  describe('host filter', () => {
+    const setupHosts = () => {
+      const hosts: IHostConfig[] = [
+        createMockHostConfig({ id: 'h1', host: '10.0.0.1', port: 22, username: 'admin', name: 'Production' }),
+        createMockHostConfig({ id: 'h2', host: '10.0.0.2', port: 22, username: 'deploy', name: 'Staging' }),
+        createMockHostConfig({ id: 'h3', host: '192.168.1.100', port: 2222, username: 'root', name: 'Dev Server' }),
+      ];
+      mockGetAllHosts.mockReturnValue(hosts);
+      return hosts;
+    };
+
+    it('should return all hosts when no filter is set', () => {
+      setupHosts();
+      const items = provider.getChildren() as ServerTreeItem[];
+      expect(items).toHaveLength(3);
+    });
+
+    it('should filter by host display name (substring)', () => {
+      setupHosts();
+      provider.setFilter('prod');
+      const items = provider.getChildren() as ServerTreeItem[];
+      expect(items).toHaveLength(1);
+      expect(items[0].label).toBe('Production');
+    });
+
+    it('should filter by hostname', () => {
+      setupHosts();
+      provider.setFilter('192.168');
+      const items = provider.getChildren() as ServerTreeItem[];
+      expect(items).toHaveLength(1);
+      expect(items[0].label).toBe('Dev Server');
+    });
+
+    it('should filter by username', () => {
+      setupHosts();
+      provider.setFilter('deploy');
+      const items = provider.getChildren() as ServerTreeItem[];
+      expect(items).toHaveLength(1);
+      expect(items[0].label).toBe('Staging');
+    });
+
+    it('should filter by host:port server key', () => {
+      setupHosts();
+      provider.setFilter('10.0.0.1:22');
+      const items = provider.getChildren() as ServerTreeItem[];
+      expect(items).toHaveLength(1);
+      expect(items[0].label).toBe('Production');
+    });
+
+    it('should be case insensitive', () => {
+      setupHosts();
+      provider.setFilter('STAGING');
+      const items = provider.getChildren() as ServerTreeItem[];
+      expect(items).toHaveLength(1);
+      expect(items[0].label).toBe('Staging');
+    });
+
+    it('should support glob wildcards', () => {
+      setupHosts();
+      provider.setFilter('10.0.0.*');
+      const items = provider.getChildren() as ServerTreeItem[];
+      expect(items).toHaveLength(2);
+    });
+
+    it('should support ? wildcard for single char', () => {
+      setupHosts();
+      provider.setFilter('*?erver');
+      const items = provider.getChildren() as ServerTreeItem[];
+      // 'Dev Server' and 'Staging' don't match, but 'Production' doesn't either...
+      // Actually all three have 'Server' in serverKey or name? 'Dev Server' has 'Server' in name
+      // Let's check: 'Production' name, 'Staging' name, 'Dev Server' name
+      // *?erver matches any string ending with one char + 'erver', effectively any string containing 'erver'
+      // '10.0.0.1:22' - no, 'Production' - no, 'admin' - no
+      // '10.0.0.2:22' - no, 'Staging' - no, 'deploy' - no
+      // '192.168.1.100:2222' - no, 'Dev Server' - 'Server' matches *?erver, yes
+      expect(items).toHaveLength(1);
+      expect(items[0].label).toBe('Dev Server');
+    });
+
+    it('should clear filter and show all hosts again', () => {
+      setupHosts();
+      provider.setFilter('prod');
+      expect(provider.getChildren()).toHaveLength(1);
+
+      provider.clearFilter();
+      expect(provider.getChildren()).toHaveLength(3);
+    });
+
+    it('should return empty when filter matches nothing', () => {
+      setupHosts();
+      provider.setFilter('nonexistent');
+      const items = provider.getChildren();
+      expect(items).toHaveLength(0);
+    });
+
+    it('should report filter pattern via getFilter', () => {
+      provider.setFilter('test');
+      expect(provider.getFilter()).toBe('test');
+
+      provider.clearFilter();
+      expect(provider.getFilter()).toBe('');
+    });
+
+    it('should match any username in a multi-user server', () => {
+      const hosts: IHostConfig[] = [
+        createMockHostConfig({ id: 'h1', host: '10.0.0.1', port: 22, username: 'user1', name: 'Multi' }),
+        createMockHostConfig({ id: 'h2', host: '10.0.0.1', port: 22, username: 'user2', name: 'Multi' }),
+      ];
+      mockGetAllHosts.mockReturnValue(hosts);
+
+      // Filter by second username should still show the server
+      provider.setFilter('user2');
+      const items = provider.getChildren() as ServerTreeItem[];
+      expect(items).toHaveLength(1);
+      expect(items[0].hosts).toHaveLength(2);
+    });
+  });
+
   describe('refresh', () => {
     it('should fire onDidChangeTreeData on manual refresh', () => {
       const listener = jest.fn();

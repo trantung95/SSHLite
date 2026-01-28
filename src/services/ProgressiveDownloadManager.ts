@@ -14,6 +14,7 @@ import {
   loadProgressiveConfig,
 } from '../types/progressive';
 import { formatFileSize, normalizeLocalPath } from '../utils/helpers';
+import { getConnectionPrefix } from '../utils/connectionPrefix';
 
 /**
  * Manages progressive file downloads with real progress tracking
@@ -97,7 +98,7 @@ export class ProgressiveDownloadManager {
 
   /**
    * Get local file path for a remote file
-   * Adds [SSH] prefix for easy identification in tabs
+   * Uses [tabLabel] or [user@host] prefix for server identification in tabs
    */
   private getLocalFilePath(connectionId: string, remotePath: string): string {
     // Create subdirectory for each connection using hash
@@ -108,10 +109,10 @@ export class ProgressiveDownloadManager {
       fs.mkdirSync(connectionDir, { recursive: true });
     }
 
-    // Use original filename with [SSH] prefix for easy identification in tabs
+    const prefix = getConnectionPrefix(connectionId);
     const fileName = path.basename(remotePath);
-    const sshFileName = `[SSH] ${fileName}`;
-    return path.join(connectionDir, sshFileName);
+    const prefixedFileName = `[${prefix}] ${fileName}`;
+    return path.join(connectionDir, prefixedFileName);
   }
 
   /**

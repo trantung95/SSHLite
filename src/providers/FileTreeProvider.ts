@@ -123,7 +123,8 @@ export class FileTreeItem extends vscode.TreeItem {
     public readonly isLoading: boolean = false,
     public readonly shouldBeExpanded: boolean = false,
     public readonly isFiltered: boolean = false,
-    public readonly filterPattern: string = ''
+    public readonly filterPattern: string = '',
+    public readonly isEmptyAfterFilter: boolean = false
   ) {
     super(
       file.name,
@@ -141,9 +142,13 @@ export class FileTreeItem extends vscode.TreeItem {
 
     // Set icon based on type, with special indicators for open/loading files
     if (file.isDirectory) {
-      this.iconPath = isHighlighted
-        ? new vscode.ThemeIcon('folder', new vscode.ThemeColor('charts.yellow'))
-        : vscode.ThemeIcon.Folder;
+      if (isEmptyAfterFilter) {
+        this.iconPath = new vscode.ThemeIcon('folder', new vscode.ThemeColor('disabledForeground'));
+      } else if (isHighlighted) {
+        this.iconPath = new vscode.ThemeIcon('folder', new vscode.ThemeColor('charts.yellow'));
+      } else {
+        this.iconPath = vscode.ThemeIcon.Folder;
+      }
     } else if (isLoading) {
       // Show spinning icon when loading data from server
       this.iconPath = new vscode.ThemeIcon('sync~spin');
@@ -163,11 +168,9 @@ export class FileTreeItem extends vscode.TreeItem {
     const timeStr = formatRelativeTime(file.modifiedTime);
     if (isFiltered && filterPattern) {
       // Show filter pattern in description for filtered folders
+      // Icon + text color handled by FileDecorationProvider (blue highlight via resourceUri match)
+      // Don't override iconPath — let file icon theme handle the folder icon for correct indent
       this.description = `[filter: ${filterPattern}]`;
-      // Use filter icon (not a folder icon) to avoid file icon theme overriding the color
-      this.iconPath = new vscode.ThemeIcon('filter-filled', new vscode.ThemeColor('charts.blue'));
-      // Clear resourceUri so file icon theme doesn't interfere with custom icon
-      this.resourceUri = undefined;
     } else {
       this.description = file.isDirectory
         ? timeStr
@@ -345,6 +348,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   private filenameFilterBasePath: string = '';
   private filenameFilterConnectionId: string = '';
   private highlightedPaths: Set<string> = new Set();
+  private onFilterClearedCallback?: () => void;
 
   // Live update tracking: files currently open in editor tabs (show eye icon)
   private openFilePaths: Set<string> = new Set();
@@ -1068,10 +1072,12 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       const cached = this.getCached(element.connection.id, element.file.path);
       if (cached) {
         this.loadingItems.delete(loadingKey);
-        // Apply filter
-        const filteredFiles = cached.filter((file) => this.matchesFilter(file));
+        // Apply global filter and per-folder filename filter
+        const filteredFiles = cached.filter((file) =>
+          this.matchesFilter(file) && this.matchesFilenameFilter(element.connection.id, file));
         const items = filteredFiles.map((file) => {
           const isFolderFiltered = file.isDirectory && this.isFilteredFolder(element.connection.id, file.path);
+          const isEmpty = file.isDirectory && this.isEmptyAfterFilter(element.connection.id, file.path);
           return new FileTreeItem(
             file,
             element.connection,
@@ -1080,7 +1086,8 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
             this.loadingFilePaths.has(file.path),
             file.isDirectory && this.isExpanded(element.connection.id, file.path),
             isFolderFiltered,
-            isFolderFiltered ? this.filenameFilterPattern : ''
+            isFolderFiltered ? this.filenameFilterPattern : '',
+            isEmpty
           );
         });
         // Preload subdirectories in background
@@ -1125,10 +1132,12 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       this.preloadParentFolder(connection, '/');
     }
 
-    // Apply filter and add files with highlighting, watched state, and loading state
-    const filteredFiles = files.filter((file) => this.matchesFilter(file));
+    // Apply global filter and per-folder filename filter
+    const filteredFiles = files.filter((file) =>
+      this.matchesFilter(file) && this.matchesFilenameFilter(connection.id, file));
     items.push(...filteredFiles.map((file) => {
       const isFolderFiltered = file.isDirectory && this.isFilteredFolder(connection.id, file.path);
+      const isEmpty = file.isDirectory && this.isEmptyAfterFilter(connection.id, file.path);
       return new FileTreeItem(
         file,
         connection,
@@ -1137,7 +1146,8 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
         this.loadingFilePaths.has(file.path),
         file.isDirectory && this.isExpanded(connection.id, file.path),
         isFolderFiltered,
-        isFolderFiltered ? this.filenameFilterPattern : ''
+        isFolderFiltered ? this.filenameFilterPattern : '',
+        isEmpty
       );
     }));
 
@@ -1175,8 +1185,9 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     // Cast to TreeItem type
     items.push(headerItem as unknown as TreeItem);
 
-    // Apply filter and add files (read-only, grayed out)
-    const filteredFiles = files.filter((file) => this.matchesFilter(file));
+    // Apply global filter and per-folder filename filter (read-only, grayed out)
+    const filteredFiles = files.filter((file) =>
+      this.matchesFilter(file) && this.matchesFilenameFilter(connectionId, file));
     for (const file of filteredFiles) {
       const item = new vscode.TreeItem(
         file.name,
@@ -1651,6 +1662,19 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       return undefined;
     }
 
+    // Auto-clear filename filter if the file would be hidden by it
+    if (this.filenameFilterPattern && this.filenameFilterConnectionId === connectionId
+        && remotePath.startsWith(this.filenameFilterBasePath)) {
+      const fileName = path.posix.basename(remotePath);
+      const mockFile: IRemoteFile = {
+        name: fileName, path: remotePath, isDirectory: false,
+        size: 0, modifiedTime: 0, connectionId,
+      };
+      if (!this.matchesFilenameFilter(connectionId, mockFile)) {
+        this.clearFilenameFilter();
+      }
+    }
+
     const parentPath = path.posix.dirname(remotePath);
     const fileName = path.posix.basename(remotePath);
 
@@ -1740,14 +1764,27 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   }
 
   /**
-   * Clear the filename filter and remove all highlights
+   * Clear the filename filter and remove all highlights.
+   * Also invokes the onFilterCleared callback to sync decoration provider state.
    */
   clearFilenameFilter(): void {
+    const wasActive = this.filenameFilterPattern.length > 0;
     this.filenameFilterPattern = '';
     this.filenameFilterBasePath = '';
     this.filenameFilterConnectionId = '';
     this.highlightedPaths.clear();
+    if (wasActive) {
+      this.onFilterClearedCallback?.();
+    }
     this._onDidChangeTreeData.fire();
+  }
+
+  /**
+   * Register a callback invoked when the filename filter is auto-cleared
+   * (e.g., during reveal-in-tree when the file would be hidden by the filter).
+   */
+  setOnFilterCleared(callback: () => void): void {
+    this.onFilterClearedCallback = callback;
   }
 
   /**
@@ -1798,6 +1835,27 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   }
 
   /**
+   * Check if a file should be shown when the per-folder filename filter is active.
+   * Hides non-matching files inside the filtered folder (and its subdirectories).
+   * Directories always pass to allow navigation.
+   */
+  private matchesFilenameFilter(connectionId: string, file: IRemoteFile): boolean {
+    if (!this.filenameFilterPattern || this.filenameFilterConnectionId !== connectionId) {
+      return true; // No filter active or different connection
+    }
+    // Only filter files under the filtered base path
+    if (!file.path.startsWith(this.filenameFilterBasePath)) {
+      return true;
+    }
+    // Always show directories for navigation
+    if (file.isDirectory) {
+      return true;
+    }
+    // Show if highlighted by server search or matches local pattern
+    return this.highlightedPaths.has(file.path) || this.shouldHighlightByFilter(connectionId, file);
+  }
+
+  /**
    * Check if filename filter is active
    */
   hasFilenameFilter(): boolean {
@@ -1811,6 +1869,39 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     return this.filenameFilterPattern.length > 0
       && this.filenameFilterConnectionId === connectionId
       && this.filenameFilterBasePath === folderPath;
+  }
+
+  /**
+   * Check if a folder has no matching descendants when filename filter is active.
+   * A folder is "empty after filter" if it's under the filter base path but NOT in highlightedPaths.
+   * The highlightedPaths set contains: basePath + all matching files + all ancestor directories of matches.
+   */
+  isEmptyAfterFilter(connectionId: string, folderPath: string): boolean {
+    if (!this.filenameFilterPattern || this.filenameFilterConnectionId !== connectionId) {
+      return false;
+    }
+    if (!folderPath.startsWith(this.filenameFilterBasePath)) {
+      return false;
+    }
+    // Don't gray out the base path itself (the filtered folder gets a blue badge)
+    if (folderPath === this.filenameFilterBasePath) {
+      return false;
+    }
+    return !this.highlightedPaths.has(folderPath);
+  }
+
+  /**
+   * Get the current filename filter state for decoration provider synchronization.
+   */
+  getFilenameFilterState(): { highlightedPaths: Set<string>; basePath: string; connectionId: string } | null {
+    if (!this.filenameFilterPattern) {
+      return null;
+    }
+    return {
+      highlightedPaths: this.highlightedPaths,
+      basePath: this.filenameFilterBasePath,
+      connectionId: this.filenameFilterConnectionId,
+    };
   }
 
   /**
