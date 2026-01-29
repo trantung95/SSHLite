@@ -1104,7 +1104,7 @@ export function activate(context: vscode.ExtensionContext): void {
           const topItems = await Promise.resolve(provider.getChildren());
           if (topItems) {
             for (const item of topItems) {
-              try { await view.reveal(item, { expand: 1, select: false, focus: false }); } catch { /* item may not be revealable */ }
+              try { await view.reveal(item as any, { expand: 1, select: false, focus: false }); } catch { /* item may not be revealable */ }
             }
           }
         } catch { /* provider may fail */ }
