@@ -599,10 +599,8 @@ export class ServerMonitorService {
       ps aux --sort=${sortFlag} 2>/dev/null | head -${processCount + 1} || ps aux | head -${processCount + 1}
       echo "===CONNECTIONS==="
       ss -tuln 2>/dev/null | wc -l || netstat -tuln 2>/dev/null | wc -l
-      echo "===ZOMBIES==="
-      ps aux 2>/dev/null | grep -c ' Z ' || echo "0"
       echo "===ZOMBIE_LIST==="
-      ps -eo pid,ppid,user,stat,comm 2>/dev/null | grep ' Z' | head -10 || echo ""
+      ps -eo pid,ppid,user,stat,comm 2>/dev/null | awk '$4 ~ /Z/' | head -10 || echo ""
     `);
 
     return this.parseServerStatus(result);
@@ -673,11 +671,9 @@ export class ServerMonitorService {
         case 'CONNECTIONS':
           status.networkConnections = parseInt(content, 10) || 0;
           break;
-        case 'ZOMBIES':
-          status.zombieProcesses = Math.max(0, (parseInt(content, 10) || 0) - 1);
-          break;
         case 'ZOMBIE_LIST':
           status.zombieProcessList = this.parseZombieList(content);
+          status.zombieProcesses = status.zombieProcessList.length;
           break;
       }
     }

@@ -102,7 +102,7 @@ describe('Integration: Credential + Connection + Tree', () => {
       const item = new ServerTreeItem('10.0.0.1:22', hosts, true);
 
       expect(item.isConnected).toBe(true);
-      expect(item.contextValue).toBe('connectedServer');
+      expect(item.contextValue).toBe('connectedServer.saved');
     });
 
     it('should show disconnected icon when host is not connected', () => {

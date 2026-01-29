@@ -2,7 +2,7 @@
   "name": "ssh-lite",
   "displayName": "SSH Lite - Remote File Browser & Terminal",
   "description": "Lightweight SSH client for VS Code. Browse remote files, edit and save, open terminals, port forwarding - all without installing anything on remote servers. Perfect for VPS, cloud servers (AWS/Azure/GCP), and Linux administration.",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "publisher": "hybr8",
   "engines": {
     "vscode": "^1.85.0"
@@ -796,57 +796,57 @@
         },
         {
           "command": "sshLite.editHost",
-          "when": "view == sshLite.hosts && viewItem == savedServer",
+          "when": "view == sshLite.hosts && viewItem =~ /^(savedServer|connectedServer\\.saved)$/",
           "group": "1_modify@1"
         },
         {
           "command": "sshLite.removeHost",
-          "when": "view == sshLite.hosts && viewItem == savedServer",
+          "when": "view == sshLite.hosts && viewItem =~ /^(savedServer|connectedServer\\.saved)$/",
           "group": "1_modify@2"
         },
         {
           "command": "sshLite.renameHost",
-          "when": "view == sshLite.hosts && viewItem == savedServer",
+          "when": "view == sshLite.hosts && viewItem =~ /^(savedServer|connectedServer\\.saved)$/",
           "group": "1_modify@3"
         },
         {
           "command": "sshLite.setTabLabel",
-          "when": "view == sshLite.hosts && viewItem == savedServer",
+          "when": "view == sshLite.hosts && viewItem =~ /^(savedServer|connectedServer\\.saved)$/",
           "group": "1_modify@4"
         },
         {
           "command": "sshLite.clearCredentials",
-          "when": "view == sshLite.hosts && viewItem =~ /^(server|savedServer|connectedServer)$/",
+          "when": "view == sshLite.hosts && viewItem =~ /^(server|savedServer|connectedServer)/",
           "group": "2_credentials@1"
         },
         {
           "command": "sshLite.clearTempFilesForConnection",
-          "when": "view == sshLite.hosts && viewItem == connectedServer",
+          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer/",
           "group": "3_cleanup@1"
         },
         {
           "command": "sshLite.openServerBackupFolder",
-          "when": "view == sshLite.hosts && viewItem == connectedServer",
+          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer/",
           "group": "3_cleanup@2"
         },
         {
           "command": "sshLite.showAllBackups",
-          "when": "view == sshLite.hosts && viewItem == connectedServer",
+          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer/",
           "group": "3_cleanup@3"
         },
         {
           "command": "sshLite.disconnect",
-          "when": "view == sshLite.hosts && viewItem == connectedServer",
+          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer/",
           "group": "inline@1"
         },
         {
           "command": "sshLite.openTerminal",
-          "when": "view == sshLite.hosts && viewItem == connectedServer",
+          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer/",
           "group": "inline@2"
         },
         {
           "command": "sshLite.monitor",
-          "when": "view == sshLite.hosts && viewItem == connectedServer",
+          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer/",
           "group": "inline@3"
         },
         {
@@ -856,7 +856,7 @@
         },
         {
           "command": "sshLite.copyHost",
-          "when": "view == sshLite.hosts && viewItem =~ /^(server|savedServer|connectedServer|credential)$/",
+          "when": "view == sshLite.hosts && viewItem =~ /^(server|savedServer|connectedServer|credential)/",
           "group": "4_copy@1"
         },
         {

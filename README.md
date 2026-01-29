@@ -81,7 +81,7 @@ Forward remote ports to localhost. Monitor server health with CPU, memory, disk,
 ### 1. Install Extension
 Search "SSH Lite" in VS Code Extensions or install from command line:
 ```bash
-code --install-extension your-publisher.ssh-lite
+code --install-extension hybr8.ssh-lite
 ```
 
 ### 2. Add a Host

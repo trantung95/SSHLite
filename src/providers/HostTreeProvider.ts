@@ -56,16 +56,19 @@ export class ServerTreeItem extends vscode.TreeItem {
         `- Status: ${isConnected ? 'Connected' : 'Disconnected'}`
     );
 
-    // Set context value and icon based on connection status
+    // Set context value and icon based on connection status and source
     // Always use ThemeIcon to avoid VS Code SVG caching issues
-    // Check for actual saved credentials in CredentialService (not just host config source)
+    // Check if host is manually added (source: 'saved') OR has saved credentials
     const credentialService = CredentialService.getInstance();
     const hasSavedCredential = hosts.some(h => credentialService.listCredentials(h.id).length > 0);
+    const isManuallyAdded = hosts.some(h => h.source === 'saved');
+    const isSavedOrHasCredentials = hasSavedCredential || isManuallyAdded;
 
     if (isConnected) {
-      this.contextValue = 'connectedServer';
+      // Use different context for saved vs config hosts so menu items work correctly
+      this.contextValue = isSavedOrHasCredentials ? 'connectedServer.saved' : 'connectedServer';
       this.iconPath = new vscode.ThemeIcon('vm-running', new vscode.ThemeColor('charts.green'));
-    } else if (hasSavedCredential) {
+    } else if (isSavedOrHasCredentials) {
       this.contextValue = 'savedServer';
       this.iconPath = new vscode.ThemeIcon('vm');
     } else {

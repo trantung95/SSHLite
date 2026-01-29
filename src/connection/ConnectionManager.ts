@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { SSHConnection } from './SSHConnection';
-import { IHostConfig, ConnectionState } from '../types';
+import { IHostConfig, ConnectionState, AuthenticationError } from '../types';
 import { SavedCredential, CredentialService } from '../services/CredentialService';
 import { ActivityService } from '../services/ActivityService';
 
@@ -25,6 +25,9 @@ export class ConnectionManager {
 
   // Track disconnected connections for auto-reconnect
   private _disconnectedConnections: Map<string, DisconnectedConnectionInfo> = new Map();
+
+  // Track connections currently in the middle of a reconnect attempt (to prevent duplicate reconnects)
+  private _activeReconnectAttempts: Set<string> = new Set();
 
   // Reconnect interval in milliseconds
   private readonly RECONNECT_INTERVAL_MS = 3000;
@@ -86,16 +89,24 @@ export class ConnectionManager {
       // Handle unexpected disconnect - start auto-reconnect
       if (state === ConnectionState.Disconnected) {
         const disconnectInfo = this._disconnectedConnections.get(connectionId);
-        console.log(`[SSH Lite] Disconnect handler - connectionId: ${connectionId}, isManualDisconnect: ${disconnectInfo?.isManualDisconnect}`);
-        if (!disconnectInfo?.isManualDisconnect) {
-          // Unexpected disconnect - start auto-reconnect
-          console.log(`[SSH Lite] Starting auto-reconnect for: ${connectionId}`);
-          this.startReconnect(connectionId, host);
-        } else {
+        const isActiveAttempt = this._activeReconnectAttempts.has(connectionId);
+        console.log(`[SSH Lite] Disconnect handler - connectionId: ${connectionId}, isManualDisconnect: ${disconnectInfo?.isManualDisconnect}, isActiveAttempt: ${isActiveAttempt}`);
+
+        // If currently in the middle of a reconnect attempt, don't start another
+        if (isActiveAttempt) {
+          console.log(`[SSH Lite] Active reconnect attempt in progress, skipping: ${connectionId}`);
+          return;
+        }
+
+        if (disconnectInfo?.isManualDisconnect) {
           // Manual disconnect - remove from maps
           console.log(`[SSH Lite] Manual disconnect, cleaning up: ${connectionId}`);
           this._connections.delete(connectionId);
           this._disconnectedConnections.delete(connectionId);
+        } else if (!disconnectInfo?.reconnectTimer) {
+          // Unexpected disconnect and no reconnect scheduled - start auto-reconnect
+          console.log(`[SSH Lite] Starting auto-reconnect for: ${connectionId}`);
+          this.startReconnect(connectionId, host);
         }
       }
 
@@ -162,16 +173,24 @@ export class ConnectionManager {
       // Handle unexpected disconnect - start auto-reconnect
       if (state === ConnectionState.Disconnected) {
         const disconnectInfo = this._disconnectedConnections.get(connectionId);
-        console.log(`[SSH Lite] Disconnect handler (withCred) - connectionId: ${connectionId}, isManualDisconnect: ${disconnectInfo?.isManualDisconnect}`);
-        if (!disconnectInfo?.isManualDisconnect) {
-          // Unexpected disconnect - start auto-reconnect with credential
-          console.log(`[SSH Lite] Starting auto-reconnect (withCred) for: ${connectionId}`);
-          this.startReconnect(connectionId, host, credential);
-        } else {
+        const isActiveAttempt = this._activeReconnectAttempts.has(connectionId);
+        console.log(`[SSH Lite] Disconnect handler (withCred) - connectionId: ${connectionId}, isManualDisconnect: ${disconnectInfo?.isManualDisconnect}, isActiveAttempt: ${isActiveAttempt}`);
+
+        // If currently in the middle of a reconnect attempt, don't start another
+        if (isActiveAttempt) {
+          console.log(`[SSH Lite] Active reconnect attempt in progress (withCred), skipping: ${connectionId}`);
+          return;
+        }
+
+        if (disconnectInfo?.isManualDisconnect) {
           // Manual disconnect - remove from maps
           console.log(`[SSH Lite] Manual disconnect (withCred), cleaning up: ${connectionId}`);
           this._connections.delete(connectionId);
           this._disconnectedConnections.delete(connectionId);
+        } else if (!disconnectInfo?.reconnectTimer) {
+          // Unexpected disconnect and no reconnect scheduled - start auto-reconnect
+          console.log(`[SSH Lite] Starting auto-reconnect (withCred) for: ${connectionId}`);
+          this.startReconnect(connectionId, host, credential);
         }
       }
 
@@ -278,10 +297,14 @@ export class ConnectionManager {
       return;
     }
 
+    // Mark as actively attempting (prevents state handler from starting duplicate reconnects)
+    this._activeReconnectAttempts.add(connectionId);
+
     info.reconnectAttempts++;
 
     // Check max attempts (0 = unlimited)
     if (this.MAX_RECONNECT_ATTEMPTS > 0 && info.reconnectAttempts > this.MAX_RECONNECT_ATTEMPTS) {
+      this._activeReconnectAttempts.delete(connectionId);
       this.stopReconnect(connectionId);
       vscode.window.showWarningMessage(
         `Failed to reconnect to ${info.host.name} after ${this.MAX_RECONNECT_ATTEMPTS} attempts.`
@@ -317,6 +340,7 @@ export class ConnectionManager {
       }
 
       // Success! Clean up
+      this._activeReconnectAttempts.delete(connectionId);
       this.stopReconnect(connectionId);
       vscode.window.setStatusBarMessage(
         `$(check) Reconnected to ${info.host.name}`,
@@ -332,7 +356,30 @@ export class ConnectionManager {
       });
 
     } catch (error) {
-      // Failed - schedule another attempt
+      // Clear active attempt flag
+      this._activeReconnectAttempts.delete(connectionId);
+
+      // Don't retry on authentication failures - credentials are wrong
+      const errorMsg = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+      const isAuthError = error instanceof AuthenticationError ||
+        errorMsg.includes('authentication') ||
+        errorMsg.includes('auth failed') ||
+        errorMsg.includes('permission denied') ||
+        errorMsg.includes('publickey') ||
+        errorMsg.includes('no supported') ||
+        errorMsg.includes('all configured authentication methods failed');
+
+      console.log(`[SSH Lite] Reconnect failed for ${connectionId}: ${errorMsg}, isAuthError=${isAuthError}, errorType=${error?.constructor?.name}`);
+
+      if (isAuthError) {
+        this.stopReconnect(connectionId);
+        vscode.window.showErrorMessage(
+          `Cannot reconnect to ${info.host.name}: Authentication failed. Please reconnect manually with correct credentials.`
+        );
+        return;
+      }
+
+      // Network/connection error - schedule another attempt
       vscode.window.setStatusBarMessage(
         `$(sync~spin) Reconnecting to ${info.host.name} (attempt ${info.reconnectAttempts})...`,
         this.RECONNECT_INTERVAL_MS

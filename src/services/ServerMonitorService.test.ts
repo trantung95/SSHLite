@@ -132,22 +132,22 @@ describe('ServerMonitorService', () => {
       expect(status.networkConnections).toBe(42);
     });
 
-    it('should parse zombie count (subtracting grep)', () => {
-      const output = '===ZOMBIES===\n3\n';
+    it('should derive zombie count from zombie list', () => {
+      const output = [
+        '===ZOMBIE_LIST===',
+        '12345 100 www-data Z+ defunct',
+        '12346 100 root Zs other',
+      ].join('\n');
       const status = parseServerStatus(output);
-      expect(status.zombieProcesses).toBe(2); // 3 - 1 for grep itself
+      expect(status.zombieProcesses).toBe(2);
+      expect(status.zombieProcessList).toHaveLength(2);
     });
 
-    it('should handle zero zombies', () => {
-      const output = '===ZOMBIES===\n1\n';
+    it('should have zero zombies when list is empty', () => {
+      const output = '===ZOMBIE_LIST===\n\n';
       const status = parseServerStatus(output);
-      expect(status.zombieProcesses).toBe(0); // 1 - 1 = 0
-    });
-
-    it('should not go below zero for zombies', () => {
-      const output = '===ZOMBIES===\n0\n';
-      const status = parseServerStatus(output);
-      expect(status.zombieProcesses).toBe(0); // max(0, -1) = 0
+      expect(status.zombieProcesses).toBe(0);
+      expect(status.zombieProcessList).toEqual([]);
     });
 
     it('should parse complete server output', () => {
@@ -159,7 +159,7 @@ describe('ServerMonitorService', () => {
         '===DISK===', '/dev/sda1       100G   85G   15G  85% /',
         '===TOP_PROCS===', 'USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND\nroot 1 0.1 0.2 100 200 ? Ss Jan01 1:00 /sbin/init',
         '===CONNECTIONS===', '15',
-        '===ZOMBIES===', '1',
+        '===ZOMBIE_LIST===', '',
       ].join('\n');
 
       const status = parseServerStatus(output);

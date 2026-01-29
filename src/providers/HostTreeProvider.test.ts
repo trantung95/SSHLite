@@ -146,7 +146,7 @@ describe('HostTreeProvider', () => {
       mockGetAllConnections.mockReturnValue([mockConn]);
 
       const items = provider.getChildren() as ServerTreeItem[];
-      expect(items[0].contextValue).toBe('connectedServer');
+      expect(items[0].contextValue).toBe('connectedServer.saved');
       expect((items[0].iconPath as any).id).toBe('vm-running');
     });
 
@@ -160,14 +160,26 @@ describe('HostTreeProvider', () => {
       expect((items[0].iconPath as any).id).toBe('vm');
     });
 
-    it('should show vm-outline icon when disconnected with no credentials', () => {
-      const host = createMockHostConfig({ id: 'h1' });
+    it('should show vm-outline icon when SSH config host disconnected with no credentials', () => {
+      // SSH config hosts (source: 'ssh-config') without credentials show as 'server'
+      const host = createMockHostConfig({ id: 'h1', source: 'ssh-config' });
       mockGetAllHosts.mockReturnValue([host]);
       mockListCredentials.mockReturnValue([]);
 
       const items = provider.getChildren() as ServerTreeItem[];
       expect(items[0].contextValue).toBe('server');
       expect((items[0].iconPath as any).id).toBe('vm-outline');
+    });
+
+    it('should show vm icon when saved host disconnected with no credentials', () => {
+      // Manually added hosts (source: 'saved') without credentials show as 'savedServer'
+      const host = createMockHostConfig({ id: 'h1', source: 'saved' });
+      mockGetAllHosts.mockReturnValue([host]);
+      mockListCredentials.mockReturnValue([]);
+
+      const items = provider.getChildren() as ServerTreeItem[];
+      expect(items[0].contextValue).toBe('savedServer');
+      expect((items[0].iconPath as any).id).toBe('vm');
     });
 
     it('should expose primaryHost', () => {

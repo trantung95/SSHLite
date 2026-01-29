@@ -664,15 +664,22 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     vscode.commands.registerCommand('sshLite.editHost', async (item?: ServerTreeItem) => {
-      if (!item) return;
+      logCommand('editHost');
+      if (!item) {
+        vscode.window.showWarningMessage('No host selected');
+        return;
+      }
+
+      console.log(`[SSH Lite] editHost - hosts: ${item.hosts.map(h => `${h.name}(${h.source})`).join(', ')}`);
 
       // Find the first saved host for this server to edit
       const savedHost = item.hosts.find(h => h.source === 'saved');
       if (!savedHost) {
-        vscode.window.setStatusBarMessage('$(info) SSH config hosts must be edited in ~/.ssh/config', 5000);
+        vscode.window.showInformationMessage('This host is from SSH config. Edit ~/.ssh/config to modify it.');
         return;
       }
 
+      console.log(`[SSH Lite] editHost - editing: ${savedHost.name} (${savedHost.id})`);
       const host = await hostService.promptEditHost(savedHost);
       if (host) {
         hostTreeProvider.refresh();
@@ -681,15 +688,22 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     vscode.commands.registerCommand('sshLite.removeHost', async (item?: ServerTreeItem) => {
-      if (!item) return;
+      logCommand('removeHost');
+      if (!item) {
+        vscode.window.showWarningMessage('No host selected');
+        return;
+      }
+
+      console.log(`[SSH Lite] removeHost - hosts: ${item.hosts.map(h => `${h.name}(${h.source})`).join(', ')}`);
 
       // Find saved hosts for this server
       const savedHosts = item.hosts.filter(h => h.source === 'saved');
       if (savedHosts.length === 0) {
-        vscode.window.setStatusBarMessage('$(info) SSH config hosts must be edited in ~/.ssh/config', 5000);
+        vscode.window.showInformationMessage('This host is from SSH config. Edit ~/.ssh/config to remove it.');
         return;
       }
 
+      console.log(`[SSH Lite] removeHost - removing: ${savedHosts.map(h => h.name).join(', ')}`);
       const confirm = await vscode.window.showWarningMessage(
         `Remove all saved users for "${item.primaryHost.name}"?`,
         { modal: true },
