@@ -10,16 +10,22 @@
 import { setMockConfig, clearMockConfig, workspace } from '../__mocks__/vscode';
 
 // Mock fs and ssh-config
+const mockWriteFileSync = jest.fn();
 jest.mock('fs', () => ({
   existsSync: jest.fn().mockReturnValue(false),
   readFileSync: jest.fn().mockReturnValue(''),
   statSync: jest.fn().mockReturnValue({ mtimeMs: 1000 }),
+  writeFileSync: mockWriteFileSync,
 }));
 
+const mockRemove = jest.fn();
+const mockToString = jest.fn().mockReturnValue('');
 jest.mock('ssh-config', () => ({
   parse: jest.fn().mockReturnValue({
     [Symbol.iterator]: function* () {},
     compute: jest.fn().mockReturnValue({}),
+    remove: mockRemove,
+    toString: mockToString,
   }),
   DIRECTIVE: 1,
 }));
@@ -172,6 +178,19 @@ describe('HostService', () => {
       const hosts = workspace.getConfiguration('sshLite').get('hosts') as any[];
       expect(hosts).toHaveLength(1);
       expect(hosts[0].name).toBe('Server2');
+    });
+  });
+
+  describe('removeHostFromSSHConfig', () => {
+    it('should remove Host block and write file', async () => {
+      const fs = require('fs');
+      fs.readFileSync.mockReturnValue('Host test\n  HostName 1.2.3.4\n');
+      mockToString.mockReturnValue('');
+
+      await service.removeHostFromSSHConfig('test');
+
+      expect(mockRemove).toHaveBeenCalledWith({ Host: 'test' });
+      expect(mockWriteFileSync).toHaveBeenCalled();
     });
   });
 

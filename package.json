@@ -2,7 +2,7 @@
   "name": "ssh-lite",
   "displayName": "SSH Lite - Remote File Browser & Terminal",
   "description": "Lightweight SSH client for VS Code. Browse remote files, edit and save, open terminals, port forwarding - all without installing anything on remote servers. Perfect for VPS, cloud servers (AWS/Azure/GCP), and Linux administration.",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "publisher": "hybr8",
   "engines": {
     "vscode": "^1.85.0"
@@ -320,7 +320,7 @@
       },
       {
         "command": "sshLite.deleteCredential",
-        "title": "Delete Credential",
+        "title": "Remove User",
         "category": "SSH Lite",
         "icon": "$(trash)"
       },
@@ -781,7 +781,7 @@
         },
         {
           "command": "sshLite.deleteCredential",
-          "when": "view == sshLite.hosts && viewItem == credential",
+          "when": "view == sshLite.hosts && viewItem =~ /^credential/",
           "group": "inline@2"
         },
         {
@@ -851,8 +851,13 @@
         },
         {
           "command": "sshLite.savePassword",
-          "when": "view == sshLite.hosts && viewItem == credential",
+          "when": "view == sshLite.hosts && viewItem =~ /^credential/",
           "group": "1_credential@1"
+        },
+        {
+          "command": "sshLite.deleteCredential",
+          "when": "view == sshLite.hosts && viewItem =~ /^credential/",
+          "group": "1_credential@2"
         },
         {
           "command": "sshLite.copyHost",

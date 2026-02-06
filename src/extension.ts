@@ -2035,36 +2035,49 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
 
-    // Delete credential command (removes saved password for a user)
+    // Delete credential command (removes user entry + saved password)
     vscode.commands.registerCommand('sshLite.deleteCredential', async (item?: UserCredentialTreeItem) => {
       if (!item) {
         log('deleteCredential: No item provided');
-        vscode.window.showWarningMessage('Select a user to delete password');
+        vscode.window.showWarningMessage('Select a user to remove');
         return;
       }
 
-      if (!item.credential) {
-        vscode.window.showInformationMessage('No saved password to delete');
-        return;
-      }
+      const { hostConfig, credential, isConnected } = item;
+      const source = hostConfig.source === 'ssh-config' ? '~/.ssh/config' : 'saved hosts';
+      log(`deleteCredential: Removing user "${hostConfig.username}" from ${source} (hostId: ${hostConfig.id})`);
 
-      log(`deleteCredential: Deleting credential for user "${item.hostConfig.username}" (hostId: ${item.hostConfig.id})`);
+      // Confirm with user - mention which source will be modified
+      const confirmMsg = hostConfig.source === 'ssh-config'
+        ? `Remove "${hostConfig.name}" (${hostConfig.username}) from ~/.ssh/config?`
+        : `Remove user "${hostConfig.username}" from saved hosts?`;
+      const confirm = await vscode.window.showWarningMessage(confirmMsg, { modal: true }, 'Remove');
+      if (confirm !== 'Remove') return;
 
-      const confirm = await vscode.window.showWarningMessage(
-        `Delete saved password for "${item.hostConfig.username}"?`,
-        'Delete'
-      );
-
-      if (confirm === 'Delete') {
-        try {
-          await credentialService.deleteCredential(item.hostConfig.id, item.credential.id);
-          hostTreeProvider.refresh();
-          vscode.window.setStatusBarMessage('$(check) Password deleted', 3000);
-          log('deleteCredential: Success');
-        } catch (error) {
-          log(`deleteCredential: Error - ${(error as Error).message}`);
-          vscode.window.showErrorMessage(`Failed to delete password: ${(error as Error).message}`);
+      try {
+        // Disconnect first if connected
+        if (isConnected) {
+          await connectionManager.disconnect(hostConfig.id);
         }
+
+        // Delete saved credential + password if any
+        if (credential) {
+          await credentialService.deleteCredential(hostConfig.id, credential.id);
+        }
+
+        // Remove the host entry from its source
+        if (hostConfig.source === 'ssh-config') {
+          await hostService.removeHostFromSSHConfig(hostConfig.name);
+        } else {
+          await hostService.removeHost(hostConfig.id);
+        }
+
+        hostTreeProvider.refresh();
+        vscode.window.setStatusBarMessage(`$(check) Removed user "${hostConfig.username}"`, 3000);
+        log('deleteCredential: Success');
+      } catch (error) {
+        log(`deleteCredential: Error - ${(error as Error).message}`);
+        vscode.window.showErrorMessage(`Failed to remove user: ${(error as Error).message}`);
       }
     }),
 

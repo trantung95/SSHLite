@@ -51,17 +51,22 @@ export class HostService {
   }
 
   /**
+   * Get the SSH config file path
+   */
+  getSSHConfigPath(): string {
+    const config = vscode.workspace.getConfiguration('sshLite');
+    const configPath = config.get<string>('sshConfigPath', '');
+    if (configPath) {
+      return expandPath(configPath);
+    }
+    return path.join(os.homedir(), '.ssh', 'config');
+  }
+
+  /**
    * Load hosts from ~/.ssh/config (with caching for performance)
    */
   private loadSSHConfigHosts(): IHostConfig[] {
-    const config = vscode.workspace.getConfiguration('sshLite');
-    let configPath = config.get<string>('sshConfigPath', '');
-
-    if (!configPath) {
-      configPath = path.join(os.homedir(), '.ssh', 'config');
-    } else {
-      configPath = expandPath(configPath);
-    }
+    const configPath = this.getSSHConfigPath();
 
     if (!fs.existsSync(configPath)) {
       this.sshConfigHostsCache = [];
@@ -227,6 +232,18 @@ export class HostService {
     );
 
     await config.update('hosts', filtered, vscode.ConfigurationTarget.Global);
+  }
+
+  /**
+   * Remove a Host block from ~/.ssh/config file
+   */
+  async removeHostFromSSHConfig(hostName: string): Promise<void> {
+    const configPath = this.getSSHConfigPath();
+    const content = fs.readFileSync(configPath, 'utf-8');
+    const parsed = SSHConfig.parse(content);
+    parsed.remove({ Host: hostName });
+    fs.writeFileSync(configPath, parsed.toString(), 'utf-8');
+    this.invalidateCache();
   }
 
   /**
