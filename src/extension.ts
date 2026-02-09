@@ -18,7 +18,7 @@ import { FileTreeProvider, FileTreeItem, ConnectionTreeItem, setFileTreeExtensio
 import { PortForwardTreeProvider, PortForwardTreeItem } from './providers/PortForwardTreeProvider';
 import { ActivityTreeProvider, ActivityTreeItem, ServerGroupTreeItem } from './providers/ActivityTreeProvider';
 import { ActivityService } from './services/ActivityService';
-import { SearchPanel } from './webviews/SearchPanel';
+import { SearchPanel, ServerSearchEntry } from './webviews/SearchPanel';
 import { SSHFileDecorationProvider } from './providers/FileDecorationProvider';
 import { ProgressiveFileContentProvider } from './providers/ProgressiveFileContentProvider';
 import { PROGRESSIVE_PREVIEW_SCHEME, parsePreviewUri } from './types/progressive';
@@ -53,6 +53,33 @@ async function selectConnection(connectionManager: ConnectionManager) {
   );
 
   return selected?.connection;
+}
+
+/**
+ * Build server search entries from all available hosts for cross-server search.
+ */
+function buildServerSearchEntries(
+  hostService: HostService,
+  connectionManager: ConnectionManager,
+  credentialService: CredentialService
+): ServerSearchEntry[] {
+  const hosts = hostService.getAllHosts();
+  const connections = connectionManager.getAllConnections();
+  const connectedIds = new Set(connections.map((c) => c.id));
+
+  return hosts.map((host) => {
+    const credentials = credentialService.listCredentials(host.id);
+    const firstCredential = credentials.length > 0 ? credentials[0] : null;
+    return {
+      id: host.id,
+      hostConfig: host,
+      credential: firstCredential,
+      connected: connectedIds.has(host.id),
+      checked: false,
+      disabled: firstCredential === null && !connectedIds.has(host.id),
+      searchPaths: [],
+    };
+  });
 }
 
 /**
@@ -352,6 +379,20 @@ export function activate(context: vscode.ExtensionContext): void {
   connectionManager.onDidChangeConnections(() => {
     if (connectionManager.getAllConnections().length > 0) {
       startPreloadProgressTracking();
+    }
+
+    // Update search panel server states when connections change
+    const searchPanel = SearchPanel.getInstance();
+    const connectedIds = new Set(connectionManager.getAllConnections().map((c) => c.id));
+    for (const conn of connectionManager.getAllConnections()) {
+      searchPanel.updateServerConnection(conn.id, true);
+    }
+    // Mark disconnected servers
+    const allHosts = hostService.getAllHosts();
+    for (const host of allHosts) {
+      if (!connectedIds.has(host.id)) {
+        searchPanel.updateServerConnection(host.id, false);
+      }
     }
   });
 
@@ -1294,7 +1335,25 @@ export function activate(context: vscode.ExtensionContext): void {
       // Set connection resolver to avoid stale references after auto-reconnect
       searchPanel.setConnectionResolver((connectionId) => connectionManager.getConnection(connectionId));
 
-      // Add all connections' current paths as default scopes only if no scopes exist
+      // Set auto-connect callback for cross-server search
+      searchPanel.setAutoConnectCallback(async (hostConfig, credential) => {
+        try {
+          return await connectionManager.connectWithCredential(hostConfig, credential);
+        } catch {
+          return undefined;
+        }
+      });
+
+      // Set auto-disconnect callback for cleanup after search
+      searchPanel.setAutoDisconnectCallback(async (connectionId) => {
+        await connectionManager.disconnect(connectionId);
+      });
+
+      // Populate server list for cross-server search
+      searchPanel.setServerList(buildServerSearchEntries(hostService, connectionManager, credentialService));
+      searchPanel.loadSortOrder(context);
+
+      // Legacy: add all connections' current paths as default scopes only if no scopes exist
       if (!searchPanel.hasScopes()) {
         const connections = connectionManager.getAllConnections();
         for (const conn of connections) {
@@ -1371,6 +1430,22 @@ export function activate(context: vscode.ExtensionContext): void {
 
       // Set connection resolver to avoid stale references after auto-reconnect
       searchPanel.setConnectionResolver((connectionId) => connectionManager.getConnection(connectionId));
+
+      // Set auto-connect/disconnect callbacks for cross-server search
+      searchPanel.setAutoConnectCallback(async (hostConfig, credential) => {
+        try {
+          return await connectionManager.connectWithCredential(hostConfig, credential);
+        } catch {
+          return undefined;
+        }
+      });
+      searchPanel.setAutoDisconnectCallback(async (connectionId) => {
+        await connectionManager.disconnect(connectionId);
+      });
+
+      // Populate server list for cross-server search
+      searchPanel.setServerList(buildServerSearchEntries(hostService, connectionManager, credentialService));
+      searchPanel.loadSortOrder(context);
 
       // Add the selected scope (don't clear existing scopes to allow multiple)
       if (item instanceof ConnectionTreeItem) {
@@ -1868,10 +1943,11 @@ export function activate(context: vscode.ExtensionContext): void {
         source: 'saved',
       };
 
-      log(`addCredential: Adding new user "${username}" for server ${serverItem.serverKey}`);
+      log(`addCredential: Adding new user "${username}" for server ${serverItem.serverKey}, hostConfig=${JSON.stringify({ id: newHostId, name: newHost.name, host: newHost.host, port: newHost.port, username: newHost.username })}`);
       try {
-        // Save the host
-        hostService.saveHost(newHost);
+        // Save the host (must await to ensure it's persisted before tree refresh)
+        await hostService.saveHost(newHost);
+        log(`addCredential: Host saved to settings`);
 
         // Save the credential (password)
         const cred = await credentialService.addCredential(newHostId, 'Default', 'password', password);
@@ -1923,7 +1999,19 @@ export function activate(context: vscode.ExtensionContext): void {
     // Connect with specific credential
     vscode.commands.registerCommand('sshLite.connectWithCredential', async (hostConfig?: IHostConfig, credential?: SavedCredential | null) => {
       if (!hostConfig) {
+        log(`connectWithCredential: called with no hostConfig`);
         vscode.window.showWarningMessage('Invalid host selection');
+        return;
+      }
+
+      // Log full host config for debugging connection issues
+      log(`connectWithCredential: hostConfig=${JSON.stringify({ id: hostConfig.id, name: hostConfig.name, host: hostConfig.host, port: hostConfig.port, username: hostConfig.username, source: hostConfig.source })}, credential=${credential ? credential.label : 'none'}`);
+
+      // Validate host config before attempting connection
+      if (!hostConfig.host || !hostConfig.username) {
+        const missing = [!hostConfig.host && 'hostname', !hostConfig.username && 'username'].filter(Boolean).join(', ');
+        log(`connectWithCredential: Invalid host config - missing ${missing}`);
+        vscode.window.showErrorMessage(`Invalid host configuration: missing ${missing}. Please remove and re-add this host.`);
         return;
       }
 
@@ -1972,9 +2060,9 @@ export function activate(context: vscode.ExtensionContext): void {
         // Auto-dismiss connection success (non-blocking UX)
         vscode.window.setStatusBarMessage(`$(check) Connected to ${hostConfig.name}`, 3000);
       } catch (error) {
-        log(`Connection failed: ${(error as Error).message}`);
+        log(`Connection failed for ${hostConfig.username}@${hostConfig.host}:${hostConfig.port}: ${(error as Error).message}`);
         const errMsg = (error as Error).message;
-        const isAuthError = errMsg.includes('authentication') || errMsg.includes('password') || errMsg.includes('Permission denied') || errMsg.includes('All configured authentication methods failed');
+        const isAuthError = errMsg.includes('authentication') || errMsg.includes('password') || errMsg.includes('Permission denied') || errMsg.includes('All configured authentication methods failed') || errMsg.includes('Invalid username');
 
         if (isAuthError && effectiveCredential.type === 'password') {
           // Authentication failed - offer to retry with new password

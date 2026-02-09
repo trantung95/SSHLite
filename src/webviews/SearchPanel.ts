@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { SSHConnection } from '../connection/SSHConnection';
+import { IHostConfig } from '../types';
+import { SavedCredential } from '../services/CredentialService';
 import { formatFileSize, formatRelativeTime } from '../utils/helpers';
 import { ActivityService } from '../services/ActivityService';
 
@@ -30,17 +32,46 @@ export interface WebviewSearchResult {
 }
 
 /**
+ * A search path within a server (folder or file)
+ */
+export interface SearchPath {
+  path: string;
+  isFile?: boolean;          // true for single-file scopes (from magnifying glass on a file)
+  redundantOf?: string;      // set when path is child of another path on same server (grayed out)
+  overlapWarning?: string;   // set when path overlaps with another user on same host
+}
+
+/**
+ * A server entry in the cross-server search list
+ */
+export interface ServerSearchEntry {
+  id: string;                          // hostConfig.id (host:port:username)
+  hostConfig: IHostConfig;
+  credential: SavedCredential | null;  // null = no saved credentials
+  connected: boolean;
+  checked: boolean;                    // user selection
+  disabled: boolean;                   // true when no credentials (grayed out)
+  searchPaths: SearchPath[];           // multiple paths per server
+  status?: 'connecting' | 'failed';    // transient state during search
+  error?: string;                      // error message if connection failed
+}
+
+/**
  * Message types for webview communication
  */
 type WebviewMessage =
-  | { type: 'search'; query: string; include: string; exclude: string; caseSensitive: boolean; regex: boolean }
+  | { type: 'search'; query: string; include: string; exclude: string; caseSensitive: boolean; regex: boolean; findFiles?: boolean }
   | { type: 'removeScope'; index: number }
   | { type: 'clearScopes' }
   | { type: 'openResult'; result: WebviewSearchResult; line?: number }
   | { type: 'revealInTree'; result: WebviewSearchResult }
   | { type: 'increaseLimit' }
   | { type: 'cancelSearch' }
-  | { type: 'ready' };
+  | { type: 'ready' }
+  | { type: 'toggleServer'; serverId: string; checked: boolean }
+  | { type: 'removeServerPath'; serverId: string; pathIndex: number }
+  | { type: 'addServerPath'; serverId: string; path: string }
+  | { type: 'toggleSort' };
 
 /**
  * SearchPanel - VS Code native-style search webview
@@ -56,9 +87,16 @@ export class SearchPanel {
   private lastSearchQuery: string = '';
   private searchAbortController: AbortController | null = null;
 
+  // Server list state (cross-server search model)
+  private serverList: ServerSearchEntry[] = [];
+  private findFilesMode: boolean = false;
+  private sortOrder: 'checked' | 'name' = 'checked';
+
   // Callbacks
   private openFileCallback?: (connectionId: string, remotePath: string, line?: number, searchQuery?: string) => Promise<void>;
   private connectionResolver?: (connectionId: string) => SSHConnection | undefined;
+  private autoConnectCallback?: (hostConfig: IHostConfig, credential: SavedCredential) => Promise<SSHConnection | undefined>;
+  private autoDisconnectCallback?: (connectionId: string) => Promise<void>;
 
   private constructor() {}
 
@@ -85,6 +123,64 @@ export class SearchPanel {
    */
   public setConnectionResolver(resolver: (connectionId: string) => SSHConnection | undefined): void {
     this.connectionResolver = resolver;
+  }
+
+  /**
+   * Set callback for auto-connecting disconnected servers during search.
+   * Returns SSHConnection on success, undefined on failure.
+   */
+  public setAutoConnectCallback(callback: (hostConfig: IHostConfig, credential: SavedCredential) => Promise<SSHConnection | undefined>): void {
+    this.autoConnectCallback = callback;
+  }
+
+  /**
+   * Set callback for auto-disconnecting servers that were connected during search but had no results.
+   */
+  public setAutoDisconnectCallback(callback: (connectionId: string) => Promise<void>): void {
+    this.autoDisconnectCallback = callback;
+  }
+
+  /**
+   * Set the server list for cross-server search.
+   * Called by extension.ts to populate all available hosts.
+   */
+  public setServerList(entries: ServerSearchEntry[]): void {
+    this.serverList = entries;
+    this.detectRedundancy();
+    this.sendState();
+  }
+
+  /**
+   * Update a server's connection state (called when connections change externally).
+   */
+  public updateServerConnection(connectionId: string, connected: boolean): void {
+    const server = this.serverList.find((s) => s.id === connectionId);
+    if (server) {
+      server.connected = connected;
+      if (connected) {
+        server.status = undefined;
+        server.error = undefined;
+      }
+      this.sendState();
+    }
+  }
+
+  /**
+   * Set sort order for server list and persist to globalState.
+   */
+  public setSortOrder(order: 'checked' | 'name', context?: vscode.ExtensionContext): void {
+    this.sortOrder = order;
+    if (context) {
+      context.globalState.update('sshLite.searchSortOrder', order);
+    }
+    this.sendState();
+  }
+
+  /**
+   * Load sort order from globalState.
+   */
+  public loadSortOrder(context: vscode.ExtensionContext): void {
+    this.sortOrder = context.globalState.get<'checked' | 'name'>('sshLite.searchSortOrder', 'checked');
   }
 
   /**
@@ -141,23 +237,34 @@ export class SearchPanel {
   }
 
   /**
-   * Add a search scope (folder or file)
+   * Add a search scope (folder or file).
+   * Routes to the correct server's searchPaths in the serverList model.
+   * Also maintains legacy searchScopes for backward compat during migration.
    */
   public addScope(scopePath: string, connection: SSHConnection, isFile?: boolean): void {
+    // Legacy searchScopes (kept during migration)
     const id = `${connection.id}:${scopePath}`;
-
-    // Check for duplicate
-    if (this.searchScopes.some((s) => s.id === id)) {
-      return;
+    if (!this.searchScopes.some((s) => s.id === id)) {
+      this.searchScopes.push({
+        id,
+        path: scopePath,
+        connection,
+        displayName: `${connection.host.name}: ${scopePath}`,
+        isFile: isFile || false,
+      });
     }
 
-    this.searchScopes.push({
-      id,
-      path: scopePath,
-      connection,
-      displayName: `${connection.host.name}: ${scopePath}`,
-      isFile: isFile || false,
-    });
+    // New serverList model: route path to correct server entry
+    const server = this.serverList.find((s) => s.id === connection.id);
+    if (server) {
+      // Check for duplicate path
+      if (!server.searchPaths.some((p) => p.path === scopePath)) {
+        server.searchPaths.push({ path: scopePath, isFile: isFile || false });
+      }
+      // Auto-check the server (additive — does NOT uncheck other servers)
+      server.checked = true;
+      this.detectRedundancy();
+    }
 
     this.sendState();
   }
@@ -173,10 +280,44 @@ export class SearchPanel {
   }
 
   /**
+   * Remove a specific path from a server's searchPaths.
+   * If all paths are removed, the server is unchecked.
+   */
+  public removeServerPath(serverId: string, pathIndex: number): void {
+    const server = this.serverList.find((s) => s.id === serverId);
+    if (server && pathIndex >= 0 && pathIndex < server.searchPaths.length) {
+      server.searchPaths.splice(pathIndex, 1);
+      // Uncheck server if no paths remain
+      if (server.searchPaths.length === 0) {
+        server.checked = false;
+      }
+      this.detectRedundancy();
+      this.sendState();
+    }
+  }
+
+  /**
+   * Toggle a server's checked state from webview
+   */
+  public toggleServer(serverId: string, checked: boolean): void {
+    const server = this.serverList.find((s) => s.id === serverId);
+    if (server && !server.disabled) {
+      server.checked = checked;
+      this.detectRedundancy();
+      this.sendState();
+    }
+  }
+
+  /**
    * Clear all scopes
    */
   public clearScopes(): void {
     this.searchScopes = [];
+    // Also clear all server paths and uncheck all
+    for (const server of this.serverList) {
+      server.searchPaths = [];
+      server.checked = false;
+    }
     this.sendState();
   }
 
@@ -204,10 +345,10 @@ export class SearchPanel {
   }
 
   /**
-   * Check if any scopes exist
+   * Check if any scopes exist (checks both legacy scopes and serverList)
    */
   public hasScopes(): boolean {
-    return this.searchScopes.length > 0;
+    return this.searchScopes.length > 0 || this.serverList.some((s) => s.checked && !s.disabled);
   }
 
   /**
@@ -218,11 +359,32 @@ export class SearchPanel {
   }
 
   /**
+   * Get the sorted server list based on current sort order
+   */
+  private getSortedServerList(): ServerSearchEntry[] {
+    const list = [...this.serverList];
+    if (this.sortOrder === 'checked') {
+      // Checked (with paths) first, then alphabetical
+      list.sort((a, b) => {
+        const aHasPaths = a.checked && a.searchPaths.length > 0 ? 0 : 1;
+        const bHasPaths = b.checked && b.searchPaths.length > 0 ? 0 : 1;
+        if (aHasPaths !== bHasPaths) return aHasPaths - bHasPaths;
+        return a.hostConfig.name.localeCompare(b.hostConfig.name);
+      });
+    } else {
+      // Alphabetical by display name
+      list.sort((a, b) => a.hostConfig.name.localeCompare(b.hostConfig.name));
+    }
+    return list;
+  }
+
+  /**
    * Send current state to webview
    */
   private sendState(): void {
     this.postMessage({
       type: 'state',
+      // Legacy scopes format (kept during migration)
       scopes: this.searchScopes.map((s) => ({
         id: s.id,
         path: s.path,
@@ -230,7 +392,24 @@ export class SearchPanel {
         connectionId: s.connection.id,
         isFile: s.isFile || false,
       })),
+      // New server list format
+      serverList: this.getSortedServerList().map((s) => ({
+        id: s.id,
+        name: s.hostConfig.name,
+        host: s.hostConfig.host,
+        port: s.hostConfig.port,
+        username: s.hostConfig.username,
+        connected: s.connected,
+        checked: s.checked,
+        disabled: s.disabled,
+        searchPaths: s.searchPaths,
+        status: s.status,
+        error: s.error,
+        hasCredential: s.credential !== null,
+      })),
       isSearching: this.isSearching,
+      findFilesMode: this.findFilesMode,
+      sortOrder: this.sortOrder,
     });
   }
 
@@ -240,7 +419,7 @@ export class SearchPanel {
   private async handleMessage(message: WebviewMessage): Promise<void> {
     switch (message.type) {
       case 'search':
-        await this.performSearch(message.query, message.include, message.exclude, message.caseSensitive, message.regex);
+        await this.performSearch(message.query, message.include, message.exclude, message.caseSensitive, message.regex, message.findFiles);
         break;
 
       case 'removeScope':
@@ -276,6 +455,32 @@ export class SearchPanel {
       case 'ready':
         this.sendState();
         break;
+
+      case 'toggleServer':
+        this.toggleServer(message.serverId, message.checked);
+        break;
+
+      case 'removeServerPath':
+        this.removeServerPath(message.serverId, message.pathIndex);
+        break;
+
+      case 'addServerPath': {
+        const server = this.serverList.find((s) => s.id === message.serverId);
+        if (server) {
+          if (!server.searchPaths.some((p) => p.path === message.path)) {
+            server.searchPaths.push({ path: message.path });
+          }
+          server.checked = true;
+          this.detectRedundancy();
+          this.sendState();
+        }
+        break;
+      }
+
+      case 'toggleSort':
+        this.sortOrder = this.sortOrder === 'checked' ? 'name' : 'checked';
+        this.sendState();
+        break;
     }
   }
 
@@ -306,16 +511,24 @@ export class SearchPanel {
   }
 
   /**
-   * Perform search across all scopes
+   * Perform search across all scopes (supports both legacy and serverList models).
+   * For serverList: auto-connects disconnected servers, supports findFiles mode,
+   * auto-disconnects no-result servers.
    */
   private async performSearch(
     query: string,
     includePattern: string,
     excludePattern: string,
     caseSensitive: boolean,
-    regex: boolean
+    regex: boolean,
+    findFiles?: boolean
   ): Promise<void> {
-    if (!query.trim() || this.searchScopes.length === 0) {
+    // Determine which model to use: serverList (new) or searchScopes (legacy)
+    // Checked servers without explicit paths default to searching from /
+    const checkedServers = this.serverList.filter((s) => s.checked && !s.disabled);
+    const useServerList = checkedServers.length > 0;
+
+    if (!query.trim() || (!useServerList && this.searchScopes.length === 0)) {
       this.postMessage({ type: 'results', results: [], query: '' });
       return;
     }
@@ -325,142 +538,367 @@ export class SearchPanel {
       this.searchAbortController.abort();
     }
     this.searchAbortController = new AbortController();
-    const abortController = this.searchAbortController; // capture for closures
+    const abortController = this.searchAbortController;
     const signal = abortController.signal;
 
     this.isSearching = true;
     this.lastSearchQuery = query;
+    this.findFilesMode = !!findFiles;
     this.postMessage({ type: 'searching', query });
 
-    console.log(`[SSH Lite Search] Starting search for "${query}" across ${this.searchScopes.length} scope(s):`,
-      this.searchScopes.map(s => `${s.displayName} (connection: ${s.connection.id})`));
-
-    // Get configurable limit from settings
     const config = vscode.workspace.getConfiguration('sshLite');
     const maxResults = config.get<number>('searchMaxResults', 2000);
+    const connectionTimeout = config.get<number>('connectionTimeout', 30000);
 
-    // Track search activities
     const activityService = ActivityService.getInstance();
     const activityIds: string[] = [];
+    const autoConnectedIds = new Set<string>();
+    const serverResults = new Map<string, number>(); // connectionId -> result count
 
     try {
-      // Deduplicate scopes (same connection+path)
-      const uniqueScopes = new Map<string, SearchScope>();
-      for (const scope of this.searchScopes) {
-        if (!uniqueScopes.has(scope.id)) {
-          uniqueScopes.set(scope.id, scope);
-        }
-      }
+      if (useServerList) {
+        // === New serverList-based search ===
+        console.log(`[SSH Lite Search] Starting ${findFiles ? 'findFiles' : 'content'} search for "${query}" across ${checkedServers.length} server(s)`);
 
-      // Search each scope in parallel
-      const failedScopes: string[] = [];
-      const searchPromises = Array.from(uniqueScopes.values()).map(async (scope) => {
-        // Check if cancelled before starting
-        if (signal.aborted) return [];
+        const failedScopes: string[] = [];
 
-        // Resolve fresh connection to avoid stale references after auto-reconnect
-        const connection = this.connectionResolver
-          ? (this.connectionResolver(scope.connection.id) || scope.connection)
-          : scope.connection;
+        // Phase 1: Resolve connections (auto-connect if needed) using Promise.allSettled
+        const connectionMap = new Map<string, SSHConnection>();
+        const connectPromises = checkedServers.map(async (server) => {
+          if (signal.aborted) return;
 
-        // Start activity tracking for this scope
-        const activityId = activityService.startActivity(
-          'search',
-          connection.id,
-          connection.host.name,
-          `Search: "${query.substring(0, 30)}${query.length > 30 ? '...' : ''}"`,
-          {
-            detail: `in ${scope.path}`,
-            cancellable: true,
-            onCancel: () => {
-              abortController.abort();
-            },
+          // Try to resolve existing connection
+          let connection = this.connectionResolver?.(server.id);
+
+          if (connection) {
+            connectionMap.set(server.id, connection);
+            return;
           }
-        );
-        activityIds.push(activityId);
 
-        try {
-          const results = await connection.searchFiles(scope.path, query, {
-            searchContent: true,
-            caseSensitive,
-            regex,
-            filePattern: includePattern || '*',
-            excludePattern: excludePattern || undefined,
-            maxResults,
-            signal,
-          });
+          // Auto-connect if disconnected and has credentials
+          if (!server.connected && server.credential && this.autoConnectCallback) {
+            server.status = 'connecting';
+            this.sendState();
 
-          // Check if cancelled after search completed
-          if (signal.aborted) {
-            activityService.cancelActivity(activityId);
+            try {
+              connection = await this.autoConnectCallback(server.hostConfig, server.credential);
+              if (signal.aborted) return; // cancelled during connect
+
+              if (connection) {
+                connectionMap.set(server.id, connection);
+                autoConnectedIds.add(server.id);
+                server.connected = true;
+                server.status = undefined;
+                server.error = undefined;
+              } else {
+                server.status = 'failed';
+                server.error = 'Connection returned undefined';
+                failedScopes.push(`${server.hostConfig.name} (${server.hostConfig.username}): Connection failed`);
+              }
+            } catch (error) {
+              if (signal.aborted) return;
+              server.status = 'failed';
+              server.error = (error as Error).message;
+              failedScopes.push(`${server.hostConfig.name} (${server.hostConfig.username}): ${(error as Error).message}`);
+            }
+            this.sendState();
+          } else if (!server.connected) {
+            server.status = 'failed';
+            server.error = 'No credentials available';
+            failedScopes.push(`${server.hostConfig.name} (${server.hostConfig.username}): No credentials`);
+            this.sendState();
+          }
+        });
+
+        await Promise.allSettled(connectPromises);
+        if (signal.aborted) return;
+
+        // Phase 2: Search each server's non-redundant paths in parallel
+        const searchPromises: Promise<WebviewSearchResult[]>[] = [];
+
+        for (const server of checkedServers) {
+          const connection = connectionMap.get(server.id);
+          if (!connection) continue; // failed to connect
+
+          // Filter out redundant child paths (already covered by parent)
+          // Default to / if no paths specified (user checked server without adding paths)
+          const activePaths = server.searchPaths.length > 0
+            ? server.searchPaths.filter((sp) => !sp.redundantOf)
+            : [{ path: '/' }];
+
+          for (const sp of activePaths) {
+            if (signal.aborted) break;
+
+            const displayName = `${server.hostConfig.name} (${server.hostConfig.username}): ${sp.path}`;
+
+            const activityId = activityService.startActivity(
+              'search',
+              connection.id,
+              connection.host.name,
+              `${findFiles ? 'Find' : 'Search'}: "${query.substring(0, 30)}${query.length > 30 ? '...' : ''}"`,
+              {
+                detail: `in ${sp.path}`,
+                cancellable: true,
+                onCancel: () => { abortController.abort(); },
+              }
+            );
+            activityIds.push(activityId);
+
+            searchPromises.push(
+              (async () => {
+                if (signal.aborted) return [];
+                try {
+                  const results = await connection.searchFiles(sp.path, query, {
+                    searchContent: !findFiles,
+                    caseSensitive,
+                    regex,
+                    filePattern: includePattern || '*',
+                    excludePattern: excludePattern || undefined,
+                    maxResults,
+                    signal,
+                  });
+
+                  if (signal.aborted) {
+                    activityService.cancelActivity(activityId);
+                    return [];
+                  }
+
+                  const mapped = results.map((r) => ({
+                    ...r,
+                    modified: r.modified ? r.modified.getTime() : undefined,
+                    connectionId: connection.id,
+                    connectionName: connection.host.name,
+                  }));
+
+                  console.log(`[SSH Lite Search] "${displayName}" returned ${mapped.length} results`);
+                  activityService.completeActivity(activityId, `${mapped.length} results`);
+
+                  // Track results per server for auto-disconnect decision
+                  serverResults.set(server.id, (serverResults.get(server.id) || 0) + mapped.length);
+                  return mapped;
+                } catch (error) {
+                  console.log(`[SSH Lite Search] "${displayName}" FAILED: ${(error as Error).message}`);
+                  activityService.failActivity(activityId, (error as Error).message);
+                  failedScopes.push(`${displayName}: ${(error as Error).message}`);
+                  return [];
+                }
+              })()
+            );
+          }
+        }
+
+        const settledResults = await Promise.allSettled(searchPromises);
+        const allResults = settledResults
+          .filter((r): r is PromiseFulfilledResult<WebviewSearchResult[]> => r.status === 'fulfilled')
+          .flatMap((r) => r.value);
+
+        console.log(`[SSH Lite Search] All servers complete. Total results: ${allResults.length}, Failed: ${failedScopes.length}`);
+
+        if (signal.aborted) return;
+
+        // Deduplicate results
+        const seen = new Set<string>();
+        const uniqueResults = allResults.filter((r) => {
+          const key = `${r.connectionId}:${r.path}:${r.line || 0}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+
+        const hitLimit = uniqueResults.length >= maxResults;
+
+        // Build scope servers from checked servers (for multi-server grouping)
+        const scopeServers = checkedServers
+          .filter((s) => connectionMap.has(s.id))
+          .map((s) => ({ id: s.id, name: `${s.hostConfig.name} (${s.hostConfig.username})` }));
+
+        this.postMessage({ type: 'results', results: uniqueResults, query, hitLimit, limit: maxResults, scopeServers });
+
+        if (failedScopes.length > 0) {
+          vscode.window.showWarningMessage(
+            `Search failed for ${failedScopes.length} scope(s): ${failedScopes.join('; ')}`
+          );
+        }
+      } else {
+        // === Legacy searchScopes-based search ===
+        console.log(`[SSH Lite Search] Starting legacy search for "${query}" across ${this.searchScopes.length} scope(s)`);
+
+        const uniqueScopes = new Map<string, SearchScope>();
+        for (const scope of this.searchScopes) {
+          if (!uniqueScopes.has(scope.id)) {
+            uniqueScopes.set(scope.id, scope);
+          }
+        }
+
+        const failedScopes: string[] = [];
+        const searchPromises = Array.from(uniqueScopes.values()).map(async (scope) => {
+          if (signal.aborted) return [];
+
+          const connection = this.connectionResolver
+            ? (this.connectionResolver(scope.connection.id) || scope.connection)
+            : scope.connection;
+
+          const activityId = activityService.startActivity(
+            'search',
+            connection.id,
+            connection.host.name,
+            `Search: "${query.substring(0, 30)}${query.length > 30 ? '...' : ''}"`,
+            {
+              detail: `in ${scope.path}`,
+              cancellable: true,
+              onCancel: () => { abortController.abort(); },
+            }
+          );
+          activityIds.push(activityId);
+
+          try {
+            const results = await connection.searchFiles(scope.path, query, {
+              searchContent: !findFiles,
+              caseSensitive,
+              regex,
+              filePattern: includePattern || '*',
+              excludePattern: excludePattern || undefined,
+              maxResults,
+              signal,
+            });
+
+            if (signal.aborted) {
+              activityService.cancelActivity(activityId);
+              return [];
+            }
+
+            const mappedResults = results.map((r) => ({
+              ...r,
+              modified: r.modified ? r.modified.getTime() : undefined,
+              connectionId: connection.id,
+              connectionName: connection.host.name,
+            }));
+
+            console.log(`[SSH Lite Search] Scope "${scope.displayName}" returned ${mappedResults.length} results`);
+            activityService.completeActivity(activityId, `${mappedResults.length} results`);
+            return mappedResults;
+          } catch (error) {
+            console.log(`[SSH Lite Search] Scope "${scope.displayName}" FAILED: ${(error as Error).message}`);
+            activityService.failActivity(activityId, (error as Error).message);
+            failedScopes.push(`${scope.displayName}: ${(error as Error).message}`);
             return [];
           }
+        });
 
-          const mappedResults = results.map((r) => ({
-            ...r,
-            modified: r.modified ? r.modified.getTime() : undefined,
-            connectionId: connection.id,
-            connectionName: connection.host.name,
-          }));
+        const allResults = (await Promise.all(searchPromises)).flat();
+        console.log(`[SSH Lite Search] All scopes complete. Total results: ${allResults.length}, Failed: ${failedScopes.length}`);
 
-          console.log(`[SSH Lite Search] Scope "${scope.displayName}" returned ${mappedResults.length} results`);
-          activityService.completeActivity(activityId, `${mappedResults.length} results`);
-          return mappedResults;
-        } catch (error) {
-          console.log(`[SSH Lite Search] Scope "${scope.displayName}" FAILED: ${(error as Error).message}`);
-          activityService.failActivity(activityId, (error as Error).message);
-          failedScopes.push(`${scope.displayName}: ${(error as Error).message}`);
-          return [];
+        if (signal.aborted) return;
+
+        const seen = new Set<string>();
+        const uniqueResults = allResults.filter((r) => {
+          const key = `${r.connectionId}:${r.path}:${r.line || 0}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+
+        const hitLimit = uniqueResults.length >= maxResults;
+
+        const scopeServerMap = new Map<string, string>();
+        for (const scope of this.searchScopes) {
+          scopeServerMap.set(scope.connection.id, scope.connection.host.name);
         }
-      });
+        const scopeServers = Array.from(scopeServerMap.entries()).map(([id, name]) => ({ id, name }));
 
-      const allResults = (await Promise.all(searchPromises)).flat();
-      console.log(`[SSH Lite Search] All scopes complete. Total results: ${allResults.length}, Failed: ${failedScopes.length}`);
+        this.postMessage({ type: 'results', results: uniqueResults, query, hitLimit, limit: maxResults, scopeServers });
 
-      // Check if cancelled during search
-      if (signal.aborted) {
-        return;
-      }
-
-      // Deduplicate results (same file+line from overlapping scopes)
-      const seen = new Set<string>();
-      const uniqueResults = allResults.filter((r) => {
-        const key = `${r.connectionId}:${r.path}:${r.line || 0}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-
-      // Check if we hit the limit
-      const hitLimit = uniqueResults.length >= maxResults;
-
-      // Send scope server info for multi-server grouping (even if some servers returned zero results)
-      const scopeServerMap = new Map<string, string>();
-      for (const scope of this.searchScopes) {
-        scopeServerMap.set(scope.connection.id, scope.connection.host.name);
-      }
-      const scopeServers = Array.from(scopeServerMap.entries()).map(([id, name]) => ({ id, name }));
-
-      this.postMessage({ type: 'results', results: uniqueResults, query, hitLimit, limit: maxResults, scopeServers });
-
-      // Notify user about failed scopes so failures aren't silently swallowed
-      if (failedScopes.length > 0) {
-        vscode.window.showWarningMessage(
-          `Search failed for ${failedScopes.length} scope(s): ${failedScopes.join('; ')}`
-        );
+        if (failedScopes.length > 0) {
+          vscode.window.showWarningMessage(
+            `Search failed for ${failedScopes.length} scope(s): ${failedScopes.join('; ')}`
+          );
+        }
       }
     } catch (error) {
       if (!signal.aborted) {
         this.postMessage({ type: 'error', message: (error as Error).message });
       }
-      // Mark any remaining activities as failed
       for (const id of activityIds) {
         activityService.failActivity(id, 'Search error');
       }
     } finally {
+      // Clean up auto-connected servers with no results
+      for (const connId of autoConnectedIds) {
+        const hadResults = (serverResults.get(connId) || 0) > 0;
+        if (!hadResults) {
+          try {
+            console.log(`[SSH Lite Search] Auto-disconnect (no results): ${connId}`);
+            await this.autoDisconnectCallback?.(connId);
+            // Update server state
+            const server = this.serverList.find((s) => s.id === connId);
+            if (server) {
+              server.connected = false;
+              server.status = undefined;
+            }
+          } catch (e) {
+            console.log(`[SSH Lite Search] Failed to auto-disconnect ${connId}: ${e}`);
+          }
+        }
+      }
+
       if (!signal.aborted) {
         this.isSearching = false;
         this.sendState();
+      }
+    }
+  }
+
+  /**
+   * Detect redundant child paths (same server) and cross-user overlapping paths (same host).
+   * Same-user child paths: grayed out, NOT searched (saves resources).
+   * Cross-user overlaps: warned but still searched (different permissions).
+   */
+  private detectRedundancy(): void {
+    // Reset all flags first
+    for (const server of this.serverList) {
+      for (const sp of server.searchPaths) {
+        sp.redundantOf = undefined;
+        sp.overlapWarning = undefined;
+      }
+    }
+
+    // Same-server, same-user: child-path redundancy
+    for (const server of this.serverList) {
+      if (!server.checked) continue;
+      for (const sp of server.searchPaths) {
+        for (const other of server.searchPaths) {
+          if (other === sp) continue;
+          if (sp.path === other.path || sp.path.startsWith(other.path + '/')) {
+            sp.redundantOf = other.path;
+            break;
+          }
+        }
+      }
+    }
+
+    // Cross-user overlap: same host, different user
+    for (const server of this.serverList) {
+      if (!server.checked) continue;
+      const host = server.hostConfig.host;
+      const port = server.hostConfig.port;
+
+      for (const sp of server.searchPaths) {
+        if (sp.redundantOf) continue; // already grayed, skip overlap check
+
+        for (const other of this.serverList) {
+          if (other === server || !other.checked) continue;
+          if (other.hostConfig.host !== host || other.hostConfig.port !== port) continue;
+
+          for (const otherPath of other.searchPaths) {
+            if (sp.path === otherPath.path ||
+                sp.path.startsWith(otherPath.path + '/') ||
+                otherPath.path.startsWith(sp.path + '/')) {
+              sp.overlapWarning = `Overlaps with ${other.hostConfig.username}@${other.hostConfig.name} ${otherPath.path}`;
+              break;
+            }
+          }
+          if (sp.overlapWarning) break;
+        }
       }
     }
   }
@@ -758,6 +1196,219 @@ export class SearchPanel {
     }
 
     .no-scopes {
+      font-size: 12px;
+      color: var(--vscode-descriptionForeground);
+      font-style: italic;
+      padding: 4px 0;
+    }
+
+    /* Server list styles */
+    .servers-section {
+      padding: 8px;
+      border-bottom: 1px solid var(--vscode-panel-border);
+    }
+
+    .servers-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 6px;
+    }
+
+    .servers-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: var(--vscode-sideBarSectionHeader-foreground);
+    }
+
+    .servers-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .servers-actions .action-link {
+      background: transparent;
+      border: none;
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+      font-size: 11px;
+      padding: 2px 4px;
+    }
+
+    .servers-actions .action-link:hover {
+      color: var(--vscode-foreground);
+    }
+
+    .sort-toggle {
+      background: transparent;
+      border: none;
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+      font-size: 11px;
+      padding: 2px 4px;
+    }
+
+    .sort-toggle:hover {
+      color: var(--vscode-foreground);
+    }
+
+    .server-list {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+
+    .server-group {
+      margin-bottom: 2px;
+    }
+
+    .server-row {
+      display: flex;
+      align-items: center;
+      padding: 3px 4px;
+      border-radius: 2px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .server-row:hover {
+      background: var(--vscode-list-hoverBackground);
+    }
+
+    .server-row:focus {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: -1px;
+    }
+
+    .server-row.disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .server-checkbox {
+      margin-right: 6px;
+      flex-shrink: 0;
+      accent-color: var(--vscode-checkbox-background);
+    }
+
+    .server-name {
+      flex: 1;
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .server-status {
+      font-size: 10px;
+      margin-left: 4px;
+      flex-shrink: 0;
+    }
+
+    .server-paths {
+      padding-left: 26px;
+    }
+
+    .server-paths.empty {
+      padding-left: 26px;
+    }
+
+    .path-item {
+      display: flex;
+      align-items: center;
+      padding: 1px 4px;
+      border-radius: 2px;
+      font-size: 12px;
+    }
+
+    .path-item.redundant {
+      opacity: 0.4;
+    }
+
+    .path-item.overlap .path-text {
+      color: var(--vscode-editorWarning-foreground, #cca700);
+    }
+
+    .path-icon {
+      margin-right: 4px;
+      opacity: 0.8;
+      font-size: 11px;
+    }
+
+    .path-text {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 12px;
+    }
+
+    .path-remove {
+      background: transparent;
+      border: none;
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+      padding: 1px 4px;
+      font-size: 13px;
+      line-height: 1;
+      border-radius: 2px;
+      opacity: 0;
+    }
+
+    .path-item:hover .path-remove,
+    .server-group:hover .path-remove {
+      opacity: 1;
+    }
+
+    .path-remove:hover {
+      background: var(--vscode-toolbar-hoverBackground);
+      color: var(--vscode-foreground);
+    }
+
+    .add-path-link {
+      display: inline-block;
+      font-size: 11px;
+      color: var(--vscode-textLink-foreground);
+      cursor: pointer;
+      padding: 2px 4px;
+      text-decoration: none;
+    }
+
+    .add-path-link:hover {
+      text-decoration: underline;
+    }
+
+    .no-paths {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+      font-style: italic;
+      padding: 2px 4px;
+    }
+
+    .path-input-row {
+      display: flex;
+      align-items: center;
+      padding: 1px 4px;
+    }
+
+    .path-input {
+      flex: 1;
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-input-border);
+      border-radius: 2px;
+      color: var(--vscode-input-foreground);
+      padding: 2px 6px;
+      font-size: 12px;
+      outline: none;
+    }
+
+    .path-input:focus {
+      border-color: var(--vscode-focusBorder);
+    }
+
+    .no-servers {
       font-size: 12px;
       color: var(--vscode-descriptionForeground);
       font-style: italic;
@@ -1134,6 +1785,7 @@ export class SearchPanel {
             <input type="text" id="searchInput" class="search-input" placeholder="Search" autofocus>
             <button id="caseSensitiveBtn" class="toggle-btn" title="Match Case">Aa</button>
             <button id="regexBtn" class="toggle-btn" title="Use Regular Expression">.*</button>
+            <button id="findFilesBtn" class="toggle-btn" title="Find Files by Name — search for filenames instead of file content">&#128196;</button>
           </div>
           <button id="searchBtn" class="search-btn" title="Search (Enter)">&#128269;</button>
           <button id="cancelBtn" class="search-btn cancel-btn" title="Cancel Search" style="display: none;">&#x2715;</button>
@@ -1156,13 +1808,17 @@ export class SearchPanel {
         </div>
       </div>
 
-      <div class="scopes-section">
-        <div class="scopes-header">
-          <span class="scopes-title">Search In</span>
-          <button id="clearScopesBtn" class="clear-btn" title="Clear all scopes">Clear</button>
+      <div class="servers-section">
+        <div class="servers-header">
+          <span class="servers-title">Servers</span>
+          <div class="servers-actions">
+            <button id="sortToggleBtn" class="sort-toggle" title="Sort: servers with search paths first">&#8593;checked</button>
+            <button id="selectAllBtn" class="action-link" title="Select all available servers">All</button>
+            <button id="selectNoneBtn" class="action-link" title="Deselect all servers">None</button>
+          </div>
         </div>
-        <div id="scopeList" class="scope-list">
-          <div class="no-scopes">No folders selected. Click search icon on a folder to add.</div>
+        <div id="serverList" class="server-list">
+          <div class="no-servers">No servers configured.</div>
         </div>
       </div>
     </div>
@@ -1180,16 +1836,20 @@ export class SearchPanel {
 
     // State
     let scopes = [];
+    let serverList = [];       // New cross-server search model
     let results = [];
     let scopeServers = []; // Servers from search scopes (for multi-server grouping)
     let currentQuery = '';
     let caseSensitive = false;
     let useRegex = false;
+    let findFilesMode = false;
+    let sortOrder = 'checked';
     let expandedFiles = new Set();
     let viewMode = 'list'; // 'list' or 'tree'
     let expandedTreeNodes = new Set();
     let treeViewFirstExpand = true; // Flag to auto-expand all tree nodes on first switch to tree view
     let searchExpandState = 2; // 0=collapsed, 1=all expanded, 2=file level (default)
+    let lastClickedServerIndex = -1; // For shift-click range selection
 
     // Elements
     const searchInput = document.getElementById('searchInput');
@@ -1197,10 +1857,13 @@ export class SearchPanel {
     const excludeInput = document.getElementById('excludeInput');
     const caseSensitiveBtn = document.getElementById('caseSensitiveBtn');
     const regexBtn = document.getElementById('regexBtn');
+    const findFilesBtn = document.getElementById('findFilesBtn');
     const searchBtn = document.getElementById('searchBtn');
     const cancelBtn = document.getElementById('cancelBtn');
-    const clearScopesBtn = document.getElementById('clearScopesBtn');
-    const scopeList = document.getElementById('scopeList');
+    const sortToggleBtn = document.getElementById('sortToggleBtn');
+    const selectAllBtn = document.getElementById('selectAllBtn');
+    const selectNoneBtn = document.getElementById('selectNoneBtn');
+    const serverListEl = document.getElementById('serverList');
     const resultsHeader = document.getElementById('resultsHeader');
     const resultsContainer = document.getElementById('resultsContainer');
     const patternToggle = document.getElementById('patternToggle');
@@ -1260,8 +1923,30 @@ export class SearchPanel {
         performSearch();
       });
 
-      // Clear scopes
-      clearScopesBtn.addEventListener('click', () => {
+      // Find files mode toggle
+      findFilesBtn.addEventListener('click', () => {
+        findFilesMode = !findFilesMode;
+        findFilesBtn.classList.toggle('active', findFilesMode);
+        searchInput.placeholder = findFilesMode ? 'Find Files by Name' : 'Search';
+        findFilesBtn.title = findFilesMode
+          ? 'Search File Content \\u2014 search for text inside files'
+          : 'Find Files by Name \\u2014 search for filenames instead of file content';
+      });
+
+      // Server list actions
+      sortToggleBtn.addEventListener('click', () => {
+        vscode.postMessage({ type: 'toggleSort' });
+      });
+
+      selectAllBtn.addEventListener('click', () => {
+        serverList.forEach(s => {
+          if (!s.disabled) {
+            vscode.postMessage({ type: 'toggleServer', serverId: s.id, checked: true });
+          }
+        });
+      });
+
+      selectNoneBtn.addEventListener('click', () => {
         vscode.postMessage({ type: 'clearScopes' });
       });
 
@@ -1303,7 +1988,9 @@ export class SearchPanel {
     // Perform search
     function performSearch() {
       const query = searchInput.value.trim();
-      if (!query || scopes.length === 0) {
+      // Check if any server is checked (new model) or legacy scopes exist
+      const hasServerScopes = serverList.some(s => s.checked && !s.disabled);
+      if (!query || (!hasServerScopes && scopes.length === 0)) {
         showNoResults();
         return;
       }
@@ -1314,30 +2001,178 @@ export class SearchPanel {
         include: includeInput.value.trim(),
         exclude: excludeInput.value.trim(),
         caseSensitive,
-        regex: useRegex
+        regex: useRegex,
+        findFiles: findFilesMode
       });
     }
 
-    // Render scopes
-    function renderScopes() {
-      if (scopes.length === 0) {
-        scopeList.innerHTML = '<div class="no-scopes">No folders or files selected. Click search icon on a folder or file to add.</div>';
+    // Render server list (replaces old renderScopes)
+    function renderServers() {
+      if (serverList.length === 0) {
+        serverListEl.innerHTML = '<div class="no-servers">No servers configured.</div>';
         return;
       }
 
-      scopeList.innerHTML = scopes.map((scope, index) => \`
-        <div class="scope-item">
-          <span class="scope-icon">\${scope.isFile ? '📄' : '📁'}</span>
-          <span class="scope-path" title="\${escapeHtml(scope.displayName)}">\${escapeHtml(scope.displayName)}</span>
-          <button class="scope-remove" data-index="\${index}" title="Remove">×</button>
-        </div>
-      \`).join('');
+      let html = '';
+      serverList.forEach((server, idx) => {
+        const statusIcon = server.status === 'connecting' ? '\\u{1F504}'
+          : server.status === 'failed' ? '\\u{274C}'
+          : server.connected ? '\\u{1F7E2}'
+          : server.hasCredential ? '\\u{26A1}'
+          : '\\u{26AA}';
 
-      // Add click handlers
-      scopeList.querySelectorAll('.scope-remove').forEach(btn => {
+        const statusTitle = server.status === 'connecting' ? 'Connecting to server...'
+          : server.status === 'failed' ? ('Connection failed: ' + escapeHtml(server.error || 'Unknown error'))
+          : server.connected ? 'Include this server in search'
+          : server.hasCredential ? 'Include this server \\u2014 will auto-connect using saved credentials'
+          : 'Save credentials first to search this server';
+
+        const disabledAttr = server.disabled ? ' disabled' : '';
+        const disabledClass = server.disabled ? ' disabled' : '';
+        const checkedAttr = server.checked ? ' checked' : '';
+        const displayName = escapeHtml(server.name) + ' (' + escapeHtml(server.username) + ')';
+        const fullTitle = escapeHtml(server.name) + ' (' + escapeHtml(server.username) + ') \\u2014 ' + escapeHtml(server.host) + ':' + server.port;
+
+        html += '<div class="server-group">';
+        html += '<div class="server-row' + disabledClass + '" tabindex="0" data-server-id="' + escapeHtml(server.id) + '" data-server-idx="' + idx + '" title="' + fullTitle + '">';
+        html += '<input type="checkbox" class="server-checkbox" data-server-id="' + escapeHtml(server.id) + '"' + checkedAttr + disabledAttr + ' title="' + escapeHtml(statusTitle) + '">';
+        html += '<span class="server-name">' + displayName + '</span>';
+        html += '<span class="server-status" title="' + escapeHtml(statusTitle) + '">' + statusIcon + '</span>';
+        html += '</div>';
+
+        // Search paths
+        html += '<div class="server-paths' + (server.searchPaths.length === 0 ? ' empty' : '') + '">';
+        if (server.searchPaths.length > 0) {
+          server.searchPaths.forEach((sp, pathIdx) => {
+            const pathIcon = sp.isFile ? '\\u{1F4C4}' : '\\u{1F4C1}';
+            let pathClass = 'path-item';
+            let pathTitle = escapeHtml(sp.path);
+            let warnIcon = '';
+
+            if (sp.redundantOf) {
+              pathClass += ' redundant';
+              pathTitle = 'Already included by ' + escapeHtml(sp.redundantOf) + ' \\u2014 this path will be skipped';
+            } else if (sp.overlapWarning) {
+              pathClass += ' overlap';
+              pathTitle = escapeHtml(sp.overlapWarning) + ' \\u2014 results may be duplicated (different permissions)';
+              warnIcon = ' \\u{26A0}\\u{FE0F}';
+            }
+
+            html += '<div class="' + pathClass + '">';
+            html += '<span class="path-icon">' + pathIcon + '</span>';
+            html += '<span class="path-text" title="' + pathTitle + '">' + escapeHtml(sp.path) + warnIcon + '</span>';
+            html += '<button class="path-remove" data-server-id="' + escapeHtml(server.id) + '" data-path-idx="' + pathIdx + '" title="Remove this search path">\\u00D7</button>';
+            html += '</div>';
+          });
+
+          // Add folder link (only if server is not disabled)
+          if (!server.disabled) {
+            html += '<a class="add-path-link" data-server-id="' + escapeHtml(server.id) + '" title="Add another folder to search on this server">+ Add folder</a>';
+          }
+        } else if (!server.disabled) {
+          html += '<span class="no-paths" title="Click \\u{1F50D} on a folder in Remote Files, or click + Add folder">Add a search path</span>';
+          html += '<a class="add-path-link" data-server-id="' + escapeHtml(server.id) + '" title="Add another folder to search on this server" style="display:inline-block">+ Add folder</a>';
+        } else {
+          html += '<span class="no-paths">(no credentials)</span>';
+        }
+        html += '</div>';
+        html += '</div>';
+      });
+
+      serverListEl.innerHTML = html;
+
+      // Wire event handlers
+      // Checkbox toggle
+      serverListEl.querySelectorAll('.server-checkbox').forEach(cb => {
+        cb.addEventListener('change', (e) => {
+          const serverId = e.target.dataset.serverId;
+          const checked = e.target.checked;
+          vscode.postMessage({ type: 'toggleServer', serverId, checked });
+        });
+      });
+
+      // Server row click (toggle checkbox) + shift-click range selection + space key
+      serverListEl.querySelectorAll('.server-row').forEach(row => {
+        row.addEventListener('click', (e) => {
+          // Don't toggle if clicking on checkbox directly or remove button
+          if (e.target.tagName === 'INPUT' || e.target.classList.contains('path-remove')) return;
+
+          const serverId = row.dataset.serverId;
+          const idx = parseInt(row.dataset.serverIdx);
+          const server = serverList.find(s => s.id === serverId);
+          if (!server || server.disabled) return;
+
+          if (e.shiftKey && lastClickedServerIndex >= 0) {
+            // Range selection
+            const from = Math.min(lastClickedServerIndex, idx);
+            const to = Math.max(lastClickedServerIndex, idx);
+            const targetChecked = !server.checked;
+            for (let i = from; i <= to; i++) {
+              const s = serverList[i];
+              if (s && !s.disabled) {
+                vscode.postMessage({ type: 'toggleServer', serverId: s.id, checked: targetChecked });
+              }
+            }
+          } else {
+            // Single toggle
+            vscode.postMessage({ type: 'toggleServer', serverId, checked: !server.checked });
+          }
+          lastClickedServerIndex = idx;
+        });
+
+        // Space key toggle
+        row.addEventListener('keydown', (e) => {
+          if (e.key === ' ' || e.key === 'Enter') {
+            e.preventDefault();
+            const serverId = row.dataset.serverId;
+            const server = serverList.find(s => s.id === serverId);
+            if (server && !server.disabled) {
+              vscode.postMessage({ type: 'toggleServer', serverId, checked: !server.checked });
+            }
+          }
+        });
+      });
+
+      // Path remove buttons
+      serverListEl.querySelectorAll('.path-remove').forEach(btn => {
         btn.addEventListener('click', (e) => {
-          const index = parseInt(e.target.dataset.index);
-          vscode.postMessage({ type: 'removeScope', index });
+          e.stopPropagation();
+          const serverId = e.target.dataset.serverId;
+          const pathIdx = parseInt(e.target.dataset.pathIdx);
+          vscode.postMessage({ type: 'removeServerPath', serverId, pathIndex: pathIdx });
+        });
+      });
+
+      // Add folder links
+      serverListEl.querySelectorAll('.add-path-link').forEach(link => {
+        link.addEventListener('click', (e) => {
+          e.preventDefault();
+          const serverId = e.target.dataset.serverId;
+          // Create inline input
+          const container = e.target.parentElement;
+          const inputRow = document.createElement('div');
+          inputRow.className = 'path-input-row';
+          const input = document.createElement('input');
+          input.type = 'text';
+          input.className = 'path-input';
+          input.placeholder = '/path/to/search';
+          inputRow.appendChild(input);
+          container.insertBefore(inputRow, e.target);
+          input.focus();
+
+          const commit = () => {
+            const path = input.value.trim();
+            if (path) {
+              vscode.postMessage({ type: 'addServerPath', serverId, path });
+            }
+            inputRow.remove();
+          };
+
+          input.addEventListener('keydown', (ke) => {
+            if (ke.key === 'Enter') commit();
+            if (ke.key === 'Escape') inputRow.remove();
+          });
+          input.addEventListener('blur', commit);
         });
       });
     }
@@ -1929,10 +2764,11 @@ export class SearchPanel {
     // Show no results
     function showNoResults() {
       resultsHeader.style.display = 'none';
-      if (searchInput.value.trim() && scopes.length > 0) {
+      const hasAnyScope = scopes.length > 0 || serverList.some(s => s.checked && !s.disabled);
+      if (searchInput.value.trim() && hasAnyScope) {
         resultsContainer.innerHTML = '<div class="no-results">No results found</div>';
-      } else if (scopes.length === 0) {
-        resultsContainer.innerHTML = '<div class="no-results">Add a folder to search in</div>';
+      } else if (!hasAnyScope) {
+        resultsContainer.innerHTML = '<div class="no-results">Select a server to search</div>';
       } else {
         resultsContainer.innerHTML = '';
       }
@@ -1981,7 +2817,20 @@ export class SearchPanel {
       switch (message.type) {
         case 'state':
           scopes = message.scopes || [];
-          renderScopes();
+          serverList = message.serverList || [];
+          if (message.findFilesMode !== undefined) {
+            findFilesMode = message.findFilesMode;
+            findFilesBtn.classList.toggle('active', findFilesMode);
+            searchInput.placeholder = findFilesMode ? 'Find Files by Name' : 'Search';
+          }
+          if (message.sortOrder) {
+            sortOrder = message.sortOrder;
+            sortToggleBtn.innerHTML = sortOrder === 'checked' ? '\\u2191checked' : '\\u2191name';
+            sortToggleBtn.title = sortOrder === 'checked'
+              ? 'Sort: servers with search paths first'
+              : 'Sort: alphabetical by name';
+          }
+          renderServers();
           // Update button visibility based on search state
           if (message.isSearching) {
             searchBtn.style.display = 'none';

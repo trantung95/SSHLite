@@ -359,7 +359,7 @@ export class ConnectionManager {
       // Clear active attempt flag
       this._activeReconnectAttempts.delete(connectionId);
 
-      // Don't retry on authentication failures - credentials are wrong
+      // Don't retry on authentication or configuration failures
       const errorMsg = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
       const isAuthError = error instanceof AuthenticationError ||
         errorMsg.includes('authentication') ||
@@ -367,9 +367,11 @@ export class ConnectionManager {
         errorMsg.includes('permission denied') ||
         errorMsg.includes('publickey') ||
         errorMsg.includes('no supported') ||
-        errorMsg.includes('all configured authentication methods failed');
+        errorMsg.includes('all configured authentication methods failed') ||
+        errorMsg.includes('invalid username') ||
+        errorMsg.includes('invalid host configuration');
 
-      console.log(`[SSH Lite] Reconnect failed for ${connectionId}: ${errorMsg}, isAuthError=${isAuthError}, errorType=${error?.constructor?.name}`);
+      console.log(`[SSH Lite] Reconnect failed for ${connectionId}: errorMsg="${errorMsg}", isAuthError=${isAuthError}, errorType=${error?.constructor?.name}, host=${JSON.stringify({ name: info.host.name, host: info.host.host, port: info.host.port, username: info.host.username })}`);
 
       if (isAuthError) {
         this.stopReconnect(connectionId);

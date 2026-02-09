@@ -162,16 +162,30 @@ export class HostService {
       tabLabel?: string;
     }>>('hosts', []);
 
-    return savedHosts.map((host) => ({
-      id: `${host.host}:${host.port || 22}:${host.username}`,
-      name: host.name,
-      host: host.host,
-      port: host.port || 22,
-      username: host.username,
-      privateKeyPath: host.privateKeyPath ? expandPath(host.privateKeyPath) : undefined,
-      tabLabel: host.tabLabel,
-      source: 'saved' as const,
-    }));
+    const validHosts: IHostConfig[] = [];
+    for (const host of savedHosts) {
+      // Validate required fields - skip invalid entries
+      if (!host.name || !host.host || !host.username) {
+        const missing = [
+          !host.name && 'name',
+          !host.host && 'host',
+          !host.username && 'username',
+        ].filter(Boolean).join(', ');
+        console.warn(`[SSH Lite] Skipping invalid saved host: missing ${missing}. Entry: ${JSON.stringify(host)}`);
+        continue;
+      }
+      validHosts.push({
+        id: `${host.host}:${host.port || 22}:${host.username}`,
+        name: host.name,
+        host: host.host,
+        port: host.port || 22,
+        username: host.username,
+        privateKeyPath: host.privateKeyPath ? expandPath(host.privateKeyPath) : undefined,
+        tabLabel: host.tabLabel,
+        source: 'saved' as const,
+      });
+    }
+    return validHosts;
   }
 
   /**

@@ -189,6 +189,21 @@ export class SSHConnection implements ISSHConnection {
       return;
     }
 
+    // Validate host config before attempting connection
+    const hostInfo = `host=${this.host.host}, port=${this.host.port}, username=${this.host.username}, name=${this.host.name}, source=${this.host.source}`;
+    getOutputChannel().appendLine(`[${new Date().toISOString()}] [CONNECT] Attempting connection: ${hostInfo}`);
+
+    if (!this.host.username || this.host.username.trim() === '') {
+      const msg = `Invalid host configuration: username is missing or empty. Host config: ${hostInfo}`;
+      getOutputChannel().appendLine(`[${new Date().toISOString()}] [CONNECT] FAILED: ${msg}`);
+      throw new ConnectionError(msg);
+    }
+    if (!this.host.host || this.host.host.trim() === '') {
+      const msg = `Invalid host configuration: hostname is missing or empty. Host config: ${hostInfo}`;
+      getOutputChannel().appendLine(`[${new Date().toISOString()}] [CONNECT] FAILED: ${msg}`);
+      throw new ConnectionError(msg);
+    }
+
     this.setState(ConnectionState.Connecting);
     this._client = new Client();
 
@@ -211,8 +226,9 @@ export class SSHConnection implements ISSHConnection {
 
         this._client!.on('error', (err) => {
           clearTimeout(timeoutId);
+          getOutputChannel().appendLine(`[${new Date().toISOString()}] [CONNECT] SSH2 error for ${this.host.host}:${this.host.port}: ${err.message}`);
           const msg = err.message.toLowerCase();
-          if (msg.includes('authentication') || msg.includes('auth') || msg.includes('permission denied') || msg.includes('publickey')) {
+          if (msg.includes('authentication') || msg.includes('auth') || msg.includes('permission denied') || msg.includes('publickey') || msg.includes('invalid username')) {
             // Clear saved credentials on auth failure so user can retry
             CredentialService.getInstance().deleteAll(this.id);
             reject(new AuthenticationError(`Authentication failed: ${err.message}. Saved credentials cleared - please try again.`, err));
@@ -1315,10 +1331,15 @@ export class SSHConnection implements ISSHConnection {
         let aborted = false;
         const onAbort = () => {
           aborted = true;
+          // Send SIGTERM to explicitly kill the remote process before closing the channel.
+          // stream.signal() may not be supported by all SSH servers; stream.close()
+          // sends channel_close which usually causes SSHD to send SIGHUP as fallback.
+          try { stream.signal('TERM'); } catch { /* signal not supported */ }
           stream.close();
         };
         if (signal) {
           if (signal.aborted) {
+            try { stream.signal('TERM'); } catch { /* signal not supported */ }
             stream.close();
             resolve([]);
             return;
