@@ -263,4 +263,35 @@ module.exports = {
 };
 ```
 
-Separate configs exist for Docker and Multi-OS tests to include their specific test paths.
+Separate configs exist for Docker, Multi-OS, and Chaos tests to include their specific test paths.
+
+---
+
+## Chaos Bug Discovery Tests
+
+Dynamic bug-discovery module that exercises actual extension code against real Docker SSH containers.
+See `.adn/testing/chaos-testing.md` for full documentation.
+
+```bash
+npm run test:chaos          # Quick mode (3-5 min, 8 servers)
+npm run test:chaos:deep     # Deep mode (10+ min, 8 servers)
+```
+
+### What It Discovers
+
+- **Invariant violations**: writeFile/readFile mismatches, ghost files, state machine bugs
+- **Output anomalies**: unexpected errors in extension output channels
+- **Resource leaks**: activities that never complete, dangling event listeners
+- **OS-specific bugs**: different behavior across Alpine/Ubuntu/Debian/Fedora/Rocky
+- **Race conditions**: concurrent operations that corrupt data or hang
+- **Error handling gaps**: operations that don't throw when they should
+
+### Files
+
+```
+src/chaos/
+  ChaosEngine.ts, ChaosConfig.ts, ChaosCollector.ts, ChaosDetector.ts,
+  ChaosValidator.ts, ChaosLogger.ts, chaos-helpers.ts, chaos.test.ts,
+  coverage-manifest.json
+  scenarios/ (7 scenario files + index.ts)
+```

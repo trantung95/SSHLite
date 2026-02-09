@@ -14,6 +14,7 @@ Run after **every** code change:
 - [ ] `.adn/` docs updated if the change affected architecture, features, config, or behavior (see mapping in `CLAUDE.md`)
 - [ ] No `console.log` statements — use `log()` instead
 - [ ] LITE principles respected (no auto server commands, debounced actions, etc.)
+- [ ] Backward compatibility maintained — no breaking changes to existing public APIs, settings keys, command IDs, contextValues, or file formats without migration path
 
 ---
 

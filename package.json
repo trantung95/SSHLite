@@ -1296,6 +1296,8 @@
     "test:multios": "jest --config jest.multios.config.js --no-coverage",
     "test:all": "jest --no-coverage && npm run test:docker",
     "test:all:os": "jest --no-coverage && npm run test:docker && npm run test:multios",
+    "test:chaos": "jest --config jest.chaos.config.js --no-coverage",
+    "test:chaos:deep": "CHAOS_TIMEOUT=900000 CHAOS_MODE=deep jest --config jest.chaos.config.js --no-coverage",
     "test:ci": "jest --config jest.ci.config.js --no-coverage",
     "test:ci:setup": "bash test-docker/generate-test-keys.sh && docker compose -f test-docker/docker-compose.ci.yml up -d --build",
     "test:ci:teardown": "docker compose -f test-docker/docker-compose.ci.yml down",

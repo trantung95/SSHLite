@@ -42,6 +42,7 @@ The `.adn/` folder allows any AI assistant (or new developer) to fully understan
     commands-reference.md                # All 80+ commands, context values, when clauses
   testing/
     testing-strategy.md                  # Unit/Docker/MultiOS, mock architecture
+    chaos-testing.md                     # Chaos bug discovery module + AI review checklist
   growth/
     playbooks.md                         # Step-by-step recipes for extending SSH Lite
     coding-conventions.md                # Singleton, EventEmitter, debounce patterns

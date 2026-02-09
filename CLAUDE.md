@@ -14,6 +14,8 @@ npm run watch                            # Watch mode
 npx jest --no-coverage                   # Run all unit tests (823 tests)
 npx jest -- HostTreeProvider             # Run specific file
 npx jest --testPathPattern=docker        # Docker integration tests
+npm run test:chaos                       # Chaos bug discovery (quick, 3-5 min)
+npm run test:chaos:deep                  # Chaos bug discovery (deep, 10+ min)
 npx vsce package                         # Create .vsix
 ```
 
@@ -116,6 +118,7 @@ After any code change that affects behaviour, architecture, or contracts, update
 | Activity/audit change | `features/activity-audit.md` |
 | Tree provider/decoration change | `features/tree-providers.md` |
 | Test pattern/infrastructure change | `testing/testing-strategy.md` |
+| Chaos test/scenario change | `testing/chaos-testing.md`, `src/chaos/coverage-manifest.json` |
 | Startup/activation flow change | `flow/extension-activation.md` |
 | Type/interface change | `architecture/types-reference.md` |
 
@@ -173,3 +176,20 @@ This project is designed to grow itself. The `.adn/growth/` folder contains ever
 ### v0.2.5
 
 - Remove User from hosts panel (saved + SSH config)
+
+---
+
+## Weekly Chaos Test Review
+
+AI should review and enhance the chaos bug-discovery module weekly:
+1. Run `npm run test:chaos:deep` and analyze all output
+2. Read `logs/chaos-results.jsonl` for trends and new anomalies
+3. Follow the full checklist in `.adn/testing/chaos-testing.md`
+4. Enhance: scenarios, detection rules, invariants, and discovery strategies
+5. Commit all improvements directly
+
+## Chaos Test Catchup Rule
+
+After any prompt that changes project logic (new methods, changed APIs, new services),
+run `npm run test:chaos` to verify the chaos module detects the change.
+If `coverage.methods_uncovered` reports new methods, add scenarios before committing.

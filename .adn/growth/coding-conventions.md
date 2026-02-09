@@ -215,3 +215,15 @@ Before implementing any feature:
 - [ ] **Debounce actions** — 300ms+ between server calls
 - [ ] **Lazy load** — Don't preload data user hasn't requested
 - [ ] **Minimal UI** — Don't add complexity without clear user benefit
+
+---
+
+## Backward Compatibility
+
+When enhancing features, always maintain backward compatibility:
+- **Settings**: Never rename or remove existing setting keys. Add new keys instead, deprecate old ones.
+- **Commands**: Never change command IDs. Add new commands if behavior changes significantly.
+- **Interfaces**: Never remove fields from exported interfaces. Add optional fields instead.
+- **File formats**: Audit log, config files must remain parseable by older versions.
+- **contextValues**: Never rename. Add new values, keep old ones as aliases if needed.
+- If a breaking change is truly necessary, document the migration path in release notes.
