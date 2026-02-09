@@ -1,0 +1,14 @@
+services:
+  ssh-server:
+    image: linuxserver/openssh-server
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - USER_NAME=testuser
+      - USER_PASSWORD=testpass
+      - SUDO_ACCESS=true
+      - PASSWORD_ACCESS=true
+    ports:
+      - "2222:2222"
+    volumes:
+      - ./test-files:/home/testuser/files

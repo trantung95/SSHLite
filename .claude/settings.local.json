@@ -4,7 +4,10 @@
       "Bash(npm run compile:*)",
       "Bash(git add:*)",
       "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd VS Code-style search panel and filename filter highlighting\n\n- Add SearchPanel webview with VS Code-native styling and multi-scope search\n- Add filename filter with tree highlighting \\(yellow icons for matches\\)\n- Add excludePattern support to searchFiles for better filtering\n- Add rich tooltips to search results with file metadata\n- Add \"Reveal in Tree\" option for search results\n- Add race condition fixes with mutex locks in FileService and ProgressiveDownloadManager\n- Update LITE principles documentation \\(server + UI/UX\\)\n- Add code quality and logging guidelines to workflow\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
-      "Bash(node:*)"
+      "Bash(node:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nFix file save bug, search auto-cancel, multi-server grouping, activity tracking\n\n- Fix skipNextSave leak: removed 5 skipNextSave.add\\(\\) calls before\n  workbench.action.files.revert \\(revert doesn''t trigger onDidSaveTextDocument,\n  so skip was never consumed and silently ate the next user save\\)\n- Fix save race condition: capture document.getText\\(\\) eagerly at save time,\n  flush pending uploads on tab close and before file reopen\n- Search auto-cancel: new search kills previous running search via AbortSignal\n  that closes the SSH channel stream \\(killing remote grep/find process\\)\n- Multi-server search grouping: server grouping rows now based on search scopes\n  instead of result servers, ensuring grouping appears even when a server\n  returns zero results\n- Activity tracking: new ActivityService, ActivityTreeProvider, CommandGuard\n  for tracking file operations and search activities\n- Change tracking: FileDecorationProvider for modified file badges\n- Filename filter improvements: visual feedback, clear filter button\n- Server monitor enhancements, icon updates\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(npx jest:*)",
+      "Bash(git status:*)"
     ]
   }
 }

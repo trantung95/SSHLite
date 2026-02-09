@@ -1,0 +1,3 @@
+This is a deep nested file for testing.
+It contains the word hello on this line.
+And some other content here.
