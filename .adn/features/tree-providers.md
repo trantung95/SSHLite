@@ -95,10 +95,12 @@ Two filter types:
 
 **Filename Filter** (`sshLite.filterFileNames`):
 - Filters tree by file NAME matching
+- Available on both **connection** (server level) and **folder** items
 - Glob pattern support (`*.ts`, `config*`)
 - Plain text = substring match
 - Directories always shown (for navigation)
 - Empty folders after filter are grayed out
+- Connection contextValue changes: `connection` → `connection.filtered` when active
 
 ```typescript
 matchesFilter(file: IRemoteFile, pattern: string): boolean {

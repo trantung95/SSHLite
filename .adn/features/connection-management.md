@@ -82,9 +82,9 @@ Check isManualDisconnect?
 - `MAX_RECONNECT_ATTEMPTS = 0` (unlimited retries)
 
 **Non-recoverable errors** (stop reconnect):
-- "Invalid username" / empty username
-- Authentication failures
-- Host key mismatch
+- Authentication failures (auth failed, permission denied, publickey, invalid username)
+- Invalid host configuration
+- DNS resolution failures (ENOTFOUND, getaddrinfo)
 
 ---
 

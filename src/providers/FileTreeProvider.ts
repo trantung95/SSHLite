@@ -987,6 +987,10 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       for (const conn of orderedActive) {
         const currentPath = this.getCurrentPath(conn.id);
         const item = new ConnectionTreeItem(conn, currentPath);
+        // Show connection.filtered contextValue when filename filter is active on this connection
+        if (this.filenameFilterPattern && this.filenameFilterConnectionId === conn.id) {
+          item.contextValue = 'connection.filtered';
+        }
         items.push(item);
         this.connectionTreeItemRefs.set(conn.id, item);
       }

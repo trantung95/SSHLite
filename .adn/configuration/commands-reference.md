@@ -91,7 +91,7 @@ All 80+ commands registered by SSH Lite, organized by category.
 | `sshLite.cancelSearch` | Cancel Search | Palette |
 | `sshLite.filterFiles` | Filter Files (content) | View title / Keybinding |
 | `sshLite.clearFilter` | Clear Filter | View title |
-| `sshLite.filterFileNames` | Filter by Filename | Tree context |
+| `sshLite.filterFileNames` | Filter by Filename | Tree context (connection + folder) |
 | `sshLite.clearFilenameFilter` | Clear Filename Filter | View title / Tree context |
 | `sshLite.searchServerForFilter` | Search Server for Filter | View title |
 | `sshLite.revealSearchResultInTree` | Reveal Search Result | Context |

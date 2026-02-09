@@ -69,8 +69,10 @@ export class ConnectionManager {
   async connect(host: IHostConfig): Promise<SSHConnection> {
     const connectionId = `${host.host}:${host.port}:${host.username}`;
 
-    // Clear any pending reconnect for this host
-    this.stopReconnect(connectionId);
+    // Clear any pending reconnect for this host (but not during active attemptReconnect)
+    if (!this._activeReconnectAttempts.has(connectionId)) {
+      this.stopReconnect(connectionId);
+    }
 
     // Return existing connection if already connected
     const existing = this._connections.get(connectionId);
@@ -153,8 +155,10 @@ export class ConnectionManager {
   async connectWithCredential(host: IHostConfig, credential: SavedCredential): Promise<SSHConnection> {
     const connectionId = `${host.host}:${host.port}:${host.username}`;
 
-    // Clear any pending reconnect for this host
-    this.stopReconnect(connectionId);
+    // Clear any pending reconnect for this host (but not during active attemptReconnect)
+    if (!this._activeReconnectAttempts.has(connectionId)) {
+      this.stopReconnect(connectionId);
+    }
 
     // Return existing connection if already connected
     const existing = this._connections.get(connectionId);
@@ -356,11 +360,10 @@ export class ConnectionManager {
       });
 
     } catch (error) {
-      // Clear active attempt flag
-      this._activeReconnectAttempts.delete(connectionId);
-
-      // Don't retry on authentication or configuration failures
+      // Classify error: non-recoverable (stop) vs transient (retry)
       const errorMsg = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+
+      // Authentication / credential errors — retrying won't help
       const isAuthError = error instanceof AuthenticationError ||
         errorMsg.includes('authentication') ||
         errorMsg.includes('auth failed') ||
@@ -371,17 +374,33 @@ export class ConnectionManager {
         errorMsg.includes('invalid username') ||
         errorMsg.includes('invalid host configuration');
 
-      console.log(`[SSH Lite] Reconnect failed for ${connectionId}: errorMsg="${errorMsg}", isAuthError=${isAuthError}, errorType=${error?.constructor?.name}, host=${JSON.stringify({ name: info.host.name, host: info.host.host, port: info.host.port, username: info.host.username })}`);
+      // DNS / host resolution errors — hostname doesn't exist, retrying won't help
+      const isDnsError =
+        errorMsg.includes('enotfound') ||
+        errorMsg.includes('getaddrinfo');
 
-      if (isAuthError) {
+      const isNonRecoverable = isAuthError || isDnsError;
+
+      console.log(`[SSH Lite] Reconnect failed for ${connectionId}: errorMsg="${errorMsg}", isNonRecoverable=${isNonRecoverable} (auth=${isAuthError}, dns=${isDnsError}), errorType=${error?.constructor?.name}, host=${JSON.stringify({ name: info.host.name, host: info.host.host, port: info.host.port, username: info.host.username })}`);
+
+      if (isNonRecoverable) {
+        // Stop reconnecting. Keep _activeReconnectAttempts set briefly so the
+        // async SSH2 'close' event (which fires after connect() rejects) sees
+        // the guard and doesn't restart a new reconnect cycle.
         this.stopReconnect(connectionId);
-        vscode.window.showErrorMessage(
-          `Cannot reconnect to ${info.host.name}: Authentication failed. Please reconnect manually with correct credentials.`
-        );
+        const reason = isAuthError
+          ? 'Authentication failed. Please reconnect manually with correct credentials.'
+          : `Host not found (${info.host.host}). Please check the hostname and try again.`;
+        vscode.window.showErrorMessage(`Cannot reconnect to ${info.host.name}: ${reason}`);
+        // Delay clearing the active flag to let async close event be ignored
+        setTimeout(() => this._activeReconnectAttempts.delete(connectionId), 500);
         return;
       }
 
-      // Network/connection error - schedule another attempt
+      // Clear active attempt flag for transient errors (safe: scheduleReconnect follows)
+      this._activeReconnectAttempts.delete(connectionId);
+
+      // Transient network error - schedule another attempt
       vscode.window.setStatusBarMessage(
         `$(sync~spin) Reconnecting to ${info.host.name} (attempt ${info.reconnectAttempts})...`,
         this.RECONNECT_INTERVAL_MS

@@ -1523,29 +1523,41 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.window.setStatusBarMessage(`$(list-tree) Grouping by ${newMode}`, 2000);
     }),
 
-    // Filter files by name in folder (highlights in tree)
-    vscode.commands.registerCommand('sshLite.filterFileNames', async (item?: FileTreeItem) => {
-      if (!item || !item.file.isDirectory) {
+    // Filter files by name in folder or connection root (highlights in tree)
+    vscode.commands.registerCommand('sshLite.filterFileNames', async (item?: FileTreeItem | ConnectionTreeItem) => {
+      let connection: SSHConnection;
+      let basePath: string;
+      let displayName: string;
+
+      if (item instanceof ConnectionTreeItem) {
+        connection = item.connection;
+        basePath = item.currentPath;
+        displayName = item.connection.host.name;
+      } else if (item instanceof FileTreeItem && item.file.isDirectory) {
+        connection = item.connection;
+        basePath = item.file.path;
+        displayName = item.file.name;
+      } else {
         vscode.window.showWarningMessage('Select a folder to filter');
         return;
       }
 
       const pattern = await vscode.window.showInputBox({
-        prompt: `Filter files in ${item.file.name}`,
+        prompt: `Filter files in ${displayName}`,
         placeHolder: '*.ts, config*, etc.',
         title: 'Filter by Filename',
       });
 
       if (pattern) {
-        await fileTreeProvider.setFilenameFilter(pattern, item.file.path, item.connection);
-        fileDecorationProvider.setFilteredFolder(item.connection.id, item.file.path);
+        await fileTreeProvider.setFilenameFilter(pattern, basePath, connection);
+        fileDecorationProvider.setFilteredFolder(connection.id, basePath);
         // Pass highlighted paths to decoration provider for empty folder graying
         const filterState = fileTreeProvider.getFilenameFilterState();
         if (filterState) {
           fileDecorationProvider.setFilenameFilterPaths(filterState.highlightedPaths, filterState.basePath, filterState.connectionId);
         }
         vscode.commands.executeCommand('setContext', 'sshLite.hasFilenameFilter', true);
-        vscode.window.setStatusBarMessage(`$(filter) Filtering: ${pattern} in ${item.file.name}`, 0);
+        vscode.window.setStatusBarMessage(`$(filter) Filtering: ${pattern} in ${displayName}`, 0);
       }
     }),
 
