@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Testing infrastructure, patterns, and guides for SSH Lite. **823 tests across 30 suites**.
+Testing infrastructure, patterns, and guides for SSH Lite. **859 tests across 32 suites**.
 
 ---
 
@@ -12,6 +12,7 @@ Testing infrastructure, patterns, and guides for SSH Lite. **823 tests across 30
 | **Docker Integration** | `src/integration/docker-ssh.test.ts` | `npx jest --testPathPattern=docker` | Real SSH via Docker |
 | **Multi-OS** | `src/integration/multios-*.test.ts` | `npx jest --testPathPattern=multios` | Multiple Linux distros |
 | **Multi-Server** | `src/integration/multi-server.test.ts` | `npx jest --testPathPattern=multi-server` | Multiple SSH servers |
+| **Integration** | `src/integration/port-forward-persistence.test.ts` | `npx jest --no-coverage` | Mocked SSH, cross-service |
 
 ### Running Tests
 
@@ -264,6 +265,268 @@ module.exports = {
 ```
 
 Separate configs exist for Docker, Multi-OS, and Chaos tests to include their specific test paths.
+
+---
+
+## Per-Function Test Case Matrix: Port Forward Persistence
+
+Comprehensive test cases for every function in the port forward persistence feature, organized by test type.
+
+**Legend**: `[x]` = implemented, `[ ]` = not yet implemented
+
+---
+
+### PortForwardService
+
+#### `getInstance()`
+
+| Test Type | Case | Status |
+|-----------|------|--------|
+| Unit | Returns singleton instance | [x] |
+
+#### `initialize(context)`
+
+| Test Type | Case | Status |
+|-----------|------|--------|
+| Unit | Loads saved rules from globalState | [x] |
+| Unit | Handles empty globalState gracefully | [x] |
+| Integration | New service instance loads rules saved by previous instance | [x] |
+| E2E (Docker) | Initializes with real VS Code extension context | [ ] |
+
+#### `forwardPort(connection, localPort, remoteHost, remotePort)`
+
+| Test Type | Case | Status |
+|-----------|------|--------|
+| Unit | Calls `connection.forwardPort` with correct args | [x] |
+| Unit | Adds forward to tree provider on success | [x] |
+| Unit | Shows success status bar message | [x] |
+| Unit | Shows error message on failure | [x] |
+| Unit | Does not add to tree on failure | [x] |
+| Unit | Auto-saves rule on success | [x] |
+| Unit | Does not save rule on failure | [x] |
+| Integration | Create → verify tree + saved rule both reflect forward | [x] |
+| E2E (Docker) | Forward real port through SSH tunnel | [ ] |
+| E2E (Docker) | Forward with non-localhost remoteHost | [ ] |
+| E2E (Docker) | Forward to port already in use (EADDRINUSE) | [ ] |
+| Chaos | Forward under concurrent operations | coverage-manifest entry |
+| Chaos | Forward during connection state transitions | coverage-manifest entry |
+
+#### `stopForward(forward)`
+
+| Test Type | Case | Status |
+|-----------|------|--------|
+| Unit | Calls `connection.stopForward` | [x] |
+| Unit | Removes forward from tree provider | [x] |
+| Unit | Shows warning if connection no longer active | [x] |
+| Unit | Shows error on stopForward failure | [x] |
+| Unit | Shows status bar message on success | [x] |
+| Unit | Keeps saved rule after stopping (rule persists) | [x] |
+| E2E (Docker) | Stop real forwarded port, verify traffic stops | [ ] |
+| Chaos | Stop during active data transfer | coverage-manifest entry |
+
+#### `deactivateAllForwardsForConnection(connectionId)`
+
+| Test Type | Case | Status |
+|-----------|------|--------|
+| Unit | Stops all forwards for a connection | [x] |
+| Unit | Does nothing if no tree provider | [x] |
+| Unit | Handles missing connection gracefully | [x] |
+| Unit | Keeps saved rules after deactivation | [x] |
+| Integration | Deactivate → tree shows 0 active, saved rules persist | [x] |
+| E2E (Docker) | Deactivate all after real SSH disconnect | [ ] |
+
+#### `restoreForwardsForConnection(connection)`
+
+| Test Type | Case | Status |
+|-----------|------|--------|
+| Unit | Restores saved forwards on connect | [x] |
+| Unit | Restores multiple forwards | [x] |
+| Unit | Handles partial failures gracefully (some succeed, some fail) | [x] |
+| Unit | Does nothing when no saved rules | [x] |
+| Unit | Shows status message on restore | [x] |
+| Integration | Full create → disconnect → restart → restore cycle | [x] |
+| Integration | Multi-server isolation (restore only correct server's rules) | [x] |
+| Integration | Partial restore failure (successful rules added to tree, failed skipped) | [x] |
+| E2E (Docker) | Restore real port forwards after SSH reconnect | [ ] |
+| E2E (Docker) | Restore when remote port is no longer available | [ ] |
+| Chaos | Restore under concurrent connection events | coverage-manifest entry |
+
+#### `saveRule(hostId, localPort, remoteHost, remotePort)`
+
+| Test Type | Case | Status |
+|-----------|------|--------|
+| Unit | Saves rule to globalState | [x] |
+| Unit | Deduplicates identical rules (same localPort+remoteHost+remotePort) | [x] |
+| Unit | Allows different rules for same host | [x] |
+| Unit | Returns existing rule object on duplicate | [x] |
+| Integration | Rule survives service instance restart (new singleton, same globalState) | [x] |
+
+#### `deleteSavedRule(hostId, ruleId)`
+
+| Test Type | Case | Status |
+|-----------|------|--------|
+| Unit | Deletes rule from globalState | [x] |
+| Unit | Refreshes tree after deleting rule | [x] |
+| Unit | Cleans up host entry when last rule deleted | [x] |
+| Integration | Deleted rule is not restored on next connect | [x] |
+
+#### `activateSavedForward(hostId, ruleId)`
+
+| Test Type | Case | Status |
+|-----------|------|--------|
+| Unit | Activates a saved forward on active connection | [x] |
+| Unit | Shows warning if rule not found | [x] |
+| Unit | Shows warning if no active connection | [x] |
+| Integration | Activate saved rule on active connection (manual trigger) | [x] |
+| Integration | Shows warning when activating without connection | [x] |
+
+#### `getSavedRules(hostId)`
+
+| Test Type | Case | Status |
+|-----------|------|--------|
+| Unit | Returns saved rules for host | [x] (via persistence tests) |
+| Unit | Returns empty array for unknown host | [x] |
+
+#### `getHostIdsWithSavedRules()`
+
+| Test Type | Case | Status |
+|-----------|------|--------|
+| Unit | Returns all hostIds that have saved rules | [x] |
+
+#### `promptForwardPort()`
+
+| Test Type | Case | Status |
+|-----------|------|--------|
+| Unit | Shows warning if no connections | [x] |
+| Unit | Shows quick pick to select connection | [x] |
+| Unit | Cancels if user dismisses connection picker | [x] |
+| Unit | Prompts for local port after connection selection | [x] |
+
+---
+
+### PortForwardTreeProvider
+
+#### `addForward(connectionId, localPort, remoteHost, remotePort)`
+
+| Test Type | Case | Status |
+|-----------|------|--------|
+| Unit | Adds a forward to internal storage | [x] |
+| Unit | Adds multiple forwards | [x] |
+
+#### `removeForward(localPort, connectionId)`
+
+| Test Type | Case | Status |
+|-----------|------|--------|
+| Unit | Removes by localPort and connectionId | [x] |
+| Unit | Does not affect other connections | [x] |
+
+#### `getForwardsForConnection(connectionId)`
+
+| Test Type | Case | Status |
+|-----------|------|--------|
+| Unit | Returns empty array for unknown connection | [x] |
+| Unit | Filters by connectionId | [x] |
+
+#### `getChildren(element?)`
+
+| Test Type | Case | Status |
+|-----------|------|--------|
+| Unit | Returns empty when no forwards and no saved rules | [x] |
+| Unit | Returns PortForwardTreeItem for active forwards with connection | [x] |
+| Unit | Skips forwards for disconnected connections | [x] |
+| Unit | Shows saved-but-inactive rules as SavedForwardTreeItem | [x] |
+| Unit | Does not duplicate active forward as saved item (dedup) | [x] |
+| Unit | Shows both active and saved items for different ports | [x] |
+| Unit | Shows saved rules for orphaned hosts (not in HostService) | [x] |
+| Integration | Shows active items during connection, dimmed items after disconnect | [x] |
+| Integration | Shows active items again after reconnect + restore | [x] |
+
+#### `cleanupDisconnectedForwards()`
+
+| Test Type | Case | Status |
+|-----------|------|--------|
+| Unit | Removes forwards for disconnected connections | [x] |
+| Unit | Keeps forwards for still-connected connections | [x] |
+
+#### `refresh()`
+
+| Test Type | Case | Status |
+|-----------|------|--------|
+| Unit | Fires onDidChangeTreeData event | [x] |
+
+---
+
+### PortForwardTreeItem
+
+| Test Type | Case | Status |
+|-----------|------|--------|
+| Unit | Has `contextValue = 'forward'` | [x] |
+| Unit | Displays correct label format (remoteHost:remotePort <-> localhost:localPort) | [x] (via getChildren tests) |
+
+### SavedForwardTreeItem
+
+| Test Type | Case | Status |
+|-----------|------|--------|
+| Unit | Has `contextValue = 'savedForward'` | [x] |
+| Unit | Has stable id (`saved:${hostId}:${ruleId}`) | [x] |
+| Unit | Shows `(saved)` in description | [x] |
+| Unit | Uses dimmed icon (`disabledForeground`) | [x] (via constructor) |
+
+---
+
+### Integration Test Flows (`src/integration/port-forward-persistence.test.ts`)
+
+| Flow | Description | Status |
+|------|-------------|--------|
+| Full lifecycle | Create → disconnect → restart (new service instance) → restore | [x] |
+| Tree view lifecycle | Active item → dimmed item (disconnect) → active item (reconnect) | [x] |
+| Multi-server isolation | Restore only correct server's rules, other server untouched | [x] |
+| Delete permanently | Delete saved rule → not restored on next connect | [x] |
+| Manual activation | Activate a manually-saved rule on active connection | [x] |
+| Activation without connection | Show warning when no active connection | [x] |
+| Partial restore failure | One rule succeeds, one fails EADDRINUSE → only success in tree, both rules kept | [x] |
+
+---
+
+### E2E Docker Test Cases (Not Yet Implemented)
+
+These require Docker Desktop running with SSH containers.
+
+| Flow | Description | Status |
+|------|-------------|--------|
+| Real forward | Forward a real port through SSH, verify TCP connectivity | [ ] |
+| Real stop | Stop forward, verify port no longer accessible | [ ] |
+| Real restore | Disconnect SSH, reconnect, verify forwards auto-restore | [ ] |
+| Port conflict | Forward to port already in use on local machine | [ ] |
+| Remote port unavailable | Forward to remote port with no service listening | [ ] |
+| Multi-OS | Verify port forwarding works on Alpine, Ubuntu, Debian, Fedora, Rocky | [ ] |
+
+---
+
+### Chaos Test Scenarios (Coverage Manifest Only)
+
+Methods registered in `src/chaos/coverage-manifest.json`. Scenario implementations pending.
+
+| Method | Manifest Scenarios |
+|--------|--------------------|
+| `PortForwardService.forwardPort` | `[]` (pending) |
+| `PortForwardService.stopForward` | `[]` (pending) |
+| `PortForwardService.restoreForwardsForConnection` | `[]` (pending) |
+| `PortForwardService.deactivateAllForwardsForConnection` | `[]` (pending) |
+| `PortForwardService.saveRule` | `[]` (pending) |
+| `PortForwardService.deleteSavedRule` | `[]` (pending) |
+| `PortForwardService.activateSavedForward` | `[]` (pending) |
+
+---
+
+### Test Coverage Summary
+
+| Test Type | Written | Pending |
+|-----------|---------|---------|
+| **Unit** | 48 test cases | 0 |
+| **Integration** | 7 flows (11 assertions) | 0 |
+| **E2E (Docker)** | 0 | 6 flows |
+| **Chaos** | 0 scenarios | 7 methods in manifest |
 
 ---
 

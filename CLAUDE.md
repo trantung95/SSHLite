@@ -158,6 +158,18 @@ This project is designed to grow itself. The `.adn/growth/` folder contains ever
 
 ## Release Notes
 
+### v0.4.2 — Persistent port forwarding (GitHub Issue #2)
+
+- **Saved port forward rules**: Port forwards are auto-saved to globalState and auto-restored on reconnect or VSCode restart
+- **New `ISavedPortForwardRule` type**: Persistence model for saved rules, scoped per-host
+- **`SavedForwardTreeItem`**: Dimmed tree items for saved-but-inactive rules with play/delete inline actions
+- **New commands**: `sshLite.activateSavedForward` and `sshLite.deleteSavedForward`
+- **PortForwardService persistence layer**: `initialize()`, `saveRule()`, `deleteSavedRule()`, `restoreForwardsForConnection()`, `deactivateAllForwardsForConnection()`, `activateSavedForward()`
+- **Integration tests**: 7 cross-service flows covering full lifecycle, multi-server isolation, partial restore failure
+- **Per-function test matrix**: Comprehensive test documentation in `.adn/testing/testing-strategy.md`
+
+### v0.4.1 — Filter by name on server level, fix reconnect loop
+
 ### v0.4.0 — Project DNA documentation system
 
 - **`.adn/` documentation system**: 18-file "project DNA" covering architecture, features, flows, configuration, testing, and growth playbooks

@@ -155,3 +155,4 @@ These are NOT user settings — they're set programmatically and used in `when` 
 | Host key fingerprints | SSH host verification |
 | Search sort order | Checked-first vs alphabetical |
 | Folder access history | Preloading priorities |
+| Saved port forward rules | Auto-restore port forwards on connect |

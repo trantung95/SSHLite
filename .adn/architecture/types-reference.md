@@ -77,13 +77,28 @@ interface ISSHConnection {
 }
 ```
 
+### ISavedPortForwardRule
+
+Saved port forward rule (persisted in globalState, survives restarts). Source: `src/types.ts`
+
+```typescript
+interface ISavedPortForwardRule {
+  id: string;              // Unique identifier ("pf_timestamp_random")
+  localPort: number;       // Local port to listen on
+  remoteHost: string;      // Remote host (usually "localhost")
+  remotePort: number;      // Remote port
+}
+```
+
+Stored in `context.globalState` under key `sshLite.savedPortForwards`, indexed by `hostId`.
+
 ### IPortForward
 
-Port forward configuration. Source: `src/types.ts`
+Active port forward configuration (in-memory). Source: `src/types.ts`
 
 ```typescript
 interface IPortForward {
-  id: string;              // Unique identifier
+  id: string;              // Unique identifier ("localPort:connectionId")
   connectionId: string;    // Connection ID
   localPort: number;       // Local port
   remoteHost: string;      // Remote host (usually "localhost")

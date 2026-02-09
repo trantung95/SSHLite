@@ -6,10 +6,33 @@
  * - Filtering by connection
  * - Tree item generation
  * - Cleanup of disconnected forwards
+ * - Saved-but-inactive forward display
  */
 
 import { IPortForward, ConnectionState } from '../types';
 import { createMockConnection, createMockHostConfig, createMockPortForward } from '../__mocks__/testHelpers';
+
+// Mock PortForwardService for saved rules
+const mockGetSavedRules = jest.fn().mockReturnValue([]);
+const mockGetHostIdsWithSavedRules = jest.fn().mockReturnValue([]);
+jest.mock('../services/PortForwardService', () => ({
+  PortForwardService: {
+    getInstance: jest.fn().mockReturnValue({
+      getSavedRules: mockGetSavedRules,
+      getHostIdsWithSavedRules: mockGetHostIdsWithSavedRules,
+    }),
+  },
+}));
+
+// Mock HostService for host lookup
+const mockGetAllHosts = jest.fn().mockReturnValue([]);
+jest.mock('../services/HostService', () => ({
+  HostService: {
+    getInstance: jest.fn().mockReturnValue({
+      getAllHosts: mockGetAllHosts,
+    }),
+  },
+}));
 
 // We need to mock ConnectionManager before importing PortForwardTreeProvider
 jest.mock('../connection/ConnectionManager', () => {
@@ -27,7 +50,7 @@ jest.mock('../connection/ConnectionManager', () => {
   };
 });
 
-import { PortForwardTreeProvider } from './PortForwardTreeProvider';
+import { PortForwardTreeProvider, PortForwardTreeItem, SavedForwardTreeItem } from './PortForwardTreeProvider';
 import { ConnectionManager } from '../connection/ConnectionManager';
 
 function createProvider(): PortForwardTreeProvider {
@@ -40,6 +63,9 @@ describe('PortForwardTreeProvider', () => {
   beforeEach(() => {
     provider = createProvider();
     jest.clearAllMocks();
+    mockGetSavedRules.mockReturnValue([]);
+    mockGetHostIdsWithSavedRules.mockReturnValue([]);
+    mockGetAllHosts.mockReturnValue([]);
   });
 
   afterEach(() => {
@@ -105,7 +131,7 @@ describe('PortForwardTreeProvider', () => {
   });
 
   describe('getChildren', () => {
-    it('should return empty when no forwards', async () => {
+    it('should return empty when no forwards and no saved rules', async () => {
       const children = await provider.getChildren();
       expect(children).toEqual([]);
     });
@@ -120,6 +146,7 @@ describe('PortForwardTreeProvider', () => {
 
       const children = await provider.getChildren();
       expect(children).toHaveLength(1);
+      expect(children[0]).toBeInstanceOf(PortForwardTreeItem);
     });
 
     it('should skip forwards for disconnected connections', async () => {
@@ -132,6 +159,125 @@ describe('PortForwardTreeProvider', () => {
       const children = await provider.getChildren();
       // No matching connection in map, so forward is skipped
       expect(children).toHaveLength(0);
+    });
+
+    it('should show saved-but-inactive rules as SavedForwardTreeItem', async () => {
+      const connectionManager = ConnectionManager.getInstance();
+      (connectionManager.getAllConnections as jest.Mock).mockReturnValue([]);
+
+      const host = createMockHostConfig();
+      mockGetAllHosts.mockReturnValue([host]);
+      mockGetSavedRules.mockReturnValue([
+        { id: 'pf_1', localPort: 3000, remoteHost: 'localhost', remotePort: 3000 },
+      ]);
+
+      const children = await provider.getChildren();
+      expect(children).toHaveLength(1);
+      expect(children[0]).toBeInstanceOf(SavedForwardTreeItem);
+    });
+
+    it('should not duplicate active forward as saved item', async () => {
+      // Use host.id that matches connectionId (as in production)
+      const host = createMockHostConfig({ id: '192.168.1.100:22:testuser' });
+      const mockConn = createMockConnection({ host });
+      const connectionManager = ConnectionManager.getInstance();
+      (connectionManager.getAllConnections as jest.Mock).mockReturnValue([mockConn]);
+
+      // Active forward
+      provider.addForward(mockConn.id, 3000, 'localhost', 3000);
+
+      // Same rule saved for same host
+      mockGetAllHosts.mockReturnValue([host]);
+      mockGetSavedRules.mockReturnValue([
+        { id: 'pf_1', localPort: 3000, remoteHost: 'localhost', remotePort: 3000 },
+      ]);
+
+      const children = await provider.getChildren();
+      // Should only show the active forward, not the saved duplicate
+      expect(children).toHaveLength(1);
+      expect(children[0]).toBeInstanceOf(PortForwardTreeItem);
+    });
+
+    it('should show both active and saved items for different ports', async () => {
+      // Use host.id that matches connectionId (as in production)
+      const host = createMockHostConfig({ id: '192.168.1.100:22:testuser' });
+      const mockConn = createMockConnection({ host });
+      const connectionManager = ConnectionManager.getInstance();
+      (connectionManager.getAllConnections as jest.Mock).mockReturnValue([mockConn]);
+
+      // Active forward on port 3000
+      provider.addForward(mockConn.id, 3000, 'localhost', 3000);
+
+      // Saved rules: port 3000 (active, deduped) and port 8080 (inactive)
+      mockGetAllHosts.mockReturnValue([host]);
+      mockGetSavedRules.mockReturnValue([
+        { id: 'pf_1', localPort: 3000, remoteHost: 'localhost', remotePort: 3000 },
+        { id: 'pf_2', localPort: 8080, remoteHost: 'localhost', remotePort: 80 },
+      ]);
+
+      const children = await provider.getChildren();
+      expect(children).toHaveLength(2);
+      expect(children.filter(c => c instanceof PortForwardTreeItem)).toHaveLength(1);
+      expect(children.filter(c => c instanceof SavedForwardTreeItem)).toHaveLength(1);
+    });
+
+    it('should show saved rules for hosts not in hostService', async () => {
+      const connectionManager = ConnectionManager.getInstance();
+      (connectionManager.getAllConnections as jest.Mock).mockReturnValue([]);
+
+      mockGetAllHosts.mockReturnValue([]); // No known hosts
+      mockGetHostIdsWithSavedRules.mockReturnValue(['orphan-host:22:user']);
+      mockGetSavedRules.mockImplementation((hostId: string) => {
+        if (hostId === 'orphan-host:22:user') {
+          return [{ id: 'pf_1', localPort: 3000, remoteHost: 'localhost', remotePort: 3000 }];
+        }
+        return [];
+      });
+
+      const children = await provider.getChildren();
+      expect(children).toHaveLength(1);
+      expect(children[0]).toBeInstanceOf(SavedForwardTreeItem);
+    });
+  });
+
+  describe('SavedForwardTreeItem', () => {
+    it('should have correct contextValue', () => {
+      const item = new SavedForwardTreeItem(
+        { id: 'pf_1', localPort: 3000, remoteHost: 'localhost', remotePort: 3000 },
+        'host1:22:user',
+        'My Server',
+        'host1'
+      );
+      expect(item.contextValue).toBe('savedForward');
+    });
+
+    it('should have stable id', () => {
+      const item = new SavedForwardTreeItem(
+        { id: 'pf_1', localPort: 3000, remoteHost: 'localhost', remotePort: 3000 },
+        'host1:22:user',
+        'My Server',
+        'host1'
+      );
+      expect(item.id).toBe('saved:host1:22:user:pf_1');
+    });
+
+    it('should show saved description', () => {
+      const item = new SavedForwardTreeItem(
+        { id: 'pf_1', localPort: 3000, remoteHost: 'localhost', remotePort: 3000 },
+        'host1:22:user',
+        'My Server',
+        'host1'
+      );
+      expect(item.description).toBe('My Server (saved)');
+    });
+  });
+
+  describe('PortForwardTreeItem', () => {
+    it('should have correct contextValue', () => {
+      const mockConn = createMockConnection();
+      const forward = createMockPortForward({ connectionId: mockConn.id });
+      const item = new PortForwardTreeItem(forward, mockConn as any);
+      expect(item.contextValue).toBe('forward');
     });
   });
 

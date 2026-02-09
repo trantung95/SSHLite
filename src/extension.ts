@@ -15,7 +15,7 @@ import { HostTreeProvider, ServerTreeItem, UserCredentialTreeItem, CredentialTre
 import { SavedCredential, PinnedFolder } from './services/CredentialService';
 import { IHostConfig, ConnectionState } from './types';
 import { FileTreeProvider, FileTreeItem, ConnectionTreeItem, setFileTreeExtensionPath } from './providers/FileTreeProvider';
-import { PortForwardTreeProvider, PortForwardTreeItem } from './providers/PortForwardTreeProvider';
+import { PortForwardTreeProvider, PortForwardTreeItem, SavedForwardTreeItem } from './providers/PortForwardTreeProvider';
 import { ActivityTreeProvider, ActivityTreeItem, ServerGroupTreeItem } from './providers/ActivityTreeProvider';
 import { ActivityService } from './services/ActivityService';
 import { SearchPanel, ServerSearchEntry } from './webviews/SearchPanel';
@@ -104,6 +104,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Initialize host key verification storage
   setGlobalState(context.globalState);
+
+  // Initialize port forward service for persistence
+  portForwardService.initialize(context);
 
   // Initialize folder history service for smart preloading
   const folderHistoryService = FolderHistoryService.getInstance();
@@ -403,6 +406,13 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   });
 
+  // Auto-restore saved port forwards when connection established
+  connectionManager.onConnectionStateChange(async (event) => {
+    if (event.state === ConnectionState.Connected) {
+      await portForwardService.restoreForwardsForConnection(event.connection);
+    }
+  });
+
   // Register commands
   const commands = [
     // Host commands
@@ -522,7 +532,7 @@ export function activate(context: vscode.ExtensionContext): void {
         // Clean up resources
         fileService.cleanupConnection(connection.id);
         terminalService.closeTerminalsForConnection(connection.id);
-        await portForwardService.stopAllForwardsForConnection(connection.id);
+        await portForwardService.deactivateAllForwardsForConnection(connection.id);
         fileTreeProvider.clearCache(connection.id);
         fileTreeProvider.clearExpansionState(connection.id);
 
@@ -1785,6 +1795,26 @@ export function activate(context: vscode.ExtensionContext): void {
       logCommand('stopForward', `${item.forward.localPort} -> ${item.forward.remoteHost}:${item.forward.remotePort}`);
       await portForwardService.stopForward(item.forward);
       logResult('stopForward', true);
+    }),
+
+    vscode.commands.registerCommand('sshLite.activateSavedForward', async (item?: SavedForwardTreeItem) => {
+      if (!item) {
+        return;
+      }
+
+      logCommand('activateSavedForward', `${item.rule.localPort} -> ${item.rule.remoteHost}:${item.rule.remotePort}`);
+      await portForwardService.activateSavedForward(item.hostId, item.rule.id);
+      logResult('activateSavedForward', true);
+    }),
+
+    vscode.commands.registerCommand('sshLite.deleteSavedForward', async (item?: SavedForwardTreeItem) => {
+      if (!item) {
+        return;
+      }
+
+      logCommand('deleteSavedForward', `rule ${item.rule.id}`);
+      await portForwardService.deleteSavedRule(item.hostId, item.rule.id);
+      logResult('deleteSavedForward', true);
     }),
 
     // Audit log commands

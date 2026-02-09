@@ -60,6 +60,20 @@ export interface IRemoteFile {
 }
 
 /**
+ * Saved port forward rule (persisted, per-host)
+ */
+export interface ISavedPortForwardRule {
+  /** Unique identifier */
+  id: string;
+  /** Local port to listen on */
+  localPort: number;
+  /** Remote host (usually localhost or 127.0.0.1) */
+  remoteHost: string;
+  /** Remote port */
+  remotePort: number;
+}
+
+/**
  * Port forward configuration
  */
 export interface IPortForward {

@@ -59,5 +59,12 @@
   "ActivityService.getRunningActivities": [],
   "ActivityService.cancelAllForConnection": [],
   "ActivityService.cancelAll": [],
-  "ActivityService.clearAll": []
+  "ActivityService.clearAll": [],
+  "PortForwardService.forwardPort": [],
+  "PortForwardService.stopForward": [],
+  "PortForwardService.restoreForwardsForConnection": [],
+  "PortForwardService.deactivateAllForwardsForConnection": [],
+  "PortForwardService.saveRule": [],
+  "PortForwardService.deleteSavedRule": [],
+  "PortForwardService.activateSavedForward": []
 }

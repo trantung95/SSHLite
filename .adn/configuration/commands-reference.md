@@ -80,7 +80,9 @@ All 80+ commands registered by SSH Lite, organized by category.
 | `sshLite.openTerminal` | Open Terminal | Tree context / Keybinding |
 | `sshLite.openTerminalHere` | Open Terminal Here | Tree context |
 | `sshLite.forwardPort` | Forward Port | View title |
-| `sshLite.stopForward` | Stop Forward | Tree context |
+| `sshLite.stopForward` | Stop Forward | Tree context (active forward) |
+| `sshLite.activateSavedForward` | Start Saved Forward | Tree context (saved forward) |
+| `sshLite.deleteSavedForward` | Delete Saved Forward | Tree context (saved forward) |
 
 ### Search & Filter
 

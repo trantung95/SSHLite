@@ -1,10 +1,14 @@
 import * as vscode from 'vscode';
 import { ConnectionManager } from '../connection/ConnectionManager';
 import { SSHConnection } from '../connection/SSHConnection';
-import { IPortForward } from '../types';
+import { IPortForward, ISavedPortForwardRule } from '../types';
+import { PortForwardService } from '../services/PortForwardService';
+import { HostService } from '../services/HostService';
+
+type PortForwardTreeElement = PortForwardTreeItem | SavedForwardTreeItem;
 
 /**
- * Tree item representing a port forward
+ * Tree item representing an active port forward
  */
 export class PortForwardTreeItem extends vscode.TreeItem {
   constructor(
@@ -38,10 +42,44 @@ export class PortForwardTreeItem extends vscode.TreeItem {
 }
 
 /**
+ * Tree item representing a saved-but-inactive port forward rule
+ */
+export class SavedForwardTreeItem extends vscode.TreeItem {
+  constructor(
+    public readonly rule: ISavedPortForwardRule,
+    public readonly hostId: string,
+    public readonly hostName: string,
+    public readonly hostAddress: string
+  ) {
+    const remoteDisplay = rule.remoteHost === 'localhost'
+      ? `${hostAddress}:${rule.remotePort}`
+      : `${rule.remoteHost}:${rule.remotePort}`;
+
+    super(
+      `${remoteDisplay} <-> localhost:${rule.localPort}`,
+      vscode.TreeItemCollapsibleState.None
+    );
+
+    this.id = `saved:${hostId}:${rule.id}`;
+    this.description = `${hostName} (saved)`;
+    this.contextValue = 'savedForward';
+    this.iconPath = new vscode.ThemeIcon('arrow-swap', new vscode.ThemeColor('disabledForeground'));
+
+    this.tooltip = new vscode.MarkdownString(
+      `**Saved Port Forward** (inactive)\n\n` +
+        `- Local: \`localhost:${rule.localPort}\`\n` +
+        `- Remote: \`${rule.remoteHost}:${rule.remotePort}\`\n` +
+        `- Host: ${hostName}\n\n` +
+        `*Click play to activate, or delete to remove saved rule*`
+    );
+  }
+}
+
+/**
  * Tree data provider for port forwards
  */
-export class PortForwardTreeProvider implements vscode.TreeDataProvider<PortForwardTreeItem> {
-  private readonly _onDidChangeTreeData = new vscode.EventEmitter<PortForwardTreeItem | undefined | void>();
+export class PortForwardTreeProvider implements vscode.TreeDataProvider<PortForwardTreeElement> {
+  private readonly _onDidChangeTreeData = new vscode.EventEmitter<PortForwardTreeElement | undefined | void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
   private connectionManager: ConnectionManager;
@@ -113,26 +151,63 @@ export class PortForwardTreeProvider implements vscode.TreeDataProvider<PortForw
   /**
    * Get tree item representation
    */
-  getTreeItem(element: PortForwardTreeItem): vscode.TreeItem {
+  getTreeItem(element: PortForwardTreeElement): vscode.TreeItem {
     return element;
   }
 
   /**
-   * Get children (forwards)
+   * Get children (active forwards + saved-but-inactive rules)
    */
-  async getChildren(element?: PortForwardTreeItem): Promise<PortForwardTreeItem[]> {
+  async getChildren(element?: PortForwardTreeElement): Promise<PortForwardTreeElement[]> {
     if (element) {
       return []; // Forwards have no children
     }
 
-    const items: PortForwardTreeItem[] = [];
+    const items: PortForwardTreeElement[] = [];
     const connections = this.connectionManager.getAllConnections();
     const connectionMap = new Map(connections.map((c) => [c.id, c]));
 
+    // Track active forward keys to avoid duplicating them as saved items
+    const activeKeys = new Set<string>();
+
+    // 1. Add active forwards
     for (const forward of this.forwards.values()) {
       const connection = connectionMap.get(forward.connectionId);
       if (connection) {
         items.push(new PortForwardTreeItem(forward, connection));
+        activeKeys.add(`${forward.connectionId}:${forward.localPort}:${forward.remoteHost}:${forward.remotePort}`);
+      }
+    }
+
+    // 2. Add saved-but-inactive rules
+    const portForwardService = PortForwardService.getInstance();
+    const hostService = HostService.getInstance();
+    const allHosts = hostService.getAllHosts();
+
+    for (const host of allHosts) {
+      const savedRules = portForwardService.getSavedRules(host.id);
+      for (const rule of savedRules) {
+        const key = `${host.id}:${rule.localPort}:${rule.remoteHost}:${rule.remotePort}`;
+        if (!activeKeys.has(key)) {
+          items.push(new SavedForwardTreeItem(rule, host.id, host.name, host.host));
+        }
+      }
+    }
+
+    // Also show saved rules for hosts not currently in hostService
+    // (e.g., hosts removed from config but still have saved rules)
+    const knownHostIds = new Set(allHosts.map((h) => h.id));
+    for (const hostId of portForwardService.getHostIdsWithSavedRules()) {
+      if (knownHostIds.has(hostId)) {
+        continue;
+      }
+      const savedRules = portForwardService.getSavedRules(hostId);
+      const [hostAddr] = hostId.split(':');
+      for (const rule of savedRules) {
+        const key = `${hostId}:${rule.localPort}:${rule.remoteHost}:${rule.remotePort}`;
+        if (!activeKeys.has(key)) {
+          items.push(new SavedForwardTreeItem(rule, hostId, hostId, hostAddr));
+        }
       }
     }
 

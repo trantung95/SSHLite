@@ -2,7 +2,7 @@
   "name": "ssh-lite",
   "displayName": "SSH Lite - Remote File Browser & Terminal",
   "description": "Lightweight SSH client for VS Code. Browse remote files, edit and save, open terminals, port forwarding - all without installing anything on remote servers. Perfect for VPS, cloud servers (AWS/Azure/GCP), and Linux administration.",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "publisher": "hybr8",
   "engines": {
     "vscode": "^1.85.0"
@@ -257,6 +257,18 @@
         "title": "Stop Forward",
         "category": "SSH Lite",
         "icon": "$(close)"
+      },
+      {
+        "command": "sshLite.activateSavedForward",
+        "title": "Start Saved Forward",
+        "category": "SSH Lite",
+        "icon": "$(play)"
+      },
+      {
+        "command": "sshLite.deleteSavedForward",
+        "title": "Delete Saved Forward",
+        "category": "SSH Lite",
+        "icon": "$(trash)"
       },
       {
         "command": "sshLite.showAuditLog",
@@ -1038,6 +1050,16 @@
           "command": "sshLite.stopForward",
           "when": "view == sshLite.portForwards && viewItem == forward",
           "group": "inline"
+        },
+        {
+          "command": "sshLite.activateSavedForward",
+          "when": "view == sshLite.portForwards && viewItem == savedForward",
+          "group": "inline@1"
+        },
+        {
+          "command": "sshLite.deleteSavedForward",
+          "when": "view == sshLite.portForwards && viewItem == savedForward",
+          "group": "inline@2"
         },
         {
           "command": "sshLite.searchInScope",

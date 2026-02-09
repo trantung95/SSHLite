@@ -1,7 +1,7 @@
 /**
  * PortForwardService tests
  *
- * Tests port forward create/stop/batch operations
+ * Tests port forward create/stop/batch operations and persistence
  */
 
 import { IPortForward } from '../types';
@@ -32,15 +32,30 @@ import { PortForwardService } from './PortForwardService';
 const mockAddForward = jest.fn();
 const mockRemoveForward = jest.fn();
 const mockGetForwardsForConnection = jest.fn().mockReturnValue([]);
+const mockRefresh = jest.fn();
+
+// Mock globalState
+const mockGlobalStateStore: Record<string, any> = {};
+const mockGlobalState = {
+  get: jest.fn((key: string) => mockGlobalStateStore[key]),
+  update: jest.fn(async (key: string, value: any) => {
+    mockGlobalStateStore[key] = value;
+  }),
+};
+const mockContext = {
+  globalState: mockGlobalState,
+} as any;
 
 function resetPortForwardService(): PortForwardService {
   (PortForwardService as any)._instance = undefined;
+  // Clear stored rules
+  delete mockGlobalStateStore['sshLite.savedPortForwards'];
   const service = PortForwardService.getInstance();
   service.setTreeProvider({
     addForward: mockAddForward,
     removeForward: mockRemoveForward,
     getForwardsForConnection: mockGetForwardsForConnection,
-    refresh: jest.fn(),
+    refresh: mockRefresh,
     getTreeItem: jest.fn(),
     getChildren: jest.fn(),
     onDidChangeTreeData: jest.fn(),
@@ -111,6 +126,30 @@ describe('PortForwardService', () => {
       await service.forwardPort(mockConn as any, 3000, 'localhost', 3000);
 
       expect(mockAddForward).not.toHaveBeenCalled();
+    });
+
+    it('should auto-save rule on success', async () => {
+      service.initialize(mockContext);
+      const mockConn = createMockConnection();
+
+      await service.forwardPort(mockConn as any, 3000, 'localhost', 3000);
+
+      const rules = service.getSavedRules(mockConn.id);
+      expect(rules).toHaveLength(1);
+      expect(rules[0].localPort).toBe(3000);
+      expect(rules[0].remoteHost).toBe('localhost');
+      expect(rules[0].remotePort).toBe(3000);
+    });
+
+    it('should not save rule on failure', async () => {
+      service.initialize(mockContext);
+      const mockConn = createMockConnection();
+      (mockConn.forwardPort as jest.Mock).mockRejectedValue(new Error('Failed'));
+
+      await service.forwardPort(mockConn as any, 3000, 'localhost', 3000);
+
+      const rules = service.getSavedRules(mockConn.id);
+      expect(rules).toHaveLength(0);
     });
   });
 
@@ -183,9 +222,29 @@ describe('PortForwardService', () => {
         3000
       );
     });
+
+    it('should keep saved rule after stopping', async () => {
+      service.initialize(mockContext);
+      const mockConn = createMockConnection();
+      mockGetConnection.mockReturnValue(mockConn);
+
+      // Create forward (auto-saves rule)
+      await service.forwardPort(mockConn as any, 3000, 'localhost', 3000);
+
+      // Stop it
+      const forward = createMockPortForward({
+        connectionId: mockConn.id,
+        localPort: 3000,
+      });
+      await service.stopForward(forward);
+
+      // Saved rule should still exist
+      const rules = service.getSavedRules(mockConn.id);
+      expect(rules).toHaveLength(1);
+    });
   });
 
-  describe('stopAllForwardsForConnection', () => {
+  describe('deactivateAllForwardsForConnection', () => {
     it('should stop all forwards for a connection', async () => {
       const mockConn = createMockConnection();
       mockGetConnection.mockReturnValue(mockConn);
@@ -197,7 +256,7 @@ describe('PortForwardService', () => {
       ];
       mockGetForwardsForConnection.mockReturnValue(forwards);
 
-      await service.stopAllForwardsForConnection(mockConn.id);
+      await service.deactivateAllForwardsForConnection(mockConn.id);
 
       expect(mockConn.stopForward).toHaveBeenCalledTimes(3);
       expect(mockRemoveForward).toHaveBeenCalledTimes(3);
@@ -209,18 +268,247 @@ describe('PortForwardService', () => {
       // No tree provider set
 
       // Should not throw
-      await freshService.stopAllForwardsForConnection('conn1');
+      await freshService.deactivateAllForwardsForConnection('conn1');
     });
 
-    it('should do nothing if connection not found', async () => {
+    it('should handle missing connection gracefully', async () => {
       mockGetConnection.mockReturnValue(undefined);
-      mockGetForwardsForConnection.mockReturnValue([
-        createMockPortForward({ localPort: 3000 }),
-      ]);
+      const forwards: IPortForward[] = [
+        createMockPortForward({ connectionId: 'dead', localPort: 3000 }),
+      ];
+      mockGetForwardsForConnection.mockReturnValue(forwards);
 
-      await service.stopAllForwardsForConnection('disconnected');
+      // Should not throw, should still remove from tree
+      await service.deactivateAllForwardsForConnection('dead');
+      expect(mockRemoveForward).toHaveBeenCalledTimes(1);
+    });
 
-      expect(mockRemoveForward).not.toHaveBeenCalled();
+    it('should keep saved rules after deactivation', async () => {
+      service.initialize(mockContext);
+      const mockConn = createMockConnection();
+      mockGetConnection.mockReturnValue(mockConn);
+
+      // Create a forward (auto-saves)
+      await service.forwardPort(mockConn as any, 3000, 'localhost', 3000);
+
+      const forwards: IPortForward[] = [
+        createMockPortForward({ connectionId: mockConn.id, localPort: 3000 }),
+      ];
+      mockGetForwardsForConnection.mockReturnValue(forwards);
+
+      await service.deactivateAllForwardsForConnection(mockConn.id);
+
+      // Saved rule should persist
+      const rules = service.getSavedRules(mockConn.id);
+      expect(rules).toHaveLength(1);
+    });
+  });
+
+  describe('persistence', () => {
+    it('should initialize and load saved rules from globalState', () => {
+      const existingRules = {
+        'host1:22:user': [
+          { id: 'pf_1', localPort: 3000, remoteHost: 'localhost', remotePort: 3000 },
+        ],
+      };
+      mockGlobalStateStore['sshLite.savedPortForwards'] = existingRules;
+
+      service.initialize(mockContext);
+
+      const rules = service.getSavedRules('host1:22:user');
+      expect(rules).toHaveLength(1);
+      expect(rules[0].localPort).toBe(3000);
+    });
+
+    it('should handle empty globalState gracefully', () => {
+      service.initialize(mockContext);
+
+      const rules = service.getSavedRules('nonexistent');
+      expect(rules).toEqual([]);
+    });
+
+    it('should save rule to globalState', async () => {
+      service.initialize(mockContext);
+
+      await service.saveRule('host1:22:user', 3000, 'localhost', 3000);
+
+      expect(mockGlobalState.update).toHaveBeenCalledWith(
+        'sshLite.savedPortForwards',
+        expect.objectContaining({
+          'host1:22:user': expect.arrayContaining([
+            expect.objectContaining({ localPort: 3000 }),
+          ]),
+        })
+      );
+    });
+
+    it('should deduplicate saved rules', async () => {
+      service.initialize(mockContext);
+
+      await service.saveRule('host1:22:user', 3000, 'localhost', 3000);
+      await service.saveRule('host1:22:user', 3000, 'localhost', 3000);
+
+      const rules = service.getSavedRules('host1:22:user');
+      expect(rules).toHaveLength(1);
+    });
+
+    it('should allow different rules for same host', async () => {
+      service.initialize(mockContext);
+
+      await service.saveRule('host1:22:user', 3000, 'localhost', 3000);
+      await service.saveRule('host1:22:user', 8080, 'localhost', 80);
+
+      const rules = service.getSavedRules('host1:22:user');
+      expect(rules).toHaveLength(2);
+    });
+
+    it('should delete saved rule', async () => {
+      service.initialize(mockContext);
+
+      const rule = await service.saveRule('host1:22:user', 3000, 'localhost', 3000);
+      await service.deleteSavedRule('host1:22:user', rule.id);
+
+      const rules = service.getSavedRules('host1:22:user');
+      expect(rules).toHaveLength(0);
+    });
+
+    it('should refresh tree after deleting rule', async () => {
+      service.initialize(mockContext);
+
+      const rule = await service.saveRule('host1:22:user', 3000, 'localhost', 3000);
+      mockRefresh.mockClear();
+      await service.deleteSavedRule('host1:22:user', rule.id);
+
+      expect(mockRefresh).toHaveBeenCalled();
+    });
+
+    it('should clean up host entry when last rule deleted', async () => {
+      service.initialize(mockContext);
+
+      const rule = await service.saveRule('host1:22:user', 3000, 'localhost', 3000);
+      await service.deleteSavedRule('host1:22:user', rule.id);
+
+      expect(service.getHostIdsWithSavedRules()).not.toContain('host1:22:user');
+    });
+
+    it('should return all hostIds with saved rules', async () => {
+      service.initialize(mockContext);
+
+      await service.saveRule('host1:22:user', 3000, 'localhost', 3000);
+      await service.saveRule('host2:22:admin', 8080, 'localhost', 80);
+
+      const hostIds = service.getHostIdsWithSavedRules();
+      expect(hostIds).toContain('host1:22:user');
+      expect(hostIds).toContain('host2:22:admin');
+    });
+  });
+
+  describe('restoreForwardsForConnection', () => {
+    it('should restore saved forwards on connect', async () => {
+      service.initialize(mockContext);
+      const mockConn = createMockConnection();
+
+      // Save a rule
+      await service.saveRule(mockConn.id, 3000, 'localhost', 3000);
+      jest.clearAllMocks();
+
+      // Restore
+      await service.restoreForwardsForConnection(mockConn as any);
+
+      expect(mockConn.forwardPort).toHaveBeenCalledWith(3000, 'localhost', 3000);
+      expect(mockAddForward).toHaveBeenCalledWith(mockConn.id, 3000, 'localhost', 3000);
+    });
+
+    it('should restore multiple forwards', async () => {
+      service.initialize(mockContext);
+      const mockConn = createMockConnection();
+
+      await service.saveRule(mockConn.id, 3000, 'localhost', 3000);
+      await service.saveRule(mockConn.id, 8080, 'localhost', 80);
+      jest.clearAllMocks();
+
+      await service.restoreForwardsForConnection(mockConn as any);
+
+      expect(mockConn.forwardPort).toHaveBeenCalledTimes(2);
+    });
+
+    it('should handle partial failures gracefully', async () => {
+      service.initialize(mockContext);
+      const mockConn = createMockConnection();
+      // First call succeeds, second fails
+      (mockConn.forwardPort as jest.Mock)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error('Address in use'));
+
+      await service.saveRule(mockConn.id, 3000, 'localhost', 3000);
+      await service.saveRule(mockConn.id, 8080, 'localhost', 80);
+      jest.clearAllMocks();
+
+      await service.restoreForwardsForConnection(mockConn as any);
+
+      // First forward should be added to tree, second should not
+      expect(mockAddForward).toHaveBeenCalledTimes(1);
+      expect(mockAddForward).toHaveBeenCalledWith(mockConn.id, 3000, 'localhost', 3000);
+    });
+
+    it('should do nothing when no saved rules', async () => {
+      service.initialize(mockContext);
+      const mockConn = createMockConnection();
+
+      await service.restoreForwardsForConnection(mockConn as any);
+
+      expect(mockConn.forwardPort).not.toHaveBeenCalled();
+    });
+
+    it('should show status message on restore', async () => {
+      service.initialize(mockContext);
+      const mockConn = createMockConnection();
+
+      await service.saveRule(mockConn.id, 3000, 'localhost', 3000);
+      jest.clearAllMocks();
+
+      await service.restoreForwardsForConnection(mockConn as any);
+
+      expect(window.setStatusBarMessage).toHaveBeenCalledWith(
+        expect.stringContaining('Restored 1 port forward'),
+        5000
+      );
+    });
+  });
+
+  describe('activateSavedForward', () => {
+    it('should activate a saved forward on active connection', async () => {
+      service.initialize(mockContext);
+      const mockConn = createMockConnection();
+      mockGetConnection.mockReturnValue(mockConn);
+
+      const rule = await service.saveRule(mockConn.id, 3000, 'localhost', 3000);
+      jest.clearAllMocks();
+
+      await service.activateSavedForward(mockConn.id, rule.id);
+
+      expect(mockConn.forwardPort).toHaveBeenCalledWith(3000, 'localhost', 3000);
+    });
+
+    it('should show warning if rule not found', async () => {
+      service.initialize(mockContext);
+
+      await service.activateSavedForward('host1:22:user', 'nonexistent');
+
+      expect(window.showWarningMessage).toHaveBeenCalledWith('Saved forward rule not found');
+    });
+
+    it('should show warning if no active connection', async () => {
+      service.initialize(mockContext);
+      mockGetConnection.mockReturnValue(undefined);
+
+      const rule = await service.saveRule('host1:22:user', 3000, 'localhost', 3000);
+
+      await service.activateSavedForward('host1:22:user', rule.id);
+
+      expect(window.showWarningMessage).toHaveBeenCalledWith(
+        expect.stringContaining('No active connection')
+      );
     });
   });
 

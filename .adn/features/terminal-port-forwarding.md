@@ -45,7 +45,7 @@ Terminal created → shell channel active → user interacts
 
 ## PortForwardService (`src/services/PortForwardService.ts`)
 
-Singleton service for SSH port forwarding (local → remote tunnels).
+Singleton service for SSH port forwarding (local → remote tunnels) with **persistent saved rules**.
 
 ### Forward Creation
 
@@ -56,45 +56,85 @@ sshLite.forwardPort command:
   3. Prompt for remote port
   4. connection.forwardPort(localPort, remoteHost, remotePort)
   5. Store in active forwards list
-  6. Update PortForwardTreeProvider
+  6. Auto-save rule to globalState for persistence
+  7. Update PortForwardTreeProvider
 ```
 
-### Forward Storage
+### Data Types
 
 ```typescript
+// Active forward (in-memory, tied to live TCP server)
 interface IPortForward {
-  id: string;           // Unique ID
+  id: string;           // "localPort:connectionId"
   connectionId: string;
   localPort: number;
   remoteHost: string;   // Usually "localhost" or "127.0.0.1"
   remotePort: number;
   active: boolean;
 }
+
+// Saved forward rule (persisted in globalState, survives restarts)
+interface ISavedPortForwardRule {
+  id: string;           // "pf_timestamp_random"
+  localPort: number;
+  remoteHost: string;
+  remotePort: number;
+}
 ```
+
+### Persistence
+
+Rules are saved to `context.globalState` under key `sshLite.savedPortForwards`, indexed by `hostId` (format: `host:port:username`).
+
+- **Auto-save**: Every `forwardPort()` call automatically saves the rule
+- **Auto-restore**: On `ConnectionState.Connected` event, saved rules are restored via `restoreForwardsForConnection()`
+- **Deduplication**: Rules are deduped by `localPort + remoteHost + remotePort` within a host
+- **Initialization**: `portForwardService.initialize(context)` loads saved rules on activation
 
 ### Forward Lifecycle
 
 ```
-Forward created → listening on localPort → traffic tunneled
+Forward created → listening on localPort → traffic tunneled → rule auto-saved
   │
-  ├─ User stops: sshLite.stopForward → connection.stopForward(localPort)
+  ├─ User stops: sshLite.stopForward → TCP server stops, saved rule persists
+  │   └─ Tree shows dimmed SavedForwardTreeItem
   │
-  ├─ Connection drops → forward stops
-  │   └─ Auto-reconnect does NOT restore forwards
+  ├─ Connection drops → TCP servers stop, saved rules persist
+  │   └─ Auto-reconnect restores connection AND forwards automatically
   │
-  └─ User disconnects → all forwards for connection stop
+  ├─ User disconnects → TCP servers stop, saved rules persist
+  │   └─ Next connect restores forwards automatically
+  │
+  ├─ VSCode restarts → saved rules survive
+  │   └─ Next connect restores forwards automatically
+  │
+  └─ User deletes rule: sshLite.deleteSavedForward → rule removed permanently
 ```
+
+### Commands
+
+| Command | Trigger | Description |
+|---------|---------|-------------|
+| `sshLite.forwardPort` | View title button | Create new forward (auto-saved) |
+| `sshLite.stopForward` | Active forward inline | Stop TCP server, keep saved rule |
+| `sshLite.activateSavedForward` | Saved forward inline | Re-activate a saved rule |
+| `sshLite.deleteSavedForward` | Saved forward inline | Remove saved rule permanently |
 
 ### PortForwardTreeProvider (`src/providers/PortForwardTreeProvider.ts`)
 
-Tree view showing active port forwards:
+Tree view showing both active forwards and saved-but-inactive rules:
 
 ```
 sshLite.portForwards
-  └─ PortForwardTreeItem
-       label: "localhost:3000 → remote:3000"
-       contextValue: "portForward"
-       icon: $(plug)
+  ├─ PortForwardTreeItem          (active, blue icon)
+  │    label: "host:3000 <-> localhost:3000"
+  │    contextValue: "forward"
+  │    action: stop
+  │
+  └─ SavedForwardTreeItem         (inactive, dimmed icon)
+       label: "host:8080 <-> localhost:8080"
+       contextValue: "savedForward"
+       actions: play, delete
 ```
 
-**Wire-up**: `portForwardService.setTreeProvider(portForwardTreeProvider)` in extension.ts connects the service to the UI.
+**Wire-up**: `portForwardService.setTreeProvider(portForwardTreeProvider)` and `portForwardService.initialize(context)` in extension.ts connect the service to the UI and persistence.
