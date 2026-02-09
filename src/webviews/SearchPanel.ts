@@ -91,6 +91,7 @@ export class SearchPanel {
   private serverList: ServerSearchEntry[] = [];
   private findFilesMode: boolean = false;
   private sortOrder: 'checked' | 'name' = 'checked';
+  private extensionContext?: vscode.ExtensionContext;
 
   // Callbacks
   private openFileCallback?: (connectionId: string, remotePath: string, line?: number, searchQuery?: string) => Promise<void>;
@@ -145,6 +146,15 @@ export class SearchPanel {
    * Called by extension.ts to populate all available hosts.
    */
   public setServerList(entries: ServerSearchEntry[]): void {
+    // Preserve existing searchPaths and checked state from old list
+    const oldMap = new Map(this.serverList.map((s) => [s.id, s]));
+    for (const entry of entries) {
+      const old = oldMap.get(entry.id);
+      if (old && (old.searchPaths.length > 0 || old.checked)) {
+        entry.searchPaths = old.searchPaths;
+        entry.checked = old.checked;
+      }
+    }
     this.serverList = entries;
     this.detectRedundancy();
     this.sendState();
@@ -180,6 +190,7 @@ export class SearchPanel {
    * Load sort order from globalState.
    */
   public loadSortOrder(context: vscode.ExtensionContext): void {
+    this.extensionContext = context;
     this.sortOrder = context.globalState.get<'checked' | 'name'>('sshLite.searchSortOrder', 'checked');
   }
 
@@ -364,11 +375,11 @@ export class SearchPanel {
   private getSortedServerList(): ServerSearchEntry[] {
     const list = [...this.serverList];
     if (this.sortOrder === 'checked') {
-      // Checked (with paths) first, then alphabetical
+      // Checked first, then alphabetical
       list.sort((a, b) => {
-        const aHasPaths = a.checked && a.searchPaths.length > 0 ? 0 : 1;
-        const bHasPaths = b.checked && b.searchPaths.length > 0 ? 0 : 1;
-        if (aHasPaths !== bHasPaths) return aHasPaths - bHasPaths;
+        const aChecked = a.checked ? 0 : 1;
+        const bChecked = b.checked ? 0 : 1;
+        if (aChecked !== bChecked) return aChecked - bChecked;
         return a.hostConfig.name.localeCompare(b.hostConfig.name);
       });
     } else {
@@ -479,6 +490,9 @@ export class SearchPanel {
 
       case 'toggleSort':
         this.sortOrder = this.sortOrder === 'checked' ? 'name' : 'checked';
+        if (this.extensionContext) {
+          this.extensionContext.globalState.update('sshLite.searchSortOrder', this.sortOrder);
+        }
         this.sendState();
         break;
     }
