@@ -169,10 +169,41 @@ export class PortForwardService {
       return;
     }
 
-    // Get local port
-    const localPortStr = await vscode.window.showInputBox({
-      prompt: 'Enter local port',
+    // Get remote port first — this is the port the user wants to reach
+    const remotePortStr = await vscode.window.showInputBox({
+      prompt: 'Server port to forward',
       placeHolder: '8080',
+      ignoreFocusOut: true,
+      validateInput: (value) => {
+        const port = parseInt(value, 10);
+        if (isNaN(port) || port < 1 || port > 65535) {
+          return 'Please enter a valid port number (1-65535)';
+        }
+        return null;
+      },
+    });
+
+    if (!remotePortStr) {
+      return;
+    }
+
+    const remotePort = parseInt(remotePortStr, 10);
+
+    // Get destination host — usually the SSH server itself (localhost)
+    const remoteHost = await vscode.window.showInputBox({
+      prompt: 'Target host (localhost = SSH server itself)',
+      value: 'localhost',
+      ignoreFocusOut: true,
+    });
+
+    if (!remoteHost) {
+      return;
+    }
+
+    // Get local port — the port on the user's machine
+    const localPortStr = await vscode.window.showInputBox({
+      prompt: 'Listen on local port',
+      value: remotePortStr, // Default to same as remote
       ignoreFocusOut: true,
       validateInput: (value) => {
         const port = parseInt(value, 10);
@@ -193,37 +224,6 @@ export class PortForwardService {
     }
 
     const localPort = parseInt(localPortStr, 10);
-
-    // Get remote host
-    const remoteHost = await vscode.window.showInputBox({
-      prompt: 'Enter remote host (on the SSH server)',
-      value: 'localhost',
-      ignoreFocusOut: true,
-    });
-
-    if (!remoteHost) {
-      return;
-    }
-
-    // Get remote port
-    const remotePortStr = await vscode.window.showInputBox({
-      prompt: 'Enter remote port',
-      value: localPortStr, // Default to same as local
-      ignoreFocusOut: true,
-      validateInput: (value) => {
-        const port = parseInt(value, 10);
-        if (isNaN(port) || port < 1 || port > 65535) {
-          return 'Please enter a valid port number (1-65535)';
-        }
-        return null;
-      },
-    });
-
-    if (!remotePortStr) {
-      return;
-    }
-
-    const remotePort = parseInt(remotePortStr, 10);
 
     // Create the forward
     await this.forwardPort(selectedConnection.connection, localPort, remoteHost, remotePort);

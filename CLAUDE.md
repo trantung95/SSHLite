@@ -158,6 +158,12 @@ This project is designed to grow itself. The `.adn/growth/` folder contains ever
 
 ## Release Notes
 
+### v0.4.3 — Improved port forward input UX
+
+- **Reordered port forward prompt**: Now asks server port → target host → local port (was local → remote host → remote)
+- **Clearer prompt wording**: "Server port to forward", "Target host (localhost = SSH server itself)", "Listen on local port"
+- **Local port defaults to server port**: Reduces input steps for the common case
+
 ### v0.4.2 — Persistent port forwarding (GitHub Issue #2)
 
 - **Saved port forward rules**: Port forwards are auto-saved to globalState and auto-restored on reconnect or VSCode restart
