@@ -155,6 +155,20 @@ Revert:
 
 ---
 
+## Upload File To Server (`uploadFileTo`)
+
+Upload a local file to a remote directory via the tree context menu.
+
+```
+1. Show file picker dialog (defaultUri = last upload folder, remembered in-memory)
+2. Upload file via SFTP writeFile
+3. Targeted tree refresh: refreshFolder(connectionId, remoteFolderPath) clears cache + refreshes
+```
+
+Delete and create-folder commands also use `refreshFolder()` for targeted cache invalidation.
+
+---
+
 ## Preloading
 
 Background preloading of directories and files for faster navigation:

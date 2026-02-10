@@ -369,6 +369,9 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   private connectionChangeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly CONNECTION_CHANGE_DEBOUNCE_MS = 50;
 
+  // Track known connection IDs to detect structural changes (add/remove) vs state changes
+  private lastKnownConnectionIds: Set<string> = new Set();
+
   constructor() {
     this.connectionManager = ConnectionManager.getInstance();
     this.folderHistoryService = FolderHistoryService.getInstance();
@@ -606,9 +609,9 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       return;
     }
 
-    // User expanded a folder - reset the priority queue if it was cancelled
-    if (this.priorityQueue.isCancelled() && !this.priorityQueue.isPreloadingInProgress()) {
-      this.priorityQueue.reset();
+    // User expanded a folder - reset this connection's queue if it was cancelled
+    if (this.priorityQueue.isConnectionCancelled(connection.id) && !this.priorityQueue.isPreloadingInProgress()) {
+      this.priorityQueue.resetConnection(connection.id);
     }
 
     // Get all directories
@@ -629,6 +632,10 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
     // Take top 5 (prioritized by frequency)
     const directories = sortedDirectories.slice(0, 5);
+
+    if (directories.length > 0) {
+      console.log(`[SSH Lite Preload] Queuing ${directories.length} subdirs for ${connection.host.name}`);
+    }
 
     // Preload with priority queue
     for (const dir of directories) {
@@ -674,9 +681,10 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       async () => {
         try {
           const files = await this.loadDirectory(connection, dirPath, true);
+          console.log(`[SSH Lite Preload] Loaded ${dirPath} (${files?.length ?? 0} items) [${connection.host.name}]`);
 
           // If we have remaining depth, queue subdirectories for preloading too
-          if (depth > 0 && files && !this.priorityQueue.isCancelled()) {
+          if (depth > 0 && files && !this.priorityQueue.isConnectionCancelled(connection.id)) {
             const subdirs = files.filter((f) => f.isDirectory).slice(0, 3); // Limit to 3 per level
             for (const subdir of subdirs) {
               const subCacheKey = this.getCacheKey(connection.id, subdir.path);
@@ -694,8 +702,8 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
           this.preloadQueue.delete(cacheKey);
         }
       }
-    ).catch(() => {
-      // Silently ignore preload errors
+    ).catch((err) => {
+      console.log(`[SSH Lite Preload] Failed ${dirPath}: ${(err as Error)?.message || 'unknown'}`);
       this.preloadQueue.delete(cacheKey);
     });
   }
@@ -829,8 +837,9 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
   /**
    * Debounced refresh for connection change events
-   * Consolidates multiple rapid events (like during disconnect) into a single refresh
-   * to prevent VS Code's tree expansion state from being reset
+   * Consolidates multiple rapid events (like during disconnect) into a single refresh.
+   * Uses targeted refresh when connections haven't structurally changed (no add/remove)
+   * to preserve tree expansion state across all servers.
    */
   private debouncedConnectionRefresh(): void {
     if (this.connectionChangeDebounceTimer) {
@@ -838,7 +847,28 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     }
     this.connectionChangeDebounceTimer = setTimeout(() => {
       this.connectionChangeDebounceTimer = null;
-      this._onDidChangeTreeData.fire();
+
+      // Check if connection list structurally changed (add/remove)
+      const { active, reconnecting } = this.connectionManager.getAllConnectionsWithReconnecting();
+      const currentIds = new Set([
+        ...active.map(c => c.id),
+        ...reconnecting.map(r => r.connectionId),
+      ]);
+
+      const hasAdded = [...currentIds].some(id => !this.lastKnownConnectionIds.has(id));
+      const hasRemoved = [...this.lastKnownConnectionIds].some(id => !currentIds.has(id));
+
+      if (hasAdded || hasRemoved) {
+        // Structural change — must do full refresh to add/remove root tree items
+        this._onDidChangeTreeData.fire();
+      } else {
+        // No structural change — use targeted refresh per connection to preserve expansion
+        for (const id of currentIds) {
+          this.refreshConnection(id);
+        }
+      }
+
+      this.lastKnownConnectionIds = currentIds;
     }, this.CONNECTION_CHANGE_DEBOUNCE_MS);
   }
 
@@ -1297,7 +1327,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
    */
   private preloadFrequentFolders(connection: SSHConnection): void {
     // Note: Caller should check isPreloadingEnabled() before calling
-    if (this.priorityQueue.isCancelled()) {
+    if (this.priorityQueue.isConnectionCancelled(connection.id)) {
       return;
     }
 
@@ -1945,14 +1975,9 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       const key = `${item.connection.id}:${item.file.path}`;
       this.expandedFolders.delete(key);
     } else if (item instanceof ConnectionTreeItem) {
-      // When connection is collapsed, clear all expanded folder state for that connection
-      const prefix = `${item.connection.id}:`;
-      for (const key of this.expandedFolders) {
-        if (key.startsWith(prefix)) {
-          this.expandedFolders.delete(key);
-        }
-      }
-      // Also remove the connection itself
+      // Only remove the connection-level key, preserve sub-folder expansion state
+      // so re-expanding the connection restores subdirectory expansion.
+      // Full cleanup happens in clearExpansionState() on disconnect.
       const connKey = `connection:${item.connection.id}`;
       this.expandedFolders.delete(connKey);
     }

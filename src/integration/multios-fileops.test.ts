@@ -294,6 +294,117 @@ describe.each(CI_SERVERS)('File operations on $os', (server: OSServerConfig) => 
     });
   });
 
+  // -- listDirectories --
+  describe('listDirectories', () => {
+    beforeAll(async () => {
+      const dirBase = `${testDir}/listdirs`;
+      await conn.mkdir(dirBase);
+      await conn.mkdir(`${dirBase}/alpha`);
+      await conn.mkdir(`${dirBase}/beta`);
+      await conn.mkdir(`${dirBase}/gamma`);
+      await conn.writeFile(`${dirBase}/file1.txt`, Buffer.from('not a directory'));
+      await conn.writeFile(`${dirBase}/file2.log`, Buffer.from('also not a directory'));
+    });
+
+    it('should list only subdirectories, not files', async () => {
+      const dirs = await conn.listDirectories(`${testDir}/listdirs`);
+      expect(dirs.length).toBe(3);
+      for (const d of dirs) {
+        expect(d).not.toMatch(/file[12]/);
+      }
+    });
+
+    it('should return sorted results', async () => {
+      const dirs = await conn.listDirectories(`${testDir}/listdirs`);
+      const sorted = [...dirs].sort();
+      expect(dirs).toEqual(sorted);
+    });
+
+    it('should return full paths', async () => {
+      const dirs = await conn.listDirectories(`${testDir}/listdirs`);
+      for (const d of dirs) {
+        expect(d).toMatch(/^\//); // absolute path
+        expect(d).toContain(`${testDir}/listdirs/`);
+      }
+    });
+
+    it('should return empty array for empty directory', async () => {
+      // alpha has no subdirectories
+      const dirs = await conn.listDirectories(`${testDir}/listdirs/alpha`);
+      expect(dirs).toEqual([]);
+    });
+
+    it('should handle directory with only files (no subdirs)', async () => {
+      const onlyFiles = `${testDir}/listdirs-onlyfiles`;
+      await conn.mkdir(onlyFiles);
+      await conn.writeFile(`${onlyFiles}/a.txt`, Buffer.from('data'));
+      const dirs = await conn.listDirectories(onlyFiles);
+      expect(dirs).toEqual([]);
+    });
+  });
+
+  // -- searchFiles with multiple paths (string[]) --
+  describe('searchFiles multi-path', () => {
+    beforeAll(async () => {
+      const base = `${testDir}/multi-search`;
+      await conn.mkdir(base);
+      await conn.mkdir(`${base}/dir1`);
+      await conn.mkdir(`${base}/dir2`);
+      await conn.mkdir(`${base}/dir3`);
+      await conn.writeFile(`${base}/dir1/match.ts`, Buffer.from('export const TOKEN_MULTI = "found1";'));
+      await conn.writeFile(`${base}/dir2/match.ts`, Buffer.from('export const TOKEN_MULTI = "found2";'));
+      await conn.writeFile(`${base}/dir3/no-match.ts`, Buffer.from('nothing here'));
+    });
+
+    it('should search across multiple paths (grep)', async () => {
+      const results = await conn.searchFiles(
+        [`${testDir}/multi-search/dir1`, `${testDir}/multi-search/dir2`],
+        'TOKEN_MULTI',
+        { searchContent: true }
+      );
+      expect(results.length).toBeGreaterThanOrEqual(2);
+      const paths = results.map(r => r.path);
+      expect(paths.some(p => p.includes('dir1'))).toBe(true);
+      expect(paths.some(p => p.includes('dir2'))).toBe(true);
+    });
+
+    it('should not return results from paths not included', async () => {
+      const results = await conn.searchFiles(
+        [`${testDir}/multi-search/dir1`],
+        'TOKEN_MULTI',
+        { searchContent: true }
+      );
+      expect(results.length).toBeGreaterThanOrEqual(1);
+      for (const r of results) {
+        expect(r.path).not.toContain('dir2');
+        expect(r.path).not.toContain('dir3');
+      }
+    });
+
+    it('should search multiple paths by filename (find)', async () => {
+      const results = await conn.searchFiles(
+        [`${testDir}/multi-search/dir1`, `${testDir}/multi-search/dir2`, `${testDir}/multi-search/dir3`],
+        'match',
+        { searchContent: false }
+      );
+      expect(results.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('should handle single-element array same as string', async () => {
+      const arrayResult = await conn.searchFiles(
+        [`${testDir}/multi-search/dir1`],
+        'TOKEN_MULTI',
+        { searchContent: true }
+      );
+      const stringResult = await conn.searchFiles(
+        `${testDir}/multi-search/dir1`,
+        'TOKEN_MULTI',
+        { searchContent: true }
+      );
+      expect(arrayResult.length).toBe(stringResult.length);
+    });
+  });
+
   // -- rename (file rename) --
   describe('rename', () => {
     it('should rename a file', async () => {
@@ -416,6 +527,99 @@ describe.each(CI_SERVERS)('File operations on $os', (server: OSServerConfig) => 
       expect(exists).toBe(true);
 
       await conn.deleteFile(moveDir('src/orphan.txt'));
+    });
+  });
+
+  // -- listEntries (file-level worker pool support) --
+  describe('listEntries', () => {
+    const entriesDir = `${testDir}/list-entries-test`;
+
+    beforeAll(async () => {
+      // Create test structure:
+      // list-entries-test/
+      //   file1.ts
+      //   file2.py
+      //   readme.md
+      //   sub-a/
+      //   sub-b/
+      //   empty-dir/
+      await conn.mkdir(entriesDir);
+      await conn.writeFile(`${entriesDir}/file1.ts`, Buffer.from('ts'));
+      await conn.writeFile(`${entriesDir}/file2.py`, Buffer.from('py'));
+      await conn.writeFile(`${entriesDir}/readme.md`, Buffer.from('md'));
+      await conn.mkdir(`${entriesDir}/sub-a`);
+      await conn.mkdir(`${entriesDir}/sub-b`);
+      await conn.mkdir(`${entriesDir}/empty-dir`);
+      await conn.writeFile(`${entriesDir}/sub-a/nested.ts`, Buffer.from('nested'));
+    });
+
+    afterAll(async () => {
+      try { await conn.exec(`rm -rf ${entriesDir}`); } catch { /* ignore */ }
+    });
+
+    it('should return files and dirs at one level', async () => {
+      const result = await conn.listEntries(entriesDir);
+
+      expect(result.files.length).toBe(3);
+      expect(result.dirs.length).toBe(3);
+
+      // Files should be sorted
+      const fileNames = result.files.map(f => f.split('/').pop());
+      expect(fileNames).toContain('file1.ts');
+      expect(fileNames).toContain('file2.py');
+      expect(fileNames).toContain('readme.md');
+
+      // Dirs should be sorted
+      const dirNames = result.dirs.map(d => d.split('/').pop());
+      expect(dirNames).toContain('sub-a');
+      expect(dirNames).toContain('sub-b');
+      expect(dirNames).toContain('empty-dir');
+    });
+
+    it('should NOT include nested files (non-recursive)', async () => {
+      const result = await conn.listEntries(entriesDir);
+
+      // nested.ts is in sub-a/, should NOT appear in top-level files
+      const allPaths = result.files.join(' ');
+      expect(allPaths).not.toContain('nested.ts');
+    });
+
+    it('should filter files by pattern', async () => {
+      const result = await conn.listEntries(entriesDir, '*.ts');
+
+      expect(result.files.length).toBe(1);
+      expect(result.files[0]).toContain('file1.ts');
+
+      // Dirs should still all be returned (pattern only affects files)
+      expect(result.dirs.length).toBe(3);
+    });
+
+    it('should return empty arrays for empty directory', async () => {
+      const result = await conn.listEntries(`${entriesDir}/empty-dir`);
+
+      expect(result.files).toEqual([]);
+      expect(result.dirs).toEqual([]);
+    });
+
+    it('should return full absolute paths', async () => {
+      const result = await conn.listEntries(entriesDir);
+
+      for (const file of result.files) {
+        expect(file).toMatch(/^\//); // starts with /
+        expect(file).toContain(entriesDir); // contains parent
+      }
+      for (const dir of result.dirs) {
+        expect(dir).toMatch(/^\//);
+        expect(dir).toContain(entriesDir);
+      }
+    });
+
+    it('should handle subdirectory listing', async () => {
+      const result = await conn.listEntries(`${entriesDir}/sub-a`);
+
+      expect(result.files.length).toBe(1);
+      expect(result.files[0]).toContain('nested.ts');
+      expect(result.dirs.length).toBe(0);
     });
   });
 });

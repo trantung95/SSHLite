@@ -1224,14 +1224,63 @@ export class SSHConnection implements ISSHConnection {
   }
 
   /**
+   * List immediate subdirectories of a path.
+   * Used by parallel search to split a large directory into sub-searches.
+   */
+  async listDirectories(dirPath: string): Promise<string[]> {
+    if (this.state !== ConnectionState.Connected || !this._client) {
+      throw new SFTPError('Not connected');
+    }
+    const escaped = dirPath.replace(/'/g, "'\\''");
+    const output = await this.exec(
+      `find '${escaped}' -maxdepth 1 -mindepth 1 -type d 2>/dev/null`
+    );
+    return output.trim().split('\n').filter(Boolean).sort();
+  }
+
+  /**
+   * List files and subdirectories at one level of a directory (non-recursive).
+   * Used by the search worker pool for file-level parallelism.
+   * Returns both files (with optional name filter) and subdirectories in a single SSH call.
+   */
+  async listEntries(
+    dirPath: string,
+    filePattern?: string
+  ): Promise<{ files: string[]; dirs: string[] }> {
+    if (this.state !== ConnectionState.Connected || !this._client) {
+      throw new SFTPError('Not connected');
+    }
+    const escaped = dirPath.replace(/'/g, "'\\''");
+    const nameFilter =
+      filePattern && filePattern !== '*'
+        ? `-name '${filePattern.replace(/'/g, "'\\''")}'`
+        : '';
+    // Single SSH exec: list files (with optional pattern), then dirs, separated by marker
+    const command =
+      `find '${escaped}' -maxdepth 1 -mindepth 1 -type f ${nameFilter} 2>/dev/null; ` +
+      `echo '<<DIR_MARKER>>'; ` +
+      `find '${escaped}' -maxdepth 1 -mindepth 1 -type d 2>/dev/null`;
+
+    const output = await this.exec(command);
+    const parts = output.split('<<DIR_MARKER>>');
+    const fileSection = parts[0] || '';
+    const dirSection = parts[1] || '';
+
+    return {
+      files: fileSection.trim().split('\n').filter(Boolean).sort(),
+      dirs: dirSection.trim().split('\n').filter(Boolean).sort(),
+    };
+  }
+
+  /**
    * Search for files/content in a remote directory using grep/find
-   * @param searchPath - Directory to search in
+   * @param searchPath - Directory or directories to search in
    * @param pattern - Search pattern (for content search)
    * @param options - Search options
    * @returns Array of search results
    */
   async searchFiles(
-    searchPath: string,
+    searchPath: string | string[],
     pattern: string,
     options: {
       searchContent?: boolean; // Search file contents (grep) vs filenames (find)
@@ -1271,7 +1320,9 @@ export class SSHConnection implements ISSHConnection {
     const escapeForSingleQuotes = (str: string): string => str.replace(/'/g, "'\\''");
 
     const escapedPattern = escapeForSingleQuotes(pattern);
-    const escapedSearchPath = escapeForSingleQuotes(searchPath);
+    // Support single path or multiple paths for parallel search
+    const searchPaths = Array.isArray(searchPath) ? searchPath : [searchPath];
+    const escapedSearchPaths = searchPaths.map((p) => `'${escapeForSingleQuotes(p)}'`).join(' ');
     const escapedFilePattern = escapeForSingleQuotes(filePattern);
     const caseFlag = caseSensitive ? '' : '-i';
     // Use -F for fixed string matching (literal text, not regex) unless user wants regex
@@ -1301,7 +1352,7 @@ export class SSHConnection implements ISSHConnection {
       // --include: file pattern filter, --exclude/--exclude-dir: exclude patterns
       // -- signals end of options, allowing patterns that start with dash (e.g., -lfsms-)
       const grepMaxFlag = validatedMaxResults > 0 ? `-m ${validatedMaxResults}` : '';
-      command = `grep -rnH ${fixedStringFlag} ${caseFlag} --include='${escapedFilePattern}'${excludeFlags} ${grepMaxFlag} -- '${escapedPattern}' '${escapedSearchPath}' 2>/dev/null${headLimit}`;
+      command = `grep -rnH ${fixedStringFlag} ${caseFlag} --include='${escapedFilePattern}'${excludeFlags} ${grepMaxFlag} -- '${escapedPattern}' ${escapedSearchPaths} 2>/dev/null${headLimit}`;
     } else {
       // Use find for filename search
       const findCaseFlag = caseSensitive ? '-name' : '-iname';
@@ -1314,7 +1365,7 @@ export class SSHConnection implements ISSHConnection {
           findExcludes += ` ! -path '*/${escapedEp}/*' ! -name '${escapedEp}'`;
         }
       }
-      command = `find '${escapedSearchPath}' -type f ${findCaseFlag} '*${escapedPattern}*'${findExcludes} 2>/dev/null${headLimit}`;
+      command = `find ${escapedSearchPaths} -type f ${findCaseFlag} '*${escapedPattern}*'${findExcludes} 2>/dev/null${headLimit}`;
     }
 
     // Log the search command

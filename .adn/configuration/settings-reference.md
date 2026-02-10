@@ -97,7 +97,7 @@ File opened → size > progressiveDownloadThreshold (1MB)?
 | Setting | Type | Default | Min/Max | Description |
 |---------|------|---------|---------|-------------|
 | `sshLite.enablePreloading` | `boolean` | `true` | — | Enable background preloading of directories |
-| `sshLite.maxPreloadingConcurrency` | `number` | `5` | `1`/`10` | Max parallel preload operations. Lower = less server load |
+| `sshLite.maxPreloadingConcurrency` | `number` | `5` | `1`/`10` | Max parallel preload operations per server. Each server gets its own independent queue. Lower = less server load |
 
 **LITE note**: Preloading is opt-in by default (enabled but controlled). Lower concurrency for shared/busy servers.
 
@@ -105,10 +105,14 @@ File opened → size > progressiveDownloadThreshold (1MB)?
 
 ## Search & Filter
 
-| Setting | Type | Default | Min | Description |
-|---------|------|---------|-----|-------------|
+| Setting | Type | Default | Min/Max | Description |
+|---------|------|---------|---------|-------------|
 | `sshLite.searchMaxResults` | `number` | `2000` | `1` | Max search results. Higher = slower on large dirs |
 | `sshLite.filterMaxResults` | `number` | `1000` | `1` | Max file filter results |
+| `sshLite.searchParallelProcesses` | `number` | `5` | `1`/`16` | Number of parallel search workers per folder. Workers process file batches concurrently for faster results. Set to 1 to disable parallel search |
+| `sshLite.searchExcludeSystemDirs` | `boolean` | `true` | — | Auto-exclude system directories (`/proc`, `/sys`, `/dev`, `/run`, `/snap`, `/lost+found`) when searching from root `/`. A notice is shown to let you include them |
+
+**Parallel search (file-level worker pool)**: When `searchParallelProcesses > 1`, the search panel uses a file-level worker pool. Workers share a mixed queue of `dir` and `files` items. A `dir` item calls `listEntries()` to discover files + subdirs at one level, batches files by byte size (32KB limit for cross-OS safety), and adds file batches + subdirs back to the queue. A `files` item calls `searchFiles()` with an explicit file path array. Workers pick items from the queue until exhausted. This gives perfect load balancing — workers never idle, no duplication, no missed files.
 
 ---
 

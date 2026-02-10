@@ -39,9 +39,10 @@ interface QueueTask {
  * 3. Higher priorities get more connection slots
  * 4. Non-preload actions (user interactions) use executeImmediate() and bypass the queue
  * 5. Queue is processed in priority order when slots become available
+ * 6. Each server (connectionId) gets its own independent queue with its own slot allocation
  *
- * Slot Allocation Strategy:
- * - Total slots controlled by sshLite.maxPreloadingConcurrency (default: 5)
+ * Slot Allocation Strategy (per server):
+ * - Slots per server controlled by sshLite.maxPreloadingConcurrency (default: 5)
  * - CRITICAL (0): Always gets a slot, even if over limit
  * - HIGH (1): Gets up to 2 slots when available
  * - MEDIUM (2): Gets up to 1 slot when >= 2 slots available
@@ -51,36 +52,34 @@ interface QueueTask {
 export class PriorityQueueService {
   private static instance: PriorityQueueService | undefined;
 
-  // Priority queues (Map of priority -> array of tasks)
-  private queues: Map<PreloadPriority, QueueTask[]> = new Map();
+  // Per-connection priority queues: connectionId -> (priority -> tasks[])
+  private connectionQueues: Map<string, Map<PreloadPriority, QueueTask[]>> = new Map();
 
   // Active task tracking
   private activeTasks: Map<string, QueueTask> = new Map(); // taskId -> task
   private activeByConnection: Map<string, Set<string>> = new Map(); // connectionId -> Set of taskIds
 
   // Configuration
-  private maxTotalSlots: number = 5;
+  private maxSlotsPerConnection: number = 5;
 
-  // State
-  private cancelled: boolean = false;
-  private completedCount: number = 0;
-  private totalQueued: number = 0;
+  // Per-connection state
+  private cancelledConnections: Set<string> = new Set();
+  private cancelledAll: boolean = false;
+  private completedByConnection: Map<string, number> = new Map();
+  private totalQueuedByConnection: Map<string, number> = new Map();
 
-  // Processing flag to prevent concurrent queue processing
-  private isProcessing: boolean = false;
+  // Per-connection processing flag to prevent concurrent queue processing
+  private processingConnections: Set<string> = new Set();
+
+  private static readonly PRIORITY_ORDER = [
+    PreloadPriority.CRITICAL,
+    PreloadPriority.HIGH,
+    PreloadPriority.MEDIUM,
+    PreloadPriority.LOW,
+    PreloadPriority.IDLE,
+  ];
 
   private constructor() {
-    // Initialize queues for each priority level
-    for (const priority of [
-      PreloadPriority.CRITICAL,
-      PreloadPriority.HIGH,
-      PreloadPriority.MEDIUM,
-      PreloadPriority.LOW,
-      PreloadPriority.IDLE,
-    ]) {
-      this.queues.set(priority, []);
-    }
-
     // Load config
     this.updateConfig();
 
@@ -107,7 +106,22 @@ export class PriorityQueueService {
    */
   private updateConfig(): void {
     const config = vscode.workspace.getConfiguration('sshLite');
-    this.maxTotalSlots = config.get<number>('maxPreloadingConcurrency', 5);
+    this.maxSlotsPerConnection = config.get<number>('maxPreloadingConcurrency', 5);
+  }
+
+  /**
+   * Get or create per-connection priority queues
+   */
+  private getOrCreateConnectionQueue(connectionId: string): Map<PreloadPriority, QueueTask[]> {
+    let connQueue = this.connectionQueues.get(connectionId);
+    if (!connQueue) {
+      connQueue = new Map();
+      for (const priority of PriorityQueueService.PRIORITY_ORDER) {
+        connQueue.set(priority, []);
+      }
+      this.connectionQueues.set(connectionId, connQueue);
+    }
+    return connQueue;
   }
 
   /**
@@ -135,8 +149,8 @@ export class PriorityQueueService {
     priority: PreloadPriority,
     execute: () => Promise<void>
   ): Promise<void> {
-    // If cancelled and not critical, reject immediately
-    if (this.cancelled && priority !== PreloadPriority.CRITICAL) {
+    // If cancelled (globally or per-connection) and not critical, reject immediately
+    if ((this.cancelledAll || this.cancelledConnections.has(connectionId)) && priority !== PreloadPriority.CRITICAL) {
       return;
     }
 
@@ -157,26 +171,29 @@ export class PriorityQueueService {
       return;
     }
 
-    // Add to appropriate queue
-    const queue = this.queues.get(priority)!;
-    queue.push(task);
-    this.totalQueued++;
+    // Add to per-connection queue
+    const connQueue = this.getOrCreateConnectionQueue(connectionId);
+    connQueue.get(priority)!.push(task);
+    this.totalQueuedByConnection.set(connectionId, (this.totalQueuedByConnection.get(connectionId) || 0) + 1);
 
-    // Try to process queue
-    this.processQueue();
+    // Try to process this connection's queue
+    this.processConnectionQueue(connectionId);
   }
 
   /**
-   * Process the queue - runs tasks based on priority and available slots
+   * Process the queue for a specific connection
    */
-  private async processQueue(): Promise<void> {
-    // Prevent concurrent processing
-    if (this.isProcessing) return;
-    this.isProcessing = true;
+  private async processConnectionQueue(connectionId: string): Promise<void> {
+    // Prevent concurrent processing for same connection
+    if (this.processingConnections.has(connectionId)) return;
+    this.processingConnections.add(connectionId);
 
     try {
+      const connQueue = this.connectionQueues.get(connectionId);
+      if (!connQueue) return;
+
       while (true) {
-        const task = this.getNextTask();
+        const task = this.getNextTaskForConnection(connectionId, connQueue);
         if (!task) break;
 
         // Execute task (don't await - allow parallel execution)
@@ -185,30 +202,24 @@ export class PriorityQueueService {
         });
       }
     } finally {
-      this.isProcessing = false;
+      this.processingConnections.delete(connectionId);
     }
   }
 
   /**
-   * Get the next task to execute based on priority and slot availability
+   * Get the next task to execute for a connection based on priority and slot availability
    */
-  private getNextTask(): QueueTask | undefined {
-    const activeCount = this.activeTasks.size;
+  private getNextTaskForConnection(connectionId: string, connQueue: Map<PreloadPriority, QueueTask[]>): QueueTask | undefined {
+    const activeCount = this.activeByConnection.get(connectionId)?.size || 0;
 
     // Process queues in priority order
-    for (const priority of [
-      PreloadPriority.CRITICAL,
-      PreloadPriority.HIGH,
-      PreloadPriority.MEDIUM,
-      PreloadPriority.LOW,
-      PreloadPriority.IDLE,
-    ]) {
-      // Check slot availability for this priority
+    for (const priority of PriorityQueueService.PRIORITY_ORDER) {
+      // Check slot availability for this priority (per-connection)
       if (!this.canRunAtPriority(priority, activeCount)) {
         continue;
       }
 
-      const queue = this.queues.get(priority)!;
+      const queue = connQueue.get(priority)!;
       if (queue.length > 0) {
         return queue.shift();
       }
@@ -224,11 +235,11 @@ export class PriorityQueueService {
     // CRITICAL always runs
     if (priority === PreloadPriority.CRITICAL) return true;
 
-    // Check total slot limit
-    if (activeCount >= this.maxTotalSlots) return false;
+    // Check per-connection slot limit
+    if (activeCount >= this.maxSlotsPerConnection) return false;
 
     // Priority-based slot allocation
-    const availableSlots = this.maxTotalSlots - activeCount;
+    const availableSlots = this.maxSlotsPerConnection - activeCount;
 
     switch (priority) {
       case PreloadPriority.HIGH:
@@ -260,7 +271,10 @@ export class PriorityQueueService {
 
     try {
       await task.execute();
-      this.completedCount++;
+      this.completedByConnection.set(
+        task.connectionId,
+        (this.completedByConnection.get(task.connectionId) || 0) + 1
+      );
     } finally {
       // Release slot
       this.activeTasks.delete(task.id);
@@ -269,45 +283,83 @@ export class PriorityQueueService {
         this.activeByConnection.delete(task.connectionId);
       }
 
-      // Process more tasks after completion
-      this.processQueue();
+      // Process more tasks for this connection after completion
+      this.processConnectionQueue(task.connectionId);
     }
   }
 
   /**
-   * Cancel all pending preload tasks (except CRITICAL)
+   * Cancel all pending preload tasks across all connections (except CRITICAL)
    */
   public cancelAll(): void {
-    this.cancelled = true;
+    this.cancelledAll = true;
 
-    // Clear all queues except critical
-    for (const [priority, queue] of this.queues.entries()) {
-      if (priority !== PreloadPriority.CRITICAL) {
-        queue.length = 0;
+    // Clear all per-connection queues except critical
+    for (const connQueue of this.connectionQueues.values()) {
+      for (const [priority, queue] of connQueue.entries()) {
+        if (priority !== PreloadPriority.CRITICAL) {
+          queue.length = 0;
+        }
       }
     }
 
-    this.totalQueued = 0;
+    for (const connectionId of this.totalQueuedByConnection.keys()) {
+      this.totalQueuedByConnection.set(connectionId, 0);
+    }
   }
 
   /**
-   * Reset cancelled state and counters (for new preload sessions)
+   * Cancel pending preload tasks for a specific connection (except CRITICAL)
+   */
+  public cancelConnection(connectionId: string): void {
+    this.cancelledConnections.add(connectionId);
+
+    const connQueue = this.connectionQueues.get(connectionId);
+    if (connQueue) {
+      for (const [priority, queue] of connQueue.entries()) {
+        if (priority !== PreloadPriority.CRITICAL) {
+          queue.length = 0;
+        }
+      }
+    }
+    this.totalQueuedByConnection.set(connectionId, 0);
+  }
+
+  /**
+   * Reset cancelled state and counters globally (for new preload sessions)
    */
   public reset(): void {
-    this.cancelled = false;
-    this.completedCount = 0;
-    this.totalQueued = 0;
+    this.cancelledAll = false;
+    this.cancelledConnections.clear();
+    this.completedByConnection.clear();
+    this.totalQueuedByConnection.clear();
   }
 
   /**
-   * Check if cancelled
+   * Reset cancelled state and counters for a specific connection
+   */
+  public resetConnection(connectionId: string): void {
+    this.cancelledConnections.delete(connectionId);
+    this.completedByConnection.delete(connectionId);
+    this.totalQueuedByConnection.delete(connectionId);
+  }
+
+  /**
+   * Check if globally cancelled
    */
   public isCancelled(): boolean {
-    return this.cancelled;
+    return this.cancelledAll;
   }
 
   /**
-   * Get queue status for UI display
+   * Check if a specific connection is cancelled (globally or per-connection)
+   */
+  public isConnectionCancelled(connectionId: string): boolean {
+    return this.cancelledAll || this.cancelledConnections.has(connectionId);
+  }
+
+  /**
+   * Get aggregated queue status for UI display (backward compatible)
    */
   public getStatus(): {
     active: number;
@@ -319,32 +371,66 @@ export class PriorityQueueService {
     const byPriority: { [key: number]: number } = {};
     let totalQueued = 0;
 
-    for (const [priority, queue] of this.queues.entries()) {
-      byPriority[priority] = queue.length;
-      totalQueued += queue.length;
+    for (const connQueue of this.connectionQueues.values()) {
+      for (const [priority, queue] of connQueue.entries()) {
+        byPriority[priority] = (byPriority[priority] || 0) + queue.length;
+        totalQueued += queue.length;
+      }
     }
+
+    // Initialize any missing priorities
+    for (const priority of PriorityQueueService.PRIORITY_ORDER) {
+      if (!(priority in byPriority)) {
+        byPriority[priority] = 0;
+      }
+    }
+
+    let completed = 0;
+    for (const c of this.completedByConnection.values()) completed += c;
+    let total = 0;
+    for (const t of this.totalQueuedByConnection.values()) total += t;
 
     return {
       active: this.activeTasks.size,
       queued: totalQueued,
-      completed: this.completedCount,
-      total: this.totalQueued,
+      completed,
+      total,
       byPriority,
     };
   }
 
   /**
-   * Clear queue for a specific connection
+   * Get status for a specific connection
+   */
+  public getConnectionStatus(connectionId: string): {
+    active: number;
+    queued: number;
+    completed: number;
+    total: number;
+  } {
+    const activeCount = this.activeByConnection.get(connectionId)?.size || 0;
+    let queued = 0;
+    const connQueue = this.connectionQueues.get(connectionId);
+    if (connQueue) {
+      for (const queue of connQueue.values()) queued += queue.length;
+    }
+    return {
+      active: activeCount,
+      queued,
+      completed: this.completedByConnection.get(connectionId) || 0,
+      total: this.totalQueuedByConnection.get(connectionId) || 0,
+    };
+  }
+
+  /**
+   * Clear queue and all state for a specific connection (e.g., on disconnect)
    */
   public clearConnection(connectionId: string): void {
-    for (const queue of this.queues.values()) {
-      // Remove tasks for this connection
-      for (let i = queue.length - 1; i >= 0; i--) {
-        if (queue[i].connectionId === connectionId) {
-          queue.splice(i, 1);
-        }
-      }
-    }
+    this.connectionQueues.delete(connectionId);
+    this.cancelledConnections.delete(connectionId);
+    this.completedByConnection.delete(connectionId);
+    this.totalQueuedByConnection.delete(connectionId);
+    this.processingConnections.delete(connectionId);
   }
 
   /**
@@ -362,13 +448,15 @@ export class PriorityQueueService {
   }
 
   /**
-   * Check if preloading is in progress
+   * Check if preloading is in progress (any connection)
    */
   public isPreloadingInProgress(): boolean {
     if (this.activeTasks.size > 0) return true;
 
-    for (const queue of this.queues.values()) {
-      if (queue.length > 0) return true;
+    for (const connQueue of this.connectionQueues.values()) {
+      for (const queue of connQueue.values()) {
+        if (queue.length > 0) return true;
+      }
     }
 
     return false;

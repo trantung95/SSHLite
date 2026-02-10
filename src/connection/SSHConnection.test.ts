@@ -609,6 +609,190 @@ describe('SSHConnection - Actual Class', () => {
         // Should be a find command, not grep
         expect(capturedCommand).toMatch(/^find /);
       });
+
+      it('should accept string[] paths for grep content search', async () => {
+        await connection.searchFiles(['/home', '/var', '/etc'], 'test', { searchContent: true });
+        // All three paths should appear in the grep command
+        expect(capturedCommand).toContain("'/home'");
+        expect(capturedCommand).toContain("'/var'");
+        expect(capturedCommand).toContain("'/etc'");
+        expect(capturedCommand).toMatch(/^grep /);
+      });
+
+      it('should accept string[] paths for find filename search', async () => {
+        await connection.searchFiles(['/opt/a', '/opt/b'], 'test', { searchContent: false });
+        // Both paths should appear in the find command
+        expect(capturedCommand).toContain("'/opt/a'");
+        expect(capturedCommand).toContain("'/opt/b'");
+        expect(capturedCommand).toMatch(/^find /);
+      });
+
+      it('should handle single-element string[] same as string', async () => {
+        await connection.searchFiles(['/home'], 'test', { searchContent: true });
+        expect(capturedCommand).toContain("'/home'");
+        expect(capturedCommand).toMatch(/^grep /);
+      });
+
+      it('should escape single quotes in multi-path search', async () => {
+        await connection.searchFiles(["/home/user's dir", "/var/it's here"], 'test', { searchContent: true });
+        expect(capturedCommand).toContain("'\\''");
+        expect(capturedCommand).toMatch(/^grep /);
+      });
+    });
+
+    describe('listDirectories', () => {
+      let execSpy: jest.SpyInstance;
+
+      beforeEach(() => {
+        (connection as any).state = ConnectionState.Connected;
+        (connection as any)._client = { exec: jest.fn(), end: jest.fn(), destroy: jest.fn() };
+      });
+
+      function mockExecOutput(output: string) {
+        execSpy = jest.spyOn(connection, 'exec').mockResolvedValue(output);
+      }
+
+      it('should throw when not connected', async () => {
+        (connection as any).state = ConnectionState.Disconnected;
+        (connection as any)._client = null;
+        await expect(connection.listDirectories('/home')).rejects.toThrow('Not connected');
+      });
+
+      it('should build correct find command', async () => {
+        mockExecOutput('/home/user\n/home/admin\n');
+        await connection.listDirectories('/home');
+        expect(execSpy).toHaveBeenCalledWith(
+          expect.stringContaining("find '/home' -maxdepth 1 -mindepth 1 -type d")
+        );
+      });
+
+      it('should parse output into sorted directory list', async () => {
+        mockExecOutput('/home/zeta\n/home/alpha\n/home/beta\n');
+        const result = await connection.listDirectories('/home');
+        expect(result).toEqual(['/home/alpha', '/home/beta', '/home/zeta']);
+      });
+
+      it('should handle empty output', async () => {
+        mockExecOutput('');
+        const result = await connection.listDirectories('/home');
+        expect(result).toEqual([]);
+      });
+
+      it('should escape single quotes in path', async () => {
+        mockExecOutput('');
+        await connection.listDirectories("/home/user's dir");
+        expect(execSpy).toHaveBeenCalledWith(
+          expect.stringContaining("'\\''")
+        );
+      });
+
+      it('should handle root / path correctly', async () => {
+        mockExecOutput('/home\n/var\n/etc\n/proc\n');
+        const result = await connection.listDirectories('/');
+        expect(result).toEqual(['/etc', '/home', '/proc', '/var']);
+        expect(execSpy).toHaveBeenCalledWith(
+          expect.stringContaining("find '/' -maxdepth 1")
+        );
+      });
+    });
+
+    describe('listEntries', () => {
+      let execSpy: jest.SpyInstance;
+
+      beforeEach(() => {
+        (connection as any).state = ConnectionState.Connected;
+        (connection as any)._client = { exec: jest.fn(), end: jest.fn(), destroy: jest.fn() };
+      });
+
+      function mockExecOutput(output: string) {
+        execSpy = jest.spyOn(connection, 'exec').mockResolvedValue(output);
+      }
+
+      it('should throw when not connected', async () => {
+        (connection as any).state = ConnectionState.Disconnected;
+        (connection as any)._client = null;
+        await expect(connection.listEntries('/home')).rejects.toThrow('Not connected');
+      });
+
+      it('should return files and dirs correctly', async () => {
+        mockExecOutput(
+          '/home/file1.ts\n/home/file2.ts\n<<DIR_MARKER>>\n/home/subdir1\n/home/subdir2\n'
+        );
+        const result = await connection.listEntries('/home');
+        expect(result.files).toEqual(['/home/file1.ts', '/home/file2.ts']);
+        expect(result.dirs).toEqual(['/home/subdir1', '/home/subdir2']);
+      });
+
+      it('should sort files and dirs', async () => {
+        mockExecOutput(
+          '/opt/z.ts\n/opt/a.ts\n<<DIR_MARKER>>\n/opt/zdir\n/opt/adir\n'
+        );
+        const result = await connection.listEntries('/opt');
+        expect(result.files).toEqual(['/opt/a.ts', '/opt/z.ts']);
+        expect(result.dirs).toEqual(['/opt/adir', '/opt/zdir']);
+      });
+
+      it('should handle empty directory (no files, no dirs)', async () => {
+        mockExecOutput('<<DIR_MARKER>>\n');
+        const result = await connection.listEntries('/empty');
+        expect(result.files).toEqual([]);
+        expect(result.dirs).toEqual([]);
+      });
+
+      it('should handle directory with only files', async () => {
+        mockExecOutput('/opt/a.ts\n/opt/b.ts\n<<DIR_MARKER>>\n');
+        const result = await connection.listEntries('/opt');
+        expect(result.files).toEqual(['/opt/a.ts', '/opt/b.ts']);
+        expect(result.dirs).toEqual([]);
+      });
+
+      it('should handle directory with only subdirs', async () => {
+        mockExecOutput('<<DIR_MARKER>>\n/opt/sub1\n/opt/sub2\n');
+        const result = await connection.listEntries('/opt');
+        expect(result.files).toEqual([]);
+        expect(result.dirs).toEqual(['/opt/sub1', '/opt/sub2']);
+      });
+
+      it('should apply filePattern filter', async () => {
+        mockExecOutput('/opt/a.ts\n<<DIR_MARKER>>\n/opt/sub1\n');
+        await connection.listEntries('/opt', '*.ts');
+        expect(execSpy).toHaveBeenCalledWith(
+          expect.stringContaining("-name '*.ts'")
+        );
+      });
+
+      it('should not apply name filter when pattern is *', async () => {
+        mockExecOutput('<<DIR_MARKER>>\n');
+        await connection.listEntries('/opt', '*');
+        const cmd = execSpy.mock.calls[0][0] as string;
+        expect(cmd).not.toContain("-name '*'");
+      });
+
+      it('should escape single quotes in path', async () => {
+        mockExecOutput('<<DIR_MARKER>>\n');
+        await connection.listEntries("/home/user's dir");
+        expect(execSpy).toHaveBeenCalledWith(
+          expect.stringContaining("'\\''")
+        );
+      });
+
+      it('should escape single quotes in filePattern', async () => {
+        mockExecOutput('<<DIR_MARKER>>\n');
+        await connection.listEntries('/opt', "*.o'malley");
+        expect(execSpy).toHaveBeenCalledWith(
+          expect.stringContaining("'\\''")
+        );
+      });
+
+      it('should use single SSH exec call with marker', async () => {
+        mockExecOutput('<<DIR_MARKER>>\n');
+        await connection.listEntries('/opt');
+        expect(execSpy).toHaveBeenCalledTimes(1);
+        const cmd = execSpy.mock.calls[0][0] as string;
+        expect(cmd).toContain('<<DIR_MARKER>>');
+        expect(cmd).toContain('-type f');
+        expect(cmd).toContain('-type d');
+      });
     });
   });
 

@@ -71,7 +71,8 @@ type WebviewMessage =
   | { type: 'toggleServer'; serverId: string; checked: boolean }
   | { type: 'removeServerPath'; serverId: string; pathIndex: number }
   | { type: 'addServerPath'; serverId: string; path: string }
-  | { type: 'toggleSort' };
+  | { type: 'toggleSort' }
+  | { type: 'searchIncludeSystemDirs' };
 
 /**
  * SearchPanel - VS Code native-style search webview
@@ -85,7 +86,12 @@ export class SearchPanel {
   private searchScopes: SearchScope[] = [];
   private isSearching: boolean = false;
   private lastSearchQuery: string = '';
+  private lastIncludePattern: string = '';
+  private lastExcludePattern: string = '';
+  private lastCaseSensitive: boolean = false;
+  private lastRegex: boolean = false;
   private searchAbortController: AbortController | null = null;
+  private includeSystemDirsOverride: boolean = false;
 
   // Server list state (cross-server search model)
   private serverList: ServerSearchEntry[] = [];
@@ -268,6 +274,10 @@ export class SearchPanel {
     // New serverList model: route path to correct server entry
     const server = this.serverList.find((s) => s.id === connection.id);
     if (server) {
+      // If server was checked with no paths (implicit root /), make it explicit
+      if (server.checked && server.searchPaths.length === 0 && scopePath !== '/') {
+        server.searchPaths.push({ path: '/' });
+      }
       // Check for duplicate path
       if (!server.searchPaths.some((p) => p.path === scopePath)) {
         server.searchPaths.push({ path: scopePath, isFile: isFile || false });
@@ -478,6 +488,10 @@ export class SearchPanel {
       case 'addServerPath': {
         const server = this.serverList.find((s) => s.id === message.serverId);
         if (server) {
+          // If server was checked with no paths (implicit root /), make it explicit
+          if (server.checked && server.searchPaths.length === 0 && message.path !== '/') {
+            server.searchPaths.push({ path: '/' });
+          }
           if (!server.searchPaths.some((p) => p.path === message.path)) {
             server.searchPaths.push({ path: message.path });
           }
@@ -494,6 +508,22 @@ export class SearchPanel {
           this.extensionContext.globalState.update('sshLite.searchSortOrder', this.sortOrder);
         }
         this.sendState();
+        break;
+
+      case 'searchIncludeSystemDirs':
+        // Re-run last search with system dirs included (one-shot override)
+        this.includeSystemDirsOverride = true;
+        if (this.lastSearchQuery) {
+          await this.performSearch(
+            this.lastSearchQuery,
+            this.lastIncludePattern || '',
+            this.lastExcludePattern || '',
+            this.lastCaseSensitive || false,
+            this.lastRegex || false,
+            this.findFilesMode
+          );
+        }
+        this.includeSystemDirsOverride = false;
         break;
     }
   }
@@ -557,8 +587,19 @@ export class SearchPanel {
 
     this.isSearching = true;
     this.lastSearchQuery = query;
+    this.lastIncludePattern = includePattern;
+    this.lastExcludePattern = excludePattern;
+    this.lastCaseSensitive = caseSensitive;
+    this.lastRegex = regex;
     this.findFilesMode = !!findFiles;
-    this.postMessage({ type: 'searching', query });
+
+    // Build scope servers list for multi-server grouping (available before connections resolve)
+    const scopeServers = checkedServers.map((s) => ({
+      id: s.id,
+      name: `${s.hostConfig.name} (${s.hostConfig.username})`,
+    }));
+
+    this.postMessage({ type: 'searching', query, scopeServers });
 
     const config = vscode.workspace.getConfiguration('sshLite');
     const maxResults = config.get<number>('searchMaxResults', 2000);
@@ -627,8 +668,87 @@ export class SearchPanel {
         await Promise.allSettled(connectPromises);
         if (signal.aborted) return;
 
-        // Phase 2: Search each server's non-redundant paths in parallel
-        const searchPromises: Promise<WebviewSearchResult[]>[] = [];
+        // Phase 2: Search each server's non-redundant paths in parallel with progressive results
+        const globalSeen = new Set<string>(); // cross-batch deduplication
+        let completedCount = 0;
+        let totalCount = 0; // counted after building all tasks
+
+        const parallelProcesses = config.get<number>('searchParallelProcesses', 4);
+        const excludeSystemDirs = config.get<boolean>('searchExcludeSystemDirs', true);
+        const SYSTEM_DIRS = ['/proc', '/sys', '/dev', '/run', '/snap', '/lost+found'];
+        let systemDirsExcluded: string[] = []; // track for webview notification
+
+        // Build search tasks with metadata
+        interface SearchTask {
+          serverId: string;
+          displayName: string;
+          activityId: string;
+          promise: Promise<WebviewSearchResult[]>;
+        }
+        const searchTasks: SearchTask[] = [];
+        const workerPoolPromises: Promise<void>[] = [];
+
+        // Helper to create a search task
+        const createSearchTask = (
+          server: ServerSearchEntry,
+          connection: SSHConnection,
+          searchPathArg: string | string[],
+          label: string,
+        ): SearchTask => {
+          const displayName = `${server.hostConfig.name} (${server.hostConfig.username}): ${label}`;
+          const activityId = activityService.startActivity(
+            'search',
+            connection.id,
+            connection.host.name,
+            `${findFiles ? 'Find' : 'Search'}: "${query.substring(0, 30)}${query.length > 30 ? '...' : ''}"`,
+            {
+              detail: `in ${label}`,
+              cancellable: true,
+              onCancel: () => { abortController.abort(); },
+            }
+          );
+          activityIds.push(activityId);
+
+          const searchPromise = (async (): Promise<WebviewSearchResult[]> => {
+            if (signal.aborted) return [];
+            try {
+              const results = await connection.searchFiles(searchPathArg, query, {
+                searchContent: !findFiles,
+                caseSensitive,
+                regex,
+                filePattern: includePattern || '*',
+                excludePattern: excludePattern || undefined,
+                maxResults,
+                signal,
+              });
+
+              if (signal.aborted) {
+                activityService.cancelActivity(activityId);
+                return [];
+              }
+
+              const mapped = results.map((r) => ({
+                ...r,
+                modified: r.modified ? r.modified.getTime() : undefined,
+                connectionId: connection.id,
+                connectionName: connection.host.name,
+              }));
+
+              console.log(`[SSH Lite Search] "${displayName}" returned ${mapped.length} results`);
+              activityService.completeActivity(activityId, `${mapped.length} results`);
+
+              serverResults.set(server.id, (serverResults.get(server.id) || 0) + mapped.length);
+              return mapped;
+            } catch (error) {
+              console.log(`[SSH Lite Search] "${displayName}" FAILED: ${(error as Error).message}`);
+              activityService.failActivity(activityId, (error as Error).message);
+              failedScopes.push(`${displayName}: ${(error as Error).message}`);
+              return [];
+            }
+          })();
+
+          return { serverId: server.id, displayName, activityId, promise: searchPromise };
+        };
 
         for (const server of checkedServers) {
           const connection = connectionMap.get(server.id);
@@ -643,90 +763,253 @@ export class SearchPanel {
           for (const sp of activePaths) {
             if (signal.aborted) break;
 
-            const displayName = `${server.hostConfig.name} (${server.hostConfig.username}): ${sp.path}`;
+            // File-level worker pool: list entries per directory level, batch files to workers
+            if (parallelProcesses > 1 && !sp.isFile) {
+              // 32KB batch limit — safe across all server OS variants (Linux, macOS, FreeBSD, Solaris, AIX)
+              const MAX_BATCH_BYTES = 32_000;
+              // Only pass simple glob patterns to listEntries (find -name doesn't support brace expansion)
+              const listEntriesPattern = (includePattern && !/[{,]/.test(includePattern))
+                ? includePattern : undefined;
 
-            const activityId = activityService.startActivity(
-              'search',
-              connection.id,
-              connection.host.name,
-              `${findFiles ? 'Find' : 'Search'}: "${query.substring(0, 30)}${query.length > 30 ? '...' : ''}"`,
-              {
-                detail: `in ${sp.path}`,
-                cancellable: true,
-                onCancel: () => { abortController.abort(); },
-              }
-            );
-            activityIds.push(activityId);
+              const poolPromise = (async () => {
+                const workQueue: Array<{ type: 'dir'; path: string } | { type: 'files'; filePaths: string[] }> = [];
+                let workIndex = 0;
 
-            searchPromises.push(
-              (async () => {
-                if (signal.aborted) return [];
-                try {
-                  const results = await connection.searchFiles(sp.path, query, {
-                    searchContent: !findFiles,
-                    caseSensitive,
-                    regex,
-                    filePattern: includePattern || '*',
-                    excludePattern: excludePattern || undefined,
-                    maxResults,
-                    signal,
-                  });
-
-                  if (signal.aborted) {
-                    activityService.cancelActivity(activityId);
-                    return [];
+                // Seed work queue: filter system dirs at root, otherwise start with the search path
+                if (excludeSystemDirs && !this.includeSystemDirsOverride && sp.path === '/') {
+                  try {
+                    const subdirs = await connection.listDirectories(sp.path);
+                    if (signal.aborted) return;
+                    const excluded = subdirs.filter((d) => SYSTEM_DIRS.includes(d));
+                    const searchableDirs = subdirs.filter((d) => !SYSTEM_DIRS.includes(d));
+                    if (excluded.length > 0) {
+                      systemDirsExcluded = excluded;
+                      this.postMessage({ type: 'systemDirsExcluded', dirs: excluded });
+                    }
+                    for (const dir of searchableDirs) {
+                      workQueue.push({ type: 'dir', path: dir });
+                    }
+                  } catch {
+                    workQueue.push({ type: 'dir', path: sp.path });
                   }
-
-                  const mapped = results.map((r) => ({
-                    ...r,
-                    modified: r.modified ? r.modified.getTime() : undefined,
-                    connectionId: connection.id,
-                    connectionName: connection.host.name,
-                  }));
-
-                  console.log(`[SSH Lite Search] "${displayName}" returned ${mapped.length} results`);
-                  activityService.completeActivity(activityId, `${mapped.length} results`);
-
-                  // Track results per server for auto-disconnect decision
-                  serverResults.set(server.id, (serverResults.get(server.id) || 0) + mapped.length);
-                  return mapped;
-                } catch (error) {
-                  console.log(`[SSH Lite Search] "${displayName}" FAILED: ${(error as Error).message}`);
-                  activityService.failActivity(activityId, (error as Error).message);
-                  failedScopes.push(`${displayName}: ${(error as Error).message}`);
-                  return [];
+                } else {
+                  workQueue.push({ type: 'dir', path: sp.path });
                 }
-              })()
-            );
+
+                totalCount += workQueue.length;
+                console.log(`[SSH Lite Search] Worker pool for ${sp.path}: ${workQueue.length} initial items, ${parallelProcesses} workers`);
+
+                const runWorker = async (): Promise<void> => {
+                  while (!signal.aborted && globalSeen.size < maxResults) {
+                    if (workIndex >= workQueue.length) return; // queue exhausted
+                    const item = workQueue[workIndex++];
+
+                    if (item.type === 'dir') {
+                      // LIST: discover files + subdirs at this level
+                      try {
+                        const entries = await connection.listEntries(item.path, listEntriesPattern);
+                        if (signal.aborted) return;
+
+                        // Batch files by byte size for cross-OS safety
+                        const batches: string[][] = [];
+                        let currentBatch: string[] = [];
+                        let currentBytes = 0;
+                        for (const file of entries.files) {
+                          const fileBytes = file.length + 3; // +3 for quoting and space
+                          if (currentBytes + fileBytes > MAX_BATCH_BYTES && currentBatch.length > 0) {
+                            batches.push(currentBatch);
+                            currentBatch = [];
+                            currentBytes = 0;
+                          }
+                          currentBatch.push(file);
+                          currentBytes += fileBytes;
+                        }
+                        if (currentBatch.length > 0) batches.push(currentBatch);
+
+                        // Push file batches and subdirs to work queue
+                        for (const batch of batches) {
+                          workQueue.push({ type: 'files', filePaths: batch });
+                        }
+                        for (const dir of entries.dirs) {
+                          workQueue.push({ type: 'dir', path: dir });
+                        }
+
+                        // Update totalCount: add new items (file batches + subdirs) discovered by this dir
+                        const newItems = batches.length + entries.dirs.length;
+                        totalCount += newItems;
+
+                        // Dir listing done — send progress-only batch
+                        completedCount++;
+                        this.postMessage({
+                          type: 'searchBatch', results: [],
+                          totalResults: globalSeen.size, completedCount, totalCount,
+                          hitLimit: false, limit: maxResults,
+                          done: completedCount === totalCount,
+                        });
+                      } catch {
+                        // listEntries failed — fallback to recursive grep on this dir
+                        const actId = activityService.startActivity(
+                          'search', connection.id, connection.host.name,
+                          `${findFiles ? 'Find' : 'Search'}: "${query.substring(0, 30)}${query.length > 30 ? '...' : ''}"`,
+                          { detail: `in ${item.path} (fallback)`, cancellable: true, onCancel: () => { abortController.abort(); } }
+                        );
+                        activityIds.push(actId);
+                        try {
+                          const results = await connection.searchFiles(item.path, query, {
+                            searchContent: !findFiles, caseSensitive, regex,
+                            filePattern: includePattern || '*',
+                            excludePattern: excludePattern || undefined,
+                            maxResults, signal,
+                          });
+                          if (signal.aborted) { activityService.cancelActivity(actId); return; }
+                          const mapped = results.map((r) => ({
+                            ...r, modified: r.modified ? r.modified.getTime() : undefined,
+                            connectionId: connection.id, connectionName: connection.host.name,
+                          }));
+                          activityService.completeActivity(actId, `${mapped.length} results`);
+                          serverResults.set(server.id, (serverResults.get(server.id) || 0) + mapped.length);
+                          const unique = mapped.filter((r) => {
+                            const key = `${r.connectionId}:${r.path}:${r.line || 0}`;
+                            if (globalSeen.has(key)) return false;
+                            globalSeen.add(key);
+                            return true;
+                          });
+                          completedCount++;
+                          this.postMessage({
+                            type: 'searchBatch', results: unique,
+                            totalResults: globalSeen.size, completedCount, totalCount,
+                            hitLimit: globalSeen.size >= maxResults, limit: maxResults,
+                            done: completedCount === totalCount,
+                          });
+                        } catch (error) {
+                          activityService.failActivity(actId, (error as Error).message);
+                          failedScopes.push(`${server.hostConfig.name}: ${(error as Error).message}`);
+                          completedCount++;
+                          this.postMessage({
+                            type: 'searchBatch', results: [],
+                            totalResults: globalSeen.size, completedCount, totalCount,
+                            hitLimit: false, limit: maxResults,
+                            done: completedCount === totalCount,
+                          });
+                        }
+                      }
+                    } else if (item.type === 'files') {
+                      // SEARCH: grep this batch of files
+                      const actId = activityService.startActivity(
+                        'search', connection.id, connection.host.name,
+                        `${findFiles ? 'Find' : 'Search'}: "${query.substring(0, 30)}${query.length > 30 ? '...' : ''}"`,
+                        { detail: `${item.filePaths.length} files`, cancellable: true,
+                          onCancel: () => { abortController.abort(); } }
+                      );
+                      activityIds.push(actId);
+                      try {
+                        const results = await connection.searchFiles(item.filePaths, query, {
+                          searchContent: !findFiles, caseSensitive, regex,
+                          filePattern: includePattern || '*',
+                          excludePattern: excludePattern || undefined,
+                          maxResults, signal,
+                        });
+                        if (signal.aborted) { activityService.cancelActivity(actId); return; }
+                        const mapped = results.map((r) => ({
+                          ...r, modified: r.modified ? r.modified.getTime() : undefined,
+                          connectionId: connection.id, connectionName: connection.host.name,
+                        }));
+                        activityService.completeActivity(actId, `${mapped.length} results`);
+                        serverResults.set(server.id, (serverResults.get(server.id) || 0) + mapped.length);
+                        const unique = mapped.filter((r) => {
+                          const key = `${r.connectionId}:${r.path}:${r.line || 0}`;
+                          if (globalSeen.has(key)) return false;
+                          globalSeen.add(key);
+                          return true;
+                        });
+                        completedCount++;
+                        this.postMessage({
+                          type: 'searchBatch', results: unique,
+                          totalResults: globalSeen.size, completedCount, totalCount,
+                          hitLimit: globalSeen.size >= maxResults, limit: maxResults,
+                          done: completedCount === totalCount,
+                        });
+                      } catch (error) {
+                        activityService.failActivity(actId, (error as Error).message);
+                        failedScopes.push(`${server.hostConfig.name}: ${(error as Error).message}`);
+                        completedCount++;
+                        this.postMessage({
+                          type: 'searchBatch', results: [],
+                          totalResults: globalSeen.size, completedCount, totalCount,
+                          hitLimit: false, limit: maxResults,
+                          done: completedCount === totalCount,
+                        });
+                      }
+                    }
+                  }
+                };
+
+                const workerCount = Math.min(parallelProcesses, Math.max(workQueue.length, 2));
+                await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+              })();
+
+              workerPoolPromises.push(poolPromise);
+              continue; // skip single-path fallthrough
+            }
+
+            // Single search (no parallel split or fallback)
+            searchTasks.push(createSearchTask(server, connection, sp.path, sp.path));
           }
         }
 
-        const settledResults = await Promise.allSettled(searchPromises);
-        const allResults = settledResults
-          .filter((r): r is PromiseFulfilledResult<WebviewSearchResult[]> => r.status === 'fulfilled')
-          .flatMap((r) => r.value);
+        totalCount += searchTasks.length;
 
-        console.log(`[SSH Lite Search] All servers complete. Total results: ${allResults.length}, Failed: ${failedScopes.length}`);
+        // Notify webview about excluded system directories
+        if (systemDirsExcluded.length > 0) {
+          this.postMessage({
+            type: 'systemDirsExcluded',
+            dirs: systemDirsExcluded,
+          });
+        }
 
-        if (signal.aborted) return;
+        // Wrap each task with .then() that sends progressive searchBatch messages
+        const wrappedPromises = searchTasks.map((task) =>
+          task.promise.then((batchResults) => {
+            if (signal.aborted) return [];
+            // Deduplicate against global set
+            const unique = batchResults.filter((r) => {
+              const key = `${r.connectionId}:${r.path}:${r.line || 0}`;
+              if (globalSeen.has(key)) return false;
+              globalSeen.add(key);
+              return true;
+            });
+            completedCount++;
+            this.postMessage({
+              type: 'searchBatch',
+              results: unique,
+              totalResults: globalSeen.size,
+              completedCount,
+              totalCount,
+              hitLimit: globalSeen.size >= maxResults,
+              limit: maxResults,
+              done: completedCount === totalCount,
+            });
+            return unique;
+          }).catch(() => {
+            if (signal.aborted) return [] as WebviewSearchResult[];
+            completedCount++;
+            this.postMessage({
+              type: 'searchBatch',
+              results: [],
+              totalResults: globalSeen.size,
+              completedCount,
+              totalCount,
+              hitLimit: false,
+              limit: maxResults,
+              done: completedCount === totalCount,
+            });
+            return [] as WebviewSearchResult[];
+          })
+        );
 
-        // Deduplicate results
-        const seen = new Set<string>();
-        const uniqueResults = allResults.filter((r) => {
-          const key = `${r.connectionId}:${r.path}:${r.line || 0}`;
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
+        await Promise.all([...wrappedPromises, ...workerPoolPromises]);
 
-        const hitLimit = uniqueResults.length >= maxResults;
-
-        // Build scope servers from checked servers (for multi-server grouping)
-        const scopeServers = checkedServers
-          .filter((s) => connectionMap.has(s.id))
-          .map((s) => ({ id: s.id, name: `${s.hostConfig.name} (${s.hostConfig.username})` }));
-
-        this.postMessage({ type: 'results', results: uniqueResults, query, hitLimit, limit: maxResults, scopeServers });
+        console.log(`[SSH Lite Search] All servers complete. Total results: ${globalSeen.size}, Failed: ${failedScopes.length}`);
 
         if (failedScopes.length > 0) {
           vscode.window.showWarningMessage(
@@ -863,6 +1146,15 @@ export class SearchPanel {
   }
 
   /**
+   * Returns true if childPath is a strict child of parentPath.
+   * Handles root "/" correctly: every absolute path is a child of "/".
+   */
+  private static isChildPath(childPath: string, parentPath: string): boolean {
+    if (parentPath === '/') return childPath !== '/';
+    return childPath.startsWith(parentPath + '/');
+  }
+
+  /**
    * Detect redundant child paths (same server) and cross-user overlapping paths (same host).
    * Same-user child paths: grayed out, NOT searched (saves resources).
    * Cross-user overlaps: warned but still searched (different permissions).
@@ -882,7 +1174,7 @@ export class SearchPanel {
       for (const sp of server.searchPaths) {
         for (const other of server.searchPaths) {
           if (other === sp) continue;
-          if (sp.path === other.path || sp.path.startsWith(other.path + '/')) {
+          if (sp.path === other.path || SearchPanel.isChildPath(sp.path, other.path)) {
             sp.redundantOf = other.path;
             break;
           }
@@ -905,8 +1197,8 @@ export class SearchPanel {
 
           for (const otherPath of other.searchPaths) {
             if (sp.path === otherPath.path ||
-                sp.path.startsWith(otherPath.path + '/') ||
-                otherPath.path.startsWith(sp.path + '/')) {
+                SearchPanel.isChildPath(sp.path, otherPath.path) ||
+                SearchPanel.isChildPath(otherPath.path, sp.path)) {
               sp.overlapWarning = `Overlaps with ${other.hostConfig.username}@${other.hostConfig.name} ${otherPath.path}`;
               break;
             }
@@ -1582,6 +1874,41 @@ export class SearchPanel {
       color: var(--vscode-descriptionForeground);
     }
 
+    .system-dirs-notice {
+      padding: 6px 12px;
+      background: var(--vscode-editorInfo-background, rgba(0, 120, 212, 0.1));
+      border-bottom: 1px solid var(--vscode-panel-border);
+      font-size: 12px;
+      color: var(--vscode-descriptionForeground);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .system-dirs-notice .include-all-link {
+      color: var(--vscode-textLink-foreground);
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    .system-dirs-notice .include-all-link:hover {
+      text-decoration: underline;
+    }
+
+    .system-dirs-notice .notice-dismiss {
+      margin-left: auto;
+      background: transparent;
+      border: none;
+      color: var(--vscode-foreground);
+      cursor: pointer;
+      opacity: 0.6;
+      font-size: 14px;
+    }
+
+    .system-dirs-notice .notice-dismiss:hover {
+      opacity: 1;
+    }
+
     .file-group {
       border-bottom: 1px solid var(--vscode-panel-border);
     }
@@ -2084,7 +2411,7 @@ export class SearchPanel {
             html += '<a class="add-path-link" data-server-id="' + escapeHtml(server.id) + '" title="Add another folder to search on this server">+ Add folder</a>';
           }
         } else if (!server.disabled) {
-          html += '<span class="no-paths" title="Click \\u{1F50D} on a folder in Remote Files, or click + Add folder">Add a search path</span>';
+          html += '<span class="no-paths" title="Server will search from / (root). Click + Add folder to narrow scope.">/ (all files)</span>';
           html += '<a class="add-path-link" data-server-id="' + escapeHtml(server.id) + '" title="Add another folder to search on this server" style="display:inline-block">+ Add folder</a>';
         } else {
           html += '<span class="no-paths">(no credentials)</span>';
@@ -2189,6 +2516,48 @@ export class SearchPanel {
           input.addEventListener('blur', commit);
         });
       });
+    }
+
+    // Debounced progressive render — 100ms debounce for intermediate batches, immediate on done
+    let renderDebounceTimer = null;
+    function debouncedRenderResults(hitLimit, limit, done, completedCount, totalCount) {
+      if (renderDebounceTimer) {
+        clearTimeout(renderDebounceTimer);
+        renderDebounceTimer = null;
+      }
+      const doRender = () => {
+        if (results.length === 0 && !done) {
+          // Still searching, no results yet — show progress in searching indicator
+          resultsHeader.style.display = 'flex';
+          resultsHeader.innerHTML = '<span class="results-count">Searching... (' + completedCount + '/' + totalCount + ' done)</span>';
+          return;
+        }
+        if (results.length === 0 && done) {
+          showNoResults();
+          return;
+        }
+        // Save scroll position before re-render
+        const scrollTop = resultsContainer.scrollTop;
+        renderResults(hitLimit, limit);
+        // Override header with progress info while search is in progress
+        if (!done) {
+          const countEl = resultsHeader.querySelector('.results-count');
+          if (countEl) {
+            const fileCount = new Set(results.map(r => r.connectionId + ':' + r.path)).size;
+            countEl.innerHTML = results.length + ' result' + (results.length !== 1 ? 's' : '') + ' in ' +
+              fileCount + ' file' + (fileCount !== 1 ? 's' : '') +
+              ' <span style="opacity: 0.7">(' + completedCount + '/' + totalCount + ' done...)</span>';
+          }
+        }
+        // Restore scroll position
+        resultsContainer.scrollTop = scrollTop;
+      };
+
+      if (done) {
+        doRender(); // Final batch: render immediately
+      } else {
+        renderDebounceTimer = setTimeout(doRender, 100);
+      }
     }
 
     // Render results
@@ -2860,11 +3229,36 @@ export class SearchPanel {
           break;
 
         case 'searching':
+          // Reset state for new search
+          results = [];
+          currentQuery = message.query || '';
+          scopeServers = message.scopeServers || [];
+          searchExpandState = 2;
+          expandedFiles.clear();
+          expandedTreeNodes.clear();
+          treeViewFirstExpand = true;
           showSearching(message.query);
           // Show cancel button, hide search button
           searchBtn.style.display = 'none';
           cancelBtn.style.display = 'inline-block';
           break;
+
+        case 'searchBatch': {
+          // Progressive results: append new results as each search process completes
+          if (message.results && message.results.length > 0) {
+            results = results.concat(message.results);
+          }
+          // Debounced re-render with progress info
+          debouncedRenderResults(
+            message.hitLimit, message.limit, message.done,
+            message.completedCount, message.totalCount
+          );
+          if (message.done) {
+            searchBtn.style.display = 'inline-block';
+            cancelBtn.style.display = 'none';
+          }
+          break;
+        }
 
         case 'results':
           results = message.results || [];
@@ -2897,6 +3291,33 @@ export class SearchPanel {
           searchBtn.style.display = 'inline-block';
           cancelBtn.style.display = 'none';
           break;
+
+        case 'systemDirsExcluded': {
+          // Show dismissible notice about excluded system directories
+          const dirs = (message.dirs || []).join(', ');
+          const notice = document.createElement('div');
+          notice.className = 'system-dirs-notice';
+          notice.innerHTML = '\\u2139\\uFE0F System directories excluded: ' + escapeHtml(dirs) +
+            ' <a href="#" class="include-all-link">Include all</a>' +
+            ' <button class="notice-dismiss" title="Dismiss">\\u00D7</button>';
+          // Insert before results container
+          const resultsArea = resultsContainer.parentElement;
+          if (resultsArea) {
+            // Remove existing notice if any
+            const old = resultsArea.querySelector('.system-dirs-notice');
+            if (old) old.remove();
+            resultsArea.insertBefore(notice, resultsContainer);
+          }
+          // Wire dismiss button
+          notice.querySelector('.notice-dismiss').addEventListener('click', () => notice.remove());
+          // Wire "Include all" link (re-search without system dir exclusion)
+          notice.querySelector('.include-all-link').addEventListener('click', (e) => {
+            e.preventDefault();
+            notice.remove();
+            vscode.postMessage({ type: 'searchIncludeSystemDirs' });
+          });
+          break;
+        }
 
         case 'focusInput':
           searchInput.focus();

@@ -102,6 +102,8 @@ export function createMockConnection(overrides: Partial<{
     forwardPort: jest.fn().mockResolvedValue(undefined),
     stopForward: jest.fn().mockResolvedValue(undefined),
     searchFiles: jest.fn().mockResolvedValue([]),
+    listDirectories: jest.fn().mockResolvedValue([]),
+    listEntries: jest.fn().mockResolvedValue({ files: [], dirs: [] }),
     onStateChange: jest.fn().mockReturnValue({ dispose: jest.fn() }),
     dispose: jest.fn(),
   };

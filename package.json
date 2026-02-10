@@ -1214,7 +1214,7 @@
           "default": 5,
           "minimum": 1,
           "maximum": 10,
-          "description": "Maximum number of parallel preload operations (lower = less server load, higher = faster preloading)"
+          "description": "Maximum number of parallel preload operations per server (lower = less server load, higher = faster preloading)"
         },
         "sshLite.progressiveDownloadThreshold": {
           "type": "number",
@@ -1259,6 +1259,18 @@
           "default": 1000,
           "minimum": 1,
           "description": "Maximum number of files to show when filtering (default: 1000)."
+        },
+        "sshLite.searchParallelProcesses": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 16,
+          "description": "Number of parallel search workers per folder. Workers process file batches concurrently for faster results. Set to 1 to disable."
+        },
+        "sshLite.searchExcludeSystemDirs": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-exclude system directories (/proc, /sys, /dev, /run) when searching from root /. A notice is shown to let you include them."
         }
       }
     },

@@ -50,22 +50,31 @@ SearchPanel.performSearch()
     │
     ├─ For each checked + connected server:
     │   │
-    │   ├─ Content mode (grep):
-    │   │   Build: grep -rn --include="<include>" --exclude="<exclude>"
-    │   │          "<query>" <searchPaths>
+    │   ├─ Filter out redundant child paths (isChildPath)
+    │   ├─ Default to / if no explicit paths
     │   │
-    │   └─ Find files mode:
-    │       Build: find <searchPaths> -name "<pattern>" -type f
+    │   ├─ File-level worker pool (if parallelProcesses > 1):
+    │   │   ├─ Seed work queue with search path (or filtered subdirs at root)
+    │   │   ├─ N workers consume from shared queue:
+    │   │   │   ├─ DIR item → listEntries(path) → batch files (32KB) + add subdirs
+    │   │   │   └─ FILES item → searchFiles(filePaths[], query)
+    │   │   ├─ Filter system dirs if root / + searchExcludeSystemDirs
+    │   │   └─ Fallback: if listEntries fails → grep -r on that dir
     │   │
-    │   ├─ Execute via CommandGuard.exec() (tracked in Activity panel)
-    │   ├─ Stream stdout line by line
-    │   ├─ Parse results: filepath:line:content
-    │   ├─ Send to webview: { type: 'updateResults', results }
+    │   ├─ Single search (fallback when parallelProcesses = 1):
+    │   │   └─ searchFiles(path, query, options)
+    │   │
+    │   ├─ Each completed batch → sends searchBatch:
+    │   │   { type: 'searchBatch', results, totalResults,
+    │   │     completedCount, totalCount, hitLimit, done }
     │   └─ Stop at searchMaxResults limit
     │
     ▼
-Webview displays results (list or tree view)
+Webview displays results progressively (list or tree view)
     │
+    ├─ Results appended as each searchBatch arrives
+    ├─ Debounced re-render (100ms), immediate on done
+    ├─ Progress header: "42 results in 8 files (3/7 done...)"
     ├─ Grouped by server (tree) or flat (list)
     ├─ Click result → webview sends: { type: 'openResult', result }
     │
@@ -119,13 +128,18 @@ searchPanel.addScope(remotePath, connection, isFile);
 ### Redundancy Detection
 
 ```
-Same-user child paths:
-  /home/user          ← parent (searched)
+Same-user child paths (including root):
+  /                   ← parent (searched, catches all)
+  /home/user          ← child (grayed out, skipped)
   /home/user/project  ← child (grayed out, skipped)
 
 Cross-user overlaps:
-  root@srv:/var/log       ← searched
-  admin@srv:/var/log      ← warning (different user, different permissions)
+  root@srv:/           ← searched
+  admin@srv:/var/log   ← warning (different user, different permissions)
+
+Implicit root:
+  Server checked with no paths → defaults to / search
+  Adding /home/user → auto-inserts / first, child marked redundant
 ```
 
 ---
@@ -134,10 +148,12 @@ Cross-user overlaps:
 
 ```
 1. New search auto-cancels previous
-2. Cancel button in webview
-3. Extension sends SIGTERM to remote grep/find processes
-4. Stream.close() after SIGTERM
-5. Activity panel shows "cancelled" state
+2. Cancel button in webview → postMessage({ type: 'cancelSearch' })
+3. Extension aborts AbortController → signal propagates to all search tasks
+4. SSHConnection sends SIGTERM to remote grep/find processes, then stream.close()
+5. Both .then() and .catch() handlers check signal.aborted to suppress stale messages
+6. Webview receives 'searchCancelled' → shows "Search cancelled", hides cancel button
+7. Activity panel shows "cancelled" state
 ```
 
 ---
@@ -148,3 +164,5 @@ Cross-user overlaps:
 |---------|---------|--------|
 | `searchMaxResults` | `2000` | Max results before stopping |
 | `filterMaxResults` | `1000` | Max results for file filter |
+| `searchParallelProcesses` | `4` | Parallel search processes per folder (1 = disabled) |
+| `searchExcludeSystemDirs` | `true` | Auto-exclude /proc, /sys, /dev, /run when searching from root / |

@@ -23,6 +23,7 @@
   "SSHConnection.stopForward": [],
   "SSHConnection.getActiveForwards": [],
   "SSHConnection.searchFiles": ["file-operations", "command-guard", "mixed-workflows"],
+  "SSHConnection.listDirectories": ["file-operations"],
   "SSHConnection.dispose": [],
   "CommandGuard.exec": ["command-guard"],
   "CommandGuard.readFile": ["command-guard", "mixed-workflows"],

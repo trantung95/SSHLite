@@ -13,7 +13,7 @@
  */
 
 import { SearchPanel, SearchScope, ServerSearchEntry, SearchPath } from './SearchPanel';
-import { window } from '../__mocks__/vscode';
+import { window, setMockConfig, clearMockConfig } from '../__mocks__/vscode';
 import { createMockConnection, createMockHostConfig, createMockCredential } from '../__mocks__/testHelpers';
 
 // Mock ActivityService
@@ -651,6 +651,90 @@ describe('SearchPanel', () => {
       const paths2 = (panel as any).serverList[1].searchPaths as SearchPath[];
       expect(paths2[0].overlapWarning).toBeUndefined();
     });
+
+    it('should mark child of root / as redundant', () => {
+      const host = createMockHostConfig({ id: 'svr1' });
+      const conn = createMockConnection({ id: 'svr1', host });
+
+      panel.setServerList([
+        createServerEntry({ id: 'svr1', hostConfig: host }),
+      ]);
+      panel.addScope('/', conn as any);
+      panel.addScope('/home/user', conn as any);
+
+      const paths = (panel as any).serverList[0].searchPaths as SearchPath[];
+      expect(paths[0].path).toBe('/');
+      expect(paths[0].redundantOf).toBeUndefined(); // / is the parent
+      expect(paths[1].path).toBe('/home/user');
+      expect(paths[1].redundantOf).toBe('/'); // child of root
+    });
+
+    it('should mark deep child of root / as redundant', () => {
+      const host = createMockHostConfig({ id: 'svr1' });
+      const conn = createMockConnection({ id: 'svr1', host });
+
+      panel.setServerList([
+        createServerEntry({ id: 'svr1', hostConfig: host }),
+      ]);
+      panel.addScope('/', conn as any);
+      panel.addScope('/var/log/syslog/archive', conn as any);
+
+      const paths = (panel as any).serverList[0].searchPaths as SearchPath[];
+      expect(paths[1].redundantOf).toBe('/');
+    });
+
+    it('should detect cross-user overlap when one user has root /', () => {
+      const host1 = createMockHostConfig({ id: 'svr:22:root', host: 'svr', username: 'root', name: 'svr' });
+      const host2 = createMockHostConfig({ id: 'svr:22:tung', host: 'svr', username: 'tung', name: 'svr' });
+      const conn1 = createMockConnection({ id: 'svr:22:root', host: host1 });
+      const conn2 = createMockConnection({ id: 'svr:22:tung', host: host2 });
+
+      panel.setServerList([
+        createServerEntry({ id: 'svr:22:root', hostConfig: host1 }),
+        createServerEntry({ id: 'svr:22:tung', hostConfig: host2 }),
+      ]);
+      panel.addScope('/', conn1 as any);
+      panel.addScope('/var/log', conn2 as any);
+
+      const paths2 = (panel as any).serverList[1].searchPaths as SearchPath[];
+      expect(paths2[0].overlapWarning).toContain('root');
+    });
+
+    it('should auto-insert / when adding path to checked server with empty paths', () => {
+      const host = createMockHostConfig({ id: 'svr1' });
+      const conn = createMockConnection({ id: 'svr1', host });
+
+      panel.setServerList([
+        createServerEntry({ id: 'svr1', hostConfig: host }),
+      ]);
+      // First check the server (no paths)
+      panel.toggleServer('svr1', true);
+      expect((panel as any).serverList[0].searchPaths).toHaveLength(0);
+
+      // Now add a child path — should auto-insert /
+      panel.addScope('/home/user', conn as any);
+
+      const paths = (panel as any).serverList[0].searchPaths as SearchPath[];
+      expect(paths).toHaveLength(2);
+      expect(paths[0].path).toBe('/');
+      expect(paths[1].path).toBe('/home/user');
+      expect(paths[1].redundantOf).toBe('/');
+    });
+
+    it('should NOT auto-insert / when adding / explicitly to checked server', () => {
+      const host = createMockHostConfig({ id: 'svr1' });
+      const conn = createMockConnection({ id: 'svr1', host });
+
+      panel.setServerList([
+        createServerEntry({ id: 'svr1', hostConfig: host }),
+      ]);
+      panel.toggleServer('svr1', true);
+      panel.addScope('/', conn as any);
+
+      const paths = (panel as any).serverList[0].searchPaths as SearchPath[];
+      expect(paths).toHaveLength(1);
+      expect(paths[0].path).toBe('/');
+    });
   });
 
   describe('sort order', () => {
@@ -704,6 +788,15 @@ describe('SearchPanel', () => {
     ) => {
       return (panelInst as any).performSearch(query, include, exclude, caseSensitive, regex, findFiles);
     };
+
+    // Disable parallel search for basic server-list tests (tested separately in 'parallel search')
+    beforeEach(() => {
+      setMockConfig('sshLite.searchParallelProcesses', 1);
+    });
+
+    afterEach(() => {
+      clearMockConfig();
+    });
 
     it('should search checked servers with paths', async () => {
       const host = createMockHostConfig({ id: 'svr1' });
@@ -901,6 +994,719 @@ describe('SearchPanel', () => {
       const cb = jest.fn();
       panel.setAutoDisconnectCallback(cb);
       expect((panel as any).autoDisconnectCallback).toBe(cb);
+    });
+  });
+
+  describe('progressive search results (searchBatch)', () => {
+    const performSearchWithServerList = async (
+      panelInst: SearchPanel,
+      query: string,
+      include = '',
+      exclude = '',
+      caseSensitive = false,
+      regex = false,
+      findFiles = false
+    ) => {
+      return (panelInst as any).performSearch(query, include, exclude, caseSensitive, regex, findFiles);
+    };
+
+    function setupMockPanel(panelInst: SearchPanel): jest.Mock {
+      const postMessageSpy = jest.fn();
+      (panelInst as any).panel = {
+        webview: { postMessage: postMessageSpy },
+      };
+      return postMessageSpy;
+    }
+
+    beforeEach(() => {
+      // Disable parallel search for progressive results tests (test separately)
+      setMockConfig('sshLite.searchParallelProcesses', 1);
+    });
+
+    afterEach(() => {
+      clearMockConfig();
+    });
+
+    it('should send searchBatch messages per server', async () => {
+      const host1 = createMockHostConfig({ id: 'svr1', name: 'Server1' });
+      const host2 = createMockHostConfig({ id: 'svr2', name: 'Server2' });
+      const conn1 = createMockConnection({ id: 'svr1', host: host1 });
+      const conn2 = createMockConnection({ id: 'svr2', host: host2 });
+      (conn1.searchFiles as jest.Mock).mockResolvedValue([
+        { path: '/a.ts', line: 1, match: 'hello' },
+      ]);
+      (conn2.searchFiles as jest.Mock).mockResolvedValue([
+        { path: '/b.ts', line: 2, match: 'hello' },
+      ]);
+
+      panel.setServerList([
+        createServerEntry({ id: 'svr1', hostConfig: host1, connected: true }),
+        createServerEntry({ id: 'svr2', hostConfig: host2, connected: true }),
+      ]);
+      panel.setConnectionResolver((id) => {
+        if (id === 'svr1') return conn1 as any;
+        if (id === 'svr2') return conn2 as any;
+        return undefined;
+      });
+      panel.addScope('/opt', conn1 as any);
+      panel.addScope('/var', conn2 as any);
+
+      const postMessageSpy = setupMockPanel(panel);
+
+      await performSearchWithServerList(panel, 'hello');
+
+      const batchMessages = postMessageSpy.mock.calls
+        .filter((call: any[]) => call[0].type === 'searchBatch');
+      expect(batchMessages.length).toBe(2);
+    });
+
+    it('should set done: true only on the last batch', async () => {
+      const host1 = createMockHostConfig({ id: 'svr1', name: 'Server1' });
+      const host2 = createMockHostConfig({ id: 'svr2', name: 'Server2' });
+      const conn1 = createMockConnection({ id: 'svr1', host: host1 });
+      const conn2 = createMockConnection({ id: 'svr2', host: host2 });
+      (conn1.searchFiles as jest.Mock).mockResolvedValue([
+        { path: '/a.ts', line: 1, match: 'test' },
+      ]);
+      (conn2.searchFiles as jest.Mock).mockResolvedValue([
+        { path: '/b.ts', line: 2, match: 'test' },
+      ]);
+
+      panel.setServerList([
+        createServerEntry({ id: 'svr1', hostConfig: host1, connected: true }),
+        createServerEntry({ id: 'svr2', hostConfig: host2, connected: true }),
+      ]);
+      panel.setConnectionResolver((id) => {
+        if (id === 'svr1') return conn1 as any;
+        if (id === 'svr2') return conn2 as any;
+        return undefined;
+      });
+      panel.addScope('/opt', conn1 as any);
+      panel.addScope('/var', conn2 as any);
+
+      const postMessageSpy = setupMockPanel(panel);
+
+      await performSearchWithServerList(panel, 'test');
+
+      const batchMessages = postMessageSpy.mock.calls
+        .filter((call: any[]) => call[0].type === 'searchBatch');
+
+      // At least one batch should have done: false, and the last should have done: true
+      const doneMessages = batchMessages.filter((call: any[]) => call[0].done === true);
+      const notDoneMessages = batchMessages.filter((call: any[]) => call[0].done === false);
+      expect(doneMessages.length).toBe(1);
+      expect(notDoneMessages.length).toBe(1);
+    });
+
+    it('should deduplicate results across batches via globalSeen', async () => {
+      const host = createMockHostConfig({ id: 'svr1', name: 'Server1' });
+      const conn = createMockConnection({ id: 'svr1', host });
+      // Same result returned by search — both paths produce duplicate
+      (conn.searchFiles as jest.Mock).mockResolvedValue([
+        { path: '/same.ts', line: 10, match: 'dup' },
+      ]);
+
+      panel.setServerList([
+        createServerEntry({ id: 'svr1', hostConfig: host, connected: true }),
+      ]);
+      panel.setConnectionResolver(() => conn as any);
+      panel.addScope('/opt', conn as any);
+      panel.addScope('/var', conn as any);
+
+      const postMessageSpy = setupMockPanel(panel);
+
+      await performSearchWithServerList(panel, 'dup');
+
+      const batchMessages = postMessageSpy.mock.calls
+        .filter((call: any[]) => call[0].type === 'searchBatch');
+
+      // Both paths are on same server — should get 2 batch messages
+      expect(batchMessages.length).toBe(2);
+
+      // But total unique results should be 1 (deduplicated)
+      const lastBatch = batchMessages[batchMessages.length - 1][0];
+      expect(lastBatch.totalResults).toBe(1);
+    });
+
+    it('should send searching message with scopeServers', async () => {
+      const host = createMockHostConfig({ id: 'svr1', name: 'Server1', username: 'root' });
+      const conn = createMockConnection({ id: 'svr1', host });
+      (conn.searchFiles as jest.Mock).mockResolvedValue([]);
+
+      panel.setServerList([
+        createServerEntry({ id: 'svr1', hostConfig: host, connected: true }),
+      ]);
+      panel.setConnectionResolver(() => conn as any);
+      panel.addScope('/opt', conn as any);
+
+      const postMessageSpy = setupMockPanel(panel);
+
+      await performSearchWithServerList(panel, 'test');
+
+      const searchingMsg = postMessageSpy.mock.calls
+        .find((call: any[]) => call[0].type === 'searching');
+      expect(searchingMsg).toBeDefined();
+      expect(searchingMsg![0].scopeServers).toBeDefined();
+      expect(searchingMsg![0].scopeServers[0].id).toBe('svr1');
+    });
+
+    it('should include completedCount and totalCount in each batch', async () => {
+      const host1 = createMockHostConfig({ id: 'svr1', name: 'Server1' });
+      const host2 = createMockHostConfig({ id: 'svr2', name: 'Server2' });
+      const conn1 = createMockConnection({ id: 'svr1', host: host1 });
+      const conn2 = createMockConnection({ id: 'svr2', host: host2 });
+      (conn1.searchFiles as jest.Mock).mockResolvedValue([
+        { path: '/a.ts', line: 1, match: 'x' },
+      ]);
+      (conn2.searchFiles as jest.Mock).mockResolvedValue([
+        { path: '/b.ts', line: 2, match: 'x' },
+      ]);
+
+      panel.setServerList([
+        createServerEntry({ id: 'svr1', hostConfig: host1, connected: true }),
+        createServerEntry({ id: 'svr2', hostConfig: host2, connected: true }),
+      ]);
+      panel.setConnectionResolver((id) => {
+        if (id === 'svr1') return conn1 as any;
+        if (id === 'svr2') return conn2 as any;
+        return undefined;
+      });
+      panel.addScope('/opt', conn1 as any);
+      panel.addScope('/var', conn2 as any);
+
+      const postMessageSpy = setupMockPanel(panel);
+
+      await performSearchWithServerList(panel, 'x');
+
+      const batchMessages = postMessageSpy.mock.calls
+        .filter((call: any[]) => call[0].type === 'searchBatch');
+
+      // All batches should have totalCount = 2
+      for (const msg of batchMessages) {
+        expect(msg[0].totalCount).toBe(2);
+      }
+
+      // Last batch: completedCount should equal totalCount
+      const lastBatch = batchMessages[batchMessages.length - 1][0];
+      expect(lastBatch.completedCount).toBe(lastBatch.totalCount);
+    });
+
+    it('should send searchBatch with empty results on failed search', async () => {
+      const host = createMockHostConfig({ id: 'svr1', name: 'Server1' });
+      const conn = createMockConnection({ id: 'svr1', host });
+      (conn.searchFiles as jest.Mock).mockRejectedValue(new Error('Connection lost'));
+
+      panel.setServerList([
+        createServerEntry({ id: 'svr1', hostConfig: host, connected: true }),
+      ]);
+      panel.setConnectionResolver(() => conn as any);
+      panel.addScope('/opt', conn as any);
+
+      const postMessageSpy = setupMockPanel(panel);
+
+      await performSearchWithServerList(panel, 'test');
+
+      const batchMessages = postMessageSpy.mock.calls
+        .filter((call: any[]) => call[0].type === 'searchBatch');
+      expect(batchMessages.length).toBe(1);
+      expect(batchMessages[0][0].results).toEqual([]);
+      expect(batchMessages[0][0].done).toBe(true);
+    });
+  });
+
+  describe('parallel search', () => {
+    const performSearchWithServerList = async (
+      panelInst: SearchPanel,
+      query: string,
+      include = '',
+      exclude = '',
+      caseSensitive = false,
+      regex = false,
+      findFiles = false
+    ) => {
+      return (panelInst as any).performSearch(query, include, exclude, caseSensitive, regex, findFiles);
+    };
+
+    function setupMockPanel(panelInst: SearchPanel): jest.Mock {
+      const postMessageSpy = jest.fn();
+      (panelInst as any).panel = {
+        webview: { postMessage: postMessageSpy },
+      };
+      return postMessageSpy;
+    }
+
+    afterEach(() => {
+      clearMockConfig();
+    });
+
+    it('should use listEntries worker pool when parallelProcesses > 1', async () => {
+      setMockConfig('sshLite.searchParallelProcesses', 4);
+
+      const host = createMockHostConfig({ id: 'svr1', name: 'Server1' });
+      const conn = createMockConnection({ id: 'svr1', host });
+      (conn.listEntries as jest.Mock).mockResolvedValue({
+        files: ['/opt/a.ts', '/opt/b.ts'],
+        dirs: ['/opt/sub1'],
+      });
+      // First call for /opt files, second for /opt/sub1 (empty)
+      (conn.listEntries as jest.Mock)
+        .mockResolvedValueOnce({ files: ['/opt/a.ts', '/opt/b.ts'], dirs: ['/opt/sub1'] })
+        .mockResolvedValueOnce({ files: [], dirs: [] });
+      (conn.searchFiles as jest.Mock).mockResolvedValue([]);
+
+      panel.setServerList([
+        createServerEntry({ id: 'svr1', hostConfig: host, connected: true }),
+      ]);
+      panel.setConnectionResolver(() => conn as any);
+      panel.addScope('/opt', conn as any);
+
+      setupMockPanel(panel);
+
+      await performSearchWithServerList(panel, 'test');
+
+      expect(conn.listEntries).toHaveBeenCalledWith('/opt', undefined);
+    });
+
+    it('should NOT use worker pool when parallelProcesses = 1', async () => {
+      setMockConfig('sshLite.searchParallelProcesses', 1);
+
+      const host = createMockHostConfig({ id: 'svr1', name: 'Server1' });
+      const conn = createMockConnection({ id: 'svr1', host });
+      (conn.searchFiles as jest.Mock).mockResolvedValue([]);
+
+      panel.setServerList([
+        createServerEntry({ id: 'svr1', hostConfig: host, connected: true }),
+      ]);
+      panel.setConnectionResolver(() => conn as any);
+      panel.addScope('/opt', conn as any);
+
+      setupMockPanel(panel);
+
+      await performSearchWithServerList(panel, 'test');
+
+      expect(conn.listEntries).not.toHaveBeenCalled();
+    });
+
+    it('should call searchFiles with file path arrays from listEntries', async () => {
+      setMockConfig('sshLite.searchParallelProcesses', 2);
+
+      const host = createMockHostConfig({ id: 'svr1', name: 'Server1' });
+      const conn = createMockConnection({ id: 'svr1', host });
+      (conn.listEntries as jest.Mock).mockResolvedValue({
+        files: ['/opt/f1.ts', '/opt/f2.ts', '/opt/f3.ts'],
+        dirs: [],
+      });
+      (conn.searchFiles as jest.Mock).mockResolvedValue([]);
+
+      panel.setServerList([
+        createServerEntry({ id: 'svr1', hostConfig: host, connected: true }),
+      ]);
+      panel.setConnectionResolver(() => conn as any);
+      panel.addScope('/opt', conn as any);
+
+      setupMockPanel(panel);
+
+      await performSearchWithServerList(panel, 'test');
+
+      // searchFiles should be called with array of file paths (not directory paths)
+      expect(conn.searchFiles).toHaveBeenCalledWith(
+        ['/opt/f1.ts', '/opt/f2.ts', '/opt/f3.ts'],
+        'test',
+        expect.any(Object)
+      );
+    });
+
+    it('should traverse subdirectories discovered by listEntries', async () => {
+      setMockConfig('sshLite.searchParallelProcesses', 2);
+
+      const host = createMockHostConfig({ id: 'svr1', name: 'Server1' });
+      const conn = createMockConnection({ id: 'svr1', host });
+      (conn.listEntries as jest.Mock)
+        .mockResolvedValueOnce({ files: ['/opt/root.ts'], dirs: ['/opt/sub'] })
+        .mockResolvedValueOnce({ files: ['/opt/sub/deep.ts'], dirs: [] });
+      (conn.searchFiles as jest.Mock).mockResolvedValue([]);
+
+      panel.setServerList([
+        createServerEntry({ id: 'svr1', hostConfig: host, connected: true }),
+      ]);
+      panel.setConnectionResolver(() => conn as any);
+      panel.addScope('/opt', conn as any);
+
+      setupMockPanel(panel);
+
+      await performSearchWithServerList(panel, 'test');
+
+      // Should have listed both /opt and /opt/sub
+      expect(conn.listEntries).toHaveBeenCalledWith('/opt', undefined);
+      expect(conn.listEntries).toHaveBeenCalledWith('/opt/sub', undefined);
+
+      // Should have searched files from both levels
+      expect(conn.searchFiles).toHaveBeenCalledTimes(2);
+    });
+
+    it('should fall through to single search when listEntries fails', async () => {
+      setMockConfig('sshLite.searchParallelProcesses', 4);
+
+      const host = createMockHostConfig({ id: 'svr1', name: 'Server1' });
+      const conn = createMockConnection({ id: 'svr1', host });
+      (conn.listEntries as jest.Mock).mockRejectedValue(new Error('Permission denied'));
+      (conn.searchFiles as jest.Mock).mockResolvedValue([]);
+
+      panel.setServerList([
+        createServerEntry({ id: 'svr1', hostConfig: host, connected: true }),
+      ]);
+      panel.setConnectionResolver(() => conn as any);
+      panel.addScope('/opt', conn as any);
+
+      setupMockPanel(panel);
+
+      await performSearchWithServerList(panel, 'test');
+
+      // Should fall through to recursive grep on the dir (fallback)
+      expect(conn.searchFiles).toHaveBeenCalledTimes(1);
+      expect(conn.searchFiles).toHaveBeenCalledWith('/opt', 'test', expect.any(Object));
+    });
+
+    it('should exclude system dirs when searching from root /', async () => {
+      setMockConfig('sshLite.searchParallelProcesses', 4);
+      setMockConfig('sshLite.searchExcludeSystemDirs', true);
+
+      const host = createMockHostConfig({ id: 'svr1', name: 'Server1' });
+      const conn = createMockConnection({ id: 'svr1', host });
+      // Root path uses listDirectories for system dir filtering, then listEntries for each subdir
+      (conn.listDirectories as jest.Mock).mockResolvedValue([
+        '/home', '/var', '/etc', '/proc', '/sys', '/dev', '/run',
+      ]);
+      // listEntries for each non-system subdir
+      (conn.listEntries as jest.Mock).mockResolvedValue({ files: [], dirs: [] });
+      (conn.searchFiles as jest.Mock).mockResolvedValue([]);
+
+      panel.setServerList([
+        createServerEntry({ id: 'svr1', hostConfig: host, connected: true }),
+      ]);
+      panel.setConnectionResolver(() => conn as any);
+      panel.addScope('/', conn as any);
+
+      const postMessageSpy = setupMockPanel(panel);
+
+      await performSearchWithServerList(panel, 'test');
+
+      // listEntries should NOT be called for system dirs
+      const listEntriesPaths = (conn.listEntries as jest.Mock).mock.calls.map((c: any[]) => c[0]);
+      expect(listEntriesPaths).not.toContain('/proc');
+      expect(listEntriesPaths).not.toContain('/sys');
+      expect(listEntriesPaths).not.toContain('/dev');
+      expect(listEntriesPaths).not.toContain('/run');
+
+      // Should have sent systemDirsExcluded message
+      const systemDirsMsg = postMessageSpy.mock.calls
+        .find((call: any[]) => call[0].type === 'systemDirsExcluded');
+      expect(systemDirsMsg).toBeDefined();
+      expect(systemDirsMsg![0].dirs).toEqual(expect.arrayContaining(['/proc', '/sys', '/dev', '/run']));
+    });
+
+    it('should NOT exclude system dirs when searchExcludeSystemDirs is false', async () => {
+      setMockConfig('sshLite.searchParallelProcesses', 2);
+      setMockConfig('sshLite.searchExcludeSystemDirs', false);
+
+      const host = createMockHostConfig({ id: 'svr1', name: 'Server1' });
+      const conn = createMockConnection({ id: 'svr1', host });
+      // Non-root path, so listEntries is used directly
+      (conn.listEntries as jest.Mock).mockResolvedValue({ files: [], dirs: [] });
+      (conn.searchFiles as jest.Mock).mockResolvedValue([]);
+
+      panel.setServerList([
+        createServerEntry({ id: 'svr1', hostConfig: host, connected: true }),
+      ]);
+      panel.setConnectionResolver(() => conn as any);
+      panel.addScope('/', conn as any);
+
+      const postMessageSpy = setupMockPanel(panel);
+
+      await performSearchWithServerList(panel, 'test');
+
+      // listEntries should be called for root (no system dir filtering)
+      expect(conn.listEntries).toHaveBeenCalledWith('/', undefined);
+
+      // Should NOT send systemDirsExcluded message
+      const systemDirsMsg = postMessageSpy.mock.calls
+        .find((call: any[]) => call[0].type === 'systemDirsExcluded');
+      expect(systemDirsMsg).toBeUndefined();
+    });
+
+    it('should NOT exclude system dirs when path is not root /', async () => {
+      setMockConfig('sshLite.searchParallelProcesses', 2);
+      setMockConfig('sshLite.searchExcludeSystemDirs', true);
+
+      const host = createMockHostConfig({ id: 'svr1', name: 'Server1' });
+      const conn = createMockConnection({ id: 'svr1', host });
+      (conn.listEntries as jest.Mock)
+        .mockResolvedValueOnce({ files: [], dirs: ['/opt/proc', '/opt/sys'] })
+        .mockResolvedValueOnce({ files: ['/opt/proc/f.ts'], dirs: [] })
+        .mockResolvedValueOnce({ files: ['/opt/sys/f.ts'], dirs: [] });
+      (conn.searchFiles as jest.Mock).mockResolvedValue([]);
+
+      panel.setServerList([
+        createServerEntry({ id: 'svr1', hostConfig: host, connected: true }),
+      ]);
+      panel.setConnectionResolver(() => conn as any);
+      panel.addScope('/opt', conn as any);
+
+      setupMockPanel(panel);
+
+      await performSearchWithServerList(panel, 'test');
+
+      // Both subdirs should be listed (exclusion only applies to root /)
+      const listEntriesPaths = (conn.listEntries as jest.Mock).mock.calls.map((c: any[]) => c[0]);
+      expect(listEntriesPaths).toContain('/opt/proc');
+      expect(listEntriesPaths).toContain('/opt/sys');
+    });
+
+    it('should send progressive searchBatch messages', async () => {
+      setMockConfig('sshLite.searchParallelProcesses', 2);
+
+      const host = createMockHostConfig({ id: 'svr1', name: 'Server1' });
+      const conn = createMockConnection({ id: 'svr1', host });
+      (conn.listEntries as jest.Mock).mockResolvedValue({
+        files: ['/opt/a.ts', '/opt/b.ts'],
+        dirs: [],
+      });
+      (conn.searchFiles as jest.Mock)
+        .mockResolvedValueOnce([{ path: '/opt/a.ts', line: 1, match: 'x' }, { path: '/opt/b.ts', line: 2, match: 'x' }]);
+
+      panel.setServerList([
+        createServerEntry({ id: 'svr1', hostConfig: host, connected: true }),
+      ]);
+      panel.setConnectionResolver(() => conn as any);
+      panel.addScope('/opt', conn as any);
+
+      const postMessageSpy = setupMockPanel(panel);
+
+      await performSearchWithServerList(panel, 'x');
+
+      const batchMessages = postMessageSpy.mock.calls
+        .filter((call: any[]) => call[0].type === 'searchBatch');
+
+      // Should have at least 2 batches: 1 for dir listing (progress), 1 for file search
+      expect(batchMessages.length).toBeGreaterThanOrEqual(2);
+      // Last one should be done
+      expect(batchMessages[batchMessages.length - 1][0].done).toBe(true);
+      // Total results should include search results
+      expect(batchMessages[batchMessages.length - 1][0].totalResults).toBe(2);
+    });
+  });
+
+  describe('backward compatibility (legacy searchScopes path)', () => {
+    const performSearch = async (
+      panelInst: SearchPanel,
+      query: string,
+      include = '',
+      exclude = '',
+      caseSensitive = false,
+      regex = false,
+      findFiles = false
+    ) => {
+      return (panelInst as any).performSearch(query, include, exclude, caseSensitive, regex, findFiles);
+    };
+
+    function setupMockPanel(panelInst: SearchPanel): jest.Mock {
+      const postMessageSpy = jest.fn();
+      (panelInst as any).panel = {
+        webview: { postMessage: postMessageSpy },
+      };
+      return postMessageSpy;
+    }
+
+    it('should use legacy path when no serverList is set', async () => {
+      const conn = createMockConnection();
+      (conn.searchFiles as jest.Mock).mockResolvedValue([
+        { path: '/found.ts', line: 5, match: 'hello' },
+      ]);
+
+      // Only add scope, no setServerList — forces legacy path
+      panel.addScope('/home', conn as any);
+
+      const postMessageSpy = setupMockPanel(panel);
+
+      await performSearch(panel, 'hello');
+
+      // Legacy path sends 'results' message (not searchBatch)
+      const resultsMsg = postMessageSpy.mock.calls
+        .find((call: any[]) => call[0].type === 'results');
+      expect(resultsMsg).toBeDefined();
+      expect(resultsMsg![0].results).toHaveLength(1);
+
+      // Should NOT send searchBatch (that's the new serverList path)
+      const batchMsg = postMessageSpy.mock.calls
+        .find((call: any[]) => call[0].type === 'searchBatch');
+      expect(batchMsg).toBeUndefined();
+    });
+
+    it('should use serverList path when servers are checked', async () => {
+      const host = createMockHostConfig({ id: 'svr1' });
+      const conn = createMockConnection({ id: 'svr1', host });
+      (conn.searchFiles as jest.Mock).mockResolvedValue([
+        { path: '/found.ts', line: 5, match: 'hello' },
+      ]);
+
+      setMockConfig('sshLite.searchParallelProcesses', 1);
+
+      panel.setServerList([
+        createServerEntry({ id: 'svr1', hostConfig: host, connected: true }),
+      ]);
+      panel.setConnectionResolver(() => conn as any);
+      panel.addScope('/home', conn as any);
+
+      const postMessageSpy = setupMockPanel(panel);
+
+      await performSearch(panel, 'hello');
+
+      // ServerList path sends searchBatch messages (not legacy 'results')
+      const batchMsg = postMessageSpy.mock.calls
+        .find((call: any[]) => call[0].type === 'searchBatch');
+      expect(batchMsg).toBeDefined();
+
+      clearMockConfig();
+    });
+
+    it('should still call searchFiles with single string path in legacy mode', async () => {
+      const conn = createMockConnection();
+      (conn.searchFiles as jest.Mock).mockResolvedValue([]);
+
+      panel.addScope('/var/log', conn as any);
+
+      setupMockPanel(panel);
+
+      await performSearch(panel, 'test');
+
+      // Legacy path passes single string path (not array)
+      expect(conn.searchFiles).toHaveBeenCalledWith(
+        '/var/log',
+        'test',
+        expect.any(Object)
+      );
+    });
+  });
+
+  describe('handleMessage: searchIncludeSystemDirs', () => {
+    function setupMockPanel(panelInst: SearchPanel): jest.Mock {
+      const postMessageSpy = jest.fn();
+      (panelInst as any).panel = {
+        webview: { postMessage: postMessageSpy },
+      };
+      return postMessageSpy;
+    }
+
+    afterEach(() => {
+      clearMockConfig();
+    });
+
+    it('should set includeSystemDirsOverride and re-run last search', async () => {
+      setMockConfig('sshLite.searchParallelProcesses', 4);
+      setMockConfig('sshLite.searchExcludeSystemDirs', true);
+
+      const host = createMockHostConfig({ id: 'svr1', name: 'Server1' });
+      const conn = createMockConnection({ id: 'svr1', host });
+      // Root path uses listDirectories for system dir filtering
+      (conn.listDirectories as jest.Mock).mockResolvedValue(['/home', '/var', '/proc', '/sys']);
+      (conn.listEntries as jest.Mock).mockResolvedValue({ files: [], dirs: [] });
+      (conn.searchFiles as jest.Mock).mockResolvedValue([]);
+
+      panel.setServerList([
+        createServerEntry({ id: 'svr1', hostConfig: host, connected: true }),
+      ]);
+      panel.setConnectionResolver(() => conn as any);
+      panel.addScope('/', conn as any);
+
+      const postMessageSpy = setupMockPanel(panel);
+
+      // First search — system dirs should be excluded
+      await (panel as any).performSearch('test', '', '', false, false, false);
+
+      // listEntries should NOT be called for system dirs
+      const firstListPaths = (conn.listEntries as jest.Mock).mock.calls.map((c: any[]) => c[0]);
+      expect(firstListPaths).not.toContain('/proc');
+      expect(firstListPaths).not.toContain('/sys');
+
+      // Clear mocks to track the re-search
+      (conn.searchFiles as jest.Mock).mockClear();
+      (conn.listEntries as jest.Mock).mockClear();
+      (conn.listDirectories as jest.Mock).mockResolvedValue(['/home', '/var', '/proc', '/sys']);
+      (conn.listEntries as jest.Mock).mockResolvedValue({ files: [], dirs: [] });
+      (conn.searchFiles as jest.Mock).mockResolvedValue([]);
+
+      // Simulate webview sending searchIncludeSystemDirs message
+      await (panel as any).handleMessage({ type: 'searchIncludeSystemDirs' });
+
+      // Second search — system dirs should be INCLUDED (listEntries called for root directly)
+      const secondListPaths = (conn.listEntries as jest.Mock).mock.calls.map((c: any[]) => c[0]);
+      expect(secondListPaths).toContain('/');
+    });
+
+    it('should reset includeSystemDirsOverride after re-search', async () => {
+      setMockConfig('sshLite.searchParallelProcesses', 1);
+
+      const host = createMockHostConfig({ id: 'svr1', name: 'Server1' });
+      const conn = createMockConnection({ id: 'svr1', host });
+      (conn.searchFiles as jest.Mock).mockResolvedValue([]);
+
+      panel.setServerList([
+        createServerEntry({ id: 'svr1', hostConfig: host, connected: true }),
+      ]);
+      panel.setConnectionResolver(() => conn as any);
+      panel.addScope('/', conn as any);
+
+      setupMockPanel(panel);
+
+      // Trigger initial search to set lastSearchQuery
+      await (panel as any).performSearch('test', '', '', false, false, false);
+
+      // Trigger re-search with system dirs
+      await (panel as any).handleMessage({ type: 'searchIncludeSystemDirs' });
+
+      // Override should be reset after
+      expect((panel as any).includeSystemDirsOverride).toBe(false);
+    });
+
+    it('should do nothing if no previous search query', async () => {
+      const host = createMockHostConfig({ id: 'svr1', name: 'Server1' });
+      const conn = createMockConnection({ id: 'svr1', host });
+
+      panel.setServerList([
+        createServerEntry({ id: 'svr1', hostConfig: host, connected: true }),
+      ]);
+      panel.setConnectionResolver(() => conn as any);
+      panel.addScope('/', conn as any);
+
+      setupMockPanel(panel);
+
+      // No previous search — handleMessage should be a no-op
+      await (panel as any).handleMessage({ type: 'searchIncludeSystemDirs' });
+
+      expect(conn.searchFiles).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('isChildPath', () => {
+    it('should return true for child of root /', () => {
+      expect((SearchPanel as any).isChildPath('/home', '/')).toBe(true);
+    });
+
+    it('should return false for root compared to root', () => {
+      expect((SearchPanel as any).isChildPath('/', '/')).toBe(false);
+    });
+
+    it('should return true for child of non-root path', () => {
+      expect((SearchPanel as any).isChildPath('/opt/inet/DB', '/opt')).toBe(true);
+    });
+
+    it('should return false for non-child path', () => {
+      expect((SearchPanel as any).isChildPath('/var/log', '/opt')).toBe(false);
+    });
+
+    it('should return false for partial name match', () => {
+      // /opt-backup is NOT a child of /opt
+      expect((SearchPanel as any).isChildPath('/opt-backup', '/opt')).toBe(false);
     });
   });
 });

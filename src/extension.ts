@@ -1041,7 +1041,7 @@ export function activate(context: vscode.ExtensionContext): void {
       try {
         await fileService.uploadFileTo(connection, remotePath);
         logResult('uploadFile', true, remotePath);
-        fileTreeProvider.refresh();
+        fileTreeProvider.refreshFolder(connection.id, remotePath);
       } catch (error) {
         logResult('uploadFile', false, (error as Error).message);
       }
@@ -1056,7 +1056,8 @@ export function activate(context: vscode.ExtensionContext): void {
       const deleted = await fileService.deleteRemote(item.connection, item.file);
       if (deleted) {
         logResult('deleteRemote', true, item.file.name);
-        fileTreeProvider.refresh();
+        const parentDir = path.dirname(item.file.path) || '/';
+        fileTreeProvider.refreshFolder(item.connection.id, parentDir);
       } else {
         logResult('deleteRemote', false, 'Cancelled or failed');
       }
@@ -1093,7 +1094,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const created = await fileService.createFolder(connection, parentPath);
       if (created) {
         logResult('createFolder', true, parentPath);
-        fileTreeProvider.refresh();
+        fileTreeProvider.refreshFolder(connection.id, parentPath);
       } else {
         logResult('createFolder', false, 'Cancelled or failed');
       }

@@ -131,14 +131,33 @@ fileTreeProvider.setOnFilterCleared(() => {
 ### Expansion State Tracking
 
 ```typescript
-private expandedPaths: Map<string, Set<string>>;
-// Key: connectionId
-// Value: Set of expanded remote paths
+private expandedFolders: Set<string>;
+// Key format: "connectionId:path" or "connection:connectionId"
 
-trackExpand(element: FileTreeItem) → add to Set
-trackCollapse(element: FileTreeItem) → remove from Set
-// Preserved across refreshes
+trackExpand(element: TreeItem) → add to Set
+trackCollapse(element: TreeItem) → remove from Set
+// Connection collapse only removes connection-level key, preserves sub-folder expansion
+// Full cleanup happens in clearExpansionState() on disconnect
 ```
+
+### Connection Change Refresh Strategy
+
+```typescript
+private lastKnownConnectionIds: Set<string>;
+
+debouncedConnectionRefresh():
+  - Compares current connection IDs vs lastKnownConnectionIds
+  - Structural change (add/remove): full tree refresh (_onDidChangeTreeData.fire())
+  - No structural change: targeted refreshConnection(id) per connection
+  - Preserves expansion state across connection state changes
+```
+
+### Preload Logging
+
+Preload operations log to console with `[SSH Lite Preload]` prefix:
+- Queue count on `preloadSubdirectories()`
+- Completion with item count on `enqueueDirectoryPreload()`
+- Errors on preload failures
 
 ### Tree Item Properties
 

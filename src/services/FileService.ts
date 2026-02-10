@@ -108,6 +108,9 @@ export class FileService {
   private readonly WATCH_HEARTBEAT_INTERVAL_MS = 15000; // Check every 15 seconds (LITE compliant)
   private readonly WATCH_TIMEOUT_MS = 10000; // Clear highlight after 10 seconds of no activity
 
+  // Remember the last local folder used for upload dialogs
+  private lastUploadUri: vscode.Uri | undefined;
+
   // Event emitter for watched file changes (used by tree view for live-update indicators)
   // Now emits the full set of open file paths instead of just one file
   private readonly _onWatchedFileChanged = new vscode.EventEmitter<{ localPath: string; remotePath: string; connectionId: string } | null>();
@@ -3474,6 +3477,7 @@ export class FileService {
       canSelectFiles: true,
       canSelectMany: false,
       openLabel: 'Select File to Upload',
+      defaultUri: this.lastUploadUri,
     });
 
     if (!fileUri || fileUri.length === 0) {
@@ -3481,6 +3485,7 @@ export class FileService {
     }
 
     const localPath = fileUri[0].fsPath;
+    this.lastUploadUri = vscode.Uri.file(path.dirname(localPath));
     const fileName = path.basename(localPath);
     const remotePath = `${remoteFolderPath}/${fileName}`;
 
@@ -3917,19 +3922,19 @@ export class FileService {
    * Uses IDLE priority since file preloading is lowest priority background work
    */
   async preloadFrequentFiles(connection: SSHConnection, limit: number = 5): Promise<void> {
-    // Reset the priority queue if it was cancelled and no tasks are running
-    if (this.priorityQueue.isCancelled() && !this.priorityQueue.isPreloadingInProgress()) {
-      this.priorityQueue.reset();
+    // Reset this connection's queue if it was cancelled and no tasks are running
+    if (this.priorityQueue.isConnectionCancelled(connection.id) && !this.priorityQueue.isPreloadingInProgress()) {
+      this.priorityQueue.resetConnection(connection.id);
     }
 
-    if (this.priorityQueue.isCancelled()) {
+    if (this.priorityQueue.isConnectionCancelled(connection.id)) {
       return;
     }
 
     const frequentFiles = this.folderHistoryService.getFrequentFiles(connection.id, limit);
 
     for (const filePath of frequentFiles) {
-      if (this.priorityQueue.isCancelled()) {
+      if (this.priorityQueue.isConnectionCancelled(connection.id)) {
         break;
       }
 

@@ -292,4 +292,97 @@ export const fileOperationsScenarios: ScenarioDefinition[] = [
       return validator.getViolations();
     }),
   },
+  {
+    name: 'list-directories-verify',
+    category: CATEGORY,
+    fn: (ctx) => makeResult('list-directories-verify', ctx, async (conn, validator, rng) => {
+      const violations: string[] = [];
+      const baseDir = `${ctx.testDir}/listdirs`;
+      await conn.mkdir(baseDir);
+
+      // Create random subdirs and files
+      const subDirCount = rng.int(2, 5);
+      const expectedDirs: string[] = [];
+      for (let i = 0; i < subDirCount; i++) {
+        const dirName = `sub-${rng.string(6)}`;
+        await conn.mkdir(`${baseDir}/${dirName}`);
+        expectedDirs.push(`${baseDir}/${dirName}`);
+      }
+      // Add files (should NOT appear in listDirectories)
+      for (let i = 0; i < rng.int(1, 3); i++) {
+        await conn.writeFile(`${baseDir}/file-${rng.string(4)}.txt`, Buffer.from('data'));
+      }
+
+      const dirs = await conn.listDirectories(baseDir);
+
+      // Invariant: must return only directories
+      if (dirs.length !== subDirCount) {
+        violations.push(`listDirectories: expected ${subDirCount} dirs, got ${dirs.length}`);
+      }
+
+      // Invariant: results must be sorted
+      const sorted = [...dirs].sort();
+      if (JSON.stringify(dirs) !== JSON.stringify(sorted)) {
+        violations.push('listDirectories: results not sorted');
+      }
+
+      // Invariant: all expected dirs must be present
+      for (const expected of expectedDirs) {
+        if (!dirs.includes(expected)) {
+          violations.push(`listDirectories: missing expected dir "${expected}"`);
+        }
+      }
+
+      // Invariant: all returned paths must be statable as directories
+      for (const dir of dirs) {
+        try {
+          const stat = await conn.stat(dir);
+          if (!stat.isDirectory) {
+            violations.push(`listDirectories: "${dir}" is not a directory`);
+          }
+        } catch {
+          violations.push(`listDirectories: "${dir}" not statable`);
+        }
+      }
+
+      return violations;
+    }),
+  },
+  {
+    name: 'search-files-multi-path-verify',
+    category: CATEGORY,
+    fn: (ctx) => makeResult('search-files-multi-path-verify', ctx, async (conn, validator, rng) => {
+      const violations: string[] = [];
+      const baseDir = `${ctx.testDir}/multi-search`;
+      await conn.mkdir(baseDir);
+      await conn.mkdir(`${baseDir}/dirA`);
+      await conn.mkdir(`${baseDir}/dirB`);
+
+      const token = rng.string(12);
+      await conn.writeFile(`${baseDir}/dirA/match.txt`, Buffer.from(`found ${token} here`));
+      await conn.writeFile(`${baseDir}/dirB/match.txt`, Buffer.from(`also ${token} here`));
+
+      // Search with string[] paths
+      const results = await conn.searchFiles(
+        [`${baseDir}/dirA`, `${baseDir}/dirB`],
+        token,
+        { searchContent: true }
+      );
+
+      if (results.length < 2) {
+        violations.push(`multi-path search: expected >=2 results, got ${results.length}`);
+      }
+
+      // Verify results come from both paths
+      const hasA = results.some(r => r.path.includes('dirA'));
+      const hasB = results.some(r => r.path.includes('dirB'));
+      if (!hasA) violations.push('multi-path search: no results from dirA');
+      if (!hasB) violations.push('multi-path search: no results from dirB');
+
+      // Verify all returned paths are statable
+      await validator.verifySearchResults(conn, results);
+
+      return [...violations, ...validator.getViolations()];
+    }),
+  },
 ];
