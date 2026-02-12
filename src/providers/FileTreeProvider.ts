@@ -104,6 +104,50 @@ export class ParentFolderTreeItem extends vscode.TreeItem {
 }
 
 /**
+ * Tree item for "Show tree from root" button (flat → tree mode)
+ */
+export class ShowTreeFromRootItem extends vscode.TreeItem {
+  constructor(
+    public readonly connection: SSHConnection,
+    public readonly currentPath: string
+  ) {
+    super('Show tree from root', vscode.TreeItemCollapsibleState.None);
+    this.id = `showTreeFromRoot:${connection.id}`;
+    this.description = `/ → ${currentPath}`;
+    this.contextValue = 'showTreeFromRoot';
+    this.iconPath = new vscode.ThemeIcon('list-tree', new vscode.ThemeColor('charts.blue'));
+    this.tooltip = 'Show full directory tree from / to current folder';
+    this.command = {
+      command: 'sshLite.showTreeFromRoot',
+      title: 'Show Tree From Root',
+      arguments: [connection, currentPath],
+    };
+  }
+}
+
+/**
+ * Tree item for "Back to flat view" button (tree → flat mode)
+ */
+export class BackToFlatViewItem extends vscode.TreeItem {
+  constructor(
+    public readonly connection: SSHConnection,
+    public readonly originalPath: string
+  ) {
+    super('Back to flat view', vscode.TreeItemCollapsibleState.None);
+    this.id = `backToFlat:${connection.id}`;
+    this.description = originalPath;
+    this.contextValue = 'backToFlatView';
+    this.iconPath = new vscode.ThemeIcon('folder-opened', new vscode.ThemeColor('charts.yellow'));
+    this.tooltip = `Return to flat view at ${originalPath}`;
+    this.command = {
+      command: 'sshLite.backToFlatView',
+      title: 'Back to Flat View',
+      arguments: [connection, originalPath],
+    };
+  }
+}
+
+/**
  * Get the auto-refresh interval from configuration
  */
 function getRefreshInterval(): number {
@@ -291,7 +335,7 @@ export class FilteredFileItem extends vscode.TreeItem {
   }
 }
 
-type TreeItem = ConnectionTreeItem | ReconnectingConnectionTreeItem | FileTreeItem | ParentFolderTreeItem | FilterResultsHeaderItem | FilteredFileItem | LoadingTreeItem;
+type TreeItem = ConnectionTreeItem | ReconnectingConnectionTreeItem | FileTreeItem | ParentFolderTreeItem | ShowTreeFromRootItem | BackToFlatViewItem | FilterResultsHeaderItem | FilteredFileItem | LoadingTreeItem;
 
 /**
  * MIME type for drag and drop of connections
@@ -363,6 +407,11 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   // Store last-created ConnectionTreeItem references for targeted refreshes
   // This avoids full tree refresh when only one connection changes (e.g., navigation)
   private connectionTreeItemRefs: Map<string, ConnectionTreeItem | ReconnectingConnectionTreeItem> = new Map();
+
+  // Tree-from-root mode state (Changes 7 & 8)
+  private treeFromRootConnections: Set<string> = new Set(); // connectionIds in tree-from-root mode
+  private treeFromRootOriginalPaths: Map<string, string> = new Map(); // connectionId -> original path before tree-from-root
+  private treeFromRootExpandPaths: Map<string, Set<string>> = new Map(); // connectionId -> paths to auto-expand
 
   // Debounce timer for connection change events to prevent multiple rapid refreshes
   // This fixes tree state reset issues when disconnect fires multiple events
@@ -782,6 +831,63 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   }
 
   /**
+   * Enable tree-from-root mode for a connection
+   */
+  enableTreeFromRoot(connectionId: string, originalPath: string, expandPaths?: Set<string>): void {
+    this.treeFromRootConnections.add(connectionId);
+    this.treeFromRootOriginalPaths.set(connectionId, originalPath);
+    if (expandPaths) {
+      this.treeFromRootExpandPaths.set(connectionId, expandPaths);
+    }
+  }
+
+  /**
+   * Disable tree-from-root mode and restore original path
+   */
+  disableTreeFromRoot(connectionId: string): void {
+    this.treeFromRootConnections.delete(connectionId);
+    const originalPath = this.treeFromRootOriginalPaths.get(connectionId);
+    this.treeFromRootOriginalPaths.delete(connectionId);
+    this.treeFromRootExpandPaths.delete(connectionId);
+    if (originalPath) {
+      this.setCurrentPath(connectionId, originalPath);
+    }
+  }
+
+  /**
+   * Check if a connection is in tree-from-root mode
+   */
+  isTreeFromRoot(connectionId: string): boolean {
+    return this.treeFromRootConnections.has(connectionId);
+  }
+
+  /**
+   * Load all ancestor directories from root to targetPath into cache
+   */
+  async loadAncestorDirs(connection: SSHConnection, targetPath: string): Promise<void> {
+    const segments = targetPath.split('/').filter(Boolean);
+    let ancestorPath = '/';
+
+    // Load root if not cached
+    if (!this.getCached(connection.id, '/')) {
+      await this.loadDirectory(connection, '/', true);
+    }
+
+    // Load each ancestor level
+    for (const segment of segments) {
+      ancestorPath = ancestorPath === '/' ? `/${segment}` : `${ancestorPath}/${segment}`;
+      if (!this.getCached(connection.id, ancestorPath)) {
+        try {
+          await this.loadDirectory(connection, ancestorPath, true);
+        } catch {
+          // Stop loading if an ancestor fails (permission denied etc.)
+          break;
+        }
+      }
+    }
+  }
+
+  /**
    * Start the auto-refresh timer based on configuration
    */
   private startAutoRefresh(): void {
@@ -1109,16 +1215,20 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
         // Apply global filter and per-folder filename filter
         const filteredFiles = cached.filter((file) =>
           this.matchesFilter(file) && this.matchesFilenameFilter(element.connection.id, file));
+        // Check for tree-from-root auto-expand paths
+        const autoExpandPaths = this.treeFromRootExpandPaths.get(element.connection.id);
         const items = filteredFiles.map((file) => {
           const isFolderFiltered = file.isDirectory && this.isFilteredFolder(element.connection.id, file.path);
           const isEmpty = file.isDirectory && this.isEmptyAfterFilter(element.connection.id, file.path);
+          // Auto-expand folders that are on the tree-from-root expand path
+          const shouldAutoExpand = file.isDirectory && autoExpandPaths?.has(file.path);
           return new FileTreeItem(
             file,
             element.connection,
             this.highlightedPaths.has(file.path) || this.shouldHighlightByFilter(element.connection.id, file),
             this.openFilePaths.has(file.path),
             this.loadingFilePaths.has(file.path),
-            file.isDirectory && this.isExpanded(element.connection.id, file.path),
+            shouldAutoExpand || (file.isDirectory && this.isExpanded(element.connection.id, file.path)),
             isFolderFiltered,
             isFolderFiltered ? this.filenameFilterPattern : '',
             isEmpty
@@ -1153,15 +1263,25 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   ): TreeItem[] {
     const items: TreeItem[] = [];
 
-    // Add parent folder navigation if not at root
-    if (currentPath !== '/' && currentPath !== '~') {
+    // Add parent folder navigation and tree-from-root button
+    const isInTreeFromRoot = this.treeFromRootConnections.has(connection.id);
+
+    if (isInTreeFromRoot) {
+      // In tree-from-root mode: show "Back to flat view" instead of ".."
+      const originalPath = this.treeFromRootOriginalPaths.get(connection.id) || '~';
+      items.push(new BackToFlatViewItem(connection, originalPath));
+    } else if (currentPath !== '/' && currentPath !== '~') {
       const parentPath = path.posix.dirname(currentPath);
       items.push(new ParentFolderTreeItem(connection, parentPath || '/'));
+      // Show tree from root button
+      items.push(new ShowTreeFromRootItem(connection, currentPath));
       // Preload parent folder for instant navigation
       this.preloadParentFolder(connection, parentPath || '/');
     } else if (currentPath === '~') {
       // Allow going to root from home
       items.push(new ParentFolderTreeItem(connection, '/'));
+      // Show tree from root for home too
+      items.push(new ShowTreeFromRootItem(connection, currentPath));
       // Preload root for instant navigation
       this.preloadParentFolder(connection, '/');
     }
@@ -1169,16 +1289,19 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     // Apply global filter and per-folder filename filter
     const filteredFiles = files.filter((file) =>
       this.matchesFilter(file) && this.matchesFilenameFilter(connection.id, file));
+    // Check for tree-from-root auto-expand paths
+    const autoExpandPaths = this.treeFromRootExpandPaths.get(connection.id);
     items.push(...filteredFiles.map((file) => {
       const isFolderFiltered = file.isDirectory && this.isFilteredFolder(connection.id, file.path);
       const isEmpty = file.isDirectory && this.isEmptyAfterFilter(connection.id, file.path);
+      const shouldAutoExpand = file.isDirectory && autoExpandPaths?.has(file.path);
       return new FileTreeItem(
         file,
         connection,
         this.highlightedPaths.has(file.path) || this.shouldHighlightByFilter(connection.id, file),
         this.openFilePaths.has(file.path),
         this.loadingFilePaths.has(file.path),
-        file.isDirectory && this.isExpanded(connection.id, file.path),
+        shouldAutoExpand || (file.isDirectory && this.isExpanded(connection.id, file.path)),
         isFolderFiltered,
         isFolderFiltered ? this.filenameFilterPattern : '',
         isEmpty
@@ -1386,10 +1509,11 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       return new FileTreeItem(parentFile, element.connection, false, false, false, this.isExpanded(element.connection.id, parentPath));
     }
 
-    if (element instanceof ParentFolderTreeItem) {
-      // Parent folder items are children of the connection
-      const currentPath = this.getCurrentPath(element.connection.id);
-      return new ConnectionTreeItem(element.connection, currentPath);
+    if (element instanceof ParentFolderTreeItem || element instanceof ShowTreeFromRootItem || element instanceof BackToFlatViewItem) {
+      // Navigation items are children of the connection
+      const conn = element.connection;
+      const currentPath = this.getCurrentPath(conn.id);
+      return new ConnectionTreeItem(conn, currentPath);
     }
 
     // ConnectionTreeItem has no parent (root level)
@@ -1686,8 +1810,9 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   }
 
   /**
-   * Reveal a file in the tree by navigating to its parent directory
-   * Automatically navigates to the file location and returns the FileTreeItem for reveal
+   * Smart reveal: expand tree from current view to the file without resetting/collapsing.
+   * Case A: File is under currentPath → load intermediate dirs, use VS Code reveal()
+   * Case B: File is outside currentPath → switch to tree-from-root with both paths expanded
    */
   async revealFile(connectionId: string, remotePath: string): Promise<FileTreeItem | undefined> {
     const connection = this.connectionManager.getConnection(connectionId);
@@ -1712,25 +1837,111 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     const parentPath = path.posix.dirname(remotePath);
     const fileName = path.posix.basename(remotePath);
 
-    // Check if file is already visible in current tree (parent directory is cached/visible)
+    // Check if file is already visible (parent cached and file exists in it)
     const cachedFiles = this.getCached(connectionId, parentPath);
-
     if (cachedFiles) {
-      // Parent directory is cached - check if file exists in it
       const fileExists = cachedFiles.some(f => f.name === fileName || f.path === remotePath);
       if (fileExists) {
-        // File is visible in current tree - return item for reveal
         return this.createFileTreeItem(connectionId, remotePath);
       }
     }
 
-    // File is not in current tree view - automatically navigate to parent folder
-    this.setCurrentPath(connection.id, parentPath);
-    await this.loadDirectory(connection, parentPath, true);
-    // Use targeted refresh for just this connection (setCurrentPath already refreshed,
-    // but we need another one after loadDirectory updates the cache)
-    this.refreshConnection(connection.id);
+    // Resolve ~ to absolute path for comparison
+    let currentPath = this.getCurrentPath(connectionId);
+    let resolvedCurrentPath = currentPath;
+    if (currentPath === '~' || currentPath.startsWith('~/')) {
+      try {
+        const homePath = (await connection.exec('echo ~')).trim();
+        resolvedCurrentPath = currentPath === '~' ? homePath : homePath + currentPath.substring(1);
+      } catch {
+        resolvedCurrentPath = currentPath;
+      }
+    }
+
+    // Case A: File is under current path → expand tree down to file
+    if (remotePath.startsWith(resolvedCurrentPath + '/') || resolvedCurrentPath === '/') {
+      await this.loadIntermediateDirs(connection, resolvedCurrentPath, parentPath);
+      this.refreshConnection(connectionId);
+      return this.createFileTreeItem(connectionId, remotePath);
+    }
+
+    // Case B: File is outside current path → use tree-from-root mode
+    await this.revealViaTreeFromRoot(connection, resolvedCurrentPath, remotePath);
     return this.createFileTreeItem(connectionId, remotePath);
+  }
+
+  /**
+   * Load all directories between fromPath and toPath into cache for reveal() traversal
+   */
+  private async loadIntermediateDirs(
+    connection: SSHConnection, fromPath: string, toPath: string
+  ): Promise<void> {
+    // Ensure fromPath is cached
+    if (!this.getCached(connection.id, fromPath)) {
+      await this.loadDirectory(connection, fromPath, true);
+    }
+
+    // Build path from fromPath down to toPath
+    const relativePath = fromPath === '/'
+      ? toPath.substring(1)
+      : toPath.substring(fromPath.length + 1);
+    const segments = relativePath.split('/').filter(Boolean);
+
+    let currentDir = fromPath;
+    for (const segment of segments) {
+      currentDir = currentDir === '/' ? `/${segment}` : `${currentDir}/${segment}`;
+      if (!this.getCached(connection.id, currentDir)) {
+        try {
+          await this.loadDirectory(connection, currentDir, true);
+        } catch {
+          break; // Stop on permission denied etc.
+        }
+      }
+    }
+  }
+
+  /**
+   * Reveal a file using tree-from-root mode with both the original and target paths expanded
+   */
+  private async revealViaTreeFromRoot(
+    connection: SSHConnection, originalPath: string, remotePath: string
+  ): Promise<void> {
+    const parentPath = path.posix.dirname(remotePath);
+
+    // Collect all paths that need auto-expanding
+    const expandPaths = new Set<string>();
+
+    // Path from / to original location
+    let p = originalPath;
+    while (p !== '/' && p !== '') {
+      expandPaths.add(p);
+      p = path.posix.dirname(p);
+    }
+
+    // Path from / to target file's parent
+    p = parentPath;
+    while (p !== '/' && p !== '') {
+      expandPaths.add(p);
+      p = path.posix.dirname(p);
+    }
+
+    // Enable tree-from-root mode
+    this.enableTreeFromRoot(connection.id, originalPath, expandPaths);
+
+    // Load all ancestor directories for both paths
+    await this.loadAncestorDirs(connection, originalPath);
+    await this.loadAncestorDirs(connection, parentPath);
+
+    // Also ensure the target parent itself is loaded
+    if (!this.getCached(connection.id, parentPath)) {
+      try {
+        await this.loadDirectory(connection, parentPath, true);
+      } catch { /* ignore */ }
+    }
+
+    // Switch to root view
+    this.currentPaths.set(connection.id, '/');
+    this.refreshConnection(connection.id);
   }
 
   /**

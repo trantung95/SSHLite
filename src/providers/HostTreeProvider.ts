@@ -3,7 +3,7 @@ import * as path from 'path';
 import { HostService } from '../services/HostService';
 import { ConnectionManager } from '../connection/ConnectionManager';
 import { CredentialService, SavedCredential, PinnedFolder } from '../services/CredentialService';
-import { IHostConfig } from '../types';
+import { IHostConfig, ILastConnectionAttempt } from '../types';
 
 // Get extension path for custom icons
 let extensionPath: string = '';
@@ -29,7 +29,8 @@ export class ServerTreeItem extends vscode.TreeItem {
   constructor(
     serverKey: string,
     hosts: IHostConfig[],
-    isConnected: boolean
+    isConnected: boolean,
+    lastFailedAttempt?: ILastConnectionAttempt
   ) {
     // Use first host's name as display name
     const displayName = hosts[0].name;
@@ -47,15 +48,6 @@ export class ServerTreeItem extends vscode.TreeItem {
     // Description shows host:port only (no username)
     this.description = serverKey;
 
-    // Tooltip with server info
-    const usernames = hosts.map(h => h.username).join(', ');
-    this.tooltip = new vscode.MarkdownString(
-      `**${displayName}**\n\n` +
-        `- Server: ${serverKey}\n` +
-        `- Users: ${usernames}\n` +
-        `- Status: ${isConnected ? 'Connected' : 'Disconnected'}`
-    );
-
     // Set context value and icon based on connection status and source
     // Always use ThemeIcon to avoid VS Code SVG caching issues
     // Check if host is manually added (source: 'saved') OR has saved credentials
@@ -68,6 +60,9 @@ export class ServerTreeItem extends vscode.TreeItem {
       // Use different context for saved vs config hosts so menu items work correctly
       this.contextValue = isSavedOrHasCredentials ? 'connectedServer.saved' : 'connectedServer';
       this.iconPath = new vscode.ThemeIcon('vm-running', new vscode.ThemeColor('charts.green'));
+    } else if (lastFailedAttempt && !lastFailedAttempt.success) {
+      this.contextValue = isSavedOrHasCredentials ? 'savedServer' : 'server';
+      this.iconPath = new vscode.ThemeIcon('vm-outline', new vscode.ThemeColor('charts.orange'));
     } else if (isSavedOrHasCredentials) {
       this.contextValue = 'savedServer';
       this.iconPath = new vscode.ThemeIcon('vm');
@@ -75,6 +70,40 @@ export class ServerTreeItem extends vscode.TreeItem {
       this.contextValue = 'server';
       this.iconPath = new vscode.ThemeIcon('vm-outline');
     }
+
+    // Tooltip with server info + failed connection details
+    const usernames = hosts.map(h => h.username).join(', ');
+    if (!isConnected && lastFailedAttempt && !lastFailedAttempt.success) {
+      const ago = this.formatTimeAgo(lastFailedAttempt.timestamp);
+      this.tooltip = new vscode.MarkdownString(
+        `**${displayName}** \u26A0\uFE0F\n\n` +
+          `- Server: ${serverKey}\n` +
+          `- Users: ${usernames}\n` +
+          `- Status: Last connection failed ${ago}\n` +
+          `- Error: ${lastFailedAttempt.errorMessage || 'Unknown error'}`
+      );
+    } else {
+      this.tooltip = new vscode.MarkdownString(
+        `**${displayName}**\n\n` +
+          `- Server: ${serverKey}\n` +
+          `- Users: ${usernames}\n` +
+          `- Status: ${isConnected ? 'Connected' : 'Disconnected'}`
+      );
+    }
+  }
+
+  /**
+   * Format a timestamp as relative time ago
+   */
+  private formatTimeAgo(timestamp: number): string {
+    const seconds = Math.floor((Date.now() - timestamp) / 1000);
+    if (seconds < 60) return 'just now';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
   }
 
   /**
@@ -367,7 +396,22 @@ export class HostTreeProvider implements vscode.TreeDataProvider<TreeItemType> {
       }
       // Check if any username for this server is connected
       const isConnected = serverHosts.some(h => connectedIds.has(h.id));
-      items.push(new ServerTreeItem(serverKey, serverHosts, isConnected));
+
+      // Get last failed connection attempt for disconnected servers
+      let lastFailedAttempt: ILastConnectionAttempt | undefined;
+      if (!isConnected) {
+        // Check all hosts in this server group for a failed attempt
+        for (const h of serverHosts) {
+          const attempt = this.connectionManager.getLastConnectionAttempt(h.id);
+          if (attempt && !attempt.success) {
+            // Use the most recent failed attempt
+            if (!lastFailedAttempt || attempt.timestamp > lastFailedAttempt.timestamp) {
+              lastFailedAttempt = attempt;
+            }
+          }
+        }
+      }
+      items.push(new ServerTreeItem(serverKey, serverHosts, isConnected, lastFailedAttempt));
     }
 
     return items;

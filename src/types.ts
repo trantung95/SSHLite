@@ -149,6 +149,16 @@ export interface ISSHConnection {
 }
 
 /**
+ * Last connection attempt result for failed connection indicator
+ */
+export interface ILastConnectionAttempt {
+  timestamp: number;
+  success: boolean;
+  errorMessage?: string;
+  errorCode?: string;
+}
+
+/**
  * SSH errors
  */
 export class SSHError extends Error {

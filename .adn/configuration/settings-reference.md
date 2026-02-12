@@ -109,7 +109,7 @@ File opened → size > progressiveDownloadThreshold (1MB)?
 |---------|------|---------|---------|-------------|
 | `sshLite.searchMaxResults` | `number` | `2000` | `1` | Max search results. Higher = slower on large dirs |
 | `sshLite.filterMaxResults` | `number` | `1000` | `1` | Max file filter results |
-| `sshLite.searchParallelProcesses` | `number` | `5` | `1`/`16` | Number of parallel search workers per folder. Workers process file batches concurrently for faster results. Set to 1 to disable parallel search |
+| `sshLite.searchParallelProcesses` | `number` | `20` | `5`/`50` | Default parallel search workers per folder. Each server can override this inline in the search panel. Workers process file batches concurrently for faster results |
 | `sshLite.searchExcludeSystemDirs` | `boolean` | `true` | — | Auto-exclude system directories (`/proc`, `/sys`, `/dev`, `/run`, `/snap`, `/lost+found`) when searching from root `/`. A notice is shown to let you include them |
 
 **Parallel search (file-level worker pool)**: When `searchParallelProcesses > 1`, the search panel uses a file-level worker pool. Workers share a mixed queue of `dir` and `files` items. A `dir` item calls `listEntries()` to discover files + subdirs at one level, batches files by byte size (32KB limit for cross-OS safety), and adds file batches + subdirs back to the queue. A `files` item calls `searchFiles()` with an explicit file path array. Workers pick items from the queue until exhausted. This gives perfect load balancing — workers never idle, no duplication, no missed files.
@@ -160,3 +160,5 @@ These are NOT user settings — they're set programmatically and used in `when` 
 | Search sort order | Checked-first vs alphabetical |
 | Folder access history | Preloading priorities |
 | Saved port forward rules | Auto-restore port forwards on connect |
+| Per-server search settings | Server-specific `maxSearchProcesses` overrides |
+| Last connection attempts | Per-host success/failure with timestamps and errors |

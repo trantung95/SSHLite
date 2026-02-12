@@ -4,6 +4,23 @@ Testing infrastructure, patterns, and guides for SSH Lite. **859 tests across 32
 
 ---
 
+## Testing Policy (MANDATORY)
+
+**Every code change** must check/write/update ALL test types — not just unit tests:
+
+| Test Type | Required Action |
+|-----------|----------------|
+| **Unit** | Write or update for every new/changed method |
+| **Integration** | Write or update for every cross-service flow change |
+| **E2E** | Write or update for every command/feature change |
+| **UI** | Write or update for every webview/tree provider change |
+
+**Coverage target**: 95%+ on all new/changed code.
+
+**Rule**: When reviewing a PR or committing changes, verify that ALL four test types were considered. If a test type doesn't apply (e.g., no webview change → no UI test needed), document why in the PR description.
+
+---
+
 ## Test Categories
 
 | Category | Location | Runner | Environment |

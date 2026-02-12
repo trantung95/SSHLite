@@ -1,5 +1,130 @@
+/**
+ * FileTreeProvider tests
+ *
+ * Tests covering:
+ * - matchesFilter logic (filename glob/substring filtering)
+ * - matchesFilenameFilter logic (per-folder filename filter)
+ * - isEmptyAfterFilter logic (folder graying when no matching descendants)
+ * - Connection reorder algorithm (drag/drop)
+ * - handleDrag filtering
+ * - Change 7: Show Tree From Root (enableTreeFromRoot, disableTreeFromRoot, isTreeFromRoot,
+ *   loadAncestorDirs, buildDirectoryItems placement, getChildren auto-expand)
+ * - Change 8: Smart Reveal (revealFile Case A & B, loadIntermediateDirs, revealViaTreeFromRoot)
+ */
+
 import { IRemoteFile, ConnectionState } from '../types';
 import * as vscode from 'vscode';
+import { createMockConnection, createMockHostConfig, createMockRemoteFile } from '../__mocks__/testHelpers';
+
+// --- Mock service instances (must be declared before jest.mock calls) ---
+
+const mockGetConnection = jest.fn();
+const mockGetAllConnections = jest.fn().mockReturnValue([]);
+const mockGetAllConnectionsWithReconnecting = jest.fn().mockReturnValue({ active: [], reconnecting: [] });
+const mockConnectionChangeEmitter = new (require('../__mocks__/vscode').EventEmitter)();
+const mockReconnectingEmitter = new (require('../__mocks__/vscode').EventEmitter)();
+
+const mockOnOpenFilesChanged = new (require('../__mocks__/vscode').EventEmitter)();
+const mockOnFileLoadingChanged = new (require('../__mocks__/vscode').EventEmitter)();
+
+const mockRecordVisit = jest.fn();
+const mockGetFrequentFolders = jest.fn().mockReturnValue([]);
+const mockGetPreloadTargets = jest.fn().mockReturnValue([]);
+
+const mockEnqueue = jest.fn().mockResolvedValue(undefined);
+const mockCancelAll = jest.fn();
+const mockIsConnectionCancelled = jest.fn().mockReturnValue(false);
+const mockIsPreloadingInProgress = jest.fn().mockReturnValue(false);
+const mockResetConnection = jest.fn();
+const mockGetStatus = jest.fn().mockReturnValue({ active: 0, queued: 0, completed: 0, total: 0, byPriority: {} });
+
+const mockStartActivity = jest.fn().mockReturnValue('activity-1');
+const mockCompleteActivity = jest.fn();
+const mockFailActivity = jest.fn();
+const mockCancelActivity = jest.fn();
+
+// --- jest.mock calls ---
+
+jest.mock('../connection/ConnectionManager', () => ({
+  ConnectionManager: {
+    getInstance: jest.fn().mockReturnValue({
+      getConnection: mockGetConnection,
+      getAllConnections: mockGetAllConnections,
+      getAllConnectionsWithReconnecting: mockGetAllConnectionsWithReconnecting,
+      onDidChangeConnections: mockConnectionChangeEmitter.event,
+      onReconnecting: mockReconnectingEmitter.event,
+      getLastConnectionAttempt: jest.fn().mockReturnValue(undefined),
+    }),
+  },
+}));
+
+jest.mock('../services/FileService', () => ({
+  FileService: {
+    getInstance: jest.fn().mockReturnValue({
+      onOpenFilesChanged: mockOnOpenFilesChanged.event,
+      onFileLoadingChanged: mockOnFileLoadingChanged.event,
+      preloadFrequentFiles: jest.fn().mockResolvedValue(undefined),
+    }),
+  },
+}));
+
+jest.mock('../services/FolderHistoryService', () => ({
+  FolderHistoryService: {
+    getInstance: jest.fn().mockReturnValue({
+      recordVisit: mockRecordVisit,
+      getFrequentFolders: mockGetFrequentFolders,
+      getPreloadTargets: mockGetPreloadTargets,
+    }),
+  },
+}));
+
+jest.mock('../services/PriorityQueueService', () => ({
+  PriorityQueueService: {
+    getInstance: jest.fn().mockReturnValue({
+      enqueue: mockEnqueue,
+      cancelAll: mockCancelAll,
+      isConnectionCancelled: mockIsConnectionCancelled,
+      isPreloadingInProgress: mockIsPreloadingInProgress,
+      resetConnection: mockResetConnection,
+      getStatus: mockGetStatus,
+    }),
+  },
+  PreloadPriority: { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, IDLE: 4 },
+}));
+
+jest.mock('../services/ActivityService', () => ({
+  ActivityService: {
+    getInstance: jest.fn().mockReturnValue({
+      startActivity: mockStartActivity,
+      completeActivity: mockCompleteActivity,
+      failActivity: mockFailActivity,
+      cancelActivity: mockCancelActivity,
+    }),
+  },
+}));
+
+jest.mock('../utils/helpers', () => ({
+  formatFileSize: jest.fn().mockReturnValue('1 KB'),
+  formatRelativeTime: jest.fn().mockReturnValue('just now'),
+  formatDateTime: jest.fn().mockReturnValue('2026-01-01 00:00'),
+}));
+
+// --- Import after mocks ---
+
+import {
+  FileTreeProvider,
+  FileTreeItem,
+  ConnectionTreeItem,
+  ParentFolderTreeItem,
+  ShowTreeFromRootItem,
+  BackToFlatViewItem,
+  LoadingTreeItem,
+} from './FileTreeProvider';
+
+// ============================================================================
+// Existing tests (matchesFilter, matchesFilenameFilter, isEmptyAfterFilter,
+// drag/drop reorder, handleDrag filtering)
+// ============================================================================
 
 /**
  * Test implementation of matchesFilter logic
@@ -403,7 +528,7 @@ describe('FileTreeProvider - isEmptyAfterFilter', () => {
 });
 
 /**
- * Connection reorder algorithm — extracted from FileTreeProvider.handleDrop
+ * Connection reorder algorithm -- extracted from FileTreeProvider.handleDrop
  * for unit testing the drag/drop reorder logic.
  */
 function reorderConnections(
@@ -432,25 +557,25 @@ describe('FileTreeProvider - drag/drop connection reorder', () => {
   const order = ['conn-A', 'conn-B', 'conn-C', 'conn-D', 'conn-E'];
 
   describe('single item drag', () => {
-    it('should move item forward (A → position of D)', () => {
+    it('should move item forward (A -> position of D)', () => {
       const result = reorderConnections(order, ['conn-A'], 3);
-      // A removed from index 0, target adjusted 3→2, insert at 2
+      // A removed from index 0, target adjusted 3->2, insert at 2
       expect(result).toEqual(['conn-B', 'conn-C', 'conn-A', 'conn-D', 'conn-E']);
     });
 
-    it('should move item backward (D → position of B)', () => {
+    it('should move item backward (D -> position of B)', () => {
       const result = reorderConnections(order, ['conn-D'], 1);
       // D removed from index 3, target stays 1 (removal was after target)
       expect(result).toEqual(['conn-A', 'conn-D', 'conn-B', 'conn-C', 'conn-E']);
     });
 
-    it('should move item to end (B → end)', () => {
+    it('should move item to end (B -> end)', () => {
       const result = reorderConnections(order, ['conn-B'], 5);
-      // B removed from index 1, target adjusted 5→4, insert at 4
+      // B removed from index 1, target adjusted 5->4, insert at 4
       expect(result).toEqual(['conn-A', 'conn-C', 'conn-D', 'conn-E', 'conn-B']);
     });
 
-    it('should move item to beginning (E → position 0)', () => {
+    it('should move item to beginning (E -> position 0)', () => {
       const result = reorderConnections(order, ['conn-E'], 0);
       expect(result).toEqual(['conn-E', 'conn-A', 'conn-B', 'conn-C', 'conn-D']);
     });
@@ -465,7 +590,7 @@ describe('FileTreeProvider - drag/drop connection reorder', () => {
   describe('multi-item drag', () => {
     it('should move two adjacent items forward', () => {
       const result = reorderConnections(order, ['conn-A', 'conn-B'], 4);
-      // A(0), B(1) removed, target adjusted 4→2, insert at 2
+      // A(0), B(1) removed, target adjusted 4->2, insert at 2
       expect(result).toEqual(['conn-C', 'conn-D', 'conn-A', 'conn-B', 'conn-E']);
     });
 
@@ -540,5 +665,667 @@ describe('FileTreeProvider - handleDrag filtering', () => {
 
   it('should handle empty item list', () => {
     expect(filterDraggableItems([])).toEqual([]);
+  });
+});
+
+
+// ============================================================================
+// Change 7: Show Tree From Root
+// ============================================================================
+
+describe('FileTreeProvider - Change 7: Show Tree From Root', () => {
+  let provider: FileTreeProvider;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGetAllConnections.mockReturnValue([]);
+    mockGetAllConnectionsWithReconnecting.mockReturnValue({ active: [], reconnecting: [] });
+    provider = new FileTreeProvider();
+  });
+
+  afterEach(() => {
+    provider.dispose();
+  });
+
+  describe('enableTreeFromRoot()', () => {
+    it('should set tree-from-root mode for the connection', () => {
+      provider.enableTreeFromRoot('conn-1', '/home/user');
+      expect(provider.isTreeFromRoot('conn-1')).toBe(true);
+    });
+
+    it('should store the original path', () => {
+      provider.enableTreeFromRoot('conn-1', '/home/user/projects');
+      // disableTreeFromRoot should restore the original path
+      // We verify via isTreeFromRoot and the disable path
+      expect(provider.isTreeFromRoot('conn-1')).toBe(true);
+    });
+
+    it('should store expand paths when provided', () => {
+      const expandPaths = new Set(['/home', '/home/user', '/home/user/projects']);
+      provider.enableTreeFromRoot('conn-1', '/home/user/projects', expandPaths);
+      expect(provider.isTreeFromRoot('conn-1')).toBe(true);
+      // Expand paths are used internally by getChildren for auto-expand
+    });
+
+    it('should handle multiple connections independently', () => {
+      provider.enableTreeFromRoot('conn-1', '/home/user1');
+      provider.enableTreeFromRoot('conn-2', '/opt/app');
+      expect(provider.isTreeFromRoot('conn-1')).toBe(true);
+      expect(provider.isTreeFromRoot('conn-2')).toBe(true);
+      expect(provider.isTreeFromRoot('conn-3')).toBe(false);
+    });
+  });
+
+  describe('disableTreeFromRoot()', () => {
+    it('should clear tree-from-root mode', () => {
+      provider.enableTreeFromRoot('conn-1', '/home/user');
+      provider.disableTreeFromRoot('conn-1');
+      expect(provider.isTreeFromRoot('conn-1')).toBe(false);
+    });
+
+    it('should restore original path via setCurrentPath', () => {
+      // Set up a connection so setCurrentPath can work
+      const mockConn = createMockConnection({ id: 'conn-1' });
+      mockGetConnection.mockReturnValue(mockConn);
+
+      provider.enableTreeFromRoot('conn-1', '/home/user/projects');
+      provider.disableTreeFromRoot('conn-1');
+
+      // After disable, getCurrentPath should reflect the restored original path
+      expect(provider.getCurrentPath('conn-1')).toBe('/home/user/projects');
+    });
+
+    it('should be a no-op for connections not in tree-from-root mode', () => {
+      // Should not throw
+      provider.disableTreeFromRoot('conn-nonexistent');
+      expect(provider.isTreeFromRoot('conn-nonexistent')).toBe(false);
+    });
+  });
+
+  describe('isTreeFromRoot()', () => {
+    it('should return false by default', () => {
+      expect(provider.isTreeFromRoot('conn-1')).toBe(false);
+    });
+
+    it('should return true after enableTreeFromRoot', () => {
+      provider.enableTreeFromRoot('conn-1', '/home');
+      expect(provider.isTreeFromRoot('conn-1')).toBe(true);
+    });
+
+    it('should return false after disableTreeFromRoot', () => {
+      provider.enableTreeFromRoot('conn-1', '/home');
+      provider.disableTreeFromRoot('conn-1');
+      expect(provider.isTreeFromRoot('conn-1')).toBe(false);
+    });
+  });
+
+  describe('loadAncestorDirs()', () => {
+    it('should load root directory first', async () => {
+      const mockConn = createMockConnection({ id: 'conn-1' });
+      mockConn.listFiles.mockResolvedValue([]);
+
+      await provider.loadAncestorDirs(mockConn as any, '/home/user');
+
+      // Should call listFiles for /, /home, /home/user
+      expect(mockConn.listFiles).toHaveBeenCalledWith('/');
+    });
+
+    it('should load all ancestor directories along the path', async () => {
+      const mockConn = createMockConnection({ id: 'conn-1' });
+      mockConn.listFiles.mockResolvedValue([]);
+
+      await provider.loadAncestorDirs(mockConn as any, '/home/user/projects');
+
+      // Should load: /, /home, /home/user, /home/user/projects
+      expect(mockConn.listFiles).toHaveBeenCalledWith('/');
+      expect(mockConn.listFiles).toHaveBeenCalledWith('/home');
+      expect(mockConn.listFiles).toHaveBeenCalledWith('/home/user');
+      expect(mockConn.listFiles).toHaveBeenCalledWith('/home/user/projects');
+    });
+
+    it('should skip directories already in cache', async () => {
+      const mockConn = createMockConnection({ id: 'conn-1' });
+      mockConn.listFiles.mockResolvedValue([]);
+
+      // Pre-populate cache by loading root first
+      await provider.loadAncestorDirs(mockConn as any, '/home');
+      mockConn.listFiles.mockClear();
+
+      // Now load ancestors to a deeper path - root and /home should be cached
+      await provider.loadAncestorDirs(mockConn as any, '/home/user/data');
+
+      // Should only load /home/user and /home/user/data (root and /home cached)
+      expect(mockConn.listFiles).toHaveBeenCalledWith('/home/user');
+      expect(mockConn.listFiles).toHaveBeenCalledWith('/home/user/data');
+      expect(mockConn.listFiles).not.toHaveBeenCalledWith('/');
+      expect(mockConn.listFiles).not.toHaveBeenCalledWith('/home');
+    });
+
+    it('should stop loading if an ancestor fails (permission denied)', async () => {
+      const mockConn = createMockConnection({ id: 'conn-1' });
+      mockConn.listFiles
+        .mockResolvedValueOnce([]) // /
+        .mockRejectedValueOnce(new Error('Permission denied')) // /root
+        .mockResolvedValueOnce([]); // should not be called
+
+      await provider.loadAncestorDirs(mockConn as any, '/root/secret/files');
+
+      // Should stop after /root fails
+      expect(mockConn.listFiles).toHaveBeenCalledWith('/');
+      expect(mockConn.listFiles).toHaveBeenCalledWith('/root');
+      expect(mockConn.listFiles).not.toHaveBeenCalledWith('/root/secret');
+    });
+  });
+
+  describe('buildDirectoryItems() - tree item placement', () => {
+    it('should show BackToFlatViewItem when in tree-from-root mode', async () => {
+      const mockConn = createMockConnection({ id: 'conn-1' });
+      mockGetConnection.mockReturnValue(mockConn);
+      mockGetAllConnections.mockReturnValue([mockConn]);
+      mockGetAllConnectionsWithReconnecting.mockReturnValue({
+        active: [mockConn],
+        reconnecting: [],
+      });
+      mockConn.listFiles.mockResolvedValue([
+        createMockRemoteFile('dir1', { path: '/dir1', isDirectory: true, connectionId: 'conn-1' }),
+      ]);
+
+      // Navigate to root and enable tree-from-root
+      provider.setCurrentPath('conn-1', '/');
+      provider.enableTreeFromRoot('conn-1', '/home/user');
+
+      // Pre-cache the root directory
+      await mockConn.listFiles('/');
+
+      // Get the connection children
+      const rootItems = await provider.getChildren();
+      expect(rootItems.length).toBeGreaterThan(0);
+
+      const connItem = rootItems[0] as ConnectionTreeItem;
+      const children = await provider.getChildren(connItem);
+
+      // First item should be BackToFlatViewItem
+      const backItem = children.find(c => c instanceof BackToFlatViewItem);
+      expect(backItem).toBeDefined();
+      expect((backItem as BackToFlatViewItem).originalPath).toBe('/home/user');
+    });
+
+    it('should show ShowTreeFromRootItem when NOT in tree-from-root mode and not at root', async () => {
+      const mockConn = createMockConnection({ id: 'conn-1' });
+      mockGetConnection.mockReturnValue(mockConn);
+      mockGetAllConnections.mockReturnValue([mockConn]);
+      mockGetAllConnectionsWithReconnecting.mockReturnValue({
+        active: [mockConn],
+        reconnecting: [],
+      });
+
+      const files: IRemoteFile[] = [
+        createMockRemoteFile('file1.ts', { path: '/home/user/file1.ts', connectionId: 'conn-1' }),
+      ];
+      mockConn.listFiles.mockResolvedValue(files);
+
+      // Navigate to a non-root path
+      provider.setCurrentPath('conn-1', '/home/user');
+
+      const rootItems = await provider.getChildren();
+      const connItem = rootItems[0] as ConnectionTreeItem;
+      const children = await provider.getChildren(connItem);
+
+      // Should have a ShowTreeFromRootItem
+      const showTreeItem = children.find(c => c instanceof ShowTreeFromRootItem);
+      expect(showTreeItem).toBeDefined();
+      expect((showTreeItem as ShowTreeFromRootItem).currentPath).toBe('/home/user');
+
+      // Should also have ParentFolderTreeItem
+      const parentItem = children.find(c => c instanceof ParentFolderTreeItem);
+      expect(parentItem).toBeDefined();
+    });
+
+    it('should NOT show ShowTreeFromRootItem when at root /', async () => {
+      const mockConn = createMockConnection({ id: 'conn-1' });
+      mockGetConnection.mockReturnValue(mockConn);
+      mockGetAllConnections.mockReturnValue([mockConn]);
+      mockGetAllConnectionsWithReconnecting.mockReturnValue({
+        active: [mockConn],
+        reconnecting: [],
+      });
+
+      mockConn.listFiles.mockResolvedValue([]);
+      provider.setCurrentPath('conn-1', '/');
+
+      const rootItems = await provider.getChildren();
+      const connItem = rootItems[0] as ConnectionTreeItem;
+      const children = await provider.getChildren(connItem);
+
+      const showTreeItem = children.find(c => c instanceof ShowTreeFromRootItem);
+      expect(showTreeItem).toBeUndefined();
+    });
+
+    it('should show ShowTreeFromRootItem when at home ~', async () => {
+      const mockConn = createMockConnection({ id: 'conn-1' });
+      mockGetConnection.mockReturnValue(mockConn);
+      mockGetAllConnections.mockReturnValue([mockConn]);
+      mockGetAllConnectionsWithReconnecting.mockReturnValue({
+        active: [mockConn],
+        reconnecting: [],
+      });
+
+      mockConn.listFiles.mockResolvedValue([]);
+      provider.setCurrentPath('conn-1', '~');
+
+      const rootItems = await provider.getChildren();
+      const connItem = rootItems[0] as ConnectionTreeItem;
+      const children = await provider.getChildren(connItem);
+
+      const showTreeItem = children.find(c => c instanceof ShowTreeFromRootItem);
+      expect(showTreeItem).toBeDefined();
+    });
+  });
+
+  describe('getChildren(FileTreeItem) - auto-expand logic for tree-from-root', () => {
+    it('should auto-expand folders on the expand path', async () => {
+      const mockConn = createMockConnection({ id: 'conn-1' });
+      mockGetConnection.mockReturnValue(mockConn);
+
+      // Set up expand paths
+      const expandPaths = new Set(['/home', '/home/user']);
+      provider.enableTreeFromRoot('conn-1', '/home/user', expandPaths);
+
+      // Create a directory listing for /home with /home/user in it
+      const homeDir: IRemoteFile = {
+        name: 'home',
+        path: '/home',
+        isDirectory: true,
+        size: 0,
+        modifiedTime: Date.now(),
+        connectionId: 'conn-1',
+      };
+
+      const userDir: IRemoteFile = {
+        name: 'user',
+        path: '/home/user',
+        isDirectory: true,
+        size: 0,
+        modifiedTime: Date.now(),
+        connectionId: 'conn-1',
+      };
+
+      const otherDir: IRemoteFile = {
+        name: 'other',
+        path: '/home/other',
+        isDirectory: true,
+        size: 0,
+        modifiedTime: Date.now(),
+        connectionId: 'conn-1',
+      };
+
+      // Cache the /home directory
+      mockConn.listFiles.mockResolvedValue([userDir, otherDir]);
+
+      // Create a FileTreeItem for /home
+      const homeItem = new FileTreeItem(homeDir, mockConn as any, false, false, false, true);
+
+      // Get children of /home
+      const children = await provider.getChildren(homeItem);
+
+      // Find the 'user' item - it should be auto-expanded (shouldBeExpanded = true)
+      const userItem = children.find(c =>
+        c instanceof FileTreeItem && (c as FileTreeItem).file.path === '/home/user'
+      ) as FileTreeItem | undefined;
+      expect(userItem).toBeDefined();
+      expect(userItem!.collapsibleState).toBe(vscode.TreeItemCollapsibleState.Expanded);
+
+      // 'other' should NOT be auto-expanded
+      const otherItem = children.find(c =>
+        c instanceof FileTreeItem && (c as FileTreeItem).file.path === '/home/other'
+      ) as FileTreeItem | undefined;
+      expect(otherItem).toBeDefined();
+      expect(otherItem!.collapsibleState).toBe(vscode.TreeItemCollapsibleState.Collapsed);
+    });
+  });
+});
+
+
+// ============================================================================
+// Change 8: Smart Reveal
+// ============================================================================
+
+describe('FileTreeProvider - Change 8: Smart Reveal', () => {
+  let provider: FileTreeProvider;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGetAllConnections.mockReturnValue([]);
+    mockGetAllConnectionsWithReconnecting.mockReturnValue({ active: [], reconnecting: [] });
+    provider = new FileTreeProvider();
+  });
+
+  afterEach(() => {
+    provider.dispose();
+  });
+
+  describe('revealFile() - Case A: file under currentPath', () => {
+    it('should load intermediate dirs and return FileTreeItem without changing currentPath', async () => {
+      const mockConn = createMockConnection({ id: 'conn-1' });
+      mockConn.exec.mockResolvedValue('/home/user\n');
+      mockGetConnection.mockReturnValue(mockConn);
+      mockGetAllConnections.mockReturnValue([mockConn]);
+      mockGetAllConnectionsWithReconnecting.mockReturnValue({
+        active: [mockConn],
+        reconnecting: [],
+      });
+
+      // Set current path to ~ which resolves to /home/user
+      provider.setCurrentPath('conn-1', '~');
+
+      // Mock listFiles for intermediate directories
+      mockConn.listFiles.mockImplementation(async (remotePath: string) => {
+        if (remotePath === '/home/user') {
+          return [
+            createMockRemoteFile('projects', { path: '/home/user/projects', isDirectory: true, connectionId: 'conn-1' }),
+          ];
+        }
+        if (remotePath === '/home/user/projects') {
+          return [
+            createMockRemoteFile('app.ts', { path: '/home/user/projects/app.ts', connectionId: 'conn-1' }),
+          ];
+        }
+        return [];
+      });
+
+      const result = await provider.revealFile('conn-1', '/home/user/projects/app.ts');
+
+      expect(result).toBeDefined();
+      expect(result!.file.path).toBe('/home/user/projects/app.ts');
+      // currentPath should still be ~ (not changed to the parent of the revealed file)
+      expect(provider.getCurrentPath('conn-1')).toBe('~');
+      // Should NOT have entered tree-from-root mode
+      expect(provider.isTreeFromRoot('conn-1')).toBe(false);
+    });
+
+    it('should use cached parent if file is already visible', async () => {
+      const mockConn = createMockConnection({ id: 'conn-1' });
+      mockGetConnection.mockReturnValue(mockConn);
+      mockGetAllConnections.mockReturnValue([mockConn]);
+
+      provider.setCurrentPath('conn-1', '/home/user');
+
+      // Pre-cache the parent directory
+      mockConn.listFiles.mockResolvedValue([
+        createMockRemoteFile('readme.md', { path: '/home/user/readme.md', connectionId: 'conn-1' }),
+      ]);
+
+      // Trigger a load to populate cache
+      await provider.getChildren(new ConnectionTreeItem(mockConn as any, '/home/user'));
+
+      const result = await provider.revealFile('conn-1', '/home/user/readme.md');
+      expect(result).toBeDefined();
+      expect(result!.file.path).toBe('/home/user/readme.md');
+    });
+  });
+
+  describe('revealFile() - Case B: file outside currentPath', () => {
+    it('should switch to tree-from-root mode when file is outside currentPath', async () => {
+      const mockConn = createMockConnection({ id: 'conn-1' });
+      mockConn.exec.mockResolvedValue('/home/user\n');
+      mockGetConnection.mockReturnValue(mockConn);
+      mockGetAllConnections.mockReturnValue([mockConn]);
+      mockGetAllConnectionsWithReconnecting.mockReturnValue({
+        active: [mockConn],
+        reconnecting: [],
+      });
+
+      provider.setCurrentPath('conn-1', '~');
+
+      // File is at /var/log/app.log - outside of /home/user
+      mockConn.listFiles.mockResolvedValue([]);
+
+      const result = await provider.revealFile('conn-1', '/var/log/app.log');
+
+      expect(result).toBeDefined();
+      expect(result!.file.path).toBe('/var/log/app.log');
+      // Should have entered tree-from-root mode
+      expect(provider.isTreeFromRoot('conn-1')).toBe(true);
+      // currentPath should now be / (root)
+      expect(provider.getCurrentPath('conn-1')).toBe('/');
+    });
+
+    it('should return undefined if connection not found', async () => {
+      mockGetConnection.mockReturnValue(undefined);
+
+      const result = await provider.revealFile('nonexistent', '/some/file.ts');
+      expect(result).toBeUndefined();
+    });
+  });
+
+  describe('loadIntermediateDirs()', () => {
+    it('should cache all directories between fromPath and toPath', async () => {
+      const mockConn = createMockConnection({ id: 'conn-1' });
+      mockGetConnection.mockReturnValue(mockConn);
+
+      // We access loadIntermediateDirs indirectly through revealFile Case A
+      // But we can verify the caching behavior by checking listFiles calls
+
+      mockConn.exec.mockResolvedValue('/home\n');
+      mockConn.listFiles.mockImplementation(async (remotePath: string) => {
+        if (remotePath === '/home') {
+          return [
+            createMockRemoteFile('user', { path: '/home/user', isDirectory: true, connectionId: 'conn-1' }),
+          ];
+        }
+        if (remotePath === '/home/user') {
+          return [
+            createMockRemoteFile('projects', { path: '/home/user/projects', isDirectory: true, connectionId: 'conn-1' }),
+          ];
+        }
+        if (remotePath === '/home/user/projects') {
+          return [
+            createMockRemoteFile('src', { path: '/home/user/projects/src', isDirectory: true, connectionId: 'conn-1' }),
+          ];
+        }
+        if (remotePath === '/home/user/projects/src') {
+          return [
+            createMockRemoteFile('app.ts', { path: '/home/user/projects/src/app.ts', connectionId: 'conn-1' }),
+          ];
+        }
+        return [];
+      });
+
+      provider.setCurrentPath('conn-1', '~');
+      mockGetAllConnections.mockReturnValue([mockConn]);
+      mockGetAllConnectionsWithReconnecting.mockReturnValue({
+        active: [mockConn],
+        reconnecting: [],
+      });
+
+      await provider.revealFile('conn-1', '/home/user/projects/src/app.ts');
+
+      // Should have loaded intermediate directories from /home to /home/user/projects/src
+      expect(mockConn.listFiles).toHaveBeenCalledWith('/home');
+      expect(mockConn.listFiles).toHaveBeenCalledWith('/home/user');
+      expect(mockConn.listFiles).toHaveBeenCalledWith('/home/user/projects');
+      expect(mockConn.listFiles).toHaveBeenCalledWith('/home/user/projects/src');
+    });
+
+    it('should stop loading on permission error', async () => {
+      const mockConn = createMockConnection({ id: 'conn-1' });
+      mockGetConnection.mockReturnValue(mockConn);
+      mockConn.exec.mockResolvedValue('/\n');
+
+      // /restricted throws permission denied
+      mockConn.listFiles.mockImplementation(async (remotePath: string) => {
+        if (remotePath === '/') {
+          return [
+            createMockRemoteFile('restricted', { path: '/restricted', isDirectory: true, connectionId: 'conn-1' }),
+          ];
+        }
+        if (remotePath === '/restricted') {
+          throw new Error('Permission denied');
+        }
+        return [];
+      });
+
+      provider.setCurrentPath('conn-1', '/');
+      mockGetAllConnections.mockReturnValue([mockConn]);
+      mockGetAllConnectionsWithReconnecting.mockReturnValue({
+        active: [mockConn],
+        reconnecting: [],
+      });
+
+      // This should not throw - it gracefully handles permission errors
+      const result = await provider.revealFile('conn-1', '/restricted/secret/file.txt');
+      expect(result).toBeDefined();
+    });
+  });
+
+  describe('revealViaTreeFromRoot()', () => {
+    it('should enable tree-from-root with both original and target paths expanded', async () => {
+      const mockConn = createMockConnection({ id: 'conn-1' });
+      mockConn.exec.mockResolvedValue('/home/user\n');
+      mockGetConnection.mockReturnValue(mockConn);
+      mockGetAllConnections.mockReturnValue([mockConn]);
+      mockGetAllConnectionsWithReconnecting.mockReturnValue({
+        active: [mockConn],
+        reconnecting: [],
+      });
+
+      mockConn.listFiles.mockResolvedValue([]);
+
+      provider.setCurrentPath('conn-1', '~');
+
+      // Reveal a file at /var/log/app.log (outside current path /home/user)
+      await provider.revealFile('conn-1', '/var/log/app.log');
+
+      // Verify tree-from-root is enabled
+      expect(provider.isTreeFromRoot('conn-1')).toBe(true);
+
+      // Current path should be / (root view)
+      expect(provider.getCurrentPath('conn-1')).toBe('/');
+
+      // Should have loaded ancestor dirs for both paths
+      // For /home/user: /, /home, /home/user
+      // For /var/log: /, /var, /var/log
+      expect(mockConn.listFiles).toHaveBeenCalledWith('/');
+    });
+
+    it('should load ancestor directories for both original and target paths', async () => {
+      const mockConn = createMockConnection({ id: 'conn-1' });
+      mockConn.exec.mockResolvedValue('/home/admin\n');
+      mockGetConnection.mockReturnValue(mockConn);
+      mockGetAllConnections.mockReturnValue([mockConn]);
+      mockGetAllConnectionsWithReconnecting.mockReturnValue({
+        active: [mockConn],
+        reconnecting: [],
+      });
+
+      const listFilesCalls: string[] = [];
+      mockConn.listFiles.mockImplementation(async (remotePath: string) => {
+        listFilesCalls.push(remotePath);
+        return [];
+      });
+
+      provider.setCurrentPath('conn-1', '~');
+
+      // Reveal file at /etc/nginx/nginx.conf (outside /home/admin)
+      await provider.revealFile('conn-1', '/etc/nginx/nginx.conf');
+
+      // Should have loaded ancestor dirs for:
+      // Original path /home/admin: /, /home, /home/admin
+      // Target parent /etc/nginx: /, /etc, /etc/nginx
+      expect(listFilesCalls).toContain('/');
+      expect(listFilesCalls).toContain('/home');
+      expect(listFilesCalls).toContain('/home/admin');
+      expect(listFilesCalls).toContain('/etc');
+      expect(listFilesCalls).toContain('/etc/nginx');
+    });
+  });
+
+  describe('revealFile() - edge cases', () => {
+    it('should handle file at root level', async () => {
+      const mockConn = createMockConnection({ id: 'conn-1' });
+      mockConn.exec.mockResolvedValue('/\n');
+      mockGetConnection.mockReturnValue(mockConn);
+      mockGetAllConnections.mockReturnValue([mockConn]);
+      mockGetAllConnectionsWithReconnecting.mockReturnValue({
+        active: [mockConn],
+        reconnecting: [],
+      });
+
+      mockConn.listFiles.mockResolvedValue([
+        createMockRemoteFile('etc', { path: '/etc', isDirectory: true, connectionId: 'conn-1' }),
+      ]);
+
+      // Current path is / and we reveal /etc/hosts
+      provider.setCurrentPath('conn-1', '/');
+
+      mockConn.listFiles.mockImplementation(async (remotePath: string) => {
+        if (remotePath === '/') {
+          return [createMockRemoteFile('etc', { path: '/etc', isDirectory: true, connectionId: 'conn-1' })];
+        }
+        if (remotePath === '/etc') {
+          return [createMockRemoteFile('hosts', { path: '/etc/hosts', connectionId: 'conn-1' })];
+        }
+        return [];
+      });
+
+      const result = await provider.revealFile('conn-1', '/etc/hosts');
+      expect(result).toBeDefined();
+      expect(result!.file.path).toBe('/etc/hosts');
+      // Should NOT enter tree-from-root because / is the root and all paths are under /
+      expect(provider.isTreeFromRoot('conn-1')).toBe(false);
+    });
+
+    it('should handle the case when exec fails to resolve home directory', async () => {
+      const mockConn = createMockConnection({ id: 'conn-1' });
+      mockConn.exec.mockRejectedValue(new Error('Connection lost'));
+      mockGetConnection.mockReturnValue(mockConn);
+      mockGetAllConnections.mockReturnValue([mockConn]);
+      mockGetAllConnectionsWithReconnecting.mockReturnValue({
+        active: [mockConn],
+        reconnecting: [],
+      });
+
+      mockConn.listFiles.mockResolvedValue([]);
+      provider.setCurrentPath('conn-1', '~');
+
+      // When exec fails, resolvedCurrentPath stays as ~
+      // Since /var/log/app.log doesn't start with "~/", it will go to Case B
+      const result = await provider.revealFile('conn-1', '/var/log/app.log');
+      expect(result).toBeDefined();
+      expect(provider.isTreeFromRoot('conn-1')).toBe(true);
+    });
+  });
+});
+
+
+// ============================================================================
+// Tree item constructors
+// ============================================================================
+
+describe('ShowTreeFromRootItem', () => {
+  it('should have correct properties', () => {
+    const mockConn = createMockConnection({ id: 'conn-1' });
+    const item = new ShowTreeFromRootItem(mockConn as any, '/home/user');
+
+    expect(item.label).toBe('Show tree from root');
+    expect(item.description).toBe('/ \u2192 /home/user');
+    expect(item.contextValue).toBe('showTreeFromRoot');
+    expect(item.id).toBe('showTreeFromRoot:conn-1');
+    expect(item.command?.command).toBe('sshLite.showTreeFromRoot');
+    expect(item.command?.arguments).toEqual([mockConn, '/home/user']);
+  });
+});
+
+describe('BackToFlatViewItem', () => {
+  it('should have correct properties', () => {
+    const mockConn = createMockConnection({ id: 'conn-1' });
+    const item = new BackToFlatViewItem(mockConn as any, '/home/user/projects');
+
+    expect(item.label).toBe('Back to flat view');
+    expect(item.description).toBe('/home/user/projects');
+    expect(item.contextValue).toBe('backToFlatView');
+    expect(item.id).toBe('backToFlat:conn-1');
+    expect(item.command?.command).toBe('sshLite.backToFlatView');
+    expect(item.command?.arguments).toEqual([mockConn, '/home/user/projects']);
   });
 });

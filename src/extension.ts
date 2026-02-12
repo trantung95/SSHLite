@@ -105,6 +105,9 @@ export function activate(context: vscode.ExtensionContext): void {
   // Initialize host key verification storage
   setGlobalState(context.globalState);
 
+  // Initialize connection manager for failed connection indicator persistence
+  connectionManager.initialize(context);
+
   // Initialize port forward service for persistence
   portForwardService.initialize(context);
 
@@ -880,12 +883,46 @@ export function activate(context: vscode.ExtensionContext): void {
       try {
         logCommand('goToPath', targetPath);
         await connection.listFiles(targetPath);
+        // Exit tree-from-root mode when navigating explicitly
+        if (fileTreeProvider.isTreeFromRoot(connection.id)) {
+          fileTreeProvider.disableTreeFromRoot(connection.id);
+        }
         fileTreeProvider.setCurrentPath(connection.id, targetPath);
         logResult('goToPath', true, targetPath);
       } catch (error) {
         logResult('goToPath', false, (error as Error).message);
         vscode.window.showErrorMessage(`Cannot access path: ${(error as Error).message}`);
       }
+    }),
+
+    // Show tree from root: switch from flat navigation to full tree from /
+    vscode.commands.registerCommand('sshLite.showTreeFromRoot', async (connection: SSHConnection, currentPath: string) => {
+      try {
+        // Build expand paths from / to currentPath
+        const expandPaths = new Set<string>();
+        const segments = currentPath.split('/').filter(Boolean);
+        let p = '/';
+        for (const segment of segments) {
+          p = p === '/' ? `/${segment}` : `${p}/${segment}`;
+          expandPaths.add(p);
+        }
+
+        // Enable tree-from-root mode
+        fileTreeProvider.enableTreeFromRoot(connection.id, currentPath, expandPaths);
+
+        // Load all ancestor directories
+        await fileTreeProvider.loadAncestorDirs(connection, currentPath);
+
+        // Switch current path to / and refresh
+        fileTreeProvider.setCurrentPath(connection.id, '/');
+      } catch (error) {
+        vscode.window.showErrorMessage(`Failed to load tree from root: ${(error as Error).message}`);
+      }
+    }),
+
+    // Back to flat view: restore original path from tree-from-root mode
+    vscode.commands.registerCommand('sshLite.backToFlatView', async (connection: SSHConnection, originalPath: string) => {
+      fileTreeProvider.disableTreeFromRoot(connection.id);
     }),
 
     vscode.commands.registerCommand('sshLite.goToParent', async (item?: ConnectionTreeItem | FileTreeItem) => {
@@ -1542,7 +1579,16 @@ export function activate(context: vscode.ExtensionContext): void {
 
       if (item instanceof ConnectionTreeItem) {
         connection = item.connection;
+        // Resolve ~ to absolute path (tilde doesn't expand in single-quoted find/grep)
         basePath = item.currentPath;
+        if (basePath === '~' || basePath.startsWith('~/')) {
+          try {
+            const homePath = (await connection.exec('echo ~')).trim();
+            basePath = basePath === '~' ? homePath : homePath + basePath.substring(1);
+          } catch {
+            basePath = item.currentPath; // fallback
+          }
+        }
         displayName = item.connection.host.name;
       } else if (item instanceof FileTreeItem && item.file.isDirectory) {
         connection = item.connection;

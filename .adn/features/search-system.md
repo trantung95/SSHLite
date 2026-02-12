@@ -30,10 +30,10 @@ Singleton webview panel for searching across multiple SSH servers simultaneously
 
 **Extension → Webview** (`panel.webview.postMessage`):
 ```typescript
-{ type: 'updateState', serverList, isSearching, results, ... }
-{ type: 'searching', query, scopeServers }             // Search started, reset UI
+{ type: 'updateState', serverList, isSearching, results, globalMaxSearchProcesses, ... }
+{ type: 'searching', query, scopeServers, searchId }  // Search started, reset UI + searchId
 { type: 'searchBatch', results, totalResults,           // Progressive results
-  completedCount, totalCount, hitLimit, limit, done }
+  completedCount, totalCount, hitLimit, limit, done, searchId }
 { type: 'systemDirsExcluded', dirs: string[] }          // Excluded system dirs notice
 { type: 'updateServerConnection', serverId, connected }
 ```
@@ -45,7 +45,8 @@ Singleton webview panel for searching across multiple SSH servers simultaneously
 { type: 'openResult', result: { connectionId, path, line } }
 { type: 'cancelSearch' }                                // Cancel search
 { type: 'removeServerPath', serverId, pathIndex }     // Remove path
-{ type: 'searchIncludeSystemDirs' }                   // Re-search including system dirs
+{ type: 'searchIncludeSystemDirs' }                   // Search excluded dirs in-progress (merge)
+{ type: 'setServerMaxProcesses', serverId, value }    // Per-server worker override (null = reset)
 ```
 
 ---
@@ -63,6 +64,7 @@ interface ServerSearchEntry {
   checked: boolean;     // Checkbox state
   disabled: boolean;    // No credential + not connected
   searchPaths: string[];  // Paths to search in
+  maxSearchProcesses?: number;  // Per-server override (null = use global default)
 }
 ```
 
@@ -166,7 +168,7 @@ Path /opt with parallelProcesses=4:
 **System directory exclusion** (when searching from root `/`):
 - Auto-excludes: `/proc`, `/sys`, `/dev`, `/run`, `/snap`, `/lost+found`
 - Webview shows dismissible info bar: "System directories excluded: /proc, /sys, ..."
-- User can click "Include all" to re-search without exclusion
+- User can click "Include all" to search excluded dirs in-progress (merged into ongoing search, not restarted)
 
 **Skip worker pool when**:
 - `searchParallelProcesses === 1`
@@ -202,7 +204,104 @@ After search completes, auto-connected servers with no results get disconnected:
 
 ---
 
-## Sort Order
+## Per-Server Search Processes
+
+Each server can override the global `searchParallelProcesses` setting inline in the search panel. Overrides are persisted in `globalState` under key `sshLite.serverSearchSettings`.
+
+### UI
+
+Below each server's search paths, a "Workers" control shows the current value:
+- `Workers: 20 (default)` — click to edit, shows inline number input
+- `Workers: 8 ×` — override shown in accent color, `×` resets to global default
+
+### Persistence
+
+```typescript
+interface ServerSearchSettings {
+  [hostId: string]: { maxSearchProcesses?: number };
+}
+// Stored in: globalState.get('sshLite.serverSearchSettings', {})
+```
+
+Clamped to min 5, max 50. Setting to `null` clears the override.
+
+### Usage in Search
+
+```typescript
+const globalParallelProcesses = config.get<number>('searchParallelProcesses', 20);
+// Inside per-server loop:
+const parallelProcesses = server.maxSearchProcesses ?? globalParallelProcesses;
+```
+
+---
+
+## Search Instance Tracking (searchId)
+
+A monotonic counter `currentSearchId` prevents stale messages from cancelled/previous searches from corrupting the current search state.
+
+### Flow
+
+1. `performSearch()` increments `++this.currentSearchId` at start
+2. Every `postMessage` and counter mutation is guarded: `if (signal.aborted || searchId !== this.currentSearchId) return`
+3. `searchId` is included in all search messages (`searching`, `searchBatch`)
+4. Webview tracks `currentSearchId` and discards `searchBatch` messages with mismatched IDs
+5. `cancelSearch()` iterates `currentSearchActivityIds` to cancel all tracked activities
+6. `finally` block only resets `isSearching` if `searchId === this.currentSearchId`
+
+---
+
+## Include-All System Dirs In-Progress
+
+When "Include all" is clicked during or after a search, the excluded system dirs are searched using the same parallel worker pool and merged into the ongoing search — no restart.
+
+### Instance Variables
+
+```typescript
+private lastExcludedSystemDirs: string[] = [];           // Stored when dirs are excluded
+private lastSearchConnectionMap: Map<string, SSHConnection> = new Map();
+private currentGlobalSeen: Set<string> = new Set();      // Promoted from local
+private currentCompletedCount: number = 0;                // Promoted from local
+private currentTotalCount: number = 0;                    // Promoted from local
+```
+
+### searchExcludedSystemDirs() Method
+
+1. Takes the stored `lastExcludedSystemDirs` and creates `WorkItem` entries
+2. Increments `currentTotalCount` by the number of dirs
+3. Launches the same `runWorker()` pool per server with the excluded dirs as initial queue
+4. Uses the same `currentSearchId`, `currentGlobalSeen`, counters
+5. Sends `searchBatch` with `done: true` when all workers complete (if search was already done)
+
+---
+
+## Keep Results (Tab Bar)
+
+Pin current search results as tabs for comparison. Session-only (not persisted). Max 10 tabs.
+
+### State
+
+```javascript
+let resultTabs = [];    // Array of { id, query, timestamp, results, scopeServers, hitLimit, limit }
+let activeTabId = null; // null = current/live search tab
+```
+
+### UI
+
+Tab bar appears above results when `resultTabs.length > 0`:
+- Kept tabs show query + result count, with `×` close button
+- "Current" tab (always last) shows live search results
+- Active tab highlighted with accent border
+
+### Pin Flow
+
+1. Click pin icon in results header (shown when results exist and search is done)
+2. Current results copied into new tab object
+3. `results` array cleared for fresh search
+4. Tab bar re-rendered, "Current" tab becomes active
+
+---
+
+
 
 Toggle between checked-first and alphabetical:
 

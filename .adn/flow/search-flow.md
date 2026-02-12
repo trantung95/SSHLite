@@ -144,16 +144,19 @@ Implicit root:
 
 ---
 
-## Search Cancellation
+## Search Cancellation & searchId Safety
 
 ```
-1. New search auto-cancels previous
+1. New search auto-cancels previous (via AbortController)
 2. Cancel button in webview → postMessage({ type: 'cancelSearch' })
 3. Extension aborts AbortController → signal propagates to all search tasks
 4. SSHConnection sends SIGTERM to remote grep/find processes, then stream.close()
-5. Both .then() and .catch() handlers check signal.aborted to suppress stale messages
-6. Webview receives 'searchCancelled' → shows "Search cancelled", hides cancel button
-7. Activity panel shows "cancelled" state
+5. searchId guard: every postMessage and counter mutation checks:
+   if (signal.aborted || searchId !== this.currentSearchId) return
+6. cancelSearch() iterates currentSearchActivityIds to cancel all tracked activities
+7. finally block only resets isSearching if searchId === this.currentSearchId
+8. Webview tracks currentSearchId and discards searchBatch with mismatched IDs
+9. Prevents: stale results, corrupted progress, activity leaks on rapid cancel/re-search
 ```
 
 ---
@@ -164,5 +167,5 @@ Implicit root:
 |---------|---------|--------|
 | `searchMaxResults` | `2000` | Max results before stopping |
 | `filterMaxResults` | `1000` | Max results for file filter |
-| `searchParallelProcesses` | `4` | Parallel search processes per folder (1 = disabled) |
+| `searchParallelProcesses` | `20` | Default parallel workers per folder (per-server overridable, min 5) |
 | `searchExcludeSystemDirs` | `true` | Auto-exclude /proc, /sys, /dev, /run when searching from root / |

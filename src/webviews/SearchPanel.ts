@@ -54,6 +54,12 @@ export interface ServerSearchEntry {
   searchPaths: SearchPath[];           // multiple paths per server
   status?: 'connecting' | 'failed';    // transient state during search
   error?: string;                      // error message if connection failed
+  maxSearchProcesses?: number;         // per-server worker count override (null = use global default)
+}
+
+/** Per-server search settings stored in globalState */
+interface ServerSearchSettings {
+  [hostId: string]: { maxSearchProcesses?: number };
 }
 
 /**
@@ -72,7 +78,8 @@ type WebviewMessage =
   | { type: 'removeServerPath'; serverId: string; pathIndex: number }
   | { type: 'addServerPath'; serverId: string; path: string }
   | { type: 'toggleSort' }
-  | { type: 'searchIncludeSystemDirs' };
+  | { type: 'searchIncludeSystemDirs' }
+  | { type: 'setServerMaxProcesses'; serverId: string; value: number | null };
 
 /**
  * SearchPanel - VS Code native-style search webview
@@ -92,6 +99,17 @@ export class SearchPanel {
   private lastRegex: boolean = false;
   private searchAbortController: AbortController | null = null;
   private includeSystemDirsOverride: boolean = false;
+  private currentSearchId: number = 0;
+  private currentSearchActivityIds: string[] = [];
+
+  // Shared search state for progressive results (promoted from local for include-all merging)
+  private currentGlobalSeen: Set<string> = new Set();
+  private currentCompletedCount: number = 0;
+  private currentTotalCount: number = 0;
+
+  // State for include-all system dirs in-progress (Change 6)
+  private lastExcludedSystemDirs: string[] = [];
+  private lastSearchConnectionMap: Map<string, SSHConnection> = new Map();
 
   // Server list state (cross-server search model)
   private serverList: ServerSearchEntry[] = [];
@@ -160,7 +178,20 @@ export class SearchPanel {
         entry.searchPaths = old.searchPaths;
         entry.checked = old.checked;
       }
+      // Preserve per-server process override from old list
+      if (old?.maxSearchProcesses !== undefined) {
+        entry.maxSearchProcesses = old.maxSearchProcesses;
+      }
     }
+
+    // Apply persisted per-server search settings
+    const savedSettings = this.loadServerSearchSettings();
+    for (const entry of entries) {
+      if (entry.maxSearchProcesses === undefined && savedSettings[entry.id]?.maxSearchProcesses) {
+        entry.maxSearchProcesses = savedSettings[entry.id].maxSearchProcesses;
+      }
+    }
+
     this.serverList = entries;
     this.detectRedundancy();
     this.sendState();
@@ -198,6 +229,20 @@ export class SearchPanel {
   public loadSortOrder(context: vscode.ExtensionContext): void {
     this.extensionContext = context;
     this.sortOrder = context.globalState.get<'checked' | 'name'>('sshLite.searchSortOrder', 'checked');
+  }
+
+  /**
+   * Load per-server search settings from globalState
+   */
+  private loadServerSearchSettings(): ServerSearchSettings {
+    return this.extensionContext?.globalState.get<ServerSearchSettings>('sshLite.serverSearchSettings', {}) || {};
+  }
+
+  /**
+   * Save per-server search settings to globalState
+   */
+  private async saveServerSearchSettings(settings: ServerSearchSettings): Promise<void> {
+    await this.extensionContext?.globalState.update('sshLite.serverSearchSettings', settings);
   }
 
   /**
@@ -350,6 +395,13 @@ export class SearchPanel {
       this.searchAbortController.abort();
       this.searchAbortController = null;
     }
+    // Cancel all tracked search activities
+    const activityService = ActivityService.getInstance();
+    for (const id of this.currentSearchActivityIds) {
+      activityService.cancelActivity(id);
+    }
+    this.currentSearchActivityIds = [];
+
     if (this.isSearching) {
       this.isSearching = false;
       this.sendState();
@@ -427,10 +479,12 @@ export class SearchPanel {
         status: s.status,
         error: s.error,
         hasCredential: s.credential !== null,
+        maxSearchProcesses: s.maxSearchProcesses,
       })),
       isSearching: this.isSearching,
       findFilesMode: this.findFilesMode,
       sortOrder: this.sortOrder,
+      globalMaxSearchProcesses: vscode.workspace.getConfiguration('sshLite').get<number>('searchParallelProcesses', 20),
     });
   }
 
@@ -511,20 +565,32 @@ export class SearchPanel {
         break;
 
       case 'searchIncludeSystemDirs':
-        // Re-run last search with system dirs included (one-shot override)
-        this.includeSystemDirsOverride = true;
-        if (this.lastSearchQuery) {
-          await this.performSearch(
-            this.lastSearchQuery,
-            this.lastIncludePattern || '',
-            this.lastExcludePattern || '',
-            this.lastCaseSensitive || false,
-            this.lastRegex || false,
-            this.findFilesMode
-          );
-        }
-        this.includeSystemDirsOverride = false;
+        // Search only the excluded system dirs and merge results into the current search
+        await this.searchExcludedSystemDirs();
         break;
+
+      case 'setServerMaxProcesses': {
+        const targetServer = this.serverList.find((s) => s.id === message.serverId);
+        if (targetServer) {
+          if (message.value === null) {
+            // Clear override — use global default
+            targetServer.maxSearchProcesses = undefined;
+          } else {
+            // Clamp to min 5, max 50
+            targetServer.maxSearchProcesses = Math.max(5, Math.min(50, message.value));
+          }
+          // Persist to globalState
+          const settings = this.loadServerSearchSettings();
+          if (message.value === null) {
+            delete settings[message.serverId];
+          } else {
+            settings[message.serverId] = { maxSearchProcesses: targetServer.maxSearchProcesses };
+          }
+          this.saveServerSearchSettings(settings);
+          this.sendState();
+        }
+        break;
+      }
     }
   }
 
@@ -585,6 +651,9 @@ export class SearchPanel {
     const abortController = this.searchAbortController;
     const signal = abortController.signal;
 
+    const searchId = ++this.currentSearchId;
+    this.currentSearchActivityIds = [];
+
     this.isSearching = true;
     this.lastSearchQuery = query;
     this.lastIncludePattern = includePattern;
@@ -599,14 +668,13 @@ export class SearchPanel {
       name: `${s.hostConfig.name} (${s.hostConfig.username})`,
     }));
 
-    this.postMessage({ type: 'searching', query, scopeServers });
+    this.postMessage({ type: 'searching', query, scopeServers, searchId });
 
     const config = vscode.workspace.getConfiguration('sshLite');
     const maxResults = config.get<number>('searchMaxResults', 2000);
     const connectionTimeout = config.get<number>('connectionTimeout', 30000);
 
     const activityService = ActivityService.getInstance();
-    const activityIds: string[] = [];
     const autoConnectedIds = new Set<string>();
     const serverResults = new Map<string, number>(); // connectionId -> result count
 
@@ -669,11 +737,16 @@ export class SearchPanel {
         if (signal.aborted) return;
 
         // Phase 2: Search each server's non-redundant paths in parallel with progressive results
-        const globalSeen = new Set<string>(); // cross-batch deduplication
-        let completedCount = 0;
-        let totalCount = 0; // counted after building all tasks
+        // Use instance variables so include-all can merge into ongoing search
+        this.currentGlobalSeen = new Set<string>();
+        this.currentCompletedCount = 0;
+        this.currentTotalCount = 0;
+        const globalSeen = this.currentGlobalSeen; // alias for readability
+        // Store connection map for include-all system dirs
+        this.lastSearchConnectionMap = connectionMap;
+        this.lastExcludedSystemDirs = [];
 
-        const parallelProcesses = config.get<number>('searchParallelProcesses', 4);
+        const globalParallelProcesses = config.get<number>('searchParallelProcesses', 20);
         const excludeSystemDirs = config.get<boolean>('searchExcludeSystemDirs', true);
         const SYSTEM_DIRS = ['/proc', '/sys', '/dev', '/run', '/snap', '/lost+found'];
         let systemDirsExcluded: string[] = []; // track for webview notification
@@ -707,7 +780,7 @@ export class SearchPanel {
               onCancel: () => { abortController.abort(); },
             }
           );
-          activityIds.push(activityId);
+          this.currentSearchActivityIds.push(activityId);
 
           const searchPromise = (async (): Promise<WebviewSearchResult[]> => {
             if (signal.aborted) return [];
@@ -760,6 +833,9 @@ export class SearchPanel {
             ? server.searchPaths.filter((sp) => !sp.redundantOf)
             : [{ path: '/' }];
 
+          // Per-server worker count (override or global default)
+          const parallelProcesses = server.maxSearchProcesses ?? globalParallelProcesses;
+
           for (const sp of activePaths) {
             if (signal.aborted) break;
 
@@ -784,6 +860,7 @@ export class SearchPanel {
                     const searchableDirs = subdirs.filter((d) => !SYSTEM_DIRS.includes(d));
                     if (excluded.length > 0) {
                       systemDirsExcluded = excluded;
+                      this.lastExcludedSystemDirs = excluded;
                       this.postMessage({ type: 'systemDirsExcluded', dirs: excluded });
                     }
                     for (const dir of searchableDirs) {
@@ -796,7 +873,7 @@ export class SearchPanel {
                   workQueue.push({ type: 'dir', path: sp.path });
                 }
 
-                totalCount += workQueue.length;
+                this.currentTotalCount += workQueue.length;
                 console.log(`[SSH Lite Search] Worker pool for ${sp.path}: ${workQueue.length} initial items, ${parallelProcesses} workers`);
 
                 const runWorker = async (): Promise<void> => {
@@ -836,15 +913,16 @@ export class SearchPanel {
 
                         // Update totalCount: add new items (file batches + subdirs) discovered by this dir
                         const newItems = batches.length + entries.dirs.length;
-                        totalCount += newItems;
+                        this.currentTotalCount += newItems;
 
                         // Dir listing done — send progress-only batch
-                        completedCount++;
+                        this.currentCompletedCount++;
+                        if (searchId !== this.currentSearchId) return;
                         this.postMessage({
-                          type: 'searchBatch', results: [],
-                          totalResults: globalSeen.size, completedCount, totalCount,
+                          type: 'searchBatch', searchId, results: [],
+                          totalResults: globalSeen.size, completedCount: this.currentCompletedCount, totalCount: this.currentTotalCount,
                           hitLimit: false, limit: maxResults,
-                          done: completedCount === totalCount,
+                          done: this.currentCompletedCount === this.currentTotalCount,
                         });
                       } catch {
                         // listEntries failed — fallback to recursive grep on this dir
@@ -853,7 +931,7 @@ export class SearchPanel {
                           `${findFiles ? 'Find' : 'Search'}: "${query.substring(0, 30)}${query.length > 30 ? '...' : ''}"`,
                           { detail: `in ${item.path} (fallback)`, cancellable: true, onCancel: () => { abortController.abort(); } }
                         );
-                        activityIds.push(actId);
+                        this.currentSearchActivityIds.push(actId);
                         try {
                           const results = await connection.searchFiles(item.path, query, {
                             searchContent: !findFiles, caseSensitive, regex,
@@ -874,22 +952,24 @@ export class SearchPanel {
                             globalSeen.add(key);
                             return true;
                           });
-                          completedCount++;
+                          this.currentCompletedCount++;
+                          if (searchId !== this.currentSearchId) return;
                           this.postMessage({
-                            type: 'searchBatch', results: unique,
-                            totalResults: globalSeen.size, completedCount, totalCount,
+                            type: 'searchBatch', searchId, results: unique,
+                            totalResults: globalSeen.size, completedCount: this.currentCompletedCount, totalCount: this.currentTotalCount,
                             hitLimit: globalSeen.size >= maxResults, limit: maxResults,
-                            done: completedCount === totalCount,
+                            done: this.currentCompletedCount === this.currentTotalCount,
                           });
                         } catch (error) {
                           activityService.failActivity(actId, (error as Error).message);
                           failedScopes.push(`${server.hostConfig.name}: ${(error as Error).message}`);
-                          completedCount++;
+                          this.currentCompletedCount++;
+                          if (searchId !== this.currentSearchId) return;
                           this.postMessage({
-                            type: 'searchBatch', results: [],
-                            totalResults: globalSeen.size, completedCount, totalCount,
+                            type: 'searchBatch', searchId, results: [],
+                            totalResults: globalSeen.size, completedCount: this.currentCompletedCount, totalCount: this.currentTotalCount,
                             hitLimit: false, limit: maxResults,
-                            done: completedCount === totalCount,
+                            done: this.currentCompletedCount === this.currentTotalCount,
                           });
                         }
                       }
@@ -901,7 +981,7 @@ export class SearchPanel {
                         { detail: `${item.filePaths.length} files`, cancellable: true,
                           onCancel: () => { abortController.abort(); } }
                       );
-                      activityIds.push(actId);
+                      this.currentSearchActivityIds.push(actId);
                       try {
                         const results = await connection.searchFiles(item.filePaths, query, {
                           searchContent: !findFiles, caseSensitive, regex,
@@ -922,22 +1002,24 @@ export class SearchPanel {
                           globalSeen.add(key);
                           return true;
                         });
-                        completedCount++;
+                        this.currentCompletedCount++;
+                        if (searchId !== this.currentSearchId) return;
                         this.postMessage({
-                          type: 'searchBatch', results: unique,
-                          totalResults: globalSeen.size, completedCount, totalCount,
+                          type: 'searchBatch', searchId, results: unique,
+                          totalResults: globalSeen.size, completedCount: this.currentCompletedCount, totalCount: this.currentTotalCount,
                           hitLimit: globalSeen.size >= maxResults, limit: maxResults,
-                          done: completedCount === totalCount,
+                          done: this.currentCompletedCount === this.currentTotalCount,
                         });
                       } catch (error) {
                         activityService.failActivity(actId, (error as Error).message);
                         failedScopes.push(`${server.hostConfig.name}: ${(error as Error).message}`);
-                        completedCount++;
+                        this.currentCompletedCount++;
+                        if (searchId !== this.currentSearchId) return;
                         this.postMessage({
-                          type: 'searchBatch', results: [],
-                          totalResults: globalSeen.size, completedCount, totalCount,
+                          type: 'searchBatch', searchId, results: [],
+                          totalResults: globalSeen.size, completedCount: this.currentCompletedCount, totalCount: this.currentTotalCount,
                           hitLimit: false, limit: maxResults,
-                          done: completedCount === totalCount,
+                          done: this.currentCompletedCount === this.currentTotalCount,
                         });
                       }
                     }
@@ -957,7 +1039,7 @@ export class SearchPanel {
           }
         }
 
-        totalCount += searchTasks.length;
+        this.currentTotalCount += searchTasks.length;
 
         // Notify webview about excluded system directories
         if (systemDirsExcluded.length > 0) {
@@ -970,7 +1052,7 @@ export class SearchPanel {
         // Wrap each task with .then() that sends progressive searchBatch messages
         const wrappedPromises = searchTasks.map((task) =>
           task.promise.then((batchResults) => {
-            if (signal.aborted) return [];
+            if (signal.aborted || searchId !== this.currentSearchId) return [];
             // Deduplicate against global set
             const unique = batchResults.filter((r) => {
               const key = `${r.connectionId}:${r.path}:${r.line || 0}`;
@@ -978,30 +1060,32 @@ export class SearchPanel {
               globalSeen.add(key);
               return true;
             });
-            completedCount++;
+            this.currentCompletedCount++;
             this.postMessage({
               type: 'searchBatch',
+              searchId,
               results: unique,
               totalResults: globalSeen.size,
-              completedCount,
-              totalCount,
+              completedCount: this.currentCompletedCount,
+              totalCount: this.currentTotalCount,
               hitLimit: globalSeen.size >= maxResults,
               limit: maxResults,
-              done: completedCount === totalCount,
+              done: this.currentCompletedCount === this.currentTotalCount,
             });
             return unique;
           }).catch(() => {
-            if (signal.aborted) return [] as WebviewSearchResult[];
-            completedCount++;
+            if (signal.aborted || searchId !== this.currentSearchId) return [] as WebviewSearchResult[];
+            this.currentCompletedCount++;
             this.postMessage({
               type: 'searchBatch',
+              searchId,
               results: [],
               totalResults: globalSeen.size,
-              completedCount,
-              totalCount,
+              completedCount: this.currentCompletedCount,
+              totalCount: this.currentTotalCount,
               hitLimit: false,
               limit: maxResults,
-              done: completedCount === totalCount,
+              done: this.currentCompletedCount === this.currentTotalCount,
             });
             return [] as WebviewSearchResult[];
           })
@@ -1046,7 +1130,7 @@ export class SearchPanel {
               onCancel: () => { abortController.abort(); },
             }
           );
-          activityIds.push(activityId);
+          this.currentSearchActivityIds.push(activityId);
 
           try {
             const results = await connection.searchFiles(scope.path, query, {
@@ -1103,7 +1187,7 @@ export class SearchPanel {
         }
         const scopeServers = Array.from(scopeServerMap.entries()).map(([id, name]) => ({ id, name }));
 
-        this.postMessage({ type: 'results', results: uniqueResults, query, hitLimit, limit: maxResults, scopeServers });
+        this.postMessage({ type: 'results', results: uniqueResults, query, hitLimit, limit: maxResults, scopeServers, searchId });
 
         if (failedScopes.length > 0) {
           vscode.window.showWarningMessage(
@@ -1115,7 +1199,7 @@ export class SearchPanel {
       if (!signal.aborted) {
         this.postMessage({ type: 'error', message: (error as Error).message });
       }
-      for (const id of activityIds) {
+      for (const id of this.currentSearchActivityIds) {
         activityService.failActivity(id, 'Search error');
       }
     } finally {
@@ -1138,10 +1222,241 @@ export class SearchPanel {
         }
       }
 
-      if (!signal.aborted) {
+      if (searchId === this.currentSearchId) {
         this.isSearching = false;
         this.sendState();
       }
+    }
+  }
+
+  /**
+   * Search only the previously-excluded system dirs and merge results into the current/last search.
+   * Uses the same parallel worker pool pattern as performSearch() for consistent concurrency.
+   */
+  private async searchExcludedSystemDirs(): Promise<void> {
+    if (this.lastExcludedSystemDirs.length === 0) return;
+
+    const dirsToSearch = [...this.lastExcludedSystemDirs];
+    this.lastExcludedSystemDirs = [];
+    this.includeSystemDirsOverride = true;
+
+    const searchId = this.currentSearchId; // Use SAME searchId as ongoing/last search
+    const globalSeen = this.currentGlobalSeen;
+
+    const config = vscode.workspace.getConfiguration('sshLite');
+    const maxResults = config.get<number>('searchMaxResults', 2000);
+    const globalParallelProcesses = config.get<number>('searchParallelProcesses', 20);
+    const includePattern = this.lastIncludePattern || '';
+    const excludePattern = this.lastExcludePattern || '';
+    const query = this.lastSearchQuery;
+    const caseSensitive = this.lastCaseSensitive;
+    const regex = this.lastRegex;
+    const findFiles = this.findFilesMode;
+
+    if (!query) return;
+
+    const signal = this.searchAbortController?.signal;
+    const abortController = this.searchAbortController;
+    const activityService = ActivityService.getInstance();
+
+    // Resume searching state if search had already completed
+    const wasSearching = this.isSearching;
+    if (!wasSearching) {
+      this.isSearching = true;
+      this.sendState();
+    }
+
+    // Only pass simple glob patterns to listEntries
+    const listEntriesPattern = (includePattern && !/[{,]/.test(includePattern))
+      ? includePattern : undefined;
+    const MAX_BATCH_BYTES = 32_000;
+
+    const workerPoolPromises: Promise<void>[] = [];
+
+    for (const [serverId, connection] of this.lastSearchConnectionMap) {
+      if (signal?.aborted) break;
+
+      const server = this.serverList.find(s => s.id === serverId);
+      if (!server || !connection) continue;
+
+      // Per-server worker count (override or global default)
+      const parallelProcesses = server.maxSearchProcesses ?? globalParallelProcesses;
+
+      // Build work queue from excluded system dirs
+      const workQueue: Array<{ type: 'dir'; path: string } | { type: 'files'; filePaths: string[] }> = [];
+      let workIndex = 0;
+
+      for (const dir of dirsToSearch) {
+        workQueue.push({ type: 'dir', path: dir });
+      }
+
+      this.currentTotalCount += workQueue.length;
+      console.log(`[SSH Lite Search] Include-all worker pool: ${workQueue.length} system dirs, ${parallelProcesses} workers`);
+
+      // Send progress update immediately
+      if (searchId === this.currentSearchId) {
+        this.postMessage({
+          type: 'searchBatch', searchId, results: [],
+          totalResults: globalSeen.size, completedCount: this.currentCompletedCount, totalCount: this.currentTotalCount,
+          hitLimit: false, limit: maxResults,
+          done: false,
+        });
+      }
+
+      const poolPromise = (async () => {
+        const runWorker = async (): Promise<void> => {
+          while (!signal?.aborted && globalSeen.size < maxResults) {
+            if (workIndex >= workQueue.length) return;
+            const item = workQueue[workIndex++];
+
+            if (item.type === 'dir') {
+              try {
+                const entries = await connection.listEntries(item.path, listEntriesPattern);
+                if (signal?.aborted) return;
+
+                const batches: string[][] = [];
+                let currentBatch: string[] = [];
+                let currentBytes = 0;
+                for (const file of entries.files) {
+                  const fileBytes = file.length + 3;
+                  if (currentBytes + fileBytes > MAX_BATCH_BYTES && currentBatch.length > 0) {
+                    batches.push(currentBatch);
+                    currentBatch = [];
+                    currentBytes = 0;
+                  }
+                  currentBatch.push(file);
+                  currentBytes += fileBytes;
+                }
+                if (currentBatch.length > 0) batches.push(currentBatch);
+
+                for (const batch of batches) {
+                  workQueue.push({ type: 'files', filePaths: batch });
+                }
+                for (const dir of entries.dirs) {
+                  workQueue.push({ type: 'dir', path: dir });
+                }
+
+                const newItems = batches.length + entries.dirs.length;
+                this.currentTotalCount += newItems;
+
+                this.currentCompletedCount++;
+                if (searchId !== this.currentSearchId) return;
+                this.postMessage({
+                  type: 'searchBatch', searchId, results: [],
+                  totalResults: globalSeen.size, completedCount: this.currentCompletedCount, totalCount: this.currentTotalCount,
+                  hitLimit: false, limit: maxResults,
+                  done: this.currentCompletedCount === this.currentTotalCount,
+                });
+              } catch {
+                // Fallback to recursive grep on this dir
+                const actId = activityService.startActivity(
+                  'search', connection.id, connection.host.name,
+                  `${findFiles ? 'Find' : 'Search'}: "${query.substring(0, 30)}${query.length > 30 ? '...' : ''}"`,
+                  { detail: `in ${item.path} (system dir)`, cancellable: true, onCancel: () => { abortController?.abort(); } }
+                );
+                this.currentSearchActivityIds.push(actId);
+                try {
+                  const results = await connection.searchFiles(item.path, query, {
+                    searchContent: !findFiles, caseSensitive, regex,
+                    filePattern: includePattern || '*',
+                    excludePattern: excludePattern || undefined,
+                    maxResults, signal: signal!,
+                  });
+                  if (signal?.aborted) { activityService.cancelActivity(actId); return; }
+                  const mapped = results.map((r) => ({
+                    ...r, modified: r.modified ? r.modified.getTime() : undefined,
+                    connectionId: connection.id, connectionName: connection.host.name,
+                  }));
+                  activityService.completeActivity(actId, `${mapped.length} results`);
+                  const unique = mapped.filter((r) => {
+                    const key = `${r.connectionId}:${r.path}:${r.line || 0}`;
+                    if (globalSeen.has(key)) return false;
+                    globalSeen.add(key);
+                    return true;
+                  });
+                  this.currentCompletedCount++;
+                  if (searchId !== this.currentSearchId) return;
+                  this.postMessage({
+                    type: 'searchBatch', searchId, results: unique,
+                    totalResults: globalSeen.size, completedCount: this.currentCompletedCount, totalCount: this.currentTotalCount,
+                    hitLimit: globalSeen.size >= maxResults, limit: maxResults,
+                    done: this.currentCompletedCount === this.currentTotalCount,
+                  });
+                } catch (error) {
+                  activityService.failActivity(actId, (error as Error).message);
+                  this.currentCompletedCount++;
+                  if (searchId !== this.currentSearchId) return;
+                  this.postMessage({
+                    type: 'searchBatch', searchId, results: [],
+                    totalResults: globalSeen.size, completedCount: this.currentCompletedCount, totalCount: this.currentTotalCount,
+                    hitLimit: false, limit: maxResults,
+                    done: this.currentCompletedCount === this.currentTotalCount,
+                  });
+                }
+              }
+            } else if (item.type === 'files') {
+              const actId = activityService.startActivity(
+                'search', connection.id, connection.host.name,
+                `${findFiles ? 'Find' : 'Search'}: "${query.substring(0, 30)}${query.length > 30 ? '...' : ''}"`,
+                { detail: `${item.filePaths.length} files (system dir)`, cancellable: true,
+                  onCancel: () => { abortController?.abort(); } }
+              );
+              this.currentSearchActivityIds.push(actId);
+              try {
+                const results = await connection.searchFiles(item.filePaths, query, {
+                  searchContent: !findFiles, caseSensitive, regex,
+                  filePattern: includePattern || '*',
+                  excludePattern: excludePattern || undefined,
+                  maxResults, signal: signal!,
+                });
+                if (signal?.aborted) { activityService.cancelActivity(actId); return; }
+                const mapped = results.map((r) => ({
+                  ...r, modified: r.modified ? r.modified.getTime() : undefined,
+                  connectionId: connection.id, connectionName: connection.host.name,
+                }));
+                activityService.completeActivity(actId, `${mapped.length} results`);
+                const unique = mapped.filter((r) => {
+                  const key = `${r.connectionId}:${r.path}:${r.line || 0}`;
+                  if (globalSeen.has(key)) return false;
+                  globalSeen.add(key);
+                  return true;
+                });
+                this.currentCompletedCount++;
+                if (searchId !== this.currentSearchId) return;
+                this.postMessage({
+                  type: 'searchBatch', searchId, results: unique,
+                  totalResults: globalSeen.size, completedCount: this.currentCompletedCount, totalCount: this.currentTotalCount,
+                  hitLimit: globalSeen.size >= maxResults, limit: maxResults,
+                  done: this.currentCompletedCount === this.currentTotalCount,
+                });
+              } catch (error) {
+                activityService.failActivity(actId, (error as Error).message);
+                this.currentCompletedCount++;
+                if (searchId !== this.currentSearchId) return;
+                this.postMessage({
+                  type: 'searchBatch', searchId, results: [],
+                  totalResults: globalSeen.size, completedCount: this.currentCompletedCount, totalCount: this.currentTotalCount,
+                  hitLimit: false, limit: maxResults,
+                  done: this.currentCompletedCount === this.currentTotalCount,
+                });
+              }
+            }
+          }
+        };
+
+        const workerCount = Math.min(parallelProcesses, Math.max(workQueue.length, 2));
+        await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+      })();
+
+      workerPoolPromises.push(poolPromise);
+    }
+
+    await Promise.all(workerPoolPromises);
+
+    // If search was resumed and all work is now done, finalize
+    if (searchId === this.currentSearchId) {
+      this.isSearching = false;
+      this.sendState();
     }
   }
 
@@ -1714,6 +2029,57 @@ export class SearchPanel {
       border-color: var(--vscode-focusBorder);
     }
 
+    .server-processes {
+      display: flex;
+      align-items: center;
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+      padding: 1px 4px;
+      gap: 2px;
+    }
+    .processes-label {
+      opacity: 0.7;
+    }
+    .processes-value {
+      cursor: pointer;
+      padding: 0 3px;
+      border-radius: 2px;
+    }
+    .processes-value:hover {
+      background: var(--vscode-list-hoverBackground);
+    }
+    .processes-value.override {
+      color: var(--vscode-textLink-foreground);
+    }
+    .processes-default {
+      opacity: 0.6;
+      font-size: 10px;
+    }
+    .processes-reset {
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      color: var(--vscode-descriptionForeground);
+      font-size: 12px;
+      padding: 0 2px;
+      border-radius: 2px;
+      margin-left: 2px;
+    }
+    .processes-reset:hover {
+      background: var(--vscode-toolbar-hoverBackground);
+      color: var(--vscode-errorForeground);
+    }
+    .processes-input {
+      width: 48px;
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-focusBorder);
+      color: var(--vscode-input-foreground);
+      font-size: 11px;
+      padding: 1px 4px;
+      border-radius: 2px;
+      outline: none;
+    }
+
     .no-servers {
       font-size: 12px;
       color: var(--vscode-descriptionForeground);
@@ -1730,6 +2096,35 @@ export class SearchPanel {
       min-height: 0;
       height: 100%;
     }
+
+    .result-tab-bar {
+      display: flex;
+      gap: 0;
+      border-bottom: 1px solid var(--vscode-panel-border);
+      overflow-x: auto;
+      padding: 0 4px;
+      flex-shrink: 0;
+    }
+    .result-tab {
+      display: flex;
+      align-items: center;
+      padding: 4px 8px;
+      font-size: 11px;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      white-space: nowrap;
+      max-width: 150px;
+      opacity: 0.7;
+    }
+    .result-tab:hover { opacity: 1; background: var(--vscode-list-hoverBackground); }
+    .result-tab.active { opacity: 1; border-bottom-color: var(--vscode-focusBorder); }
+    .tab-label { overflow: hidden; text-overflow: ellipsis; }
+    .tab-close {
+      background: transparent; border: none; cursor: pointer;
+      color: var(--vscode-descriptionForeground); margin-left: 4px; font-size: 12px;
+      padding: 0 2px; border-radius: 2px;
+    }
+    .tab-close:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-errorForeground); }
 
     .results-header {
       padding: 8px;
@@ -2167,6 +2562,7 @@ export class SearchPanel {
     <div class="resizer" id="resizer"></div>
 
     <div class="results-section">
+      <div id="resultTabBar" class="result-tab-bar" style="display:none"></div>
       <div id="resultsHeader" class="results-header" style="display: none;"></div>
       <div id="resultsContainer"></div>
     </div>
@@ -2178,6 +2574,7 @@ export class SearchPanel {
     // State
     let scopes = [];
     let serverList = [];       // New cross-server search model
+    let globalMaxSearchProcesses = 20; // Updated from state messages
     let results = [];
     let scopeServers = []; // Servers from search scopes (for multi-server grouping)
     let currentQuery = '';
@@ -2190,7 +2587,11 @@ export class SearchPanel {
     let expandedTreeNodes = new Set();
     let treeViewFirstExpand = true; // Flag to auto-expand all tree nodes on first switch to tree view
     let searchExpandState = 2; // 0=collapsed, 1=all expanded, 2=file level (default)
+    let resultTabs = [];     // Array of { id, query, timestamp, results, scopeServers, hitLimit, limit }
+    let activeTabId = null;  // Currently visible tab ID (null = live/current search)
+    let currentDisplayScopeServers = []; // Set by renderResults for child render functions
     let lastClickedServerIndex = -1; // For shift-click range selection
+    let currentSearchId = 0; // Track current search instance to discard stale messages
 
     // Elements
     const searchInput = document.getElementById('searchInput');
@@ -2205,6 +2606,7 @@ export class SearchPanel {
     const selectAllBtn = document.getElementById('selectAllBtn');
     const selectNoneBtn = document.getElementById('selectNoneBtn');
     const serverListEl = document.getElementById('serverList');
+    const resultTabBar = document.getElementById('resultTabBar');
     const resultsHeader = document.getElementById('resultsHeader');
     const resultsContainer = document.getElementById('resultsContainer');
     const patternToggle = document.getElementById('patternToggle');
@@ -2416,6 +2818,24 @@ export class SearchPanel {
         } else {
           html += '<span class="no-paths">(no credentials)</span>';
         }
+
+        // Per-server worker count control
+        if (!server.disabled) {
+          const hasOverride = server.maxSearchProcesses != null;
+          const displayValue = hasOverride ? server.maxSearchProcesses : (globalMaxSearchProcesses || 20);
+          const valueClass = hasOverride ? 'processes-value override' : 'processes-value';
+          html += '<div class="server-processes" data-server-id="' + escapeHtml(server.id) + '">';
+          html += '<span class="processes-label">Workers: </span>';
+          html += '<span class="' + valueClass + '">' + displayValue + '</span>';
+          if (hasOverride) {
+            html += '<span class="processes-default"> (custom)</span>';
+            html += '<button class="processes-reset" title="Reset to default (' + (globalMaxSearchProcesses || 20) + ')">\\u00D7</button>';
+          } else {
+            html += '<span class="processes-default"> (default)</span>';
+          }
+          html += '</div>';
+        }
+
         html += '</div>';
         html += '</div>';
       });
@@ -2516,6 +2936,56 @@ export class SearchPanel {
           input.addEventListener('blur', commit);
         });
       });
+
+      // Workers: click value to edit
+      serverListEl.querySelectorAll('.processes-value').forEach(el => {
+        el.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const container = el.closest('.server-processes');
+          if (!container) return;
+          const serverId = container.dataset.serverId;
+          const server = serverList.find(s => s.id === serverId);
+          if (!server) return;
+
+          const currentVal = server.maxSearchProcesses || globalMaxSearchProcesses;
+          const input = document.createElement('input');
+          input.type = 'number';
+          input.min = '5';
+          input.max = '50';
+          input.value = String(currentVal);
+          input.className = 'processes-input';
+
+          el.replaceWith(input);
+          input.focus();
+          input.select();
+
+          const commit = () => {
+            const val = parseInt(input.value, 10);
+            if (!isNaN(val) && val >= 5 && val <= 50) {
+              vscode.postMessage({ type: 'setServerMaxProcesses', serverId, value: val });
+            } else {
+              renderServers(); // revert
+            }
+          };
+
+          input.addEventListener('keydown', (ke) => {
+            if (ke.key === 'Enter') { ke.preventDefault(); commit(); }
+            if (ke.key === 'Escape') { ke.preventDefault(); renderServers(); }
+          });
+          input.addEventListener('blur', commit);
+        });
+      });
+
+      // Workers: reset button
+      serverListEl.querySelectorAll('.processes-reset').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const container = btn.closest('.server-processes');
+          if (!container) return;
+          const serverId = container.dataset.serverId;
+          vscode.postMessage({ type: 'setServerMaxProcesses', serverId, value: null });
+        });
+      });
     }
 
     // Debounced progressive render — 100ms debounce for intermediate batches, immediate on done
@@ -2562,14 +3032,40 @@ export class SearchPanel {
 
     // Render results
     function renderResults(hitLimit = false, limit = 2000) {
-      if (results.length === 0) {
+      // Always update tab bar
+      renderTabBar();
+
+      // Determine which data to display (kept tab or current/live search)
+      let displayResults, displayScopeServers, displayHitLimit, displayLimit;
+      if (activeTabId) {
+        const tab = resultTabs.find(t => t.id === activeTabId);
+        if (tab) {
+          displayResults = tab.results;
+          displayScopeServers = tab.scopeServers;
+          displayHitLimit = tab.hitLimit;
+          displayLimit = tab.limit;
+        } else {
+          activeTabId = null; // tab was removed
+          displayResults = results;
+          displayScopeServers = scopeServers;
+          displayHitLimit = hitLimit;
+          displayLimit = limit;
+        }
+      } else {
+        displayResults = results;
+        displayScopeServers = scopeServers;
+        displayHitLimit = hitLimit;
+        displayLimit = limit;
+      }
+
+      if (displayResults.length === 0) {
         showNoResults();
         return;
       }
 
       // Group by file
       const grouped = {};
-      for (const result of results) {
+      for (const result of displayResults) {
         const key = result.connectionId + ':' + result.path;
         if (!grouped[key]) {
           grouped[key] = {
@@ -2586,39 +3082,44 @@ export class SearchPanel {
 
       const fileGroups = Object.values(grouped);
       const fileCount = fileGroups.length;
-      const matchCount = results.length;
+      const matchCount = displayResults.length;
+
+      // Set display scope servers for child render functions
+      currentDisplayScopeServers = displayScopeServers;
 
       // Determine multi-server mode from scope servers (not just results)
       // This ensures server grouping appears even if one server returned zero results
-      const multiServer = scopeServers.length > 1;
+      const multiServer = displayScopeServers.length > 1;
 
       // Count results per server for summary display
       const serverCounts = {};
-      for (const result of results) {
+      for (const result of displayResults) {
         const sKey = result.connectionId;
         if (!serverCounts[sKey]) {
           serverCounts[sKey] = { name: result.connectionName, count: 0 };
         }
         serverCounts[sKey].count++;
       }
-      const serverNames = multiServer ? scopeServers : Object.values(serverCounts);
+      const serverNames = multiServer ? displayScopeServers : Object.values(serverCounts);
 
       // Render header with view toggle buttons
       resultsHeader.style.display = 'flex';
       let limitWarning = '';
-      if (hitLimit) {
-        limitWarning = \` <span class="limit-warning" title="Click to increase limit">⚠️ Limit \${limit} reached - <a href="#" id="increaseLimitLink">increase limit</a></span>\`;
+      if (displayHitLimit) {
+        limitWarning = \` <span class="limit-warning" title="Click to increase limit">⚠️ Limit \${displayLimit} reached - <a href="#" id="increaseLimitLink">increase limit</a></span>\`;
       }
       // Show per-server counts when results span multiple servers
       let serverSummary = '';
       if (multiServer) {
-        serverSummary = ' (' + scopeServers.map(s => {
+        serverSummary = ' (' + displayScopeServers.map(s => {
           const count = serverCounts[s.id] ? serverCounts[s.id].count : 0;
           return escapeHtml(s.name) + ': ' + count;
         }).join(', ') + ')';
       }
+      const showPinBtn = !activeTabId && displayResults.length > 0;
       resultsHeader.innerHTML = \`
         <span class="results-count">\${matchCount} result\${matchCount !== 1 ? 's' : ''} in \${fileCount} file\${fileCount !== 1 ? 's' : ''}\${serverSummary}\${limitWarning}</span>
+        \${showPinBtn ? '<button id="keepResultsBtn" class="view-toggle-btn" title="Keep Results (Pin)"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" style="vertical-align:middle"><path d="M10.97 2.29a.75.75 0 0 1 .073.976l-.073.084L9.06 5.26l1.57 1.57 1.73-1.72a.75.75 0 0 1 1.133.976l-.073.084-1.73 1.72.97.97a.75.75 0 0 1-.976 1.133l-.084-.073L9.87 8.19 7.81 10.25l.97.97a.75.75 0 0 1-.976 1.133l-.084-.073-4.5-4.5a.75.75 0 0 1 .976-1.133l.084.073.97.97 2.06-2.06-1.73-1.72a.75.75 0 0 1 .976-1.133l.084.073 1.73 1.72L9.91 2.29a.75.75 0 0 1 1.06 0z"/></svg></button>' : ''}
         <button id="expandToggleBtn" class="view-toggle-btn" title="\${getExpandToggleTitle()}">\${getExpandToggleIcon()}</button>
         <button id="listViewBtn" class="view-toggle-btn \${viewMode === 'list' ? 'active' : ''}" title="List View">☰</button>
         <button id="treeViewBtn" class="view-toggle-btn \${viewMode === 'tree' ? 'active' : ''}" title="Tree View"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="vertical-align: middle;"><path d="M1 2h6v1.5H1zm4 4h6v1.5H5zm0 4h6v1.5H5zM3 3.5h1.5v3H3zm0 4h1.5v3H3z"/></svg></button>
@@ -2630,19 +3131,40 @@ export class SearchPanel {
         const treeBtn = document.getElementById('treeViewBtn');
         const expandToggle = document.getElementById('expandToggleBtn');
         const limitLink = document.getElementById('increaseLimitLink');
+        const keepBtn = document.getElementById('keepResultsBtn');
 
+        if (keepBtn) {
+          keepBtn.addEventListener('click', () => {
+            if (results.length === 0) return;
+            const tab = {
+              id: Date.now().toString(),
+              query: currentQuery,
+              timestamp: Date.now(),
+              results: [...results],
+              scopeServers: [...scopeServers],
+              hitLimit: displayHitLimit,
+              limit: displayLimit,
+            };
+            resultTabs.push(tab);
+            if (resultTabs.length > 10) resultTabs.shift();
+            activeTabId = null; // Switch to "current" (empty, ready for new search)
+            results = [];
+            renderTabBar();
+            renderResults();
+          });
+        }
         if (expandToggle) {
           expandToggle.addEventListener('click', () => {
             // Cycle: 0 → 1 (expand all) → 2 (file level) → 0 (collapse all)
             const nextState = (searchExpandState + 1) % 3;
             applySearchExpandState(nextState, fileGroups);
-            renderResults(hitLimit, limit);
+            renderResults(displayHitLimit, displayLimit);
           });
         }
         if (listBtn) {
           listBtn.addEventListener('click', () => {
             viewMode = 'list';
-            renderResults(hitLimit, limit);
+            renderResults(displayHitLimit, displayLimit);
           });
         }
         if (treeBtn) {
@@ -2654,7 +3176,7 @@ export class SearchPanel {
               treeViewFirstExpand = false;
               expandAllTreeNodes(fileGroups);
             }
-            renderResults(hitLimit, limit);
+            renderResults(displayHitLimit, displayLimit);
           });
         }
         if (limitLink) {
@@ -2704,9 +3226,9 @@ export class SearchPanel {
       }
 
       if (multiServer) {
-        // Group file groups by server - pre-populate from scopeServers so all servers appear
+        // Group file groups by server - pre-populate from currentDisplayScopeServers so all servers appear
         const serverGroups = {};
-        for (const ss of scopeServers) {
+        for (const ss of currentDisplayScopeServers) {
           serverGroups[ss.id] = { name: ss.name, id: ss.id, files: [] };
         }
         for (const group of fileGroups) {
@@ -2893,7 +3415,7 @@ export class SearchPanel {
       if (viewMode === 'tree') {
         if (state === 0) {
           // Collapse all: servers collapsed + tree collapsed
-          for (const server of scopeServers) {
+          for (const server of currentDisplayScopeServers) {
             expandedFiles.add('server:' + server.id + ':collapsed');
           }
         } else if (state === 1) {
@@ -2907,7 +3429,7 @@ export class SearchPanel {
         // List view
         if (state === 0) {
           // Collapse all: servers collapsed + files collapsed
-          for (const server of scopeServers) {
+          for (const server of currentDisplayScopeServers) {
             expandedFiles.add('server:' + server.id + ':collapsed');
           }
         } else if (state === 1) {
@@ -3010,9 +3532,9 @@ export class SearchPanel {
       }
 
       if (multiServer) {
-        // Group file groups by server - pre-populate from scopeServers so all servers appear
+        // Group file groups by server - pre-populate from currentDisplayScopeServers so all servers appear
         const serverGroups = {};
-        for (const ss of scopeServers) {
+        for (const ss of currentDisplayScopeServers) {
           serverGroups[ss.id] = { name: ss.name, id: ss.id, files: [] };
         }
         for (const group of fileGroups) {
@@ -3145,6 +3667,55 @@ export class SearchPanel {
     }
 
     // Show no results
+    // Tab bar for kept/pinned results
+    function renderTabBar() {
+      if (resultTabs.length === 0) {
+        resultTabBar.style.display = 'none';
+        return;
+      }
+      resultTabBar.style.display = 'flex';
+      let html = '';
+      // Kept tabs
+      for (const tab of resultTabs) {
+        const isActive = activeTabId === tab.id;
+        const label = '"' + escapeHtml(tab.query.substring(0, 20)) + (tab.query.length > 20 ? '...' : '') + '" (' + tab.results.length + ')';
+        html += '<div class="result-tab' + (isActive ? ' active' : '') + '" data-tab-id="' + escapeHtml(tab.id) + '" title="Search: ' + escapeHtml(tab.query) + '">';
+        html += '<span class="tab-label">' + label + '</span>';
+        html += '<button class="tab-close" data-tab-id="' + escapeHtml(tab.id) + '" title="Close">\\u00D7</button>';
+        html += '</div>';
+      }
+      // Current/live tab (always last)
+      const isCurrentActive = !activeTabId;
+      html += '<div class="result-tab' + (isCurrentActive ? ' active' : '') + '" data-tab-id="current">';
+      html += '<span class="tab-label">Current</span>';
+      html += '</div>';
+      resultTabBar.innerHTML = html;
+
+      // Wire tab click handlers
+      resultTabBar.querySelectorAll('.result-tab').forEach(tab => {
+        tab.addEventListener('click', (e) => {
+          // Close button
+          if (e.target.classList.contains('tab-close')) {
+            const tabId = e.target.dataset.tabId;
+            resultTabs = resultTabs.filter(t => t.id !== tabId);
+            if (activeTabId === tabId) activeTabId = null;
+            renderTabBar();
+            renderResults();
+            return;
+          }
+          // Tab selection
+          const tabId = tab.dataset.tabId;
+          if (tabId === 'current') {
+            activeTabId = null;
+          } else {
+            activeTabId = tabId;
+          }
+          renderTabBar();
+          renderResults();
+        });
+      });
+    }
+
     function showNoResults() {
       resultsHeader.style.display = 'none';
       const hasAnyScope = scopes.length > 0 || serverList.some(s => s.checked && !s.disabled);
@@ -3201,6 +3772,9 @@ export class SearchPanel {
         case 'state':
           scopes = message.scopes || [];
           serverList = message.serverList || [];
+          if (message.globalMaxSearchProcesses !== undefined) {
+            globalMaxSearchProcesses = message.globalMaxSearchProcesses;
+          }
           if (message.findFilesMode !== undefined) {
             findFilesMode = message.findFilesMode;
             findFilesBtn.classList.toggle('active', findFilesMode);
@@ -3230,6 +3804,7 @@ export class SearchPanel {
 
         case 'searching':
           // Reset state for new search
+          currentSearchId = message.searchId || 0;
           results = [];
           currentQuery = message.query || '';
           scopeServers = message.scopeServers || [];
@@ -3237,6 +3812,9 @@ export class SearchPanel {
           expandedFiles.clear();
           expandedTreeNodes.clear();
           treeViewFirstExpand = true;
+          // Switch to current/live tab when new search starts
+          activeTabId = null;
+          renderTabBar();
           showSearching(message.query);
           // Show cancel button, hide search button
           searchBtn.style.display = 'none';
@@ -3244,6 +3822,8 @@ export class SearchPanel {
           break;
 
         case 'searchBatch': {
+          // Discard stale messages from previous searches
+          if (message.searchId && message.searchId !== currentSearchId) break;
           // Progressive results: append new results as each search process completes
           if (message.results && message.results.length > 0) {
             results = results.concat(message.results);
@@ -3261,6 +3841,8 @@ export class SearchPanel {
         }
 
         case 'results':
+          // Discard stale messages from previous searches
+          if (message.searchId && message.searchId !== currentSearchId) break;
           results = message.results || [];
           currentQuery = message.query || '';
           scopeServers = message.scopeServers || [];

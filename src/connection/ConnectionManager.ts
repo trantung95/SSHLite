@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { SSHConnection } from './SSHConnection';
-import { IHostConfig, ConnectionState, AuthenticationError } from '../types';
+import { IHostConfig, ConnectionState, AuthenticationError, ILastConnectionAttempt, SSHError } from '../types';
 import { SavedCredential, CredentialService } from '../services/CredentialService';
 import { ActivityService } from '../services/ActivityService';
 
@@ -22,6 +22,8 @@ interface DisconnectedConnectionInfo {
 export class ConnectionManager {
   private static _instance: ConnectionManager;
   private _connections: Map<string, SSHConnection> = new Map();
+  private _context: vscode.ExtensionContext | null = null;
+  private static readonly LAST_CONNECTION_KEY = 'sshLite.lastConnectionAttempts';
 
   // Track disconnected connections for auto-reconnect
   private _disconnectedConnections: Map<string, DisconnectedConnectionInfo> = new Map();
@@ -61,6 +63,39 @@ export class ConnectionManager {
       ConnectionManager._instance = new ConnectionManager();
     }
     return ConnectionManager._instance;
+  }
+
+  /**
+   * Initialize with extension context for globalState persistence
+   */
+  initialize(context: vscode.ExtensionContext): void {
+    this._context = context;
+  }
+
+  /**
+   * Save the result of a connection attempt for failed connection indicator
+   */
+  private async saveLastConnectionAttempt(hostId: string, success: boolean, error?: Error): Promise<void> {
+    if (!this._context) return;
+    const stored = this._context.globalState.get<Record<string, ILastConnectionAttempt>>(
+      ConnectionManager.LAST_CONNECTION_KEY, {}
+    );
+    stored[hostId] = {
+      timestamp: Date.now(),
+      success,
+      errorMessage: error?.message,
+      errorCode: error instanceof SSHError ? error.code : undefined,
+    };
+    await this._context.globalState.update(ConnectionManager.LAST_CONNECTION_KEY, stored);
+  }
+
+  /**
+   * Get the last connection attempt for a host (for failed indicator display)
+   */
+  getLastConnectionAttempt(hostId: string): ILastConnectionAttempt | undefined {
+    return this._context?.globalState.get<Record<string, ILastConnectionAttempt>>(
+      ConnectionManager.LAST_CONNECTION_KEY, {}
+    )?.[hostId];
   }
 
   /**
@@ -133,6 +168,8 @@ export class ConnectionManager {
       await connection.connect();
       // Complete activity tracking
       activityService.completeActivity(activityId, 'Connected');
+      // Clear failed connection indicator on success
+      await this.saveLastConnectionAttempt(host.id, true);
       // Update context for VS Code when clauses
       await vscode.commands.executeCommand(
         'setContext',
@@ -143,6 +180,8 @@ export class ConnectionManager {
     } catch (error) {
       // Fail activity tracking
       activityService.failActivity(activityId, (error as Error).message);
+      // Save failed connection attempt for indicator
+      await this.saveLastConnectionAttempt(host.id, false, error as Error);
       this._connections.delete(connectionId);
       this._onDidChangeConnections.fire();
       throw error;
@@ -219,6 +258,8 @@ export class ConnectionManager {
       await connection.connect();
       // Complete activity tracking
       activityService.completeActivity(activityId, 'Connected');
+      // Clear failed connection indicator on success
+      await this.saveLastConnectionAttempt(host.id, true);
       // Update context for VS Code when clauses
       await vscode.commands.executeCommand(
         'setContext',
@@ -229,6 +270,8 @@ export class ConnectionManager {
     } catch (error) {
       // Fail activity tracking
       activityService.failActivity(activityId, (error as Error).message);
+      // Save failed connection attempt for indicator
+      await this.saveLastConnectionAttempt(host.id, false, error as Error);
       this._connections.delete(connectionId);
       this._onDidChangeConnections.fire();
       throw error;

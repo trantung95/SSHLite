@@ -48,19 +48,33 @@ sshLite.filterHosts → prompt for pattern → filter tree
   - Context key: sshLite.hasHostFilter (controls clear button visibility)
 ```
 
-### Icons
+### Icons & Connection State
 
-Custom icons loaded via `setExtensionPath()`:
-- Connected: green server icon
-- Disconnected: gray server icon
-- Reconnecting: orange sync icon
-- Error: red server icon
+| State | Icon | Color | Tooltip |
+|-------|------|-------|---------|
+| Connected | `vm-running` | Green (`charts.green`) | Server name |
+| Last connection failed | `vm-outline` | Orange (`charts.orange`) | Error details + time ago |
+| Saved (no failure) | `vm` | Default gray | "Disconnected" |
+| SSH config only | `vm-outline` | Default gray | "Disconnected" |
 
-Icons reference `context.extensionPath + '/images/...'`.
+#### Failed Connection Indicator
+
+When a connection fails, `ConnectionManager.saveLastConnectionAttempt()` stores the failure in `globalState` (key: `sshLite.lastConnectionAttempts`). On successful reconnection, the failure is cleared.
+
+`getServerItems()` queries `connectionManager.getLastConnectionAttempt()` for each disconnected server. The most recent failed attempt (across all hosts in a server group) is passed to `ServerTreeItem`.
+
+Rich tooltip via `vscode.MarkdownString`:
+```
+**Server Name** ⚠️
+- Status: Last connection failed 2h ago
+- Error: Authentication failed
+```
+
+`formatTimeAgo()` helper converts timestamps to human-readable strings: "just now", "2m ago", "3h ago", "5d ago".
 
 ---
 
-## FileTreeProvider (`src/providers/FileTreeProvider.ts`, ~2013 lines)
+## FileTreeProvider (`src/providers/FileTreeProvider.ts`)
 
 Remote file browser tree with caching, filtering, drag & drop, and preloading.
 
@@ -69,8 +83,11 @@ Remote file browser tree with caching, filtering, drag & drop, and preloading.
 ```
 sshLite.fileExplorer
   └─ ConnectionTreeItem (server name)
-       └─ FileTreeItem (file/folder)
-            └─ FileTreeItem (nested)
+       ├─ ParentFolderTreeItem (..)
+       ├─ ShowTreeFromRootItem (Show tree from root) / BackToFlatViewItem (Back to flat view)
+       ├─ FileTreeItem (file/folder)
+       │    └─ FileTreeItem (nested)
+       └─ ...
 ```
 
 ### Caching Strategy
@@ -173,6 +190,84 @@ class FileTreeItem extends vscode.TreeItem {
   isEmptyAfterFilter: boolean;  // Gray out empty filtered folders
 }
 ```
+
+### Tree-From-Root Mode
+
+A button next to `..` (ParentFolderTreeItem) that switches from flat navigation to a full hierarchical tree from `/` to the current path level, with auto-expanded path segments.
+
+#### Tree Item Types
+
+| Class | contextValue | Purpose |
+|-------|-------------|---------|
+| `ShowTreeFromRootItem` | `showTreeFromRoot` | Button to enter tree-from-root mode |
+| `BackToFlatViewItem` | `backToFlatView` | Button to exit back to flat navigation |
+
+#### Instance Variables
+
+```typescript
+private treeFromRootConnections: Set<string> = new Set();           // connectionIds in tree-from-root mode
+private treeFromRootOriginalPaths: Map<string, string> = new Map(); // connectionId → original path before switch
+private treeFromRootExpandPaths: Map<string, Set<string>> = new Map(); // connectionId → paths to auto-expand
+```
+
+#### Flow
+
+1. User clicks "Show tree from root" at `/home/user/projects`
+2. `sshLite.showTreeFromRoot` command:
+   - Marks connection as tree-from-root mode
+   - Stores original path (`/home/user/projects`)
+   - Loads ancestor dirs (`/`, `/home`, `/home/user`) into cache
+   - Sets `currentPath = '/'` and populates expand paths
+3. Tree renders from `/` with path segments auto-expanded down to `projects/`
+4. Already-cached current directory contents are reused
+5. User clicks "Back to flat view" → restores original path and exits mode
+
+#### Auto-Expand
+
+In `getChildren()` and `buildDirectoryItems()`, directories on the expand path are returned with `CollapsibleState.Expanded`:
+
+```typescript
+const autoExpandPaths = this.treeFromRootExpandPaths.get(connectionId);
+const shouldAutoExpand = file.isDirectory && autoExpandPaths?.has(file.path);
+const state = shouldAutoExpand ? Expanded : Collapsed;
+```
+
+#### Mode Exit
+
+Tree-from-root mode automatically exits when the user explicitly navigates via `goToPath` (clicking a folder to enter flat view).
+
+---
+
+### Smart Reveal (Preserve Tree State)
+
+`revealFile()` expands the tree from the current view to the target file **without collapsing or resetting** the existing tree state.
+
+#### Case A: File Under currentPath
+
+File is reachable from the current view (e.g., currentPath = `/home/user`, file = `/home/user/projects/src/foo.ts`):
+- Do NOT change `currentPath` — tree stays exactly as-is
+- `loadIntermediateDirs()` caches all directories between currentPath and file's parent
+- VS Code's `reveal()` uses `getParent()` to trace back and auto-expand each level
+
+#### Case B: File Outside currentPath
+
+File is not under current view (e.g., currentPath = `/home/user/projects`, file = `/var/log/syslog`):
+- Switch to tree-from-root mode (reuses Change 7 infrastructure)
+- `revealViaTreeFromRoot()` loads ancestors for BOTH paths (original + target)
+- Both paths are auto-expanded so user's context is preserved alongside the revealed file
+- `reveal()` selects the target file
+
+#### Key Methods
+
+```typescript
+private async loadIntermediateDirs(connection, fromPath, toPath): Promise<void>
+// Loads all dirs between fromPath and toPath into cache
+
+private async revealViaTreeFromRoot(connection, originalPath, remotePath): Promise<void>
+// Enables tree-from-root, loads ancestors for both paths, sets expand paths
+```
+
+---
 
 ### 3-State Expand/Collapse Toggle
 

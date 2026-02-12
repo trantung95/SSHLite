@@ -41,6 +41,7 @@ jest.mock('../connection/ConnectionManager', () => {
       getInstance: jest.fn().mockReturnValue({
         getAllConnections: mockGetAllConnections,
         onDidChangeConnections: emitter.event,
+        getLastConnectionAttempt: jest.fn().mockReturnValue(undefined),
       }),
     },
   };
@@ -505,6 +506,262 @@ describe('HostTreeProvider', () => {
 
       const treeItem = provider.getTreeItem(item);
       expect(treeItem).toBe(item);
+    });
+  });
+
+  describe('Last Failed Connection Indicator', () => {
+    const failedAttempt = {
+      timestamp: Date.now() - 60_000, // 1 minute ago
+      success: false,
+      errorMessage: 'Connection refused',
+      errorCode: 'ECONNREFUSED',
+    };
+
+    describe('ServerTreeItem unit tests', () => {
+      it('should show orange vm-outline icon when lastFailedAttempt is present', () => {
+        const hosts = [createMockHostConfig({ id: 'h1', host: '10.0.0.1', port: 22, name: 'S1' })];
+        const item = new ServerTreeItem('10.0.0.1:22', hosts, false, failedAttempt);
+
+        expect((item.iconPath as any).id).toBe('vm-outline');
+        expect((item.iconPath as any).color.id).toBe('charts.orange');
+      });
+
+      it('should show error details in tooltip when lastFailedAttempt is present', () => {
+        const hosts = [createMockHostConfig({ id: 'h1', host: '10.0.0.1', port: 22, name: 'S1', username: 'admin' })];
+        const item = new ServerTreeItem('10.0.0.1:22', hosts, false, failedAttempt);
+
+        const tooltipValue = (item.tooltip as any).value;
+        expect(tooltipValue).toContain('Last connection failed');
+        expect(tooltipValue).toContain('Connection refused');
+        expect(tooltipValue).toContain('\u26A0\uFE0F'); // warning emoji in title
+      });
+
+      it('should include time ago in failed tooltip', () => {
+        // 2 hours ago
+        const twoHoursAgo = {
+          ...failedAttempt,
+          timestamp: Date.now() - 2 * 60 * 60 * 1000,
+        };
+        const hosts = [createMockHostConfig({ id: 'h1', host: '10.0.0.1', port: 22, name: 'S1' })];
+        const item = new ServerTreeItem('10.0.0.1:22', hosts, false, twoHoursAgo);
+
+        const tooltipValue = (item.tooltip as any).value;
+        expect(tooltipValue).toContain('2h ago');
+      });
+
+      it('should show "just now" for very recent failures', () => {
+        const justNow = {
+          ...failedAttempt,
+          timestamp: Date.now() - 5_000, // 5 seconds ago
+        };
+        const hosts = [createMockHostConfig({ id: 'h1', host: '10.0.0.1', port: 22, name: 'S1' })];
+        const item = new ServerTreeItem('10.0.0.1:22', hosts, false, justNow);
+
+        const tooltipValue = (item.tooltip as any).value;
+        expect(tooltipValue).toContain('just now');
+      });
+
+      it('should show days ago for old failures', () => {
+        const threeDaysAgo = {
+          ...failedAttempt,
+          timestamp: Date.now() - 3 * 24 * 60 * 60 * 1000,
+        };
+        const hosts = [createMockHostConfig({ id: 'h1', host: '10.0.0.1', port: 22, name: 'S1' })];
+        const item = new ServerTreeItem('10.0.0.1:22', hosts, false, threeDaysAgo);
+
+        const tooltipValue = (item.tooltip as any).value;
+        expect(tooltipValue).toContain('3d ago');
+      });
+
+      it('should show "Unknown error" when errorMessage is not provided', () => {
+        const noMessage = { timestamp: Date.now() - 60_000, success: false };
+        const hosts = [createMockHostConfig({ id: 'h1', host: '10.0.0.1', port: 22, name: 'S1' })];
+        const item = new ServerTreeItem('10.0.0.1:22', hosts, false, noMessage);
+
+        const tooltipValue = (item.tooltip as any).value;
+        expect(tooltipValue).toContain('Unknown error');
+      });
+
+      it('should preserve savedServer contextValue for saved hosts with failed attempt', () => {
+        const host = createMockHostConfig({ id: 'h1', host: '10.0.0.1', port: 22, name: 'S1', source: 'saved' });
+        const item = new ServerTreeItem('10.0.0.1:22', [host], false, failedAttempt);
+
+        expect(item.contextValue).toBe('savedServer');
+      });
+
+      it('should preserve server contextValue for ssh-config hosts with failed attempt', () => {
+        const host = createMockHostConfig({ id: 'h1', host: '10.0.0.1', port: 22, name: 'S1', source: 'ssh-config' });
+        mockListCredentials.mockReturnValue([]);
+        const item = new ServerTreeItem('10.0.0.1:22', [host], false, failedAttempt);
+
+        expect(item.contextValue).toBe('server');
+      });
+
+      it('should show normal vm-outline icon when no lastFailedAttempt (ssh-config host)', () => {
+        const host = createMockHostConfig({ id: 'h1', host: '10.0.0.1', port: 22, name: 'S1', source: 'ssh-config' });
+        mockListCredentials.mockReturnValue([]);
+        const item = new ServerTreeItem('10.0.0.1:22', [host], false);
+
+        expect((item.iconPath as any).id).toBe('vm-outline');
+        expect((item.iconPath as any).color).toBeUndefined();
+      });
+
+      it('should show normal vm icon when no lastFailedAttempt (saved host)', () => {
+        const host = createMockHostConfig({ id: 'h1', host: '10.0.0.1', port: 22, name: 'S1', source: 'saved' });
+        const item = new ServerTreeItem('10.0.0.1:22', [host], false);
+
+        expect((item.iconPath as any).id).toBe('vm');
+        expect((item.iconPath as any).color).toBeUndefined();
+      });
+
+      it('should show normal disconnected tooltip when no lastFailedAttempt', () => {
+        const host = createMockHostConfig({ id: 'h1', host: '10.0.0.1', port: 22, name: 'S1', username: 'admin' });
+        const item = new ServerTreeItem('10.0.0.1:22', [host], false);
+
+        const tooltipValue = (item.tooltip as any).value;
+        expect(tooltipValue).toContain('Disconnected');
+        expect(tooltipValue).not.toContain('Last connection failed');
+        expect(tooltipValue).not.toContain('\u26A0\uFE0F');
+      });
+    });
+
+    describe('getServerItems integration tests', () => {
+      it('should query getLastConnectionAttempt for disconnected servers', () => {
+        const host = createMockHostConfig({ id: 'h1', host: '10.0.0.1', port: 22, name: 'S1' });
+        mockGetAllHosts.mockReturnValue([host]);
+        mockGetAllConnections.mockReturnValue([]);
+
+        const { ConnectionManager } = require('../connection/ConnectionManager');
+        const mockGetLastAttempt = ConnectionManager.getInstance().getLastConnectionAttempt;
+        mockGetLastAttempt.mockReturnValue(failedAttempt);
+
+        const items = provider.getChildren() as ServerTreeItem[];
+
+        expect(mockGetLastAttempt).toHaveBeenCalledWith('h1');
+        expect(items).toHaveLength(1);
+        expect((items[0].iconPath as any).id).toBe('vm-outline');
+        expect((items[0].iconPath as any).color.id).toBe('charts.orange');
+      });
+
+      it('should check all hosts in a server group for failed attempts', () => {
+        const hosts = [
+          createMockHostConfig({ id: 'h1', host: '10.0.0.1', port: 22, username: 'user1', name: 'S1' }),
+          createMockHostConfig({ id: 'h2', host: '10.0.0.1', port: 22, username: 'user2', name: 'S1' }),
+        ];
+        mockGetAllHosts.mockReturnValue(hosts);
+        mockGetAllConnections.mockReturnValue([]);
+
+        const { ConnectionManager } = require('../connection/ConnectionManager');
+        const mockGetLastAttempt = ConnectionManager.getInstance().getLastConnectionAttempt;
+        mockGetLastAttempt.mockImplementation((id: string) => {
+          if (id === 'h2') {
+            return failedAttempt;
+          }
+          return undefined;
+        });
+
+        const items = provider.getChildren() as ServerTreeItem[];
+
+        expect(mockGetLastAttempt).toHaveBeenCalledWith('h1');
+        expect(mockGetLastAttempt).toHaveBeenCalledWith('h2');
+        expect(items).toHaveLength(1);
+        expect((items[0].iconPath as any).color.id).toBe('charts.orange');
+      });
+
+      it('should use the most recent failed attempt when multiple hosts have failures', () => {
+        const hosts = [
+          createMockHostConfig({ id: 'h1', host: '10.0.0.1', port: 22, username: 'user1', name: 'S1' }),
+          createMockHostConfig({ id: 'h2', host: '10.0.0.1', port: 22, username: 'user2', name: 'S1' }),
+        ];
+        mockGetAllHosts.mockReturnValue(hosts);
+        mockGetAllConnections.mockReturnValue([]);
+
+        const olderAttempt = {
+          timestamp: Date.now() - 300_000, // 5 minutes ago
+          success: false,
+          errorMessage: 'Older error',
+        };
+        const newerAttempt = {
+          timestamp: Date.now() - 60_000, // 1 minute ago
+          success: false,
+          errorMessage: 'Newer error',
+        };
+
+        const { ConnectionManager } = require('../connection/ConnectionManager');
+        const mockGetLastAttempt = ConnectionManager.getInstance().getLastConnectionAttempt;
+        mockGetLastAttempt.mockImplementation((id: string) => {
+          if (id === 'h1') return olderAttempt;
+          if (id === 'h2') return newerAttempt;
+          return undefined;
+        });
+
+        const items = provider.getChildren() as ServerTreeItem[];
+
+        // Should use the newer error message
+        const tooltipValue = (items[0].tooltip as any).value;
+        expect(tooltipValue).toContain('Newer error');
+        expect(tooltipValue).not.toContain('Older error');
+      });
+
+      it('should not show failed indicator for connected servers even with past failure', () => {
+        const host = createMockHostConfig({ id: '10.0.0.1:22:user', host: '10.0.0.1', port: 22, username: 'user', name: 'S1' });
+        const mockConn = { id: '10.0.0.1:22:user', state: 'connected' };
+        mockGetAllHosts.mockReturnValue([host]);
+        mockGetAllConnections.mockReturnValue([mockConn]);
+
+        const { ConnectionManager } = require('../connection/ConnectionManager');
+        const mockGetLastAttempt = ConnectionManager.getInstance().getLastConnectionAttempt;
+        // Even if there's a past failed attempt, connected servers should NOT query it
+        mockGetLastAttempt.mockReturnValue(failedAttempt);
+
+        const items = provider.getChildren() as ServerTreeItem[];
+
+        // Should NOT call getLastConnectionAttempt for connected servers
+        expect(mockGetLastAttempt).not.toHaveBeenCalled();
+        // Should show connected icon, not orange
+        expect((items[0].iconPath as any).id).toBe('vm-running');
+        expect((items[0].iconPath as any).color.id).toBe('charts.green');
+      });
+
+      it('should not show failed indicator when attempt was successful', () => {
+        const host = createMockHostConfig({ id: 'h1', host: '10.0.0.1', port: 22, name: 'S1', source: 'ssh-config' });
+        mockGetAllHosts.mockReturnValue([host]);
+        mockGetAllConnections.mockReturnValue([]);
+        mockListCredentials.mockReturnValue([]);
+
+        const successAttempt = {
+          timestamp: Date.now() - 60_000,
+          success: true,
+        };
+
+        const { ConnectionManager } = require('../connection/ConnectionManager');
+        const mockGetLastAttempt = ConnectionManager.getInstance().getLastConnectionAttempt;
+        mockGetLastAttempt.mockReturnValue(successAttempt);
+
+        const items = provider.getChildren() as ServerTreeItem[];
+
+        // Successful attempt should not trigger orange icon
+        expect((items[0].iconPath as any).id).toBe('vm-outline');
+        expect((items[0].iconPath as any).color).toBeUndefined();
+      });
+
+      it('should show normal state when getLastConnectionAttempt returns undefined', () => {
+        const host = createMockHostConfig({ id: 'h1', host: '10.0.0.1', port: 22, name: 'S1', source: 'ssh-config' });
+        mockGetAllHosts.mockReturnValue([host]);
+        mockGetAllConnections.mockReturnValue([]);
+        mockListCredentials.mockReturnValue([]);
+
+        const { ConnectionManager } = require('../connection/ConnectionManager');
+        const mockGetLastAttempt = ConnectionManager.getInstance().getLastConnectionAttempt;
+        mockGetLastAttempt.mockReturnValue(undefined);
+
+        const items = provider.getChildren() as ServerTreeItem[];
+
+        expect((items[0].iconPath as any).id).toBe('vm-outline');
+        expect((items[0].iconPath as any).color).toBeUndefined();
+        const tooltipValue = (items[0].tooltip as any).value;
+        expect(tooltipValue).toContain('Disconnected');
+      });
     });
   });
 });

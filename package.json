@@ -1262,10 +1262,10 @@
         },
         "sshLite.searchParallelProcesses": {
           "type": "number",
-          "default": 5,
-          "minimum": 1,
-          "maximum": 16,
-          "description": "Number of parallel search workers per folder. Workers process file batches concurrently for faster results. Set to 1 to disable."
+          "default": 20,
+          "minimum": 5,
+          "maximum": 50,
+          "description": "Default parallel search workers per folder. Each server can override this in the search panel. Minimum 5."
         },
         "sshLite.searchExcludeSystemDirs": {
           "type": "boolean",
