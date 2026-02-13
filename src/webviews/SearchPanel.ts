@@ -78,7 +78,6 @@ type WebviewMessage =
   | { type: 'removeServerPath'; serverId: string; pathIndex: number }
   | { type: 'addServerPath'; serverId: string; path: string }
   | { type: 'toggleSort' }
-  | { type: 'searchIncludeSystemDirs' }
   | { type: 'setServerMaxProcesses'; serverId: string; value: number | null };
 
 /**
@@ -98,7 +97,6 @@ export class SearchPanel {
   private lastCaseSensitive: boolean = false;
   private lastRegex: boolean = false;
   private searchAbortController: AbortController | null = null;
-  private includeSystemDirsOverride: boolean = false;
   private currentSearchId: number = 0;
   private currentSearchActivityIds: string[] = [];
 
@@ -107,8 +105,6 @@ export class SearchPanel {
   private currentCompletedCount: number = 0;
   private currentTotalCount: number = 0;
 
-  // State for include-all system dirs in-progress (Change 6)
-  private lastExcludedSystemDirs: string[] = [];
   private lastSearchConnectionMap: Map<string, SSHConnection> = new Map();
 
   // Dynamic worker pool tracking (allows mid-search worker count adjustment)
@@ -572,11 +568,6 @@ export class SearchPanel {
         this.sendState();
         break;
 
-      case 'searchIncludeSystemDirs':
-        // Search only the excluded system dirs and merge results into the current search
-        await this.searchExcludedSystemDirs();
-        break;
-
       case 'setServerMaxProcesses': {
         const targetServer = this.serverList.find((s) => s.id === message.serverId);
         if (targetServer) {
@@ -766,14 +757,9 @@ export class SearchPanel {
         this.currentCompletedCount = 0;
         this.currentTotalCount = 0;
         const globalSeen = this.currentGlobalSeen; // alias for readability
-        // Store connection map for include-all system dirs
         this.lastSearchConnectionMap = connectionMap;
-        this.lastExcludedSystemDirs = [];
 
         const globalParallelProcesses = config.get<number>('searchParallelProcesses', 20);
-        const excludeSystemDirs = config.get<boolean>('searchExcludeSystemDirs', true);
-        const SYSTEM_DIRS = ['/proc', '/sys', '/dev', '/run', '/snap', '/lost+found'];
-        let systemDirsExcluded: string[] = []; // track for webview notification
 
         // Build search tasks with metadata
         interface SearchTask {
@@ -875,33 +861,14 @@ export class SearchPanel {
                 const workQueue: Array<{ type: 'dir'; path: string } | { type: 'files'; filePaths: string[] }> = [];
                 let workIndex = 0;
 
-                // Seed work queue: filter system dirs at root, otherwise start with the search path
-                if (excludeSystemDirs && !this.includeSystemDirsOverride && sp.path === '/') {
-                  try {
-                    const subdirs = await connection.listDirectories(sp.path);
-                    if (signal.aborted) return;
-                    const excluded = subdirs.filter((d) => SYSTEM_DIRS.includes(d));
-                    const searchableDirs = subdirs.filter((d) => !SYSTEM_DIRS.includes(d));
-                    if (excluded.length > 0) {
-                      systemDirsExcluded = excluded;
-                      this.lastExcludedSystemDirs = excluded;
-                      this.postMessage({ type: 'systemDirsExcluded', dirs: excluded });
-                    }
-                    for (const dir of searchableDirs) {
-                      workQueue.push({ type: 'dir', path: dir });
-                    }
-                  } catch {
-                    workQueue.push({ type: 'dir', path: sp.path });
-                  }
-                } else {
-                  workQueue.push({ type: 'dir', path: sp.path });
-                }
+                workQueue.push({ type: 'dir', path: sp.path });
 
                 this.currentTotalCount += workQueue.length;
                 console.log(`[SSH Lite Search] Worker pool for ${sp.path}: ${workQueue.length} initial items, ${parallelProcesses} workers`);
 
-                // Dynamic worker tracking
-                let desiredWorkerCount = Math.min(parallelProcesses, Math.max(workQueue.length, 2));
+                // Dynamic worker tracking — always target the full configured count;
+                // workers auto-exit when queue is empty and ramp up as work is discovered
+                let desiredWorkerCount = parallelProcesses;
                 let activeWorkerCount = 0;
                 const allWorkerPromises: Promise<void>[] = [];
                 const poolKey = `${server.id}:${sp.path}`;
@@ -948,6 +915,11 @@ export class SearchPanel {
                         // Update totalCount: add new items (file batches + subdirs) discovered by this dir
                         const newItems = batches.length + entries.dirs.length;
                         this.currentTotalCount += newItems;
+
+                        // Ramp up workers as queue grows (initial queue may be small)
+                        while (activeWorkerCount < desiredWorkerCount && workQueue.length > workIndex) {
+                          addWorker();
+                        }
 
                         // Dir listing done — send progress-only batch
                         this.currentCompletedCount++;
@@ -1075,8 +1047,9 @@ export class SearchPanel {
                   addWorker,
                 });
 
-                // Spawn initial workers
-                for (let wi = 0; wi < desiredWorkerCount; wi++) {
+                // Spawn initial workers (only as many as queue items; more spawn as work is discovered)
+                const initialWorkers = Math.min(desiredWorkerCount, workQueue.length);
+                for (let wi = 0; wi < initialWorkers; wi++) {
                   allWorkerPromises.push(runWorker());
                 }
                 // Await all workers (including dynamically added ones)
@@ -1098,14 +1071,6 @@ export class SearchPanel {
         }
 
         this.currentTotalCount += searchTasks.length;
-
-        // Notify webview about excluded system directories
-        if (systemDirsExcluded.length > 0) {
-          this.postMessage({
-            type: 'systemDirsExcluded',
-            dirs: systemDirsExcluded,
-          });
-        }
 
         // Wrap each task with .then() that sends progressive searchBatch messages
         const wrappedPromises = searchTasks.map((task) =>
@@ -1285,268 +1250,6 @@ export class SearchPanel {
         this.isSearching = false;
         this.sendState();
       }
-    }
-  }
-
-  /**
-   * Search only the previously-excluded system dirs and merge results into the current/last search.
-   * Uses the same parallel worker pool pattern as performSearch() for consistent concurrency.
-   */
-  private async searchExcludedSystemDirs(): Promise<void> {
-    if (this.lastExcludedSystemDirs.length === 0) return;
-
-    const dirsToSearch = [...this.lastExcludedSystemDirs];
-    this.lastExcludedSystemDirs = [];
-    this.includeSystemDirsOverride = true;
-
-    const searchId = this.currentSearchId; // Use SAME searchId as ongoing/last search
-    const globalSeen = this.currentGlobalSeen;
-
-    const config = vscode.workspace.getConfiguration('sshLite');
-    const maxResults = config.get<number>('searchMaxResults', 2000);
-    const globalParallelProcesses = config.get<number>('searchParallelProcesses', 20);
-    const includePattern = this.lastIncludePattern || '';
-    const excludePattern = this.lastExcludePattern || '';
-    const query = this.lastSearchQuery;
-    const caseSensitive = this.lastCaseSensitive;
-    const regex = this.lastRegex;
-    const findFiles = this.findFilesMode;
-
-    if (!query) return;
-
-    const signal = this.searchAbortController?.signal;
-    const abortController = this.searchAbortController;
-    const activityService = ActivityService.getInstance();
-
-    // Resume searching state if search had already completed
-    const wasSearching = this.isSearching;
-    if (!wasSearching) {
-      this.isSearching = true;
-      this.sendState();
-    }
-
-    // Only pass simple glob patterns to listEntries
-    const listEntriesPattern = (includePattern && !/[{,]/.test(includePattern))
-      ? includePattern : undefined;
-    const MAX_BATCH_BYTES = 32_000;
-
-    const workerPoolPromises: Promise<void>[] = [];
-
-    for (const [serverId, connection] of this.lastSearchConnectionMap) {
-      if (signal?.aborted) break;
-
-      const server = this.serverList.find(s => s.id === serverId);
-      if (!server || !connection) continue;
-
-      // Per-server worker count (override or global default)
-      const parallelProcesses = server.maxSearchProcesses ?? globalParallelProcesses;
-
-      // Build work queue from excluded system dirs
-      const workQueue: Array<{ type: 'dir'; path: string } | { type: 'files'; filePaths: string[] }> = [];
-      let workIndex = 0;
-
-      for (const dir of dirsToSearch) {
-        workQueue.push({ type: 'dir', path: dir });
-      }
-
-      this.currentTotalCount += workQueue.length;
-      console.log(`[SSH Lite Search] Include-all worker pool: ${workQueue.length} system dirs, ${parallelProcesses} workers`);
-
-      // Send progress update immediately
-      if (searchId === this.currentSearchId) {
-        this.postMessage({
-          type: 'searchBatch', searchId, results: [],
-          totalResults: globalSeen.size, completedCount: this.currentCompletedCount, totalCount: this.currentTotalCount,
-          hitLimit: false, limit: maxResults,
-          done: false,
-        });
-      }
-
-      const poolPromise = (async () => {
-        // Dynamic worker tracking
-        let sysDesiredWorkerCount = Math.min(parallelProcesses, Math.max(workQueue.length, 2));
-        let sysActiveWorkerCount = 0;
-        const sysAllWorkerPromises: Promise<void>[] = [];
-        const sysPoolKey = `${serverId}:/sys`;
-
-        const runWorker = async (): Promise<void> => {
-          sysActiveWorkerCount++;
-          try {
-          while (!signal?.aborted && globalSeen.size < maxResults) {
-            if (sysActiveWorkerCount > sysDesiredWorkerCount && sysActiveWorkerCount > 1) return;
-            if (workIndex >= workQueue.length) return;
-            const item = workQueue[workIndex++];
-
-            if (item.type === 'dir') {
-              try {
-                const entries = await connection.listEntries(item.path, listEntriesPattern);
-                if (signal?.aborted) return;
-
-                const batches: string[][] = [];
-                let currentBatch: string[] = [];
-                let currentBytes = 0;
-                for (const file of entries.files) {
-                  const fileBytes = file.length + 3;
-                  if (currentBytes + fileBytes > MAX_BATCH_BYTES && currentBatch.length > 0) {
-                    batches.push(currentBatch);
-                    currentBatch = [];
-                    currentBytes = 0;
-                  }
-                  currentBatch.push(file);
-                  currentBytes += fileBytes;
-                }
-                if (currentBatch.length > 0) batches.push(currentBatch);
-
-                for (const batch of batches) {
-                  workQueue.push({ type: 'files', filePaths: batch });
-                }
-                for (const dir of entries.dirs) {
-                  workQueue.push({ type: 'dir', path: dir });
-                }
-
-                const newItems = batches.length + entries.dirs.length;
-                this.currentTotalCount += newItems;
-
-                this.currentCompletedCount++;
-                if (searchId !== this.currentSearchId) return;
-                this.postMessage({
-                  type: 'searchBatch', searchId, results: [],
-                  totalResults: globalSeen.size, completedCount: this.currentCompletedCount, totalCount: this.currentTotalCount,
-                  hitLimit: false, limit: maxResults,
-                  done: this.currentCompletedCount === this.currentTotalCount,
-                });
-              } catch {
-                // Fallback to recursive grep on this dir
-                const actId = activityService.startActivity(
-                  'search', connection.id, connection.host.name,
-                  `${findFiles ? 'Find' : 'Search'}: "${query.substring(0, 30)}${query.length > 30 ? '...' : ''}"`,
-                  { detail: `in ${item.path} (system dir)`, cancellable: true, onCancel: () => { abortController?.abort(); } }
-                );
-                this.currentSearchActivityIds.push(actId);
-                try {
-                  const results = await connection.searchFiles(item.path, query, {
-                    searchContent: !findFiles, caseSensitive, regex,
-                    filePattern: includePattern || '*',
-                    excludePattern: excludePattern || undefined,
-                    maxResults, signal: signal!,
-                  });
-                  if (signal?.aborted) { activityService.cancelActivity(actId); return; }
-                  const mapped = results.map((r) => ({
-                    ...r, modified: r.modified ? r.modified.getTime() : undefined,
-                    connectionId: connection.id, connectionName: connection.host.name,
-                  }));
-                  activityService.completeActivity(actId, `${mapped.length} results`);
-                  const unique = mapped.filter((r) => {
-                    const key = `${r.connectionId}:${r.path}:${r.line || 0}`;
-                    if (globalSeen.has(key)) return false;
-                    globalSeen.add(key);
-                    return true;
-                  });
-                  this.currentCompletedCount++;
-                  if (searchId !== this.currentSearchId) return;
-                  this.postMessage({
-                    type: 'searchBatch', searchId, results: unique,
-                    totalResults: globalSeen.size, completedCount: this.currentCompletedCount, totalCount: this.currentTotalCount,
-                    hitLimit: globalSeen.size >= maxResults, limit: maxResults,
-                    done: this.currentCompletedCount === this.currentTotalCount,
-                  });
-                } catch (error) {
-                  activityService.failActivity(actId, (error as Error).message);
-                  this.currentCompletedCount++;
-                  if (searchId !== this.currentSearchId) return;
-                  this.postMessage({
-                    type: 'searchBatch', searchId, results: [],
-                    totalResults: globalSeen.size, completedCount: this.currentCompletedCount, totalCount: this.currentTotalCount,
-                    hitLimit: false, limit: maxResults,
-                    done: this.currentCompletedCount === this.currentTotalCount,
-                  });
-                }
-              }
-            } else if (item.type === 'files') {
-              const actId = activityService.startActivity(
-                'search', connection.id, connection.host.name,
-                `${findFiles ? 'Find' : 'Search'}: "${query.substring(0, 30)}${query.length > 30 ? '...' : ''}"`,
-                { detail: `${item.filePaths.length} files (system dir)`, cancellable: true,
-                  onCancel: () => { abortController?.abort(); } }
-              );
-              this.currentSearchActivityIds.push(actId);
-              try {
-                const results = await connection.searchFiles(item.filePaths, query, {
-                  searchContent: !findFiles, caseSensitive, regex,
-                  filePattern: includePattern || '*',
-                  excludePattern: excludePattern || undefined,
-                  maxResults, signal: signal!,
-                });
-                if (signal?.aborted) { activityService.cancelActivity(actId); return; }
-                const mapped = results.map((r) => ({
-                  ...r, modified: r.modified ? r.modified.getTime() : undefined,
-                  connectionId: connection.id, connectionName: connection.host.name,
-                }));
-                activityService.completeActivity(actId, `${mapped.length} results`);
-                const unique = mapped.filter((r) => {
-                  const key = `${r.connectionId}:${r.path}:${r.line || 0}`;
-                  if (globalSeen.has(key)) return false;
-                  globalSeen.add(key);
-                  return true;
-                });
-                this.currentCompletedCount++;
-                if (searchId !== this.currentSearchId) return;
-                this.postMessage({
-                  type: 'searchBatch', searchId, results: unique,
-                  totalResults: globalSeen.size, completedCount: this.currentCompletedCount, totalCount: this.currentTotalCount,
-                  hitLimit: globalSeen.size >= maxResults, limit: maxResults,
-                  done: this.currentCompletedCount === this.currentTotalCount,
-                });
-              } catch (error) {
-                activityService.failActivity(actId, (error as Error).message);
-                this.currentCompletedCount++;
-                if (searchId !== this.currentSearchId) return;
-                this.postMessage({
-                  type: 'searchBatch', searchId, results: [],
-                  totalResults: globalSeen.size, completedCount: this.currentCompletedCount, totalCount: this.currentTotalCount,
-                  hitLimit: false, limit: maxResults,
-                  done: this.currentCompletedCount === this.currentTotalCount,
-                });
-              }
-            }
-          }
-          } finally {
-            sysActiveWorkerCount--;
-          }
-        };
-
-        // Register pool controller
-        const sysAddWorker = () => {
-          const p = runWorker();
-          sysAllWorkerPromises.push(p);
-        };
-        this.activeWorkerPools.set(sysPoolKey, {
-          get desiredWorkerCount() { return sysDesiredWorkerCount; },
-          set desiredWorkerCount(v: number) { sysDesiredWorkerCount = v; },
-          get activeWorkerCount() { return sysActiveWorkerCount; },
-          addWorker: sysAddWorker,
-        });
-
-        for (let wi = 0; wi < sysDesiredWorkerCount; wi++) {
-          sysAllWorkerPromises.push(runWorker());
-        }
-        while (true) {
-          const len = sysAllWorkerPromises.length;
-          await Promise.all(sysAllWorkerPromises);
-          if (sysAllWorkerPromises.length === len) break;
-        }
-        this.activeWorkerPools.delete(sysPoolKey);
-      })();
-
-      workerPoolPromises.push(poolPromise);
-    }
-
-    await Promise.all(workerPoolPromises);
-
-    // If search was resumed and all work is now done, finalize
-    if (searchId === this.currentSearchId) {
-      this.isSearching = false;
-      this.sendState();
     }
   }
 
@@ -2358,41 +2061,6 @@ export class SearchPanel {
       padding: 16px;
       text-align: center;
       color: var(--vscode-descriptionForeground);
-    }
-
-    .system-dirs-notice {
-      padding: 6px 12px;
-      background: var(--vscode-editorInfo-background, rgba(0, 120, 212, 0.1));
-      border-bottom: 1px solid var(--vscode-panel-border);
-      font-size: 12px;
-      color: var(--vscode-descriptionForeground);
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .system-dirs-notice .include-all-link {
-      color: var(--vscode-textLink-foreground);
-      cursor: pointer;
-      text-decoration: none;
-    }
-
-    .system-dirs-notice .include-all-link:hover {
-      text-decoration: underline;
-    }
-
-    .system-dirs-notice .notice-dismiss {
-      margin-left: auto;
-      background: transparent;
-      border: none;
-      color: var(--vscode-foreground);
-      cursor: pointer;
-      opacity: 0.6;
-      font-size: 14px;
-    }
-
-    .system-dirs-notice .notice-dismiss:hover {
-      opacity: 1;
     }
 
     .file-group {
@@ -4151,33 +3819,6 @@ export class SearchPanel {
           searchBtn.style.display = 'inline-block';
           cancelBtn.style.display = 'none';
           break;
-
-        case 'systemDirsExcluded': {
-          // Show dismissible notice about excluded system directories
-          const dirs = (message.dirs || []).join(', ');
-          const notice = document.createElement('div');
-          notice.className = 'system-dirs-notice';
-          notice.innerHTML = '\\u2139\\uFE0F System directories excluded: ' + escapeHtml(dirs) +
-            ' <a href="#" class="include-all-link">Include all</a>' +
-            ' <button class="notice-dismiss" title="Dismiss">\\u00D7</button>';
-          // Insert before results container
-          const resultsArea = resultsContainer.parentElement;
-          if (resultsArea) {
-            // Remove existing notice if any
-            const old = resultsArea.querySelector('.system-dirs-notice');
-            if (old) old.remove();
-            resultsArea.insertBefore(notice, resultsContainer);
-          }
-          // Wire dismiss button
-          notice.querySelector('.notice-dismiss').addEventListener('click', () => notice.remove());
-          // Wire "Include all" link (re-search without system dir exclusion)
-          notice.querySelector('.include-all-link').addEventListener('click', (e) => {
-            e.preventDefault();
-            notice.remove();
-            vscode.postMessage({ type: 'searchIncludeSystemDirs' });
-          });
-          break;
-        }
 
         case 'focusInput':
           searchInput.focus();

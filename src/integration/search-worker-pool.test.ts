@@ -322,44 +322,6 @@ describe('Integration: Search Worker Pool', () => {
     });
   });
 
-  describe('system directory exclusion with worker pool', () => {
-    it('should exclude system dirs at root / and send notification', async () => {
-      setMockConfig('sshLite.searchParallelProcesses', 2);
-      setMockConfig('sshLite.searchExcludeSystemDirs', true);
-
-      const host = createMockHostConfig({ id: 'svr1', name: 'Server1' });
-      const conn = createMockConnection({ id: 'svr1', host });
-
-      // listDirectories returns dirs including system dirs (used for root filtering)
-      (conn.listDirectories as jest.Mock).mockResolvedValue([
-        '/home', '/var', '/proc', '/sys', '/dev',
-      ]);
-      // listEntries for non-system dirs
-      (conn.listEntries as jest.Mock).mockResolvedValue({ files: [], dirs: [] });
-      (conn.searchFiles as jest.Mock).mockResolvedValue([]);
-
-      // searchPaths: [] defaults to '/' in performSearch
-      panel.setServerList([createServerEntry({ id: 'svr1', hostConfig: host, connected: true })]);
-      panel.setConnectionResolver(() => conn as any);
-
-      const postMessageSpy = setupMockPanel();
-      await performSearch('test');
-
-      // listEntries should NOT be called for system dirs
-      const listEntriesPaths = (conn.listEntries as jest.Mock).mock.calls.map((c: any[]) => c[0]);
-      expect(listEntriesPaths).not.toContain('/proc');
-      expect(listEntriesPaths).not.toContain('/sys');
-      expect(listEntriesPaths).not.toContain('/dev');
-      expect(listEntriesPaths).toContain('/home');
-      expect(listEntriesPaths).toContain('/var');
-
-      // Should send systemDirsExcluded notification
-      const systemMsg = postMessageSpy.mock.calls.find((c: any[]) => c[0].type === 'systemDirsExcluded');
-      expect(systemMsg).toBeDefined();
-      expect(systemMsg![0].dirs).toEqual(expect.arrayContaining(['/proc', '/sys', '/dev']));
-    });
-  });
-
   describe('progressive message accuracy', () => {
     it('should track totalCount correctly as directory tree is explored', async () => {
       setMockConfig('sshLite.searchParallelProcesses', 1); // Single worker for predictable ordering

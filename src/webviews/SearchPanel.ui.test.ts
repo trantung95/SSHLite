@@ -7,7 +7,6 @@
  * - completedCount monotonically increases
  * - done flag is true only on the final batch
  * - searchState messages for loading/idle transitions
- * - systemDirsExcluded notification timing
  * - hitLimit flag when max results reached
  * - Activity service integration (start/complete/fail/cancel)
  *

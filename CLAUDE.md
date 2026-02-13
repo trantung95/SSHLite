@@ -158,6 +158,11 @@ This project is designed to grow itself. The `.adn/growth/` folder contains ever
 
 ## Release Notes
 
+### v0.4.5 — Remove auto-excluded dirs, fix worker scaling
+
+- **Removed auto-excluded system dirs**: Search no longer auto-excludes `/proc`, `/sys`, `/dev`, `/run`, `/snap`, `/lost+found` when searching from root `/`. Removed the `searchExcludeSystemDirs` setting, the "Include all" UI notice, and the `searchExcludedSystemDirs` method.
+- **Fixed worker pool scaling**: Workers were capped to the initial queue size (e.g., 1 when searching from `/`) instead of the configured count. Now `desiredWorkerCount` is set to the full configured value and workers auto-spawn as the queue grows from directory discovery.
+
 ### v0.4.4 — Search panel redesign & filter improvements
 
 - **Keep Results mid-search**: Clicking "Keep Results" during an active search now pins the tab with its ongoing search — results keep streaming into the kept tab while a fresh Current tab is created
