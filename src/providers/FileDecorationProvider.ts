@@ -18,12 +18,12 @@ export class SSHFileDecorationProvider implements vscode.FileDecorationProvider 
   private connectionManager: ConnectionManager;
   private tempDir: string;
 
-  // Filtered folder URI string (e.g., "ssh://connId/path/to/folder")
-  private filteredFolderUri: string = '';
+  // Filtered folder URIs (multiple simultaneous filters supported)
+  private filteredFolderUris: Set<string> = new Set();
 
-  // Filename filter state for empty folder graying
+  // Filename filter state for empty folder graying (supports multiple filters)
   private filterHighlightedUris: Set<string> = new Set();
-  private filterBasePathPrefix: string = '';  // "ssh://connId/basePath/"
+  private filterBasePrefixes: Set<string> = new Set();
 
   constructor(fileService: FileService, connectionManager: ConnectionManager) {
     this.fileService = fileService;
@@ -58,31 +58,38 @@ export class SSHFileDecorationProvider implements vscode.FileDecorationProvider 
   }
 
   /**
-   * Set the filtered folder to highlight in the tree view.
-   * Pass empty string to clear.
+   * Add a filtered folder to highlight in the tree view (additive, supports multiple).
    */
   setFilteredFolder(connectionId: string, folderPath: string): void {
-    const newUri = connectionId ? `ssh://${connectionId}${folderPath}` : '';
-    if (newUri !== this.filteredFolderUri) {
-      this.filteredFolderUri = newUri;
-      this._onDidChangeFileDecorations.fire(undefined);
-    }
+    if (!connectionId) return;
+    const uri = `ssh://${connectionId}${folderPath}`;
+    this.filteredFolderUris.add(uri);
+    this._onDidChangeFileDecorations.fire(undefined);
   }
 
   /**
-   * Clear the filtered folder highlight and empty folder graying.
+   * Clear filtered folder highlight(s) and empty folder graying.
+   * @param connectionId - Optional: clear only this connection+folder
+   * @param folderPath - Optional: clear only this specific folder
    */
-  clearFilteredFolder(): void {
-    if (this.filteredFolderUri || this.filterHighlightedUris.size > 0) {
-      this.filteredFolderUri = '';
+  clearFilteredFolder(connectionId?: string, folderPath?: string): void {
+    if (connectionId && folderPath) {
+      const uri = `ssh://${connectionId}${folderPath}`;
+      this.filteredFolderUris.delete(uri);
+      const prefix = `ssh://${connectionId}${folderPath}/`;
+      this.filterBasePrefixes.delete(prefix);
+      // Rebuild highlighted URIs from remaining filters (simplified: just fire refresh)
+      this._onDidChangeFileDecorations.fire(undefined);
+    } else {
+      this.filteredFolderUris.clear();
       this.filterHighlightedUris.clear();
-      this.filterBasePathPrefix = '';
+      this.filterBasePrefixes.clear();
       this._onDidChangeFileDecorations.fire(undefined);
     }
   }
 
   /**
-   * Set highlighted paths for filename filter (for empty folder graying).
+   * Set highlighted paths for a filename filter (additive, supports multiple filters).
    * Folders under basePath that are NOT in highlightedPaths will be grayed out.
    */
   setFilenameFilterPaths(highlightedPaths: Set<string>, basePath: string, connectionId: string): void {
@@ -90,8 +97,7 @@ export class SSHFileDecorationProvider implements vscode.FileDecorationProvider 
       return;
     }
 
-    this.filterHighlightedUris.clear();
-    this.filterBasePathPrefix = `ssh://${connectionId}${basePath}/`;
+    this.filterBasePrefixes.add(`ssh://${connectionId}${basePath}/`);
 
     for (const p of highlightedPaths) {
       this.filterHighlightedUris.add(`ssh://${connectionId}${p}`);
@@ -100,13 +106,32 @@ export class SSHFileDecorationProvider implements vscode.FileDecorationProvider 
     this._onDidChangeFileDecorations.fire(undefined);
   }
 
+  /**
+   * Rebuild all decoration state from scratch (call after filter changes).
+   */
+  rebuildFilterState(filterStates: Array<{ highlightedPaths: Set<string>; basePath: string; connectionId: string }>): void {
+    this.filteredFolderUris.clear();
+    this.filterHighlightedUris.clear();
+    this.filterBasePrefixes.clear();
+
+    for (const state of filterStates) {
+      this.filteredFolderUris.add(`ssh://${state.connectionId}${state.basePath}`);
+      this.filterBasePrefixes.add(`ssh://${state.connectionId}${state.basePath}/`);
+      for (const p of state.highlightedPaths) {
+        this.filterHighlightedUris.add(`ssh://${state.connectionId}${p}`);
+      }
+    }
+
+    this._onDidChangeFileDecorations.fire(undefined);
+  }
+
   provideFileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {
-    // Handle ssh:// URIs — highlight filtered folder and gray out empty folders
+    // Handle ssh:// URIs — highlight filtered folders and gray out empty folders
     if (uri.scheme === 'ssh') {
       const uriString = uri.toString();
 
-      // Blue badge for the filtered folder itself
-      if (this.filteredFolderUri && uriString === this.filteredFolderUri) {
+      // Blue badge for filtered folder(s)
+      if (this.filteredFolderUris.has(uriString)) {
         return {
           badge: 'F',
           color: new vscode.ThemeColor('charts.blue'),
@@ -114,13 +139,14 @@ export class SSHFileDecorationProvider implements vscode.FileDecorationProvider 
         };
       }
 
-      // Gray out empty folders (under basePath, not in highlightedPaths)
-      if (this.filterBasePathPrefix && uriString.startsWith(this.filterBasePathPrefix)
-          && !this.filterHighlightedUris.has(uriString)) {
-        return {
-          color: new vscode.ThemeColor('disabledForeground'),
-          tooltip: 'No matching files in this folder',
-        };
+      // Gray out non-matching items (under any filter basePath, not in highlightedPaths)
+      for (const prefix of this.filterBasePrefixes) {
+        if (uriString.startsWith(prefix) && !this.filterHighlightedUris.has(uriString)) {
+          return {
+            color: new vscode.ThemeColor('disabledForeground'),
+            tooltip: 'Not matching filter',
+          };
+        }
       }
     }
 

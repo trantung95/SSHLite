@@ -111,6 +111,13 @@ export class SearchPanel {
   private lastExcludedSystemDirs: string[] = [];
   private lastSearchConnectionMap: Map<string, SSHConnection> = new Map();
 
+  // Dynamic worker pool tracking (allows mid-search worker count adjustment)
+  private activeWorkerPools: Map<string, {
+    desiredWorkerCount: number;
+    activeWorkerCount: number;
+    addWorker: () => void;
+  }> = new Map();
+
   // Server list state (cross-server search model)
   private serverList: ServerSearchEntry[] = [];
   private findFilesMode: boolean = false;
@@ -395,6 +402,7 @@ export class SearchPanel {
       this.searchAbortController.abort();
       this.searchAbortController = null;
     }
+    this.activeWorkerPools.clear();
     // Cancel all tracked search activities
     const activityService = ActivityService.getInstance();
     for (const id of this.currentSearchActivityIds) {
@@ -588,6 +596,22 @@ export class SearchPanel {
           }
           this.saveServerSearchSettings(settings);
           this.sendState();
+
+          // Adjust active worker pools for this server (dynamic mid-search)
+          const newCount = targetServer.maxSearchProcesses
+            ?? vscode.workspace.getConfiguration('sshLite').get<number>('searchParallelProcesses', 20);
+          const clampedCount = Math.max(1, newCount);
+          for (const [poolKey, pool] of this.activeWorkerPools) {
+            if (poolKey.startsWith(message.serverId + ':')) {
+              pool.desiredWorkerCount = clampedCount;
+              if (clampedCount > pool.activeWorkerCount) {
+                for (let i = 0; i < clampedCount - pool.activeWorkerCount; i++) {
+                  pool.addWorker();
+                }
+              }
+              // If decreasing, workers self-terminate via the guard check
+            }
+          }
         }
         break;
       }
@@ -876,8 +900,18 @@ export class SearchPanel {
                 this.currentTotalCount += workQueue.length;
                 console.log(`[SSH Lite Search] Worker pool for ${sp.path}: ${workQueue.length} initial items, ${parallelProcesses} workers`);
 
+                // Dynamic worker tracking
+                let desiredWorkerCount = Math.min(parallelProcesses, Math.max(workQueue.length, 2));
+                let activeWorkerCount = 0;
+                const allWorkerPromises: Promise<void>[] = [];
+                const poolKey = `${server.id}:${sp.path}`;
+
                 const runWorker = async (): Promise<void> => {
+                  activeWorkerCount++;
+                  try {
                   while (!signal.aborted && globalSeen.size < maxResults) {
+                    // Graceful shrink: if more workers than desired, exit (keep at least 1)
+                    if (activeWorkerCount > desiredWorkerCount && activeWorkerCount > 1) return;
                     if (workIndex >= workQueue.length) return; // queue exhausted
                     const item = workQueue[workIndex++];
 
@@ -1024,10 +1058,34 @@ export class SearchPanel {
                       }
                     }
                   }
+                  } finally {
+                    activeWorkerCount--;
+                  }
                 };
 
-                const workerCount = Math.min(parallelProcesses, Math.max(workQueue.length, 2));
-                await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+                // Register pool controller for dynamic worker adjustment
+                const addWorker = () => {
+                  const p = runWorker();
+                  allWorkerPromises.push(p);
+                };
+                this.activeWorkerPools.set(poolKey, {
+                  get desiredWorkerCount() { return desiredWorkerCount; },
+                  set desiredWorkerCount(v: number) { desiredWorkerCount = v; },
+                  get activeWorkerCount() { return activeWorkerCount; },
+                  addWorker,
+                });
+
+                // Spawn initial workers
+                for (let wi = 0; wi < desiredWorkerCount; wi++) {
+                  allWorkerPromises.push(runWorker());
+                }
+                // Await all workers (including dynamically added ones)
+                while (true) {
+                  const len = allWorkerPromises.length;
+                  await Promise.all(allWorkerPromises);
+                  if (allWorkerPromises.length === len) break;
+                }
+                this.activeWorkerPools.delete(poolKey);
               })();
 
               workerPoolPromises.push(poolPromise);
@@ -1222,6 +1280,7 @@ export class SearchPanel {
         }
       }
 
+      this.activeWorkerPools.clear();
       if (searchId === this.currentSearchId) {
         this.isSearching = false;
         this.sendState();
@@ -1304,8 +1363,17 @@ export class SearchPanel {
       }
 
       const poolPromise = (async () => {
+        // Dynamic worker tracking
+        let sysDesiredWorkerCount = Math.min(parallelProcesses, Math.max(workQueue.length, 2));
+        let sysActiveWorkerCount = 0;
+        const sysAllWorkerPromises: Promise<void>[] = [];
+        const sysPoolKey = `${serverId}:/sys`;
+
         const runWorker = async (): Promise<void> => {
+          sysActiveWorkerCount++;
+          try {
           while (!signal?.aborted && globalSeen.size < maxResults) {
+            if (sysActiveWorkerCount > sysDesiredWorkerCount && sysActiveWorkerCount > 1) return;
             if (workIndex >= workQueue.length) return;
             const item = workQueue[workIndex++];
 
@@ -1442,10 +1510,32 @@ export class SearchPanel {
               }
             }
           }
+          } finally {
+            sysActiveWorkerCount--;
+          }
         };
 
-        const workerCount = Math.min(parallelProcesses, Math.max(workQueue.length, 2));
-        await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+        // Register pool controller
+        const sysAddWorker = () => {
+          const p = runWorker();
+          sysAllWorkerPromises.push(p);
+        };
+        this.activeWorkerPools.set(sysPoolKey, {
+          get desiredWorkerCount() { return sysDesiredWorkerCount; },
+          set desiredWorkerCount(v: number) { sysDesiredWorkerCount = v; },
+          get activeWorkerCount() { return sysActiveWorkerCount; },
+          addWorker: sysAddWorker,
+        });
+
+        for (let wi = 0; wi < sysDesiredWorkerCount; wi++) {
+          sysAllWorkerPromises.push(runWorker());
+        }
+        while (true) {
+          const len = sysAllWorkerPromises.length;
+          await Promise.all(sysAllWorkerPromises);
+          if (sysAllWorkerPromises.length === len) break;
+        }
+        this.activeWorkerPools.delete(sysPoolKey);
       })();
 
       workerPoolPromises.push(poolPromise);
@@ -2118,6 +2208,7 @@ export class SearchPanel {
     }
     .result-tab:hover { opacity: 1; background: var(--vscode-list-hoverBackground); }
     .result-tab.active { opacity: 1; border-bottom-color: var(--vscode-focusBorder); }
+    .result-tab.searching .tab-label { font-style: italic; }
     .tab-label { overflow: hidden; text-overflow: ellipsis; }
     .tab-close {
       background: transparent; border: none; cursor: pointer;
@@ -2575,23 +2666,110 @@ export class SearchPanel {
     let scopes = [];
     let serverList = [];       // New cross-server search model
     let globalMaxSearchProcesses = 20; // Updated from state messages
-    let results = [];
-    let scopeServers = []; // Servers from search scopes (for multi-server grouping)
-    let currentQuery = '';
+    // --- Tab state management ---
+    // Each tab (kept or Current) owns its own isolated state.
+    function createTabState(overrides) {
+      return Object.assign({
+        id: Date.now().toString(),
+        query: '',
+        include: '',
+        exclude: '',
+        caseSensitive: false,
+        useRegex: false,
+        findFilesMode: false,
+        results: [],
+        scopeServers: [],
+        hitLimit: false,
+        limit: 2000,
+        searchId: null,
+        searching: false,
+        timestamp: Date.now(),
+        expandedFiles: new Set(),
+        expandedTreeNodes: new Set(),
+        treeViewFirstExpand: true,
+        searchExpandState: 2,
+        viewMode: 'list',
+      }, overrides || {});
+    }
+
+    let resultTabs = [];              // Array of kept tab state objects
+    let activeTabId = null;           // null = Current tab
+    let currentTab = createTabState(); // The "Current" tab's state (always exists)
+    let tabSearchIdMap = {};          // { searchId: tabId } — routes searchBatch to kept tabs
+
+    // Per-tab state aliases (updated by save/restore on tab switch)
     let caseSensitive = false;
     let useRegex = false;
     let findFilesMode = false;
-    let sortOrder = 'checked';
     let expandedFiles = new Set();
-    let viewMode = 'list'; // 'list' or 'tree'
+    let viewMode = 'list';
     let expandedTreeNodes = new Set();
-    let treeViewFirstExpand = true; // Flag to auto-expand all tree nodes on first switch to tree view
-    let searchExpandState = 2; // 0=collapsed, 1=all expanded, 2=file level (default)
-    let resultTabs = [];     // Array of { id, query, timestamp, results, scopeServers, hitLimit, limit }
-    let activeTabId = null;  // Currently visible tab ID (null = live/current search)
-    let currentDisplayScopeServers = []; // Set by renderResults for child render functions
-    let lastClickedServerIndex = -1; // For shift-click range selection
-    let currentSearchId = 0; // Track current search instance to discard stale messages
+    let treeViewFirstExpand = true;
+    let searchExpandState = 2;
+
+    // Global state (shared across all tabs)
+    let sortOrder = 'checked';
+    let currentDisplayScopeServers = [];
+    let lastClickedServerIndex = -1;
+    let currentSearchId = 0;
+
+    function getActiveTabState() {
+      if (activeTabId) return resultTabs.find(function(t) { return t.id === activeTabId; });
+      return currentTab;
+    }
+
+    function saveCurrentInputState() {
+      var tab = getActiveTabState();
+      if (!tab) return;
+      tab.query = searchInput.value;
+      tab.include = includeInput.value;
+      tab.exclude = excludeInput.value;
+      tab.caseSensitive = caseSensitive;
+      tab.useRegex = useRegex;
+      tab.findFilesMode = findFilesMode;
+      tab.viewMode = viewMode;
+      tab.searchExpandState = searchExpandState;
+      tab.expandedFiles = new Set(expandedFiles);
+      tab.expandedTreeNodes = new Set(expandedTreeNodes);
+      tab.treeViewFirstExpand = treeViewFirstExpand;
+    }
+
+    function restoreTabState(tab) {
+      searchInput.value = tab.query || '';
+      includeInput.value = tab.include || '';
+      excludeInput.value = tab.exclude || '';
+      caseSensitive = tab.caseSensitive || false;
+      useRegex = tab.useRegex || false;
+      findFilesMode = tab.findFilesMode || false;
+      viewMode = tab.viewMode || 'list';
+      searchExpandState = tab.searchExpandState != null ? tab.searchExpandState : 2;
+      expandedFiles = new Set(tab.expandedFiles || []);
+      expandedTreeNodes = new Set(tab.expandedTreeNodes || []);
+      treeViewFirstExpand = tab.treeViewFirstExpand != null ? tab.treeViewFirstExpand : true;
+      // Update toggle button UI
+      caseSensitiveBtn.classList.toggle('active', caseSensitive);
+      regexBtn.classList.toggle('active', useRegex);
+      findFilesBtn.classList.toggle('active', findFilesMode);
+      searchInput.placeholder = findFilesMode ? 'Find Files by Name' : 'Search';
+      // Update search/cancel button visibility
+      if (tab.searching) {
+        searchBtn.style.display = 'none';
+        cancelBtn.style.display = 'inline-block';
+      } else {
+        searchBtn.style.display = 'inline-block';
+        cancelBtn.style.display = 'none';
+      }
+    }
+
+    function cleanupTab(tab) {
+      // LITE: free memory
+      if (tab) {
+        tab.results = [];
+        tab.scopeServers = [];
+        tab.expandedFiles = null;
+        tab.expandedTreeNodes = null;
+      }
+    }
 
     // Elements
     const searchInput = document.getElementById('searchInput');
@@ -2996,13 +3174,15 @@ export class SearchPanel {
         renderDebounceTimer = null;
       }
       const doRender = () => {
-        if (results.length === 0 && !done) {
+        const tab = getActiveTabState();
+        const tabResults = tab ? tab.results : [];
+        if (tabResults.length === 0 && !done) {
           // Still searching, no results yet — show progress in searching indicator
           resultsHeader.style.display = 'flex';
           resultsHeader.innerHTML = '<span class="results-count">Searching... (' + completedCount + '/' + totalCount + ' done)</span>';
           return;
         }
-        if (results.length === 0 && done) {
+        if (tabResults.length === 0 && done) {
           showNoResults();
           return;
         }
@@ -3013,8 +3193,8 @@ export class SearchPanel {
         if (!done) {
           const countEl = resultsHeader.querySelector('.results-count');
           if (countEl) {
-            const fileCount = new Set(results.map(r => r.connectionId + ':' + r.path)).size;
-            countEl.innerHTML = results.length + ' result' + (results.length !== 1 ? 's' : '') + ' in ' +
+            const fileCount = new Set(tabResults.map(r => r.connectionId + ':' + r.path)).size;
+            countEl.innerHTML = tabResults.length + ' result' + (tabResults.length !== 1 ? 's' : '') + ' in ' +
               fileCount + ' file' + (fileCount !== 1 ? 's' : '') +
               ' <span style="opacity: 0.7">(' + completedCount + '/' + totalCount + ' done...)</span>';
           }
@@ -3035,28 +3215,13 @@ export class SearchPanel {
       // Always update tab bar
       renderTabBar();
 
-      // Determine which data to display (kept tab or current/live search)
-      let displayResults, displayScopeServers, displayHitLimit, displayLimit;
-      if (activeTabId) {
-        const tab = resultTabs.find(t => t.id === activeTabId);
-        if (tab) {
-          displayResults = tab.results;
-          displayScopeServers = tab.scopeServers;
-          displayHitLimit = tab.hitLimit;
-          displayLimit = tab.limit;
-        } else {
-          activeTabId = null; // tab was removed
-          displayResults = results;
-          displayScopeServers = scopeServers;
-          displayHitLimit = hitLimit;
-          displayLimit = limit;
-        }
-      } else {
-        displayResults = results;
-        displayScopeServers = scopeServers;
-        displayHitLimit = hitLimit;
-        displayLimit = limit;
-      }
+      // Determine which data to display from active tab state
+      const tab = getActiveTabState();
+      const displayResults = tab.results;
+      const displayScopeServers = tab.scopeServers;
+      const displayHitLimit = tab.hitLimit || hitLimit;
+      const displayLimit = tab.limit || limit;
+      const displayQuery = tab.query || '';
 
       if (displayResults.length === 0) {
         showNoResults();
@@ -3135,20 +3300,30 @@ export class SearchPanel {
 
         if (keepBtn) {
           keepBtn.addEventListener('click', () => {
-            if (results.length === 0) return;
-            const tab = {
-              id: Date.now().toString(),
-              query: currentQuery,
-              timestamp: Date.now(),
-              results: [...results],
-              scopeServers: [...scopeServers],
-              hitLimit: displayHitLimit,
-              limit: displayLimit,
-            };
-            resultTabs.push(tab);
-            if (resultTabs.length > 10) resultTabs.shift();
-            activeTabId = null; // Switch to "current" (empty, ready for new search)
-            results = [];
+            const activeTab = getActiveTabState();
+            if (!activeTab || activeTab.results.length === 0) return;
+
+            // Save current input state into the tab being kept
+            saveCurrentInputState();
+
+            // Move currentTab to resultTabs (it becomes a kept tab)
+            if (!activeTabId) {
+              resultTabs.push(currentTab);
+              if (resultTabs.length > 10) {
+                const evicted = resultTabs.shift();
+                if (evicted && evicted.searchId) delete tabSearchIdMap[evicted.searchId];
+                if (evicted) cleanupTab(evicted);
+              }
+              // Route future searchBatch for this searchId to the kept tab
+              if (currentTab.searching && currentTab.searchId) {
+                tabSearchIdMap[currentTab.searchId] = currentTab.id;
+              }
+              // Create a fresh Current tab
+              currentTab = createTabState();
+              activeTabId = null;
+            }
+
+            restoreTabState(currentTab);
             renderTabBar();
             renderResults();
           });
@@ -3189,14 +3364,14 @@ export class SearchPanel {
 
       // Render based on view mode
       if (viewMode === 'tree') {
-        renderTreeView(fileGroups, multiServer);
+        renderTreeView(fileGroups, multiServer, displayQuery);
       } else {
-        renderListView(fileGroups, multiServer);
+        renderListView(fileGroups, multiServer, displayQuery);
       }
     }
 
     // Render list view (default)
-    function renderListView(fileGroups, multiServer) {
+    function renderListView(fileGroups, multiServer, displayQuery) {
       function renderFileGroup(group) {
         const fileName = group.path.split('/').pop();
         const dirPath = group.path.substring(0, group.path.length - fileName.length - 1) || '/';
@@ -3217,7 +3392,7 @@ export class SearchPanel {
               \${group.matches.map(match => \`
                 <div class="match-item" data-path="\${escapeHtml(match.path)}" data-connection="\${escapeHtml(match.connectionId)}" data-line="\${match.line || ''}">
                   <span class="match-line">\${match.line || ''}</span>
-                  <span class="match-text">\${highlightMatch(match.match || '', currentQuery, caseSensitive)}</span>
+                  <span class="match-text">\${highlightMatch(match.match || '', displayQuery, caseSensitive)}</span>
                 </div>
               \`).join('')}
             </div>
@@ -3457,7 +3632,7 @@ export class SearchPanel {
     }
 
     // Render tree view
-    function renderTreeView(fileGroups, multiServer) {
+    function renderTreeView(fileGroups, multiServer, displayQuery) {
       function renderNode(name, node, indent, parentPath) {
         const nodePath = parentPath ? parentPath + '/' + name : name;
         const nodeKey = (node._connectionId || '') + ':' + nodePath;
@@ -3496,7 +3671,7 @@ export class SearchPanel {
           const matchesHtml = node._matches ? node._matches.map(match => \`
             <div class="tree-match-item" data-path="\${escapeHtml(match.path)}" data-connection="\${escapeHtml(match.connectionId)}" data-line="\${match.line || ''}">
               <span class="match-line">\${match.line || ''}</span>
-              <span class="match-text">\${highlightMatch(match.match || '', currentQuery, caseSensitive)}</span>
+              <span class="match-text">\${highlightMatch(match.match || '', displayQuery, caseSensitive)}</span>
             </div>
           \`).join('') : '';
 
@@ -3678,16 +3853,18 @@ export class SearchPanel {
       // Kept tabs
       for (const tab of resultTabs) {
         const isActive = activeTabId === tab.id;
-        const label = '"' + escapeHtml(tab.query.substring(0, 20)) + (tab.query.length > 20 ? '...' : '') + '" (' + tab.results.length + ')';
-        html += '<div class="result-tab' + (isActive ? ' active' : '') + '" data-tab-id="' + escapeHtml(tab.id) + '" title="Search: ' + escapeHtml(tab.query) + '">';
+        const indicator = tab.searching ? ' \u27F3' : '';
+        const label = '"' + escapeHtml(tab.query.substring(0, 20)) + (tab.query.length > 20 ? '...' : '') + '" (' + tab.results.length + ')' + indicator;
+        html += '<div class="result-tab' + (isActive ? ' active' : '') + (tab.searching ? ' searching' : '') + '" data-tab-id="' + escapeHtml(tab.id) + '" title="Search: ' + escapeHtml(tab.query) + '">';
         html += '<span class="tab-label">' + label + '</span>';
         html += '<button class="tab-close" data-tab-id="' + escapeHtml(tab.id) + '" title="Close">\\u00D7</button>';
         html += '</div>';
       }
       // Current/live tab (always last)
       const isCurrentActive = !activeTabId;
-      html += '<div class="result-tab' + (isCurrentActive ? ' active' : '') + '" data-tab-id="current">';
-      html += '<span class="tab-label">Current</span>';
+      const currentIndicator = currentTab.searching ? ' \u27F3' : '';
+      html += '<div class="result-tab' + (isCurrentActive ? ' active' : '') + (currentTab.searching ? ' searching' : '') + '" data-tab-id="current">';
+      html += '<span class="tab-label">Current' + currentIndicator + '</span>';
       html += '</div>';
       resultTabBar.innerHTML = html;
 
@@ -3697,18 +3874,36 @@ export class SearchPanel {
           // Close button
           if (e.target.classList.contains('tab-close')) {
             const tabId = e.target.dataset.tabId;
-            resultTabs = resultTabs.filter(t => t.id !== tabId);
-            if (activeTabId === tabId) activeTabId = null;
+            const closedTab = resultTabs.find(function(t) { return t.id === tabId; });
+            if (closedTab) {
+              // LITE: cancel the server-side search if this tab owns it
+              if (closedTab.searching) {
+                vscode.postMessage({ type: 'cancel' });
+              }
+              // Clean up routing
+              if (closedTab.searchId) delete tabSearchIdMap[closedTab.searchId];
+              // LITE: free memory
+              cleanupTab(closedTab);
+            }
+            resultTabs = resultTabs.filter(function(t) { return t.id !== tabId; });
+            if (activeTabId === tabId) {
+              activeTabId = null;
+              restoreTabState(currentTab);
+            }
             renderTabBar();
             renderResults();
             return;
           }
-          // Tab selection
+          // Tab selection — save outgoing, restore incoming
           const tabId = tab.dataset.tabId;
+          saveCurrentInputState();
           if (tabId === 'current') {
             activeTabId = null;
+            restoreTabState(currentTab);
           } else {
             activeTabId = tabId;
+            const targetTab = resultTabs.find(function(t) { return t.id === tabId; });
+            if (targetTab) restoreTabState(targetTab);
           }
           renderTabBar();
           renderResults();
@@ -3777,6 +3972,7 @@ export class SearchPanel {
           }
           if (message.findFilesMode !== undefined) {
             findFilesMode = message.findFilesMode;
+            currentTab.findFilesMode = findFilesMode;
             findFilesBtn.classList.toggle('active', findFilesMode);
             searchInput.placeholder = findFilesMode ? 'Find Files by Name' : 'Search';
           }
@@ -3803,36 +3999,81 @@ export class SearchPanel {
           break;
 
         case 'searching':
-          // Reset state for new search
+          // Mark any kept tabs still searching as done (old search aborted)
+          for (var si = 0; si < resultTabs.length; si++) { if (resultTabs[si].searching) resultTabs[si].searching = false; }
+          tabSearchIdMap = {};
+
           currentSearchId = message.searchId || 0;
-          results = [];
-          currentQuery = message.query || '';
-          scopeServers = message.scopeServers || [];
+          // Update currentTab state for the new search
+          currentTab.searchId = currentSearchId;
+          currentTab.searching = true;
+          currentTab.results = [];
+          currentTab.query = message.query || '';
+          currentTab.scopeServers = message.scopeServers || [];
+          currentTab.searchExpandState = 2;
+          currentTab.expandedFiles = new Set();
+          currentTab.expandedTreeNodes = new Set();
+          currentTab.treeViewFirstExpand = true;
+          // Save include/exclude from input fields into currentTab
+          currentTab.include = includeInput.value;
+          currentTab.exclude = excludeInput.value;
+
+          // Reset per-tab aliases
           searchExpandState = 2;
-          expandedFiles.clear();
-          expandedTreeNodes.clear();
+          expandedFiles = new Set();
+          expandedTreeNodes = new Set();
           treeViewFirstExpand = true;
-          // Switch to current/live tab when new search starts
-          activeTabId = null;
+
+          // Switch to Current tab to see results
+          if (activeTabId) {
+            saveCurrentInputState();
+            activeTabId = null;
+            restoreTabState(currentTab);
+          }
           renderTabBar();
           showSearching(message.query);
-          // Show cancel button, hide search button
           searchBtn.style.display = 'none';
           cancelBtn.style.display = 'inline-block';
           break;
 
         case 'searchBatch': {
-          // Discard stale messages from previous searches
-          if (message.searchId && message.searchId !== currentSearchId) break;
-          // Progressive results: append new results as each search process completes
-          if (message.results && message.results.length > 0) {
-            results = results.concat(message.results);
+          var msgSearchId = message.searchId;
+
+          // 1. Check if routed to a kept tab
+          var targetTabId = tabSearchIdMap[msgSearchId];
+          if (targetTabId) {
+            var batchTab = resultTabs.find(function(t) { return t.id === targetTabId; });
+            if (batchTab) {
+              if (message.results && message.results.length > 0) batchTab.results = batchTab.results.concat(message.results);
+              batchTab.hitLimit = message.hitLimit || batchTab.hitLimit;
+              if (message.done) {
+                batchTab.searching = false;
+                delete tabSearchIdMap[msgSearchId];
+              }
+              if (activeTabId === targetTabId) {
+                debouncedRenderResults(batchTab.hitLimit, batchTab.limit, message.done,
+                  message.completedCount, message.totalCount);
+              } else {
+                renderTabBar(); // update count in tab label
+              }
+              break;
+            }
           }
-          // Debounced re-render with progress info
-          debouncedRenderResults(
-            message.hitLimit, message.limit, message.done,
-            message.completedCount, message.totalCount
-          );
+
+          // 2. Stale message check
+          if (msgSearchId && msgSearchId !== currentSearchId) break;
+
+          // 3. Normal current-tab handling — append to currentTab.results
+          if (message.results && message.results.length > 0) currentTab.results = currentTab.results.concat(message.results);
+          currentTab.hitLimit = message.hitLimit || currentTab.hitLimit;
+          if (message.done) {
+            currentTab.searching = false;
+          }
+          // Only re-render if viewing Current tab
+          if (!activeTabId) {
+            debouncedRenderResults(message.hitLimit, message.limit, message.done,
+              message.completedCount, message.totalCount);
+          }
           if (message.done) {
             searchBtn.style.display = 'inline-block';
             cancelBtn.style.display = 'none';
@@ -3840,30 +4081,67 @@ export class SearchPanel {
           break;
         }
 
-        case 'results':
-          // Discard stale messages from previous searches
-          if (message.searchId && message.searchId !== currentSearchId) break;
-          results = message.results || [];
-          currentQuery = message.query || '';
-          scopeServers = message.scopeServers || [];
-          // Reset expand state for new results (file level = default)
+        case 'results': {
+          // Check routing map for kept tabs
+          var resMsgSearchId = message.searchId;
+          var resTargetTabId = tabSearchIdMap[resMsgSearchId];
+          if (resTargetTabId) {
+            var resTab = resultTabs.find(function(t) { return t.id === resTargetTabId; });
+            if (resTab) {
+              resTab.results = message.results || [];
+              resTab.query = message.query || '';
+              resTab.scopeServers = message.scopeServers || [];
+              resTab.hitLimit = message.hitLimit || false;
+              resTab.limit = message.limit || 2000;
+              resTab.searching = false;
+              delete tabSearchIdMap[resMsgSearchId];
+              if (activeTabId === resTargetTabId) {
+                renderResults(message.hitLimit, message.limit);
+              } else {
+                renderTabBar();
+              }
+              searchBtn.style.display = 'inline-block';
+              cancelBtn.style.display = 'none';
+              break;
+            }
+          }
+          // Stale message check
+          if (resMsgSearchId && resMsgSearchId !== currentSearchId) break;
+          // Current tab handling
+          currentTab.results = message.results || [];
+          currentTab.query = message.query || '';
+          currentTab.scopeServers = message.scopeServers || [];
+          currentTab.hitLimit = message.hitLimit || false;
+          currentTab.limit = message.limit || 2000;
+          currentTab.searching = false;
+          currentTab.searchExpandState = 2;
+          currentTab.expandedFiles = new Set();
+          currentTab.expandedTreeNodes = new Set();
+          currentTab.treeViewFirstExpand = true;
+          // Reset per-tab aliases
           searchExpandState = 2;
-          expandedFiles.clear();
-          expandedTreeNodes.clear();
+          expandedFiles = new Set();
+          expandedTreeNodes = new Set();
           treeViewFirstExpand = true;
-          renderResults(message.hitLimit, message.limit);
-          // Hide cancel button, show search button
+          if (!activeTabId) {
+            renderResults(message.hitLimit, message.limit);
+          }
           searchBtn.style.display = 'inline-block';
           cancelBtn.style.display = 'none';
           break;
+        }
 
         case 'searchCancelled':
-          // Search was cancelled - show "Search cancelled" message
-          resultsHeader.style.display = 'none';
-          resultsContainer.innerHTML = '<div class="no-results">Search cancelled</div>';
-          // Hide cancel button, show search button
+          for (var ci = 0; ci < resultTabs.length; ci++) { if (resultTabs[ci].searching) resultTabs[ci].searching = false; }
+          tabSearchIdMap = {};
+          currentTab.searching = false;
+          if (!activeTabId) {
+            resultsHeader.style.display = 'none';
+            resultsContainer.innerHTML = '<div class="no-results">Search cancelled</div>';
+          }
           searchBtn.style.display = 'inline-block';
           cancelBtn.style.display = 'none';
+          renderTabBar();
           break;
 
         case 'error':

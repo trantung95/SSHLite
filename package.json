@@ -2,7 +2,7 @@
   "name": "ssh-lite",
   "displayName": "SSH Lite - Remote File Browser & Terminal",
   "description": "Lightweight SSH client for VS Code. Browse remote files, edit and save, open terminals, port forwarding - all without installing anything on remote servers. Perfect for VPS, cloud servers (AWS/Azure/GCP), and Linux administration.",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "publisher": "hybr8",
   "engines": {
     "vscode": "^1.85.0"
@@ -587,6 +587,12 @@
         "title": "Collapse All",
         "category": "SSH Lite",
         "icon": "$(collapse-all)"
+      },
+      {
+        "command": "sshLite.showTreeFromRoot",
+        "title": "Show Tree From Root",
+        "category": "SSH Lite",
+        "icon": "$(list-tree)"
       }
     ],
     "menus": {
@@ -1070,6 +1076,11 @@
           "command": "sshLite.searchInScope",
           "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
           "group": "inline@5"
+        },
+        {
+          "command": "sshLite.showTreeFromRoot",
+          "when": "view == sshLite.fileExplorer && viewItem == parentFolder",
+          "group": "inline"
         },
         {
           "command": "sshLite.cancelActivity",

@@ -342,17 +342,32 @@ describe('SSHFileDecorationProvider', () => {
       expect(decoration).toBeUndefined();
     });
 
-    it('should update when filtered folder changes', () => {
+    it('should support multiple filtered folders (additive)', () => {
       provider.setFilteredFolder('host:22:user', '/var/log');
-
-      const oldUri = sshUri('host:22:user', '/var/log');
-      const newUri = sshUri('host:22:user', '/etc');
-
-      // Old folder should stop being highlighted after change
       provider.setFilteredFolder('host:22:user', '/etc');
-      expect(provider.provideFileDecoration(oldUri)).toBeUndefined();
-      expect(provider.provideFileDecoration(newUri)).toBeDefined();
-      expect(provider.provideFileDecoration(newUri)!.badge).toBe('F');
+
+      const uri1 = sshUri('host:22:user', '/var/log');
+      const uri2 = sshUri('host:22:user', '/etc');
+
+      // Both should be highlighted (multi-filter support)
+      expect(provider.provideFileDecoration(uri1)).toBeDefined();
+      expect(provider.provideFileDecoration(uri1)!.badge).toBe('F');
+      expect(provider.provideFileDecoration(uri2)).toBeDefined();
+      expect(provider.provideFileDecoration(uri2)!.badge).toBe('F');
+    });
+
+    it('should clear specific filtered folder', () => {
+      provider.setFilteredFolder('host:22:user', '/var/log');
+      provider.setFilteredFolder('host:22:user', '/etc');
+
+      const uri1 = sshUri('host:22:user', '/var/log');
+      const uri2 = sshUri('host:22:user', '/etc');
+
+      // Clear only /var/log
+      provider.clearFilteredFolder('host:22:user', '/var/log');
+      expect(provider.provideFileDecoration(uri1)).toBeUndefined();
+      expect(provider.provideFileDecoration(uri2)).toBeDefined();
+      expect(provider.provideFileDecoration(uri2)!.badge).toBe('F');
     });
 
     it('should not affect file:// URI decorations', () => {
@@ -392,7 +407,7 @@ describe('SSHFileDecorationProvider', () => {
       const decoration = provider.provideFileDecoration(emptyUri);
 
       expect(decoration).toBeDefined();
-      expect(decoration!.tooltip).toBe('No matching files in this folder');
+      expect(decoration!.tooltip).toBe('Not matching filter');
     });
 
     it('should not gray out folders in highlighted paths', () => {
@@ -464,7 +479,7 @@ describe('SSHFileDecorationProvider', () => {
       const emptyUri = sshUri('host:22:user', '/var/log/archive/2023');
       const decoration = provider.provideFileDecoration(emptyUri);
       expect(decoration).toBeDefined();
-      expect(decoration!.tooltip).toBe('No matching files in this folder');
+      expect(decoration!.tooltip).toBe('Not matching filter');
     });
   });
 

@@ -1290,6 +1290,7 @@ export class SSHConnection implements ISSHConnection {
       excludePattern?: string; // Exclude pattern (e.g., node_modules, *.test.ts)
       maxResults?: number;
       signal?: AbortSignal; // Abort signal to cancel the search
+      findType?: 'f' | 'd' | 'both'; // For find: files, directories, or both (default: 'f')
     } = {}
   ): Promise<Array<{ path: string; line?: number; match?: string; size?: number; modified?: Date; permissions?: string }>> {
     if (this.state !== ConnectionState.Connected || !this._client) {
@@ -1356,6 +1357,9 @@ export class SSHConnection implements ISSHConnection {
     } else {
       // Use find for filename search
       const findCaseFlag = caseSensitive ? '-name' : '-iname';
+      // Determine type flag based on findType option
+      const ft = options.findType || 'f';
+      const typeFlag = ft === 'f' ? '-type f' : ft === 'd' ? '-type d' : '\\( -type f -o -type d \\)';
       // Build find exclude patterns
       let findExcludes = '';
       if (excludePattern) {
@@ -1365,7 +1369,7 @@ export class SSHConnection implements ISSHConnection {
           findExcludes += ` ! -path '*/${escapedEp}/*' ! -name '${escapedEp}'`;
         }
       }
-      command = `find ${escapedSearchPaths} -type f ${findCaseFlag} '*${escapedPattern}*'${findExcludes} 2>/dev/null${headLimit}`;
+      command = `find ${escapedSearchPaths} ${typeFlag} ${findCaseFlag} '*${escapedPattern}*'${findExcludes} 2>/dev/null${headLimit}`;
     }
 
     // Log the search command

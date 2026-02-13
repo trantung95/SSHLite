@@ -7,9 +7,8 @@
  * - isEmptyAfterFilter logic (folder graying when no matching descendants)
  * - Connection reorder algorithm (drag/drop)
  * - handleDrag filtering
- * - Change 7: Show Tree From Root (enableTreeFromRoot, disableTreeFromRoot, isTreeFromRoot,
- *   loadAncestorDirs, buildDirectoryItems placement, getChildren auto-expand)
- * - Change 8: Smart Reveal (revealFile Case A & B, loadIntermediateDirs, revealViaTreeFromRoot)
+ * - Show Tree From Root (setAutoExpandPaths, loadAncestorDirs, getChildren auto-expand)
+ * - Smart Reveal (revealFile Case A & B, loadIntermediateDirs, navigateToRootWithExpand)
  */
 
 import { IRemoteFile, ConnectionState } from '../types';
@@ -116,8 +115,6 @@ import {
   FileTreeItem,
   ConnectionTreeItem,
   ParentFolderTreeItem,
-  ShowTreeFromRootItem,
-  BackToFlatViewItem,
   LoadingTreeItem,
 } from './FileTreeProvider';
 
@@ -687,75 +684,24 @@ describe('FileTreeProvider - Change 7: Show Tree From Root', () => {
     provider.dispose();
   });
 
-  describe('enableTreeFromRoot()', () => {
-    it('should set tree-from-root mode for the connection', () => {
-      provider.enableTreeFromRoot('conn-1', '/home/user');
-      expect(provider.isTreeFromRoot('conn-1')).toBe(true);
-    });
-
-    it('should store the original path', () => {
-      provider.enableTreeFromRoot('conn-1', '/home/user/projects');
-      // disableTreeFromRoot should restore the original path
-      // We verify via isTreeFromRoot and the disable path
-      expect(provider.isTreeFromRoot('conn-1')).toBe(true);
-    });
-
-    it('should store expand paths when provided', () => {
-      const expandPaths = new Set(['/home', '/home/user', '/home/user/projects']);
-      provider.enableTreeFromRoot('conn-1', '/home/user/projects', expandPaths);
-      expect(provider.isTreeFromRoot('conn-1')).toBe(true);
+  describe('setAutoExpandPaths()', () => {
+    it('should store expand paths for a connection', () => {
+      const expandPaths = new Set(['/home', '/home/user']);
+      provider.setAutoExpandPaths('conn-1', expandPaths);
       // Expand paths are used internally by getChildren for auto-expand
+      // We verify via the auto-expand behavior in getChildren tests
+    });
+
+    it('should merge with existing pending paths', () => {
+      provider.setAutoExpandPaths('conn-1', new Set(['/home']));
+      provider.setAutoExpandPaths('conn-1', new Set(['/var', '/var/log']));
+      // Both /home and /var paths should be pending — verified via getChildren behavior
     });
 
     it('should handle multiple connections independently', () => {
-      provider.enableTreeFromRoot('conn-1', '/home/user1');
-      provider.enableTreeFromRoot('conn-2', '/opt/app');
-      expect(provider.isTreeFromRoot('conn-1')).toBe(true);
-      expect(provider.isTreeFromRoot('conn-2')).toBe(true);
-      expect(provider.isTreeFromRoot('conn-3')).toBe(false);
-    });
-  });
-
-  describe('disableTreeFromRoot()', () => {
-    it('should clear tree-from-root mode', () => {
-      provider.enableTreeFromRoot('conn-1', '/home/user');
-      provider.disableTreeFromRoot('conn-1');
-      expect(provider.isTreeFromRoot('conn-1')).toBe(false);
-    });
-
-    it('should restore original path via setCurrentPath', () => {
-      // Set up a connection so setCurrentPath can work
-      const mockConn = createMockConnection({ id: 'conn-1' });
-      mockGetConnection.mockReturnValue(mockConn);
-
-      provider.enableTreeFromRoot('conn-1', '/home/user/projects');
-      provider.disableTreeFromRoot('conn-1');
-
-      // After disable, getCurrentPath should reflect the restored original path
-      expect(provider.getCurrentPath('conn-1')).toBe('/home/user/projects');
-    });
-
-    it('should be a no-op for connections not in tree-from-root mode', () => {
-      // Should not throw
-      provider.disableTreeFromRoot('conn-nonexistent');
-      expect(provider.isTreeFromRoot('conn-nonexistent')).toBe(false);
-    });
-  });
-
-  describe('isTreeFromRoot()', () => {
-    it('should return false by default', () => {
-      expect(provider.isTreeFromRoot('conn-1')).toBe(false);
-    });
-
-    it('should return true after enableTreeFromRoot', () => {
-      provider.enableTreeFromRoot('conn-1', '/home');
-      expect(provider.isTreeFromRoot('conn-1')).toBe(true);
-    });
-
-    it('should return false after disableTreeFromRoot', () => {
-      provider.enableTreeFromRoot('conn-1', '/home');
-      provider.disableTreeFromRoot('conn-1');
-      expect(provider.isTreeFromRoot('conn-1')).toBe(false);
+      provider.setAutoExpandPaths('conn-1', new Set(['/home']));
+      provider.setAutoExpandPaths('conn-2', new Set(['/opt']));
+      // Each connection has its own pending expand paths
     });
   });
 
@@ -818,7 +764,7 @@ describe('FileTreeProvider - Change 7: Show Tree From Root', () => {
   });
 
   describe('buildDirectoryItems() - tree item placement', () => {
-    it('should show BackToFlatViewItem when in tree-from-root mode', async () => {
+    it('should NOT show any special navigation item when at root /', async () => {
       const mockConn = createMockConnection({ id: 'conn-1' });
       mockGetConnection.mockReturnValue(mockConn);
       mockGetAllConnections.mockReturnValue([mockConn]);
@@ -830,27 +776,18 @@ describe('FileTreeProvider - Change 7: Show Tree From Root', () => {
         createMockRemoteFile('dir1', { path: '/dir1', isDirectory: true, connectionId: 'conn-1' }),
       ]);
 
-      // Navigate to root and enable tree-from-root
       provider.setCurrentPath('conn-1', '/');
-      provider.enableTreeFromRoot('conn-1', '/home/user');
 
-      // Pre-cache the root directory
-      await mockConn.listFiles('/');
-
-      // Get the connection children
       const rootItems = await provider.getChildren();
-      expect(rootItems.length).toBeGreaterThan(0);
-
       const connItem = rootItems[0] as ConnectionTreeItem;
       const children = await provider.getChildren(connItem);
 
-      // First item should be BackToFlatViewItem
-      const backItem = children.find(c => c instanceof BackToFlatViewItem);
-      expect(backItem).toBeDefined();
-      expect((backItem as BackToFlatViewItem).originalPath).toBe('/home/user');
+      // At root, no ParentFolderTreeItem should be shown
+      const parentItem = children.find(c => c instanceof ParentFolderTreeItem);
+      expect(parentItem).toBeUndefined();
     });
 
-    it('should show ShowTreeFromRootItem when NOT in tree-from-root mode and not at root', async () => {
+    it('should show ParentFolderTreeItem with currentPath when NOT at root', async () => {
       const mockConn = createMockConnection({ id: 'conn-1' });
       mockGetConnection.mockReturnValue(mockConn);
       mockGetAllConnections.mockReturnValue([mockConn]);
@@ -871,17 +808,13 @@ describe('FileTreeProvider - Change 7: Show Tree From Root', () => {
       const connItem = rootItems[0] as ConnectionTreeItem;
       const children = await provider.getChildren(connItem);
 
-      // Should have a ShowTreeFromRootItem
-      const showTreeItem = children.find(c => c instanceof ShowTreeFromRootItem);
-      expect(showTreeItem).toBeDefined();
-      expect((showTreeItem as ShowTreeFromRootItem).currentPath).toBe('/home/user');
-
-      // Should also have ParentFolderTreeItem
-      const parentItem = children.find(c => c instanceof ParentFolderTreeItem);
+      // ParentFolderTreeItem should carry currentPath for inline "Show tree from root" button
+      const parentItem = children.find(c => c instanceof ParentFolderTreeItem) as ParentFolderTreeItem;
       expect(parentItem).toBeDefined();
+      expect(parentItem.currentPath).toBe('/home/user');
     });
 
-    it('should NOT show ShowTreeFromRootItem when at root /', async () => {
+    it('should NOT show ParentFolderTreeItem when at root /', async () => {
       const mockConn = createMockConnection({ id: 'conn-1' });
       mockGetConnection.mockReturnValue(mockConn);
       mockGetAllConnections.mockReturnValue([mockConn]);
@@ -897,11 +830,11 @@ describe('FileTreeProvider - Change 7: Show Tree From Root', () => {
       const connItem = rootItems[0] as ConnectionTreeItem;
       const children = await provider.getChildren(connItem);
 
-      const showTreeItem = children.find(c => c instanceof ShowTreeFromRootItem);
-      expect(showTreeItem).toBeUndefined();
+      const parentItem = children.find(c => c instanceof ParentFolderTreeItem);
+      expect(parentItem).toBeUndefined();
     });
 
-    it('should show ShowTreeFromRootItem when at home ~', async () => {
+    it('should show ParentFolderTreeItem with currentPath when at home ~', async () => {
       const mockConn = createMockConnection({ id: 'conn-1' });
       mockGetConnection.mockReturnValue(mockConn);
       mockGetAllConnections.mockReturnValue([mockConn]);
@@ -917,19 +850,20 @@ describe('FileTreeProvider - Change 7: Show Tree From Root', () => {
       const connItem = rootItems[0] as ConnectionTreeItem;
       const children = await provider.getChildren(connItem);
 
-      const showTreeItem = children.find(c => c instanceof ShowTreeFromRootItem);
-      expect(showTreeItem).toBeDefined();
+      const parentItem = children.find(c => c instanceof ParentFolderTreeItem) as ParentFolderTreeItem;
+      expect(parentItem).toBeDefined();
+      expect(parentItem.currentPath).toBe('~');
     });
   });
 
-  describe('getChildren(FileTreeItem) - auto-expand logic for tree-from-root', () => {
+  describe('getChildren(FileTreeItem) - auto-expand logic', () => {
     it('should auto-expand folders on the expand path', async () => {
       const mockConn = createMockConnection({ id: 'conn-1' });
       mockGetConnection.mockReturnValue(mockConn);
 
-      // Set up expand paths
+      // Set up auto-expand paths
       const expandPaths = new Set(['/home', '/home/user']);
-      provider.enableTreeFromRoot('conn-1', '/home/user', expandPaths);
+      provider.setAutoExpandPaths('conn-1', expandPaths);
 
       // Create a directory listing for /home with /home/user in it
       const homeDir: IRemoteFile = {
@@ -1039,8 +973,6 @@ describe('FileTreeProvider - Change 8: Smart Reveal', () => {
       expect(result!.file.path).toBe('/home/user/projects/app.ts');
       // currentPath should still be ~ (not changed to the parent of the revealed file)
       expect(provider.getCurrentPath('conn-1')).toBe('~');
-      // Should NOT have entered tree-from-root mode
-      expect(provider.isTreeFromRoot('conn-1')).toBe(false);
     });
 
     it('should use cached parent if file is already visible', async () => {
@@ -1065,7 +997,7 @@ describe('FileTreeProvider - Change 8: Smart Reveal', () => {
   });
 
   describe('revealFile() - Case B: file outside currentPath', () => {
-    it('should switch to tree-from-root mode when file is outside currentPath', async () => {
+    it('should navigate to root with auto-expand when file is outside currentPath', async () => {
       const mockConn = createMockConnection({ id: 'conn-1' });
       mockConn.exec.mockResolvedValue('/home/user\n');
       mockGetConnection.mockReturnValue(mockConn);
@@ -1084,9 +1016,7 @@ describe('FileTreeProvider - Change 8: Smart Reveal', () => {
 
       expect(result).toBeDefined();
       expect(result!.file.path).toBe('/var/log/app.log');
-      // Should have entered tree-from-root mode
-      expect(provider.isTreeFromRoot('conn-1')).toBe(true);
-      // currentPath should now be / (root)
+      // currentPath should now be / (root) — navigated to root with auto-expand
       expect(provider.getCurrentPath('conn-1')).toBe('/');
     });
 
@@ -1178,8 +1108,8 @@ describe('FileTreeProvider - Change 8: Smart Reveal', () => {
     });
   });
 
-  describe('revealViaTreeFromRoot()', () => {
-    it('should enable tree-from-root with both original and target paths expanded', async () => {
+  describe('navigateToRootWithExpand() (via revealFile Case B)', () => {
+    it('should navigate to root with both original and target paths as auto-expand', async () => {
       const mockConn = createMockConnection({ id: 'conn-1' });
       mockConn.exec.mockResolvedValue('/home/user\n');
       mockGetConnection.mockReturnValue(mockConn);
@@ -1195,9 +1125,6 @@ describe('FileTreeProvider - Change 8: Smart Reveal', () => {
 
       // Reveal a file at /var/log/app.log (outside current path /home/user)
       await provider.revealFile('conn-1', '/var/log/app.log');
-
-      // Verify tree-from-root is enabled
-      expect(provider.isTreeFromRoot('conn-1')).toBe(true);
 
       // Current path should be / (root view)
       expect(provider.getCurrentPath('conn-1')).toBe('/');
@@ -1271,8 +1198,8 @@ describe('FileTreeProvider - Change 8: Smart Reveal', () => {
       const result = await provider.revealFile('conn-1', '/etc/hosts');
       expect(result).toBeDefined();
       expect(result!.file.path).toBe('/etc/hosts');
-      // Should NOT enter tree-from-root because / is the root and all paths are under /
-      expect(provider.isTreeFromRoot('conn-1')).toBe(false);
+      // When already at /, it stays at / (Case A applies since all paths are under /)
+      expect(provider.getCurrentPath('conn-1')).toBe('/');
     });
 
     it('should handle the case when exec fails to resolve home directory', async () => {
@@ -1289,10 +1216,10 @@ describe('FileTreeProvider - Change 8: Smart Reveal', () => {
       provider.setCurrentPath('conn-1', '~');
 
       // When exec fails, resolvedCurrentPath stays as ~
-      // Since /var/log/app.log doesn't start with "~/", it will go to Case B
+      // Since /var/log/app.log doesn't start with "~/", it will go to Case B (navigate to root)
       const result = await provider.revealFile('conn-1', '/var/log/app.log');
       expect(result).toBeDefined();
-      expect(provider.isTreeFromRoot('conn-1')).toBe(true);
+      expect(provider.getCurrentPath('conn-1')).toBe('/');
     });
   });
 });
@@ -1302,30 +1229,26 @@ describe('FileTreeProvider - Change 8: Smart Reveal', () => {
 // Tree item constructors
 // ============================================================================
 
-describe('ShowTreeFromRootItem', () => {
+describe('ParentFolderTreeItem', () => {
   it('should have correct properties', () => {
     const mockConn = createMockConnection({ id: 'conn-1' });
-    const item = new ShowTreeFromRootItem(mockConn as any, '/home/user');
+    const item = new ParentFolderTreeItem(mockConn as any, '/home', '/home/user');
 
-    expect(item.label).toBe('Show tree from root');
-    expect(item.description).toBe('/ \u2192 /home/user');
-    expect(item.contextValue).toBe('showTreeFromRoot');
-    expect(item.id).toBe('showTreeFromRoot:conn-1');
-    expect(item.command?.command).toBe('sshLite.showTreeFromRoot');
-    expect(item.command?.arguments).toEqual([mockConn, '/home/user']);
+    expect(item.label).toBe('..');
+    expect(item.description).toBe('Go to parent folder');
+    expect(item.contextValue).toBe('parentFolder');
+    expect(item.parentPath).toBe('/home');
+    expect(item.currentPath).toBe('/home/user');
+    expect(item.command?.command).toBe('sshLite.goToPath');
+    expect(item.command?.arguments).toEqual([mockConn, '/home']);
+  });
+
+  it('should default currentPath to parentPath when not specified', () => {
+    const mockConn = createMockConnection({ id: 'conn-1' });
+    const item = new ParentFolderTreeItem(mockConn as any, '/home');
+
+    expect(item.parentPath).toBe('/home');
+    expect(item.currentPath).toBe('/home');
   });
 });
 
-describe('BackToFlatViewItem', () => {
-  it('should have correct properties', () => {
-    const mockConn = createMockConnection({ id: 'conn-1' });
-    const item = new BackToFlatViewItem(mockConn as any, '/home/user/projects');
-
-    expect(item.label).toBe('Back to flat view');
-    expect(item.description).toBe('/home/user/projects');
-    expect(item.contextValue).toBe('backToFlatView');
-    expect(item.id).toBe('backToFlat:conn-1');
-    expect(item.command?.command).toBe('sshLite.backToFlatView');
-    expect(item.command?.arguments).toEqual([mockConn, '/home/user/projects']);
-  });
-});

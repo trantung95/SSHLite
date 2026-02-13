@@ -158,6 +158,16 @@ This project is designed to grow itself. The `.adn/growth/` folder contains ever
 
 ## Release Notes
 
+### v0.4.4 — Search panel redesign & filter improvements
+
+- **Keep Results mid-search**: Clicking "Keep Results" during an active search now pins the tab with its ongoing search — results keep streaming into the kept tab while a fresh Current tab is created
+- **Isolated tab state**: Each kept tab owns its own query, options, results, expand state, and searching status with full save/restore on tab switch
+- **searchBatch routing**: `tabSearchIdMap` routes progressive search results to the correct kept tab by searchId
+- **LITE tab cleanup**: Closing a kept tab cancels its server-side search and frees all memory
+- **Dynamic worker adjustment**: Changing per-server worker count mid-search takes effect immediately — workers spawn or self-terminate via `activeWorkerPools` registry
+- **Filter mode graying**: Folder/both filter modes now gray out non-matching items instead of hiding them, matching the file filter visual behavior
+- **Filter QuickPick fixes**: Mode options no longer disappear when typing; last selected mode is remembered across invocations; selection no longer resets to first item on keystroke
+
 ### v0.4.3 — Improved port forward input UX
 
 - **Reordered port forward prompt**: Now asks server port → target host → local port (was local → remote host → remote)

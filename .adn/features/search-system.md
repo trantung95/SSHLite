@@ -118,11 +118,14 @@ For each checked server with non-redundant paths:
 ```
 For each checked server with non-redundant paths:
   1. Build find command:
-     find <paths> -type f -iname "<pattern>"
-  2. Execute via SSHConnection.searchFiles()
+     find <paths> <typeFlag> -iname "<pattern>"
+     typeFlag: -type f (files), -type d (dirs), \( -type f -o -type d \) (both)
+  2. Execute via SSHConnection.searchFiles({ findType: 'f'|'d'|'both' })
   3. Parse results (one path per line)
   4. Send progressive searchBatch to webview
 ```
+
+The `findType` option is also used by the filename filter system for filter modes (files/folders/both).
 
 ### Progressive Results (searchBatch)
 
@@ -233,6 +236,26 @@ const globalParallelProcesses = config.get<number>('searchParallelProcesses', 20
 const parallelProcesses = server.maxSearchProcesses ?? globalParallelProcesses;
 ```
 
+### Dynamic Worker Adjustment (Mid-Search)
+
+Worker count changes take effect immediately during an active search:
+
+```typescript
+// SearchPanel tracks active worker pools
+private activeWorkerPools: Map<string, {
+  desiredWorkerCount: number;
+  activeWorkerCount: number;
+  addWorker: () => void;
+}>;
+```
+
+When `setServerMaxProcesses` fires:
+1. Find all active pools for this server (keyed by `serverId:path`)
+2. Update `desiredWorkerCount` on each pool
+3. If increasing: spawn additional workers via `addWorker()`
+4. If decreasing: workers self-terminate at the top of their loop when `activeWorkerCount > desiredWorkerCount` (minimum 1 worker always stays alive)
+5. Pools are cleaned up on search cancel/complete (`activeWorkerPools.clear()`)
+
 ---
 
 ## Search Instance Tracking (searchId)
@@ -276,28 +299,68 @@ private currentTotalCount: number = 0;                    // Promoted from local
 
 ## Keep Results (Tab Bar)
 
-Pin current search results as tabs for comparison. Session-only (not persisted). Max 10 tabs.
+Pin current search results as tabs for comparison. Session-only (not persisted). Max 10 tabs. Each tab has completely isolated state (query, options, results, expand state).
 
-### State
+### Tab State Model
 
 ```javascript
-let resultTabs = [];    // Array of { id, query, timestamp, results, scopeServers, hitLimit, limit }
-let activeTabId = null; // null = current/live search tab
+function createTabState() {
+  return {
+    id, query, include, exclude,           // Search parameters
+    caseSensitive, useRegex, findFilesMode, // Toggle states
+    results, scopeServers, hitLimit, limit, // Result data
+    searchId, searching,                    // Active search tracking
+    expandedFiles, expandedTreeNodes,       // UI expand state
+    treeViewFirstExpand, searchExpandState, viewMode, // View state
+    timestamp,
+  };
+}
+
+let resultTabs = [];              // Kept tab state objects
+let activeTabId = null;           // null = Current tab
+let currentTab = createTabState(); // Always-present "Current" tab
+let tabSearchIdMap = {};          // { searchId: tabId } — routes searchBatch to kept tabs
 ```
 
 ### UI
 
 Tab bar appears above results when `resultTabs.length > 0`:
-- Kept tabs show query + result count, with `×` close button
+- Kept tabs show query + result count + searching indicator (`⟳`), with `×` close button
 - "Current" tab (always last) shows live search results
 - Active tab highlighted with accent border
+- Tabs with active searches show italic label
 
-### Pin Flow
+### Pin Flow (Keep Results Mid-Search)
 
-1. Click pin icon in results header (shown when results exist and search is done)
-2. Current results copied into new tab object
-3. `results` array cleared for fresh search
-4. Tab bar re-rendered, "Current" tab becomes active
+1. Click pin icon in results header (shown on Current tab when results exist)
+2. Save current input state into the tab being kept
+3. Move `currentTab` to `resultTabs` (becomes a kept tab)
+4. If the tab has an active search, register `tabSearchIdMap[searchId] = tabId` to route future `searchBatch` messages to the kept tab
+5. Create a fresh `currentTab` and restore it to the UI
+6. Tab bar re-rendered, "Current" tab becomes active with empty inputs
+
+### Tab Switch (Save/Restore)
+
+On every tab switch:
+1. `saveCurrentInputState()` captures UI state into outgoing tab
+2. `restoreTabState(tab)` applies incoming tab's state to UI (inputs, toggles, buttons)
+3. Search/cancel button visibility updated based on `tab.searching`
+
+### searchBatch Routing
+
+When `searchBatch` arrives:
+1. Check `tabSearchIdMap[searchId]` — if routed to a kept tab, append results to that tab
+2. If routed tab is the active tab, re-render results; otherwise just update tab bar count
+3. On `done`, remove the routing entry and mark tab as not searching
+4. If not routed, fall through to normal current-tab handling (stale message check via `currentSearchId`)
+
+### Tab Close (LITE Cleanup)
+
+When closing a tab:
+1. If the tab has an active search, send `cancel` message to stop server-side work
+2. Remove `tabSearchIdMap` entry for the tab's searchId
+3. Free memory: clear `results`, `scopeServers`, `expandedFiles`, `expandedTreeNodes`
+4. If closing the active tab, switch to Current tab and restore its state
 
 ---
 

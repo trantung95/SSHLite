@@ -83,8 +83,7 @@ Remote file browser tree with caching, filtering, drag & drop, and preloading.
 ```
 sshLite.fileExplorer
   └─ ConnectionTreeItem (server name)
-       ├─ ParentFolderTreeItem (..)
-       ├─ ShowTreeFromRootItem (Show tree from root) / BackToFlatViewItem (Back to flat view)
+       ├─ ParentFolderTreeItem (..)  ← inline "Show tree from root" button
        ├─ FileTreeItem (file/folder)
        │    └─ FileTreeItem (nested)
        └─ ...
@@ -115,9 +114,70 @@ Two filter types:
 - Available on both **connection** (server level) and **folder** items
 - Glob pattern support (`*.ts`, `config*`)
 - Plain text = substring match
-- Directories always shown (for navigation)
-- Empty folders after filter are grayed out
+- **Multiple simultaneous filters** on different folders (additive, not replacing)
+- **Filter modes**: files only (default), folders only, or both
+- **Match count per folder**: Recursive count shown as `(N)` in description
+- Directories with matching names are highlighted (not grayed out)
+- Empty folders after filter are grayed out (checked via `isEmptyAfterFilter`)
 - Connection contextValue changes: `connection` → `connection.filtered` when active
+
+#### Multi-Filter Architecture
+
+```typescript
+export type FilterMode = 'files' | 'folders' | 'both';
+
+interface ActiveFilter {
+  pattern: string;                      // lowercase
+  basePath: string;
+  connectionId: string;
+  highlightedPaths: Set<string>;
+  matchCounts: Map<string, number>;     // folderPath → recursive count
+  filterMode: FilterMode;
+}
+
+// Key: "connectionId:basePath"
+private activeFilters: Map<string, ActiveFilter> = new Map();
+```
+
+#### Filter Mode Behavior
+
+| Mode | Files | Directories |
+|------|-------|-------------|
+| `files` | Filtered by pattern | Always shown (for navigation) |
+| `folders` | Always shown | Filtered by pattern |
+| `both` | Filtered by pattern | Filtered by pattern |
+
+#### Key Methods
+
+| Method | Purpose |
+|--------|---------|
+| `setFilenameFilter(pattern, basePath, conn, filterMode)` | Add/update filter; calls `searchFiles` with `findType` |
+| `clearFilenameFilter(filterKey?)` | Clear specific or all filters |
+| `matchesFilenameFilter(connId, file)` | Check all applicable filters for visibility |
+| `isEmptyAfterFilter(connId, folderPath)` | Gray out folders: checks highlightedPaths AND folder name match |
+| `isPathHighlighted(connId, file)` | Check any filter highlights this file |
+| `getMatchCount(connId, folderPath)` | Sum recursive match counts from all filters |
+| `nameMatchesPattern(name, pattern)` | Shared substring/glob matcher |
+| `shouldHighlightByFilter(filter, file)` | Local pattern match (fallback for symlinks) |
+
+#### Match Count Computation
+
+After `searchFiles` returns results, `setFilenameFilter` walks up parent paths from each result to `basePath`, incrementing `matchCounts` for each ancestor folder. Displayed in `FileTreeItem.description` as `(N)`.
+
+#### QuickPick Input (extension.ts)
+
+Filter command uses `vscode.window.createQuickPick<FilterModeItem>()` with text input at top and 3 mode items below:
+- `$(file) Files only` (default)
+- `$(folder) Folders only`
+- `$(files) Both`
+
+User types pattern and selects mode, then presses Enter.
+
+#### Selective Clearing
+
+- **Inline clear** (clicking clear on filtered folder): Clears that specific filter via `clearFilenameFilter("connId:basePath")`
+- **Toolbar clear**: Clears ALL filters via `clearFilenameFilter()`
+- Decoration provider synced via `rebuildFilterState()` after changes
 
 ```typescript
 matchesFilter(file: IRemoteFile, pattern: string): boolean {
@@ -136,7 +196,7 @@ matchesFilter(file: IRemoteFile, pattern: string): boolean {
 
 ### Reveal Auto-Clear
 
-When revealing a file in the tree (`sshLite.revealInTree`), if the file is hidden by the current filename filter, the filter is auto-cleared:
+When revealing a file in the tree (`sshLite.revealInTree`), if the file is hidden by the current filename filter, the filter is auto-cleared. Only clears if ALL filters would need clearing; otherwise clears the specific blocking filter.
 
 ```typescript
 fileTreeProvider.setOnFilterCleared(() => {
@@ -191,56 +251,48 @@ class FileTreeItem extends vscode.TreeItem {
 }
 ```
 
-### Tree-From-Root Mode
+### Show Tree From Root
 
-A button next to `..` (ParentFolderTreeItem) that switches from flat navigation to a full hierarchical tree from `/` to the current path level, with auto-expanded path segments.
+An inline button on the `ParentFolderTreeItem` (`..`) row that navigates to `/` with auto-expand from root down to the current path. No special mode — just normal tree navigation with smart expansion.
 
-#### Tree Item Types
+#### How it works
 
-| Class | contextValue | Purpose |
-|-------|-------------|---------|
-| `ShowTreeFromRootItem` | `showTreeFromRoot` | Button to enter tree-from-root mode |
-| `BackToFlatViewItem` | `backToFlatView` | Button to exit back to flat navigation |
-
-#### Instance Variables
-
-```typescript
-private treeFromRootConnections: Set<string> = new Set();           // connectionIds in tree-from-root mode
-private treeFromRootOriginalPaths: Map<string, string> = new Map(); // connectionId → original path before switch
-private treeFromRootExpandPaths: Map<string, Set<string>> = new Map(); // connectionId → paths to auto-expand
-```
-
-#### Flow
-
-1. User clicks "Show tree from root" at `/home/user/projects`
+1. User clicks tree icon on `..` row at `/home/user/projects`
 2. `sshLite.showTreeFromRoot` command:
-   - Marks connection as tree-from-root mode
-   - Stores original path (`/home/user/projects`)
-   - Loads ancestor dirs (`/`, `/home`, `/home/user`) into cache
-   - Sets `currentPath = '/'` and populates expand paths
+   - Builds expand paths: `/home`, `/home/user`, `/home/user/projects`
+   - Queues them via `setAutoExpandPaths()` (consumed once by `getChildren`)
+   - Loads ancestor dirs (`/`, `/home`, `/home/user`, `/home/user/projects`) into cache
+   - Sets `currentPath = '/'`
 3. Tree renders from `/` with path segments auto-expanded down to `projects/`
-4. Already-cached current directory contents are reused
-5. User clicks "Back to flat view" → restores original path and exits mode
+4. Already-expanded folders stay expanded
+5. No "Back to flat view" — user navigates normally from the root tree
 
-#### Auto-Expand
+#### Auto-Expand Mechanism
 
-In `getChildren()` and `buildDirectoryItems()`, directories on the expand path are returned with `CollapsibleState.Expanded`:
+Pending auto-expand paths are stored in `pendingAutoExpandPaths: Map<string, Set<string>>` and consumed once by `getChildren()` / `buildDirectoryItems()`:
 
 ```typescript
-const autoExpandPaths = this.treeFromRootExpandPaths.get(connectionId);
+const autoExpandPaths = this.pendingAutoExpandPaths.get(connectionId);
 const shouldAutoExpand = file.isDirectory && autoExpandPaths?.has(file.path);
 const state = shouldAutoExpand ? Expanded : Collapsed;
+// Paths are cleared after 500ms timeout to prevent stale expand state
 ```
 
-#### Mode Exit
+#### Key Methods
 
-Tree-from-root mode automatically exits when the user explicitly navigates via `goToPath` (clicking a folder to enter flat view).
+```typescript
+setAutoExpandPaths(connectionId: string, expandPaths: Set<string>): void
+// Queue paths for auto-expand on next render (merges with existing)
+
+async loadAncestorDirs(connection: SSHConnection, targetPath: string): Promise<void>
+// Load all directories from / to targetPath into cache
+```
 
 ---
 
 ### Smart Reveal (Preserve Tree State)
 
-`revealFile()` expands the tree from the current view to the target file **without collapsing or resetting** the existing tree state.
+`revealFile()` expands the tree from the current view to the target file **without collapsing or resetting** the existing tree state. Used by search "Reveal in File Explorer" and "Reveal in Tree" commands.
 
 #### Case A: File Under currentPath
 
@@ -252,9 +304,9 @@ File is reachable from the current view (e.g., currentPath = `/home/user`, file 
 #### Case B: File Outside currentPath
 
 File is not under current view (e.g., currentPath = `/home/user/projects`, file = `/var/log/syslog`):
-- Switch to tree-from-root mode (reuses Change 7 infrastructure)
-- `revealViaTreeFromRoot()` loads ancestors for BOTH paths (original + target)
-- Both paths are auto-expanded so user's context is preserved alongside the revealed file
+- `navigateToRootWithExpand()` navigates to `/` with auto-expand
+- Loads ancestors for BOTH paths (original + target)
+- Both paths + all currently expanded folders are queued as auto-expand paths
 - `reveal()` selects the target file
 
 #### Key Methods
@@ -263,8 +315,8 @@ File is not under current view (e.g., currentPath = `/home/user/projects`, file 
 private async loadIntermediateDirs(connection, fromPath, toPath): Promise<void>
 // Loads all dirs between fromPath and toPath into cache
 
-private async revealViaTreeFromRoot(connection, originalPath, remotePath): Promise<void>
-// Enables tree-from-root, loads ancestors for both paths, sets expand paths
+private async navigateToRootWithExpand(connection, originalPath, remotePath): Promise<void>
+// Navigates to /, loads ancestors for both paths, queues auto-expand paths
 ```
 
 ---
@@ -288,27 +340,37 @@ Registered via `dragAndDropController: fileTreeProvider` on createTreeView. Supp
 
 ## FileDecorationProvider (`src/providers/FileDecorationProvider.ts`)
 
-Provides badges and colors for file tabs and tree items.
+Provides badges and colors for file tabs and tree items. Supports **multiple simultaneous filters** via `Set`-based state.
 
 ### Badge Types
 
 | Badge | Color | Meaning | Source |
 |-------|-------|---------|--------|
-| `↑` | Orange (`charts.orange`) | File uploading | `FileService.uploadingFiles` Set |
+| `↑` | Yellow (`charts.yellow`) | File uploading | `FileService.uploadingFiles` Set |
 | `✗` | Red (`errorForeground`) | Upload failed | `FileService.failedUploadFiles` Set |
-| `M` | Yellow (`gitDecoration.modifiedResourceForeground`) | File modified | Change tracking |
-| — | Blue | Filtered folder | Filename filter active |
-| — | Gray | Empty after filter | No matching files in folder |
+| `F` | Blue (`charts.blue`) | Filtered folder | Filename filter active |
+| — | Gray (`disabledForeground`) | Empty after filter / disconnected | No matching files in folder |
+
+### Multi-Filter State
+
+```typescript
+private filteredFolderUris: Set<string> = new Set();     // Blue "F" badge
+private filterHighlightedUris: Set<string> = new Set();  // Highlighted (not grayed)
+private filterBasePrefixes: Set<string> = new Set();      // Base paths for gray check
+```
+
+All three are **additive** — `setFilteredFolder()` and `setFilenameFilterPaths()` add to the sets. Use `clearFilteredFolder(connId, path)` to remove specific entries, or `clearFilteredFolder()` to clear all.
+
+`rebuildFilterState(filterStates)` replaces all state atomically from FileTreeProvider's `getFilenameFilterState()`.
 
 ### Event Subscriptions
 
 ```typescript
 constructor(fileService: FileService, connectionManager: ConnectionManager) {
-  // Subscribe to upload state changes
+  fileService.onFileMappingsChanged(() => this.refresh());
   fileService.onUploadStateChanged(() => this.refresh());
-
-  // Subscribe to connection changes (clear decorations on disconnect)
   connectionManager.onDidChangeConnections(() => this.refresh());
+  connectionManager.onConnectionStateChange(() => this.refresh());
 }
 ```
 
@@ -316,22 +378,19 @@ constructor(fileService: FileService, connectionManager: ConnectionManager) {
 
 ```typescript
 provideFileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {
-  const localPath = normalizeLocalPath(uri.fsPath);
-
-  // Check upload state
-  if (fileService.isUploading(localPath)) {
-    return { badge: '↑', color: new vscode.ThemeColor('charts.orange') };
+  // ssh:// URIs: filtered folder badges + empty folder graying
+  if (uri.scheme === 'ssh') {
+    if (this.filteredFolderUris.has(uriString)) → blue "F" badge
+    for (prefix of this.filterBasePrefixes):
+      if under prefix && !highlighted → gray "No matching files"
   }
-  if (fileService.isUploadFailed(localPath)) {
-    return { badge: '✗', color: new vscode.ThemeColor('errorForeground') };
+  // file:// URIs: upload state + connection state decorations
+  if (uri.scheme === 'file') {
+    uploading → "↑" badge
+    failed → "✗" badge
+    no mapping → gray "Not connected"
+    no connection → gray "Connection lost"
   }
-
-  // Check modified state
-  if (fileService.isModified(localPath)) {
-    return { badge: 'M', color: ... };
-  }
-
-  return undefined;  // No decoration for non-SSH files
 }
 ```
 

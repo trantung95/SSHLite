@@ -14,7 +14,7 @@ import { ProgressiveDownloadManager } from './services/ProgressiveDownloadManage
 import { HostTreeProvider, ServerTreeItem, UserCredentialTreeItem, CredentialTreeItem, PinnedFolderTreeItem, setExtensionPath } from './providers/HostTreeProvider';
 import { SavedCredential, PinnedFolder } from './services/CredentialService';
 import { IHostConfig, ConnectionState } from './types';
-import { FileTreeProvider, FileTreeItem, ConnectionTreeItem, setFileTreeExtensionPath } from './providers/FileTreeProvider';
+import { FileTreeProvider, FileTreeItem, ConnectionTreeItem, ParentFolderTreeItem, setFileTreeExtensionPath, FilterMode } from './providers/FileTreeProvider';
 import { PortForwardTreeProvider, PortForwardTreeItem, SavedForwardTreeItem } from './providers/PortForwardTreeProvider';
 import { ActivityTreeProvider, ActivityTreeItem, ServerGroupTreeItem } from './providers/ActivityTreeProvider';
 import { ActivityService } from './services/ActivityService';
@@ -417,6 +417,7 @@ export function activate(context: vscode.ExtensionContext): void {
   });
 
   // Register commands
+  let lastFilterMode: FilterMode = 'files'; // Remember last selected filter mode across invocations
   const commands = [
     // Host commands
     vscode.commands.registerCommand('sshLite.connect', async (item?: ServerTreeItem) => {
@@ -883,10 +884,6 @@ export function activate(context: vscode.ExtensionContext): void {
       try {
         logCommand('goToPath', targetPath);
         await connection.listFiles(targetPath);
-        // Exit tree-from-root mode when navigating explicitly
-        if (fileTreeProvider.isTreeFromRoot(connection.id)) {
-          fileTreeProvider.disableTreeFromRoot(connection.id);
-        }
         fileTreeProvider.setCurrentPath(connection.id, targetPath);
         logResult('goToPath', true, targetPath);
       } catch (error) {
@@ -895,8 +892,20 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
 
-    // Show tree from root: switch from flat navigation to full tree from /
-    vscode.commands.registerCommand('sshLite.showTreeFromRoot', async (connection: SSHConnection, currentPath: string) => {
+    // Show tree from root: navigate to / with auto-expand from root down to current path
+    // Called from inline button on ParentFolderTreeItem (..) row
+    vscode.commands.registerCommand('sshLite.showTreeFromRoot', async (connectionOrItem: SSHConnection | ParentFolderTreeItem, currentPathArg?: string) => {
+      let connection: SSHConnection;
+      let currentPath: string;
+
+      if (connectionOrItem instanceof ParentFolderTreeItem) {
+        connection = connectionOrItem.connection;
+        currentPath = connectionOrItem.currentPath;
+      } else {
+        connection = connectionOrItem;
+        currentPath = currentPathArg!;
+      }
+
       try {
         // Build expand paths from / to currentPath
         const expandPaths = new Set<string>();
@@ -907,10 +916,10 @@ export function activate(context: vscode.ExtensionContext): void {
           expandPaths.add(p);
         }
 
-        // Enable tree-from-root mode
-        fileTreeProvider.enableTreeFromRoot(connection.id, currentPath, expandPaths);
+        // Queue auto-expand paths (consumed once by getChildren)
+        fileTreeProvider.setAutoExpandPaths(connection.id, expandPaths);
 
-        // Load all ancestor directories
+        // Load all ancestor directories so tree can render them
         await fileTreeProvider.loadAncestorDirs(connection, currentPath);
 
         // Switch current path to / and refresh
@@ -918,11 +927,6 @@ export function activate(context: vscode.ExtensionContext): void {
       } catch (error) {
         vscode.window.showErrorMessage(`Failed to load tree from root: ${(error as Error).message}`);
       }
-    }),
-
-    // Back to flat view: restore original path from tree-from-root mode
-    vscode.commands.registerCommand('sshLite.backToFlatView', async (connection: SSHConnection, originalPath: string) => {
-      fileTreeProvider.disableTreeFromRoot(connection.id);
     }),
 
     vscode.commands.registerCommand('sshLite.goToParent', async (item?: ConnectionTreeItem | FileTreeItem) => {
@@ -1599,29 +1603,68 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
-      const pattern = await vscode.window.showInputBox({
-        prompt: `Filter files in ${displayName}`,
-        placeHolder: '*.ts, config*, etc.',
-        title: 'Filter by Filename',
+      // QuickPick with pattern input + filter mode selection below
+      interface FilterModeItem extends vscode.QuickPickItem { value: FilterMode }
+      const filterResult = await new Promise<{ pattern: string; mode: FilterMode } | undefined>((resolve) => {
+        const qp = vscode.window.createQuickPick<FilterModeItem>();
+        qp.title = `Filter by name in ${displayName}`;
+        qp.placeholder = '*.ts, config*, etc.';
+        const modeItems: FilterModeItem[] = [
+          { label: '$(file) Files only', value: 'files', description: 'Filter files, show all folders', alwaysShow: true },
+          { label: '$(folder) Folders only', value: 'folders', description: 'Filter folders, show all files', alwaysShow: true },
+          { label: '$(files) Both', value: 'both', description: 'Filter files and folders', alwaysShow: true },
+        ];
+        qp.items = modeItems;
+        const defaultItem = modeItems.find(m => m.value === lastFilterMode) || modeItems[0];
+        qp.activeItems = [defaultItem];
+        qp.canSelectMany = false;
+        // Track user's explicit mode selection (VS Code resets activeItems on typing)
+        let selectedMode: FilterModeItem = defaultItem;
+        qp.onDidChangeActive((items) => {
+          if (items.length > 0) selectedMode = items[0];
+        });
+        qp.onDidChangeValue(() => {
+          // Restore user's selection after VS Code resets it
+          qp.activeItems = [selectedMode];
+        });
+        qp.onDidAccept(() => {
+          const pattern = qp.value.trim();
+          if (pattern) {
+            lastFilterMode = selectedMode.value;
+            resolve({ pattern, mode: selectedMode.value });
+          }
+          qp.dispose();
+        });
+        qp.onDidHide(() => { resolve(undefined); qp.dispose(); });
+        qp.show();
       });
 
-      if (pattern) {
-        await fileTreeProvider.setFilenameFilter(pattern, basePath, connection);
-        fileDecorationProvider.setFilteredFolder(connection.id, basePath);
-        // Pass highlighted paths to decoration provider for empty folder graying
-        const filterState = fileTreeProvider.getFilenameFilterState();
-        if (filterState) {
-          fileDecorationProvider.setFilenameFilterPaths(filterState.highlightedPaths, filterState.basePath, filterState.connectionId);
-        }
+      if (filterResult) {
+        await fileTreeProvider.setFilenameFilter(filterResult.pattern, basePath, connection, filterResult.mode);
+        // Rebuild decoration provider state from all active filters
+        fileDecorationProvider.rebuildFilterState(fileTreeProvider.getFilenameFilterState());
         vscode.commands.executeCommand('setContext', 'sshLite.hasFilenameFilter', true);
-        vscode.window.setStatusBarMessage(`$(filter) Filtering: ${pattern} in ${displayName}`, 0);
+        const modeLabel = filterResult.mode === 'files' ? '' : ` (${filterResult.mode})`;
+        vscode.window.setStatusBarMessage(`$(filter) Filtering: ${filterResult.pattern}${modeLabel} in ${displayName}`, 0);
       }
     }),
 
     // Clear filename filter (can be triggered from tree view navigation bar or folder inline icon)
-    // Note: clearFilenameFilter() invokes the onFilterCleared callback which clears decoration + context
-    vscode.commands.registerCommand('sshLite.clearFilenameFilter', (_item?: FileTreeItem) => {
-      fileTreeProvider.clearFilenameFilter();
+    // Supports selective clearing: folder item clears just that filter, otherwise clears all
+    vscode.commands.registerCommand('sshLite.clearFilenameFilter', (item?: FileTreeItem) => {
+      if (item instanceof FileTreeItem && item.isFiltered) {
+        // Clear specific folder's filter
+        fileTreeProvider.clearFilenameFilter(`${item.connection.id}:${item.file.path}`);
+        fileDecorationProvider.clearFilteredFolder(item.connection.id, item.file.path);
+      } else {
+        // Clear all filters
+        fileTreeProvider.clearFilenameFilter();
+        fileDecorationProvider.clearFilteredFolder();
+      }
+      // Update context key based on remaining filters
+      if (!fileTreeProvider.hasFilenameFilter()) {
+        vscode.commands.executeCommand('setContext', 'sshLite.hasFilenameFilter', false);
+      }
       vscode.window.setStatusBarMessage('$(filter) Filter cleared', 2000);
     }),
 
