@@ -34,7 +34,6 @@ Singleton webview panel for searching across multiple SSH servers simultaneously
 { type: 'searching', query, scopeServers, searchId }  // Search started, reset UI + searchId
 { type: 'searchBatch', results, totalResults,           // Progressive results
   completedCount, totalCount, hitLimit, limit, done, searchId }
-{ type: 'systemDirsExcluded', dirs: string[] }          // Excluded system dirs notice
 { type: 'updateServerConnection', serverId, connected }
 ```
 
@@ -45,7 +44,6 @@ Singleton webview panel for searching across multiple SSH servers simultaneously
 { type: 'openResult', result: { connectionId, path, line } }
 { type: 'cancelSearch' }                                // Cancel search
 { type: 'removeServerPath', serverId, pathIndex }     // Remove path
-{ type: 'searchIncludeSystemDirs' }                   // Search excluded dirs in-progress (merge)
 { type: 'setServerMaxProcesses', serverId, value }    // Per-server worker override (null = reset)
 ```
 
@@ -106,12 +104,17 @@ Uses `isChildPath()` helper that correctly handles root `/` as parent (avoids `s
 ```
 For each checked server with non-redundant paths:
   1. Build grep command:
-     grep -rnH --include="<include>" --exclude="<exclude>" -- "<query>" <paths>
+     grep -rnHI --include="<include>" --exclude="<exclude>" -- "<query>" <paths>
+     -I: skip binary files
   2. Execute via SSHConnection.searchFiles() (supports single path or string[])
-  3. Parse results: filepath:line:content
+  3. Parse results: filepath:linenum:content
   4. Send progressive searchBatch to webview as each task completes
   5. Stop at searchMaxResults limit
 ```
+
+**Data correctness**: Output accumulated via `Buffer.concat()` (not string concatenation) to prevent UTF-8 multi-byte character corruption at chunk boundaries.
+
+**Channel retry**: SSH servers limit concurrent channels (`MaxSessions`, often 10). With many parallel workers, excess channel opens get rejected with "Channel open failure". The `_execChannel()` helper retries with exponential backoff (200ms, 400ms, 800ms, 1600ms, 3200ms, max 5 retries) — used by both `exec()` and `searchFiles()`. This ensures no work is lost due to channel congestion.
 
 ### Find Files Mode
 
@@ -162,16 +165,13 @@ Path /opt with parallelProcesses=4:
   4. Each completed batch sends searchBatch progressively
 ```
 
-**Key properties**: Zero duplication (each file searched exactly once), zero missed files (files at every directory level explicitly listed), perfect load balance (file-level granularity — workers never idle).
+**Key properties**: Zero duplication (each file searched exactly once), zero missed files (files at every directory level explicitly listed), perfect load balance (file-level granularity — workers never idle). `listEntries` uses `find -L` to follow symlinks, so symlinked directories and files are discovered.
 
 **Batch size**: 32KB total file paths per batch — safe across all server OS variants (Linux, macOS, FreeBSD, Solaris, AIX).
 
 **Fallback**: If `listEntries()` fails for a directory, falls back to recursive `grep -r` on that directory.
 
-**System directory exclusion** (when searching from root `/`):
-- Auto-excludes: `/proc`, `/sys`, `/dev`, `/run`, `/snap`, `/lost+found`
-- Webview shows dismissible info bar: "System directories excluded: /proc, /sys, ..."
-- User can click "Include all" to search excluded dirs in-progress (merged into ongoing search, not restarted)
+**`pendingDirListings` counter**: Workers don't exit when the queue is momentarily empty — they poll (50ms) until `pendingDirListings === 0` confirms all dir listings have completed. This prevents premature worker exit during deep directory discovery and keeps all workers active.
 
 **Skip worker pool when**:
 - `searchParallelProcesses === 1`
@@ -273,30 +273,6 @@ A monotonic counter `currentSearchId` prevents stale messages from cancelled/pre
 
 ---
 
-## Include-All System Dirs In-Progress
-
-When "Include all" is clicked during or after a search, the excluded system dirs are searched using the same parallel worker pool and merged into the ongoing search — no restart.
-
-### Instance Variables
-
-```typescript
-private lastExcludedSystemDirs: string[] = [];           // Stored when dirs are excluded
-private lastSearchConnectionMap: Map<string, SSHConnection> = new Map();
-private currentGlobalSeen: Set<string> = new Set();      // Promoted from local
-private currentCompletedCount: number = 0;                // Promoted from local
-private currentTotalCount: number = 0;                    // Promoted from local
-```
-
-### searchExcludedSystemDirs() Method
-
-1. Takes the stored `lastExcludedSystemDirs` and creates `WorkItem` entries
-2. Increments `currentTotalCount` by the number of dirs
-3. Launches the same `runWorker()` pool per server with the excluded dirs as initial queue
-4. Uses the same `currentSearchId`, `currentGlobalSeen`, counters
-5. Sends `searchBatch` with `done: true` when all workers complete (if search was already done)
-
----
-
 ## Keep Results (Tab Bar)
 
 Pin current search results as tabs for comparison. Session-only (not persisted). Max 10 tabs. Each tab has completely isolated state (query, options, results, expand state).
@@ -357,7 +333,7 @@ When `searchBatch` arrives:
 ### Tab Close (LITE Cleanup)
 
 When closing a tab:
-1. If the tab has an active search, send `cancel` message to stop server-side work
+1. If the tab has an active search, send `cancelSearch` message to stop server-side work
 2. Remove `tabSearchIdMap` entry for the tab's searchId
 3. Free memory: clear `results`, `scopeServers`, `expandedFiles`, `expandedTreeNodes`
 4. If closing the active tab, switch to Current tab and restore its state

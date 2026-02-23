@@ -551,6 +551,38 @@ export class SSHConnection implements ISSHConnection {
   }
 
   /**
+   * Open an SSH exec channel with retry on "Channel open failure".
+   * SSH servers limit concurrent channels (MaxSessions, often 10).
+   * When many workers open channels simultaneously, excess ones get rejected.
+   * Retry with exponential backoff ensures no work is lost.
+   */
+  private _execChannel(command: string, maxRetries = 5): Promise<ClientChannel> {
+    return new Promise((resolve, reject) => {
+      let attempt = 0;
+      const tryExec = () => {
+        if (!this._client) {
+          reject(new ConnectionError('Not connected'));
+          return;
+        }
+        this._client.exec(command, (err, stream) => {
+          if (err) {
+            if (err.message?.includes('open failure') && attempt < maxRetries) {
+              attempt++;
+              const delay = 200 * Math.pow(2, attempt - 1); // 200, 400, 800, 1600, 3200ms
+              setTimeout(tryExec, delay);
+              return;
+            }
+            reject(err);
+            return;
+          }
+          resolve(stream);
+        });
+      };
+      tryExec();
+    });
+  }
+
+  /**
    * Execute a command on the remote host
    */
   async exec(command: string): Promise<string> {
@@ -561,31 +593,33 @@ export class SSHConnection implements ISSHConnection {
     // Log the command being executed
     logSSHCommand(this.host.name, command);
 
+    let stream: ClientChannel;
+    try {
+      stream = await this._execChannel(command);
+    } catch (err) {
+      throw new SFTPError(`Failed to execute command: ${(err as Error).message}`, err as Error);
+    }
+
     return new Promise((resolve, reject) => {
-      this._client!.exec(command, (err, stream) => {
-        if (err) {
-          reject(new SFTPError(`Failed to execute command: ${err.message}`, err));
-          return;
+      const stdoutChunks: Buffer[] = [];
+      const stderrChunks: Buffer[] = [];
+
+      stream.on('data', (data: Buffer) => {
+        stdoutChunks.push(data);
+      });
+
+      stream.stderr.on('data', (data: Buffer) => {
+        stderrChunks.push(data);
+      });
+
+      stream.on('close', (code: number) => {
+        const stdout = Buffer.concat(stdoutChunks).toString('utf8');
+        const stderr = Buffer.concat(stderrChunks).toString('utf8');
+        if (code !== 0 && stderr) {
+          reject(new SFTPError(`Command failed (exit code ${code}): ${stderr}`));
+        } else {
+          resolve(stdout);
         }
-
-        let stdout = '';
-        let stderr = '';
-
-        stream.on('data', (data: Buffer) => {
-          stdout += data.toString();
-        });
-
-        stream.stderr.on('data', (data: Buffer) => {
-          stderr += data.toString();
-        });
-
-        stream.on('close', (code: number) => {
-          if (code !== 0 && stderr) {
-            reject(new SFTPError(`Command failed (exit code ${code}): ${stderr}`));
-          } else {
-            resolve(stdout);
-          }
-        });
       });
     });
   }
@@ -1256,10 +1290,11 @@ export class SSHConnection implements ISSHConnection {
         ? `-name '${filePattern.replace(/'/g, "'\\''")}'`
         : '';
     // Single SSH exec: list files (with optional pattern), then dirs, separated by marker
+    // -L follows symlinks so symlinked dirs/files are discovered (safe with -maxdepth 1)
     const command =
-      `find '${escaped}' -maxdepth 1 -mindepth 1 -type f ${nameFilter} 2>/dev/null; ` +
+      `find -L '${escaped}' -maxdepth 1 -mindepth 1 -type f ${nameFilter} 2>/dev/null; ` +
       `echo '<<DIR_MARKER>>'; ` +
-      `find '${escaped}' -maxdepth 1 -mindepth 1 -type d 2>/dev/null`;
+      `find -L '${escaped}' -maxdepth 1 -mindepth 1 -type d 2>/dev/null`;
 
     const output = await this.exec(command);
     const parts = output.split('<<DIR_MARKER>>');
@@ -1349,11 +1384,12 @@ export class SSHConnection implements ISSHConnection {
     const headLimit = validatedMaxResults > 0 ? ` | head -${validatedMaxResults}` : '';
     if (searchContent) {
       // Use grep for content search
-      // -r: recursive, -n: line numbers, -H: show filename, -F: fixed string (literal, not regex)
+      // -r: recursive, -n: line numbers, -H: show filename, -I: skip binary files,
+      // -F: fixed string (literal, not regex)
       // --include: file pattern filter, --exclude/--exclude-dir: exclude patterns
       // -- signals end of options, allowing patterns that start with dash (e.g., -lfsms-)
       const grepMaxFlag = validatedMaxResults > 0 ? `-m ${validatedMaxResults}` : '';
-      command = `grep -rnH ${fixedStringFlag} ${caseFlag} --include='${escapedFilePattern}'${excludeFlags} ${grepMaxFlag} -- '${escapedPattern}' ${escapedSearchPaths} 2>/dev/null${headLimit}`;
+      command = `grep -rnHI ${fixedStringFlag} ${caseFlag} --include='${escapedFilePattern}'${excludeFlags} ${grepMaxFlag} -- '${escapedPattern}' ${escapedSearchPaths} 2>/dev/null${headLimit}`;
     } else {
       // Use find for filename search
       const findCaseFlag = caseSensitive ? '-name' : '-iname';
@@ -1375,55 +1411,59 @@ export class SSHConnection implements ISSHConnection {
     // Log the search command
     logSSHCommand(this.host.name, command);
 
+    // Acquire channel with retry (handles SSH MaxSessions limit)
+    let stream: ClientChannel;
+    try {
+      stream = await this._execChannel(command);
+    } catch (err) {
+      throw new SFTPError(`Search failed: ${(err as Error).message}`, err as Error);
+    }
+
+    // If already aborted before channel opened, close immediately
+    if (signal?.aborted) {
+      try { stream.signal('TERM'); } catch { /* signal not supported */ }
+      stream.close();
+      return [];
+    }
+
     return new Promise((resolve, reject) => {
-      this._client!.exec(command, (err, stream) => {
-        if (err) {
-          reject(new SFTPError(`Search failed: ${err.message}`, err));
+      // Register abort handler to kill the remote process
+      let aborted = false;
+      const onAbort = () => {
+        aborted = true;
+        // Send SIGTERM to explicitly kill the remote process before closing the channel.
+        // stream.signal() may not be supported by all SSH servers; stream.close()
+        // sends channel_close which usually causes SSHD to send SIGHUP as fallback.
+        try { stream.signal('TERM'); } catch { /* signal not supported */ }
+        stream.close();
+      };
+      if (signal) {
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+
+      const outputChunks: Buffer[] = [];
+      const errorChunks: Buffer[] = [];
+
+      stream.on('data', (data: Buffer) => {
+        outputChunks.push(data);
+      });
+
+      stream.stderr.on('data', (data: Buffer) => {
+        errorChunks.push(data);
+      });
+
+      stream.on('close', async () => {
+        // Clean up abort listener
+        if (signal) {
+          signal.removeEventListener('abort', onAbort);
+        }
+
+        // If aborted, return empty results
+        if (aborted) {
+          resolve([]);
           return;
         }
-
-        // Register abort handler to kill the remote process
-        let aborted = false;
-        const onAbort = () => {
-          aborted = true;
-          // Send SIGTERM to explicitly kill the remote process before closing the channel.
-          // stream.signal() may not be supported by all SSH servers; stream.close()
-          // sends channel_close which usually causes SSHD to send SIGHUP as fallback.
-          try { stream.signal('TERM'); } catch { /* signal not supported */ }
-          stream.close();
-        };
-        if (signal) {
-          if (signal.aborted) {
-            try { stream.signal('TERM'); } catch { /* signal not supported */ }
-            stream.close();
-            resolve([]);
-            return;
-          }
-          signal.addEventListener('abort', onAbort, { once: true });
-        }
-
-        let output = '';
-        let errorOutput = '';
-
-        stream.on('data', (data: Buffer) => {
-          output += data.toString();
-        });
-
-        stream.stderr.on('data', (data: Buffer) => {
-          errorOutput += data.toString();
-        });
-
-        stream.on('close', async () => {
-          // Clean up abort listener
-          if (signal) {
-            signal.removeEventListener('abort', onAbort);
-          }
-
-          // If aborted, return empty results
-          if (aborted) {
-            resolve([]);
-            return;
-          }
+          const output = Buffer.concat(outputChunks).toString('utf8');
           const results: Array<{ path: string; line?: number; match?: string; size?: number; modified?: Date; permissions?: string }> = [];
           const uniquePaths = new Set<string>();
 
@@ -1523,7 +1563,6 @@ export class SSHConnection implements ISSHConnection {
           resolve(results);
         });
       });
-    });
   }
 
   /**

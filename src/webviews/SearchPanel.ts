@@ -860,6 +860,7 @@ export class SearchPanel {
               const poolPromise = (async () => {
                 const workQueue: Array<{ type: 'dir'; path: string } | { type: 'files'; filePaths: string[] }> = [];
                 let workIndex = 0;
+                let pendingDirListings = 0;
 
                 workQueue.push({ type: 'dir', path: sp.path });
 
@@ -879,11 +880,16 @@ export class SearchPanel {
                   while (!signal.aborted && globalSeen.size < maxResults) {
                     // Graceful shrink: if more workers than desired, exit (keep at least 1)
                     if (activeWorkerCount > desiredWorkerCount && activeWorkerCount > 1) return;
-                    if (workIndex >= workQueue.length) return; // queue exhausted
+                    // Wait for in-flight dir listings before exiting — they may push new items
+                    while (workIndex >= workQueue.length) {
+                      if (pendingDirListings === 0) return; // truly done — all dirs explored
+                      await new Promise(r => setTimeout(r, 50));
+                    }
                     const item = workQueue[workIndex++];
 
                     if (item.type === 'dir') {
                       // LIST: discover files + subdirs at this level
+                      pendingDirListings++;
                       try {
                         const entries = await connection.listEntries(item.path, listEntriesPattern);
                         if (signal.aborted) return;
@@ -978,6 +984,8 @@ export class SearchPanel {
                             done: this.currentCompletedCount === this.currentTotalCount,
                           });
                         }
+                      } finally {
+                        pendingDirListings--;
                       }
                     } else if (item.type === 'files') {
                       // SEARCH: grep this batch of files
@@ -3546,7 +3554,7 @@ export class SearchPanel {
             if (closedTab) {
               // LITE: cancel the server-side search if this tab owns it
               if (closedTab.searching) {
-                vscode.postMessage({ type: 'cancel' });
+                vscode.postMessage({ type: 'cancelSearch' });
               }
               // Clean up routing
               if (closedTab.searchId) delete tabSearchIdMap[closedTab.searchId];

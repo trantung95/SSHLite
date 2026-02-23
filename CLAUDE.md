@@ -58,7 +58,7 @@ src/
 
 **IMPORTANT: These rules apply to ALL prompts (agents, skills, regular chat).**
 
-SSH Lite must be **LITE** - minimize server resources and UI complexity.
+SSH Lite must be **LITE** - minimize server resources and UI complexity, but **never sacrifice data correctness**.
 
 | Rule | Bad | Good |
 |------|-----|------|
@@ -67,11 +67,14 @@ SSH Lite must be **LITE** - minimize server resources and UI complexity.
 | Cache aggressively | Preload 5 subdirs | Load on user expand |
 | Single connection | Multiple SSH sessions | Reuse connection |
 | Debounce actions | Immediate server call | 300ms+ debounce |
+| True data, no missing | Timeout and skip slow dirs | Wait for all results |
+| No auto-changing data | Auto-truncate/filter results | Show everything the user asked for |
 
 **Before implementing, ask:**
 - Does this run server commands automatically? → Make it user-triggered
 - Does this poll the server? → Make it opt-in, default OFF
 - Does this preload data? → Make it lazy-load on demand
+- Could this lose or alter user data? → **Never** — LITE means lightweight, not lossy
 
 ---
 
@@ -157,6 +160,15 @@ This project is designed to grow itself. The `.adn/growth/` folder contains ever
 ---
 
 ## Release Notes
+
+### v0.4.6 — Fix missing search results, data correctness improvements
+
+- **Channel retry on SSH exec**: Added `_execChannel()` helper with exponential backoff (5 retries, 200ms–3200ms) for "Channel open failure" errors. SSH servers limit concurrent channels (`MaxSessions`, often 10) — with many parallel workers, excess channels were rejected and those file batches permanently lost. Both `exec()` and `searchFiles()` now retry automatically, ensuring no results are dropped.
+- **Worker pool stability (`pendingDirListings`)**: Workers no longer exit prematurely when the work queue is temporarily empty but directory listings are still in-flight. A `pendingDirListings` counter keeps workers alive until all discovered directories are fully expanded.
+- **UTF-8 chunk corruption fix**: `exec()` and `searchFiles()` now accumulate raw `Buffer` chunks and decode once via `Buffer.concat().toString('utf8')`, preventing multi-byte character corruption at chunk boundaries.
+- **Binary file skipping**: Added `-I` flag to grep command — binary files are skipped instead of producing garbage matches.
+- **Symlink discovery**: `listEntries()` now uses `find -L` to follow symlinks, so symlinked directories and files are discovered during search.
+- **Cancel message fix**: Closing a kept tab now sends the correct `cancelSearch` message type (was `cancel`), properly cancelling the server-side search.
 
 ### v0.4.5 — Remove auto-excluded dirs, fix worker scaling
 
