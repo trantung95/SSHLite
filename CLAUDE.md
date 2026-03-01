@@ -1,5 +1,7 @@
 # SSH Lite -- Lightweight VS Code SSH Extension
 
+*Created by TungTran (Hybr8)*
+
 VS Code extension for SSH file browsing, editing, terminals, and search — **without** installing a VS Code server on remote machines. Built with TypeScript, ssh2, and VS Code Extension API.
 
 For detailed architecture, design decisions, and deep documentation see the `.adn/` folder.
@@ -55,6 +57,8 @@ src/
 ---
 
 ## LITE Principles (CRITICAL)
+
+**LITE = Lightweight, Intentional, Transparent, Efficient**
 
 **IMPORTANT: These rules apply to ALL prompts (agents, skills, regular chat).**
 

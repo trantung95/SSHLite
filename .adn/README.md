@@ -1,5 +1,7 @@
 # .adn - Project DNA
 
+> **ADN** is the Vietnamese word for DNA — this folder encodes the project's complete genetic blueprint for self-sustaining growth.
+
 This folder contains the complete documentation ("DNA") of **SSH Lite** -- a lightweight VS Code extension for SSH connections that works WITHOUT installing a VS Code server on remote machines.
 
 ## Purpose
@@ -8,13 +10,12 @@ The `.adn/` folder allows any AI assistant (or new developer) to fully understan
 
 ## How to Use
 
-1. **Start here** -- read this file, then `architecture/overview.md` for the big picture.
-2. **Understand features** -- read files in `features/` for specific feature areas.
-3. **Trace a flow** -- follow `flow/extension-activation.md` for startup, `flow/file-save-flow.md` for file operations.
-4. **Configure** -- see `configuration/settings-reference.md` for all settings.
-5. **Understand tests** -- see `testing/testing-strategy.md`.
-6. **Extend the project** -- read `growth/playbooks.md` for recipes, `growth/coding-conventions.md` for patterns.
-7. **After making changes** -- follow `growth/self-maintenance.md` verification checklist.
+1. **This file first** — then read `architecture/overview.md` for the big picture
+2. **Understand features** — read files in `features/` for specific feature areas
+3. **Navigate flows** — follow `flow/` docs to trace key operations step by step
+4. **Get configuration** — see `configuration/` for all settings and commands
+5. **Test strategy** — see `testing/` for test infrastructure and coverage approach
+6. **Templates for growth** — read `growth/playbooks.md` for recipes, `growth/coding-conventions.md` for patterns, `growth/self-maintenance.md` for post-change verification
 
 ## Folder Map
 

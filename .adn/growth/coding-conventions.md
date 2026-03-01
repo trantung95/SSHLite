@@ -206,15 +206,16 @@ log(`Processing ${files.length} files`);
 
 ## LITE Principle Compliance Checklist
 
-Before implementing any feature:
+Before implementing any feature, verify:
 
-- [ ] **No auto server commands** — User must trigger actions explicitly
-- [ ] **No polling by default** — Auto-refresh opt-in, default interval reasonable
-- [ ] **Cache aggressively** — Don't re-fetch data that hasn't changed
-- [ ] **Single connection** — Reuse existing SSH connection
-- [ ] **Debounce actions** — 300ms+ between server calls
-- [ ] **Lazy load** — Don't preload data user hasn't requested
-- [ ] **Minimal UI** — Don't add complexity without clear user benefit
+- [ ] **Trigger-only** — No automatic operations; user must trigger actions explicitly
+- [ ] **Use existing resources** — Reuse connections, instances, and caches
+- [ ] **No polling by default** — Background refresh must be opt-in
+- [ ] **Guard resources** — Cache aggressively, don't re-fetch unchanged data
+- [ ] **Throttle actions** — Debounce rapid operations to prevent resource waste
+- [ ] **Request-driven loading** — Lazy-load on demand, never preload speculatively
+- [ ] **Avoid complexity** — Don't add UI or code complexity without clear benefit
+- [ ] **No data loss** — Never truncate, filter, or hide results the user requested
 
 ---
 
