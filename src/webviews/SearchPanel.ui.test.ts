@@ -53,6 +53,8 @@ jest.mock('../services/ActivityService', () => ({
       completeActivity: jest.fn(),
       failActivity: jest.fn(),
       cancelActivity: jest.fn(),
+      onDidChangeActivities: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+      getActivitiesForConnection: jest.fn().mockReturnValue([]),
     }),
   },
 }));

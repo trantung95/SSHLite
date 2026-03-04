@@ -24,6 +24,8 @@ jest.mock('../services/ActivityService', () => ({
       completeActivity: jest.fn(),
       failActivity: jest.fn(),
       cancelActivity: jest.fn(),
+      onDidChangeActivities: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+      getActivitiesForConnection: jest.fn().mockReturnValue([]),
     }),
   },
 }));
@@ -151,10 +153,9 @@ describe('SearchPanel', () => {
 
   describe('cancelSearch', () => {
     it('should abort active search', () => {
-      // Set up an active abort controller
+      // Set up an active search via activeSearches map
       const controller = new AbortController();
-      (panel as any).searchAbortController = controller;
-      (panel as any).isSearching = true;
+      (panel as any).activeSearches.set(1, { abortController: controller, activityIds: [], kept: false });
 
       const abortSpy = jest.spyOn(controller, 'abort');
 
@@ -164,18 +165,16 @@ describe('SearchPanel', () => {
       expect((panel as any).isSearching).toBe(false);
     });
 
-    it('should null the abort controller', () => {
-      (panel as any).searchAbortController = new AbortController();
-      (panel as any).isSearching = true;
+    it('should clear activeSearches after cancel', () => {
+      (panel as any).activeSearches.set(1, { abortController: new AbortController(), activityIds: [], kept: false });
 
       panel.cancelSearch();
 
-      expect((panel as any).searchAbortController).toBeNull();
+      expect((panel as any).activeSearches.size).toBe(0);
     });
 
     it('should show cancel status bar message', () => {
-      (panel as any).isSearching = true;
-      (panel as any).searchAbortController = new AbortController();
+      (panel as any).activeSearches.set(1, { abortController: new AbortController(), activityIds: [], kept: false });
 
       panel.cancelSearch();
 
@@ -186,11 +185,27 @@ describe('SearchPanel', () => {
     });
 
     it('should do nothing if no search is active', () => {
-      (panel as any).searchAbortController = null;
-      (panel as any).isSearching = false;
+      (panel as any).activeSearches.clear();
 
       // Should not throw
       panel.cancelSearch();
+    });
+
+    it('should cancel specific search by searchId', () => {
+      const controller1 = new AbortController();
+      const controller2 = new AbortController();
+      (panel as any).activeSearches.set(1, { abortController: controller1, activityIds: [], kept: true });
+      (panel as any).activeSearches.set(2, { abortController: controller2, activityIds: [], kept: false });
+
+      const abortSpy1 = jest.spyOn(controller1, 'abort');
+      const abortSpy2 = jest.spyOn(controller2, 'abort');
+
+      panel.cancelSearch(1);
+
+      expect(abortSpy1).toHaveBeenCalled();
+      expect(abortSpy2).not.toHaveBeenCalled();
+      expect((panel as any).activeSearches.size).toBe(1);
+      expect((panel as any).activeSearches.has(2)).toBe(true);
     });
   });
 
@@ -258,24 +273,25 @@ describe('SearchPanel', () => {
       );
     });
 
-    it('should cancel previous search when starting new one', async () => {
+    it('should cancel previous un-kept search when starting new one', async () => {
       const conn = createMockConnection();
       (conn.searchFiles as jest.Mock).mockResolvedValue([]);
 
       panel.addScope('/home', conn as any);
 
-      // Start first search (creates an abort controller)
+      // Start first search — get its searchId
       const search1 = performSearch(panel, 'first');
-      const controller1 = (panel as any).searchAbortController;
+      const searchId1 = (panel as any).currentSearchId;
+      const controller1 = (panel as any).activeSearches.get(searchId1)?.abortController;
 
-      // Start second search (should abort the first)
+      // Start second search (should abort the first since it's not kept)
       const search2 = performSearch(panel, 'second');
 
       await search1;
       await search2;
 
       // First controller should have been aborted
-      expect(controller1.signal.aborted).toBe(true);
+      expect(controller1?.signal.aborted).toBe(true);
     });
 
     it('should track activity per scope', async () => {
@@ -1527,7 +1543,7 @@ describe('SearchPanel', () => {
       return postMessageSpy;
     }
 
-    it('should set per-server override clamped to min 5', async () => {
+    it('should set per-server override clamped to min 1', async () => {
       const mockCtx = createMockExtensionContext();
       (mockCtx.globalState.get as jest.Mock).mockReturnValue({});
       panel.loadSortOrder(mockCtx as any);
@@ -1538,9 +1554,9 @@ describe('SearchPanel', () => {
 
       setupMockPanel(panel);
 
-      await (panel as any).handleMessage({ type: 'setServerMaxProcesses', serverId: 'svr1', value: 2 });
+      await (panel as any).handleMessage({ type: 'setServerMaxProcesses', serverId: 'svr1', value: 0 });
 
-      expect((panel as any).serverList[0].maxSearchProcesses).toBe(5);
+      expect((panel as any).serverList[0].maxSearchProcesses).toBe(1);
     });
 
     it('should set per-server override clamped to max 50', async () => {
@@ -1700,15 +1716,15 @@ describe('SearchPanel', () => {
       expect(stateMsg![0].globalMaxSearchProcesses).toBe(12);
     });
 
-    it('should default globalMaxSearchProcesses to 20 when not configured', () => {
-      // No config set — should default to 20
+    it('should default globalMaxSearchProcesses to 5 when not configured', () => {
+      // No config set — should default to 5
       const postMessageSpy = setupMockPanel(panel);
 
       (panel as any).sendState();
 
       const stateMsg = postMessageSpy.mock.calls.find((call: any[]) => call[0].type === 'state');
       expect(stateMsg).toBeDefined();
-      expect(stateMsg![0].globalMaxSearchProcesses).toBe(20);
+      expect(stateMsg![0].globalMaxSearchProcesses).toBe(5);
     });
   });
 
@@ -1801,7 +1817,7 @@ describe('SearchPanel', () => {
       expect(id2).toBe(id0 + 2);
     });
 
-    it('should reset currentSearchActivityIds on each performSearch', async () => {
+    it('should track activity IDs per search in activeSearches map', async () => {
       const host = createMockHostConfig({ id: 'svr1' });
       const conn = createMockConnection({ id: 'svr1', host });
       (conn.searchFiles as jest.Mock).mockResolvedValue([]);
@@ -1814,16 +1830,11 @@ describe('SearchPanel', () => {
 
       setupMockPanel(panel);
 
-      // Manually set some activity IDs to simulate leftover from previous search
-      (panel as any).currentSearchActivityIds = ['old-activity-1', 'old-activity-2'];
-
       await (panel as any).performSearch('test', '', '', false, false, false);
 
-      // After performSearch starts, old IDs should be cleared and new ones should be present
-      // (the search completed, so there should be activity IDs from the new search)
-      const ids = (panel as any).currentSearchActivityIds as string[];
-      expect(ids).not.toContain('old-activity-1');
-      expect(ids).not.toContain('old-activity-2');
+      // After search completes, the search entry is cleaned up from activeSearches
+      // (search is done — entry removed in finally block)
+      expect((panel as any).activeSearches.size).toBe(0);
     });
 
     it('should include searchId in searching message', async () => {
@@ -1982,18 +1993,11 @@ describe('SearchPanel', () => {
 
       const postMessageSpy = setupMockPanel(panel);
 
-      // First search
+      // First search completes (awaited)
       await (panel as any).performSearch('first', '', '', false, false, false);
-      const firstActivityIds = [...(panel as any).currentSearchActivityIds];
-      expect(firstActivityIds.length).toBeGreaterThan(0);
 
-      // Cancel
-      panel.cancelSearch();
-
-      // Verify cancel was called for the first search's activity IDs
-      for (const id of firstActivityIds) {
-        expect(activityService.cancelActivity).toHaveBeenCalledWith(id);
-      }
+      // After completion, activeSearches is cleaned up
+      expect((panel as any).activeSearches.size).toBe(0);
 
       // Second search — should work independently
       activityService.startActivity.mockClear();

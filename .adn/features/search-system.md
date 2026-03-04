@@ -42,7 +42,8 @@ Singleton webview panel for searching across multiple SSH servers simultaneously
 { type: 'search', query, include, exclude, mode }    // Start search
 { type: 'toggleServer', serverId, checked }           // Toggle checkbox
 { type: 'openResult', result: { connectionId, path, line } }
-{ type: 'cancelSearch' }                                // Cancel search
+{ type: 'cancelSearch', searchId? }                      // Cancel search (specific or all)
+{ type: 'keepSearch', searchId }                         // Mark search as kept (don't abort on new search)
 { type: 'removeServerPath', serverId, pathIndex }     // Remove path
 { type: 'setServerMaxProcesses', serverId, value }    // Per-server worker override (null = reset)
 ```
@@ -200,8 +201,9 @@ After search completes, auto-connected servers with no results get disconnected:
 
 ### Search Cancellation
 
-- New search auto-cancels previous running search
+- New search only auto-cancels un-kept running searches (kept searches continue in parallel)
 - Cancel button sends SIGTERM to remote grep/find processes before closing stream
+- `cancelSearch(searchId)` cancels a specific kept search; `cancelSearch()` with no arg cancels all
 - Activity panel shows cancelled state
 - Both `.then()` and `.catch()` handlers on search promises check `signal.aborted` to prevent stale `searchBatch` messages from being posted to the webview after cancel
 
@@ -226,7 +228,7 @@ interface ServerSearchSettings {
 // Stored in: globalState.get('sshLite.serverSearchSettings', {})
 ```
 
-Clamped to min 5, max 50. Setting to `null` clears the override.
+Clamped to min 1, max 50. Setting to `null` clears the override.
 
 ### Usage in Search
 
@@ -244,32 +246,49 @@ Worker count changes take effect immediately during an active search:
 // SearchPanel tracks active worker pools
 private activeWorkerPools: Map<string, {
   desiredWorkerCount: number;
+  fullWorkerCount: number;       // Unthrottled target (user-configured value)
   activeWorkerCount: number;
   addWorker: () => void;
 }>;
+private poolConnectionMap: Map<string, string> = new Map();  // poolKey → connectionId
+private searchPoolMap: Map<string, number> = new Map();      // poolKey → searchId
 ```
 
 When `setServerMaxProcesses` fires:
 1. Find all active pools for this server (keyed by `serverId:path`)
-2. Update `desiredWorkerCount` on each pool
-3. If increasing: spawn additional workers via `addWorker()`
-4. If decreasing: workers self-terminate at the top of their loop when `activeWorkerCount > desiredWorkerCount` (minimum 1 worker always stays alive)
-5. Pools are cleaned up on search cancel/complete (`activeWorkerPools.clear()`)
+2. Update `fullWorkerCount` on each pool
+3. Trigger `_updateSearchPriority()` to recalculate `desiredWorkerCount` (accounting for throttling and multi-search division)
+4. If increasing: spawn additional workers via `addWorker()`
+5. If decreasing: workers self-terminate at the top of their loop when `activeWorkerCount > desiredWorkerCount` (minimum 1 worker always stays alive)
+6. Pool cleanup is per-search (only the completing search's pools are removed, not all)
 
 ---
 
-## Search Instance Tracking (searchId)
+## Search Instance Tracking (searchId) & Concurrent Searches
 
-A monotonic counter `currentSearchId` prevents stale messages from cancelled/previous searches from corrupting the current search state.
+A monotonic counter `currentSearchId` assigns unique IDs. Multiple searches can run concurrently via the `activeSearches` Map.
+
+### Instance Variables
+
+```typescript
+private activeSearches: Map<number, {
+  abortController: AbortController;
+  activityIds: string[];
+  kept: boolean;             // Marked true when "Keep Results" clicked
+}> = new Map();
+// isSearching is derived: this.activeSearches.size > 0
+```
 
 ### Flow
 
-1. `performSearch()` increments `++this.currentSearchId` at start
-2. Every `postMessage` and counter mutation is guarded: `if (signal.aborted || searchId !== this.currentSearchId) return`
-3. `searchId` is included in all search messages (`searching`, `searchBatch`)
-4. Webview tracks `currentSearchId` and discards `searchBatch` messages with mismatched IDs
-5. `cancelSearch()` iterates `currentSearchActivityIds` to cancel all tracked activities
-6. `finally` block only resets `isSearching` if `searchId === this.currentSearchId`
+1. `performSearch()` increments `++this.currentSearchId` and registers in `activeSearches`
+2. Only un-kept active searches are aborted when a new search starts (kept searches continue)
+3. Every `postMessage` and counter mutation is guarded: `if (signal.aborted || !this.activeSearches.has(searchId)) return`
+4. `searchId` is included in all search messages (`searching`, `searchBatch`)
+5. Webview tracks `currentSearchId` and routes `searchBatch` to kept tabs via `tabSearchIdMap`
+6. `cancelSearch(searchId)` cancels a specific search; `cancelSearch()` cancels all
+7. `finally` block removes only this search from `activeSearches` and cleans up its pools
+8. Counters (`completedCount`, `totalCount`, `globalSeen`) are local variables in `performSearch()`, not instance state
 
 ---
 
@@ -311,7 +330,11 @@ Tab bar appears above results when `resultTabs.length > 0`:
 1. Click pin icon in results header (shown on Current tab when results exist)
 2. Save current input state into the tab being kept
 3. Move `currentTab` to `resultTabs` (becomes a kept tab)
-4. If the tab has an active search, register `tabSearchIdMap[searchId] = tabId` to route future `searchBatch` messages to the kept tab
+4. If the tab has an active search:
+   - Register `tabSearchIdMap[searchId] = tabId` to route future `searchBatch` messages to the kept tab
+   - Send `keepSearch` message to extension → marks the search as `kept: true` in `activeSearches`
+   - The kept search continues running and won't be aborted when the user starts a new search
+   - Workers are redistributed equally among concurrent searches on the same connection
 5. Create a fresh `currentTab` and restore it to the UI
 6. Tab bar re-rendered, "Current" tab becomes active with empty inputs
 
@@ -341,6 +364,53 @@ When closing a tab:
 ---
 
 
+
+## Search Priority Throttling
+
+Automatically reduces search worker count when the user has active non-search operations (file browsing, uploads, downloads, terminals, etc.) or when multiple searches run concurrently.
+
+### How It Works
+
+```
+_setupSearchPriorityThrottling() subscribes to ActivityService.onDidChangeActivities:
+
+1. Count active searches per connection (via searchPoolMap + poolConnectionMap)
+2. For each active worker pool:
+   a. Divide fullWorkerCount by concurrent search count on that connection
+      effectiveCount = ceil(fullWorkerCount / searchCount), min 1
+   b. If user has active non-search operations on the connection → effectiveCount = 1
+   c. Apply: update desiredWorkerCount, spawn workers if increasing
+3. Workers self-terminate when activeWorkerCount > desiredWorkerCount
+```
+
+### User Operation Types That Trigger Throttling
+
+`download`, `upload`, `directory-load`, `file-refresh`, `terminal`, `monitor`, `connect`
+
+### Lifecycle
+
+- Throttle listener is created on first `performSearch()` call
+- Disposed when all active searches complete (no dangling listeners)
+- `_updateSearchPriority` is also called when pools are added/removed and when user changes worker count
+
+### Multi-Search Worker Division Example
+
+```
+Connection A has 5 configured workers:
+  Search 1 (kept tab, still running)  → 3 workers (ceil(5/2))
+  Search 2 (current tab, just started) → 3 workers (ceil(5/2))
+
+Search 1 finishes:
+  Search 2 → 5 workers (ceil(5/1)) — gets full allocation back
+
+User expands a folder during Search 2:
+  Search 2 → 1 worker (user op active)
+
+Folder load completes:
+  Search 2 → 5 workers (restored)
+```
+
+---
 
 Toggle between checked-first and alphabetical:
 

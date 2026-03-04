@@ -1273,10 +1273,10 @@
         },
         "sshLite.searchParallelProcesses": {
           "type": "number",
-          "default": 20,
-          "minimum": 5,
+          "default": 5,
+          "minimum": 1,
           "maximum": 50,
-          "description": "Default parallel search workers per folder. Each server can override this in the search panel. Minimum 5."
+          "description": "Default parallel search workers per server. Each server can override this in the search panel. Reduced automatically when other operations are active."
         }
       }
     },

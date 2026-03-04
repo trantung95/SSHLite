@@ -165,6 +165,15 @@ This project is designed to grow itself. The `.adn/growth/` folder contains ever
 
 ## Release Notes
 
+### v0.4.7 — Search priority throttling & concurrent search tabs
+
+- **Lower default workers**: Default `searchParallelProcesses` reduced from 20 to **5**, minimum from 5 to **1**. Search is now lighter on server resources out of the box.
+- **Search priority throttling**: When the user has active non-search operations (file browsing, uploads, downloads, terminals, monitoring, connecting) on a connection, search workers on that connection are auto-throttled to **1**. Workers restore to full count when user operations complete. Implemented via `ActivityService.onDidChangeActivities` subscription.
+- **Concurrent search tabs**: "Keep Results" on an actively searching tab now keeps that search running in parallel. Starting a new search no longer aborts kept searches. Workers are divided equally among concurrent searches on the same connection (`ceil(fullWorkerCount / searchCount)`, min 1). When a search finishes, remaining searches get the full worker allocation back.
+- **Per-search state isolation**: Replaced shared instance variables (`searchAbortController`, `currentSearchActivityIds`, counters) with per-search tracking via `activeSearches: Map<searchId, { abortController, activityIds, kept }>`. Counters (`completedCount`, `totalCount`, `globalSeen`) are now local variables in `performSearch()`.
+- **Pool ownership tracking**: New `poolConnectionMap` and `searchPoolMap` track which connection and search owns each worker pool. Cleanup is per-search — completing or cancelling one search only removes its own pools, not other searches' pools.
+- **Stale search guard fix**: Changed `searchId !== this.currentSearchId` to `!this.activeSearches.has(searchId)` throughout, so older concurrent searches don't falsely reject their own results.
+
 ### v0.4.6 — Fix missing search results, data correctness improvements
 
 - **Channel retry on SSH exec**: Added `_execChannel()` helper with exponential backoff (5 retries, 200ms–3200ms) for "Channel open failure" errors. SSH servers limit concurrent channels (`MaxSessions`, often 10) — with many parallel workers, excess channels were rejected and those file batches permanently lost. Both `exec()` and `searchFiles()` now retry automatically, ensuring no results are dropped.

@@ -72,7 +72,8 @@ type WebviewMessage =
   | { type: 'openResult'; result: WebviewSearchResult; line?: number }
   | { type: 'revealInTree'; result: WebviewSearchResult }
   | { type: 'increaseLimit' }
-  | { type: 'cancelSearch' }
+  | { type: 'cancelSearch'; searchId?: number }
+  | { type: 'keepSearch'; searchId: number }
   | { type: 'ready' }
   | { type: 'toggleServer'; serverId: string; checked: boolean }
   | { type: 'removeServerPath'; serverId: string; pathIndex: number }
@@ -90,29 +91,37 @@ export class SearchPanel {
 
   // State
   private searchScopes: SearchScope[] = [];
-  private isSearching: boolean = false;
   private lastSearchQuery: string = '';
   private lastIncludePattern: string = '';
   private lastExcludePattern: string = '';
   private lastCaseSensitive: boolean = false;
   private lastRegex: boolean = false;
-  private searchAbortController: AbortController | null = null;
   private currentSearchId: number = 0;
-  private currentSearchActivityIds: string[] = [];
 
-  // Shared search state for progressive results (promoted from local for include-all merging)
-  private currentGlobalSeen: Set<string> = new Set();
-  private currentCompletedCount: number = 0;
-  private currentTotalCount: number = 0;
+  // Per-search tracking: each active search has its own abort controller and activity IDs
+  private activeSearches: Map<number, {
+    abortController: AbortController;
+    activityIds: string[];
+    kept: boolean; // true after "Keep Results" — don't abort when new search starts
+  }> = new Map();
 
   private lastSearchConnectionMap: Map<string, SSHConnection> = new Map();
 
   // Dynamic worker pool tracking (allows mid-search worker count adjustment)
   private activeWorkerPools: Map<string, {
     desiredWorkerCount: number;
+    fullWorkerCount: number;       // Unthrottled target (before priority/multi-search division)
     activeWorkerCount: number;
     addWorker: () => void;
   }> = new Map();
+
+  // Pool metadata: maps poolKey → connectionId and poolKey → searchId
+  private poolConnectionMap: Map<string, string> = new Map();
+  private searchPoolMap: Map<string, number> = new Map();
+
+  // Priority throttling (shared across all active searches)
+  private priorityThrottleDisposable: vscode.Disposable | null = null;
+  private _updateSearchPriority: (() => void) | null = null;
 
   // Server list state (cross-server search model)
   private serverList: ServerSearchEntry[] = [];
@@ -127,6 +136,11 @@ export class SearchPanel {
   private autoDisconnectCallback?: (connectionId: string) => Promise<void>;
 
   private constructor() {}
+
+  /** Whether any search is currently running */
+  private get isSearching(): boolean {
+    return this.activeSearches.size > 0;
+  }
 
   /**
    * Get singleton instance
@@ -391,23 +405,113 @@ export class SearchPanel {
   }
 
   /**
-   * Cancel ongoing search
+   * Set up priority throttling: reduces search workers when user has active non-search
+   * operations, and divides workers equally among concurrent searches per connection.
+   * Returns a Disposable to stop listening.
    */
-  public cancelSearch(): void {
-    if (this.searchAbortController) {
-      this.searchAbortController.abort();
-      this.searchAbortController = null;
-    }
-    this.activeWorkerPools.clear();
-    // Cancel all tracked search activities
+  private _setupSearchPriorityThrottling(): vscode.Disposable {
     const activityService = ActivityService.getInstance();
-    for (const id of this.currentSearchActivityIds) {
-      activityService.cancelActivity(id);
-    }
-    this.currentSearchActivityIds = [];
+    const USER_OP_TYPES = new Set([
+      'download', 'upload', 'directory-load', 'file-refresh', 'terminal', 'monitor', 'connect',
+    ]);
 
-    if (this.isSearching) {
-      this.isSearching = false;
+    const updatePriority = () => {
+      // Count active searches per connection
+      const searchesPerConnection = new Map<string, Set<number>>();
+      for (const [poolKey] of this.activeWorkerPools) {
+        const connId = this.poolConnectionMap.get(poolKey);
+        const sid = this.searchPoolMap.get(poolKey);
+        if (connId && sid !== undefined) {
+          if (!searchesPerConnection.has(connId)) searchesPerConnection.set(connId, new Set());
+          searchesPerConnection.get(connId)!.add(sid);
+        }
+      }
+
+      for (const [poolKey, pool] of this.activeWorkerPools) {
+        const connectionId = this.poolConnectionMap.get(poolKey);
+        if (!connectionId) continue;
+
+        // Step 1: Divide by concurrent search count on this connection
+        const searchCount = searchesPerConnection.get(connectionId)?.size || 1;
+        let effectiveCount = Math.max(1, Math.ceil(pool.fullWorkerCount / searchCount));
+
+        // Step 2: Further throttle if user has active non-search operations
+        const hasUserOps = activityService
+          .getActivitiesForConnection(connectionId)
+          .some(a => a.status === 'running' && USER_OP_TYPES.has(a.type));
+        if (hasUserOps) {
+          effectiveCount = 1;
+        }
+
+        // Apply (only if changed)
+        if (pool.desiredWorkerCount !== effectiveCount) {
+          pool.desiredWorkerCount = effectiveCount;
+          if (effectiveCount > pool.activeWorkerCount) {
+            while (pool.activeWorkerCount < effectiveCount) {
+              pool.addWorker();
+            }
+          }
+          // If decreasing, workers self-terminate via the guard check
+        }
+      }
+    };
+
+    // Store for external calls (pool add/remove, manual worker count change)
+    this._updateSearchPriority = updatePriority;
+
+    const disposable = activityService.onDidChangeActivities(updatePriority);
+    updatePriority();
+    return disposable;
+  }
+
+  /**
+   * Cancel ongoing search(es).
+   * @param searchId If provided, cancel only that specific search (for kept-tab close).
+   *                 If omitted, cancel ALL active searches.
+   */
+  public cancelSearch(searchId?: number): void {
+    const activityService = ActivityService.getInstance();
+    const wasSearching = this.isSearching;
+
+    if (searchId !== undefined) {
+      // Cancel a specific (kept) search
+      const search = this.activeSearches.get(searchId);
+      if (search) {
+        search.abortController.abort();
+        for (const id of search.activityIds) activityService.cancelActivity(id);
+        this.activeSearches.delete(searchId);
+      }
+      // Clean up pools owned by this search
+      for (const [key, sid] of [...this.searchPoolMap]) {
+        if (sid === searchId) {
+          this.activeWorkerPools.delete(key);
+          this.poolConnectionMap.delete(key);
+          this.searchPoolMap.delete(key);
+        }
+      }
+    } else {
+      // Cancel ALL active searches
+      for (const [, search] of this.activeSearches) {
+        search.abortController.abort();
+        for (const id of search.activityIds) activityService.cancelActivity(id);
+      }
+      this.activeSearches.clear();
+      this.activeWorkerPools.clear();
+      this.poolConnectionMap.clear();
+      this.searchPoolMap.clear();
+    }
+
+    // Recalculate priority after pool changes
+    this._updateSearchPriority?.();
+
+    // Clean up priority throttling if no more searches
+    if (this.activeSearches.size === 0 && this.priorityThrottleDisposable) {
+      this.priorityThrottleDisposable.dispose();
+      this.priorityThrottleDisposable = null;
+      this._updateSearchPriority = null;
+    }
+
+    if (wasSearching && !this.isSearching) {
       this.sendState();
       this.postMessage({ type: 'searchCancelled' });
       vscode.window.setStatusBarMessage('$(x) Search cancelled', 2000);
@@ -488,7 +592,7 @@ export class SearchPanel {
       isSearching: this.isSearching,
       findFilesMode: this.findFilesMode,
       sortOrder: this.sortOrder,
-      globalMaxSearchProcesses: vscode.workspace.getConfiguration('sshLite').get<number>('searchParallelProcesses', 20),
+      globalMaxSearchProcesses: vscode.workspace.getConfiguration('sshLite').get<number>('searchParallelProcesses', 5),
     });
   }
 
@@ -528,8 +632,14 @@ export class SearchPanel {
         break;
 
       case 'cancelSearch':
-        this.cancelSearch();
+        this.cancelSearch(message.searchId);
         break;
+
+      case 'keepSearch': {
+        const kept = this.activeSearches.get(message.searchId);
+        if (kept) kept.kept = true;
+        break;
+      }
 
       case 'ready':
         this.sendState();
@@ -575,8 +685,8 @@ export class SearchPanel {
             // Clear override — use global default
             targetServer.maxSearchProcesses = undefined;
           } else {
-            // Clamp to min 5, max 50
-            targetServer.maxSearchProcesses = Math.max(5, Math.min(50, message.value));
+            // Clamp to min 1, max 50
+            targetServer.maxSearchProcesses = Math.max(1, Math.min(50, message.value));
           }
           // Persist to globalState
           const settings = this.loadServerSearchSettings();
@@ -590,19 +700,15 @@ export class SearchPanel {
 
           // Adjust active worker pools for this server (dynamic mid-search)
           const newCount = targetServer.maxSearchProcesses
-            ?? vscode.workspace.getConfiguration('sshLite').get<number>('searchParallelProcesses', 20);
+            ?? vscode.workspace.getConfiguration('sshLite').get<number>('searchParallelProcesses', 5);
           const clampedCount = Math.max(1, newCount);
           for (const [poolKey, pool] of this.activeWorkerPools) {
             if (poolKey.startsWith(message.serverId + ':')) {
-              pool.desiredWorkerCount = clampedCount;
-              if (clampedCount > pool.activeWorkerCount) {
-                for (let i = 0; i < clampedCount - pool.activeWorkerCount; i++) {
-                  pool.addWorker();
-                }
-              }
-              // If decreasing, workers self-terminate via the guard check
+              pool.fullWorkerCount = clampedCount;
             }
           }
+          // Let priority throttling recalculate effective counts (respects multi-search division + user ops)
+          this._updateSearchPriority?.();
         }
         break;
       }
@@ -658,18 +764,25 @@ export class SearchPanel {
       return;
     }
 
-    // Cancel any existing search
-    if (this.searchAbortController) {
-      this.searchAbortController.abort();
+    // Cancel any un-kept current search (kept searches continue in background)
+    for (const [id, search] of [...this.activeSearches]) {
+      if (!search.kept) {
+        search.abortController.abort();
+        this.activeSearches.delete(id);
+      }
     }
-    this.searchAbortController = new AbortController();
-    const abortController = this.searchAbortController;
+
+    const abortController = new AbortController();
     const signal = abortController.signal;
-
     const searchId = ++this.currentSearchId;
-    this.currentSearchActivityIds = [];
+    this.activeSearches.set(searchId, { abortController, activityIds: [], kept: false });
+    const searchActivityIds = this.activeSearches.get(searchId)!.activityIds;
 
-    this.isSearching = true;
+    // Start priority throttling if not already running (shared across concurrent searches)
+    if (!this.priorityThrottleDisposable) {
+      this.priorityThrottleDisposable = this._setupSearchPriorityThrottling();
+    }
+
     this.lastSearchQuery = query;
     this.lastIncludePattern = includePattern;
     this.lastExcludePattern = excludePattern;
@@ -752,14 +865,13 @@ export class SearchPanel {
         if (signal.aborted) return;
 
         // Phase 2: Search each server's non-redundant paths in parallel with progressive results
-        // Use instance variables so include-all can merge into ongoing search
-        this.currentGlobalSeen = new Set<string>();
-        this.currentCompletedCount = 0;
-        this.currentTotalCount = 0;
-        const globalSeen = this.currentGlobalSeen; // alias for readability
+        // Per-search counters (local — multiple searches can run concurrently)
+        const globalSeen = new Set<string>();
+        let completedCount = 0;
+        let totalCount = 0;
         this.lastSearchConnectionMap = connectionMap;
 
-        const globalParallelProcesses = config.get<number>('searchParallelProcesses', 20);
+        const globalParallelProcesses = config.get<number>('searchParallelProcesses', 5);
 
         // Build search tasks with metadata
         interface SearchTask {
@@ -790,7 +902,7 @@ export class SearchPanel {
               onCancel: () => { abortController.abort(); },
             }
           );
-          this.currentSearchActivityIds.push(activityId);
+          searchActivityIds.push(activityId);
 
           const searchPromise = (async (): Promise<WebviewSearchResult[]> => {
             if (signal.aborted) return [];
@@ -864,7 +976,7 @@ export class SearchPanel {
 
                 workQueue.push({ type: 'dir', path: sp.path });
 
-                this.currentTotalCount += workQueue.length;
+                totalCount += workQueue.length;
                 console.log(`[SSH Lite Search] Worker pool for ${sp.path}: ${workQueue.length} initial items, ${parallelProcesses} workers`);
 
                 // Dynamic worker tracking — always target the full configured count;
@@ -920,7 +1032,7 @@ export class SearchPanel {
 
                         // Update totalCount: add new items (file batches + subdirs) discovered by this dir
                         const newItems = batches.length + entries.dirs.length;
-                        this.currentTotalCount += newItems;
+                        totalCount += newItems;
 
                         // Ramp up workers as queue grows (initial queue may be small)
                         while (activeWorkerCount < desiredWorkerCount && workQueue.length > workIndex) {
@@ -928,13 +1040,13 @@ export class SearchPanel {
                         }
 
                         // Dir listing done — send progress-only batch
-                        this.currentCompletedCount++;
-                        if (searchId !== this.currentSearchId) return;
+                        completedCount++;
+                        if (!this.activeSearches.has(searchId)) return;
                         this.postMessage({
                           type: 'searchBatch', searchId, results: [],
-                          totalResults: globalSeen.size, completedCount: this.currentCompletedCount, totalCount: this.currentTotalCount,
+                          totalResults: globalSeen.size, completedCount: completedCount, totalCount: totalCount,
                           hitLimit: false, limit: maxResults,
-                          done: this.currentCompletedCount === this.currentTotalCount,
+                          done: completedCount === totalCount,
                         });
                       } catch {
                         // listEntries failed — fallback to recursive grep on this dir
@@ -943,7 +1055,7 @@ export class SearchPanel {
                           `${findFiles ? 'Find' : 'Search'}: "${query.substring(0, 30)}${query.length > 30 ? '...' : ''}"`,
                           { detail: `in ${item.path} (fallback)`, cancellable: true, onCancel: () => { abortController.abort(); } }
                         );
-                        this.currentSearchActivityIds.push(actId);
+                        searchActivityIds.push(actId);
                         try {
                           const results = await connection.searchFiles(item.path, query, {
                             searchContent: !findFiles, caseSensitive, regex,
@@ -964,24 +1076,24 @@ export class SearchPanel {
                             globalSeen.add(key);
                             return true;
                           });
-                          this.currentCompletedCount++;
-                          if (searchId !== this.currentSearchId) return;
+                          completedCount++;
+                          if (!this.activeSearches.has(searchId)) return;
                           this.postMessage({
                             type: 'searchBatch', searchId, results: unique,
-                            totalResults: globalSeen.size, completedCount: this.currentCompletedCount, totalCount: this.currentTotalCount,
+                            totalResults: globalSeen.size, completedCount: completedCount, totalCount: totalCount,
                             hitLimit: globalSeen.size >= maxResults, limit: maxResults,
-                            done: this.currentCompletedCount === this.currentTotalCount,
+                            done: completedCount === totalCount,
                           });
                         } catch (error) {
                           activityService.failActivity(actId, (error as Error).message);
                           failedScopes.push(`${server.hostConfig.name}: ${(error as Error).message}`);
-                          this.currentCompletedCount++;
-                          if (searchId !== this.currentSearchId) return;
+                          completedCount++;
+                          if (!this.activeSearches.has(searchId)) return;
                           this.postMessage({
                             type: 'searchBatch', searchId, results: [],
-                            totalResults: globalSeen.size, completedCount: this.currentCompletedCount, totalCount: this.currentTotalCount,
+                            totalResults: globalSeen.size, completedCount: completedCount, totalCount: totalCount,
                             hitLimit: false, limit: maxResults,
-                            done: this.currentCompletedCount === this.currentTotalCount,
+                            done: completedCount === totalCount,
                           });
                         }
                       } finally {
@@ -995,7 +1107,7 @@ export class SearchPanel {
                         { detail: `${item.filePaths.length} files`, cancellable: true,
                           onCancel: () => { abortController.abort(); } }
                       );
-                      this.currentSearchActivityIds.push(actId);
+                      searchActivityIds.push(actId);
                       try {
                         const results = await connection.searchFiles(item.filePaths, query, {
                           searchContent: !findFiles, caseSensitive, regex,
@@ -1016,24 +1128,24 @@ export class SearchPanel {
                           globalSeen.add(key);
                           return true;
                         });
-                        this.currentCompletedCount++;
-                        if (searchId !== this.currentSearchId) return;
+                        completedCount++;
+                        if (!this.activeSearches.has(searchId)) return;
                         this.postMessage({
                           type: 'searchBatch', searchId, results: unique,
-                          totalResults: globalSeen.size, completedCount: this.currentCompletedCount, totalCount: this.currentTotalCount,
+                          totalResults: globalSeen.size, completedCount: completedCount, totalCount: totalCount,
                           hitLimit: globalSeen.size >= maxResults, limit: maxResults,
-                          done: this.currentCompletedCount === this.currentTotalCount,
+                          done: completedCount === totalCount,
                         });
                       } catch (error) {
                         activityService.failActivity(actId, (error as Error).message);
                         failedScopes.push(`${server.hostConfig.name}: ${(error as Error).message}`);
-                        this.currentCompletedCount++;
-                        if (searchId !== this.currentSearchId) return;
+                        completedCount++;
+                        if (!this.activeSearches.has(searchId)) return;
                         this.postMessage({
                           type: 'searchBatch', searchId, results: [],
-                          totalResults: globalSeen.size, completedCount: this.currentCompletedCount, totalCount: this.currentTotalCount,
+                          totalResults: globalSeen.size, completedCount: completedCount, totalCount: totalCount,
                           hitLimit: false, limit: maxResults,
-                          done: this.currentCompletedCount === this.currentTotalCount,
+                          done: completedCount === totalCount,
                         });
                       }
                     }
@@ -1044,6 +1156,7 @@ export class SearchPanel {
                 };
 
                 // Register pool controller for dynamic worker adjustment
+                let fullDesiredCount = parallelProcesses;
                 const addWorker = () => {
                   const p = runWorker();
                   allWorkerPromises.push(p);
@@ -1051,9 +1164,14 @@ export class SearchPanel {
                 this.activeWorkerPools.set(poolKey, {
                   get desiredWorkerCount() { return desiredWorkerCount; },
                   set desiredWorkerCount(v: number) { desiredWorkerCount = v; },
+                  get fullWorkerCount() { return fullDesiredCount; },
+                  set fullWorkerCount(v: number) { fullDesiredCount = v; },
                   get activeWorkerCount() { return activeWorkerCount; },
                   addWorker,
                 });
+                this.poolConnectionMap.set(poolKey, server.id);
+                this.searchPoolMap.set(poolKey, searchId);
+                this._updateSearchPriority?.();
 
                 // Spawn initial workers (only as many as queue items; more spawn as work is discovered)
                 const initialWorkers = Math.min(desiredWorkerCount, workQueue.length);
@@ -1067,6 +1185,9 @@ export class SearchPanel {
                   if (allWorkerPromises.length === len) break;
                 }
                 this.activeWorkerPools.delete(poolKey);
+                this.poolConnectionMap.delete(poolKey);
+                this.searchPoolMap.delete(poolKey);
+                this._updateSearchPriority?.();
               })();
 
               workerPoolPromises.push(poolPromise);
@@ -1078,12 +1199,12 @@ export class SearchPanel {
           }
         }
 
-        this.currentTotalCount += searchTasks.length;
+        totalCount += searchTasks.length;
 
         // Wrap each task with .then() that sends progressive searchBatch messages
         const wrappedPromises = searchTasks.map((task) =>
           task.promise.then((batchResults) => {
-            if (signal.aborted || searchId !== this.currentSearchId) return [];
+            if (signal.aborted || !this.activeSearches.has(searchId)) return [];
             // Deduplicate against global set
             const unique = batchResults.filter((r) => {
               const key = `${r.connectionId}:${r.path}:${r.line || 0}`;
@@ -1091,32 +1212,32 @@ export class SearchPanel {
               globalSeen.add(key);
               return true;
             });
-            this.currentCompletedCount++;
+            completedCount++;
             this.postMessage({
               type: 'searchBatch',
               searchId,
               results: unique,
               totalResults: globalSeen.size,
-              completedCount: this.currentCompletedCount,
-              totalCount: this.currentTotalCount,
+              completedCount: completedCount,
+              totalCount: totalCount,
               hitLimit: globalSeen.size >= maxResults,
               limit: maxResults,
-              done: this.currentCompletedCount === this.currentTotalCount,
+              done: completedCount === totalCount,
             });
             return unique;
           }).catch(() => {
-            if (signal.aborted || searchId !== this.currentSearchId) return [] as WebviewSearchResult[];
-            this.currentCompletedCount++;
+            if (signal.aborted || !this.activeSearches.has(searchId)) return [] as WebviewSearchResult[];
+            completedCount++;
             this.postMessage({
               type: 'searchBatch',
               searchId,
               results: [],
               totalResults: globalSeen.size,
-              completedCount: this.currentCompletedCount,
-              totalCount: this.currentTotalCount,
+              completedCount: completedCount,
+              totalCount: totalCount,
               hitLimit: false,
               limit: maxResults,
-              done: this.currentCompletedCount === this.currentTotalCount,
+              done: completedCount === totalCount,
             });
             return [] as WebviewSearchResult[];
           })
@@ -1161,7 +1282,7 @@ export class SearchPanel {
               onCancel: () => { abortController.abort(); },
             }
           );
-          this.currentSearchActivityIds.push(activityId);
+          searchActivityIds.push(activityId);
 
           try {
             const results = await connection.searchFiles(scope.path, query, {
@@ -1230,7 +1351,7 @@ export class SearchPanel {
       if (!signal.aborted) {
         this.postMessage({ type: 'error', message: (error as Error).message });
       }
-      for (const id of this.currentSearchActivityIds) {
+      for (const id of searchActivityIds) {
         activityService.failActivity(id, 'Search error');
       }
     } finally {
@@ -1253,9 +1374,26 @@ export class SearchPanel {
         }
       }
 
-      this.activeWorkerPools.clear();
-      if (searchId === this.currentSearchId) {
-        this.isSearching = false;
+      // Clean up THIS search's pools (not other concurrent searches')
+      for (const [key, sid] of [...this.searchPoolMap]) {
+        if (sid === searchId) {
+          this.activeWorkerPools.delete(key);
+          this.poolConnectionMap.delete(key);
+          this.searchPoolMap.delete(key);
+        }
+      }
+      this.activeSearches.delete(searchId);
+
+      // Recalculate priority for remaining searches
+      this._updateSearchPriority?.();
+
+      // Clean up priority throttling if no more searches
+      if (this.activeSearches.size === 0) {
+        if (this.priorityThrottleDisposable) {
+          this.priorityThrottleDisposable.dispose();
+          this.priorityThrottleDisposable = null;
+          this._updateSearchPriority = null;
+        }
         this.sendState();
       }
     }
@@ -2993,6 +3131,8 @@ export class SearchPanel {
               // Route future searchBatch for this searchId to the kept tab
               if (currentTab.searching && currentTab.searchId) {
                 tabSearchIdMap[currentTab.searchId] = currentTab.id;
+                // Notify extension to preserve this search (don't abort on new search)
+                vscode.postMessage({ type: 'keepSearch', searchId: currentTab.searchId });
               }
               // Create a fresh Current tab
               currentTab = createTabState();
@@ -3553,8 +3693,8 @@ export class SearchPanel {
             const closedTab = resultTabs.find(function(t) { return t.id === tabId; });
             if (closedTab) {
               // LITE: cancel the server-side search if this tab owns it
-              if (closedTab.searching) {
-                vscode.postMessage({ type: 'cancelSearch' });
+              if (closedTab.searching && closedTab.searchId) {
+                vscode.postMessage({ type: 'cancelSearch', searchId: closedTab.searchId });
               }
               // Clean up routing
               if (closedTab.searchId) delete tabSearchIdMap[closedTab.searchId];
