@@ -8,8 +8,11 @@
  * - No decoration for active SSH files
  */
 
-import { Uri, ThemeColor } from '../__mocks__/vscode';
+import * as fs from 'fs';
+import { Uri, ThemeColor, setMockConfig, clearMockConfig } from '../__mocks__/vscode';
 import { SSHFileDecorationProvider } from './FileDecorationProvider';
+
+jest.mock('fs');
 
 // Create mock FileService
 function createMockFileService(tempDir: string) {
@@ -98,17 +101,24 @@ describe('SSHFileDecorationProvider', () => {
   });
 
   describe('SSH temp files with active connection', () => {
-    it('should return undefined (no decoration) when file is live', () => {
+    it('should return remote tooltip when file is live', () => {
       const localPath = `${tempDir}/conn1/file.ts`;
       const uri = { scheme: 'file', fsPath: localPath } as any;
 
       // Has mapping AND active connection
-      fileService.getFileMapping.mockReturnValue({ connectionId: 'conn1' });
+      fileService.getFileMapping.mockReturnValue({
+        connectionId: 'host:22:root',
+        remotePath: '/var/log/test.log',
+      });
       connectionManager.getConnection.mockReturnValue({ id: 'conn1' });
 
       const decoration = provider.provideFileDecoration(uri);
 
-      expect(decoration).toBeUndefined();
+      expect(decoration).toBeDefined();
+      expect(decoration!.tooltip).toContain('Path: /var/log/test.log');
+      expect(decoration!.tooltip).toContain('Server: host:22 (root)');
+      expect(decoration!.badge).toBeUndefined();
+      expect(decoration!.color).toBeUndefined();
     });
   });
 
@@ -212,12 +222,13 @@ describe('SSHFileDecorationProvider', () => {
         fsPath: 'C:\\Users\\user\\AppData\\Local\\Temp\\ssh-lite\\conn1\\file.ts',
       } as any;
 
-      winFileService.getFileMapping.mockReturnValue({ connectionId: 'conn1' });
+      winFileService.getFileMapping.mockReturnValue({ connectionId: 'host:22:root', remotePath: '/test' });
       winConnMgr.getConnection.mockReturnValue({ id: 'conn1' });
 
       const decoration = winProvider.provideFileDecoration(uri);
 
-      expect(decoration).toBeUndefined(); // Active file, no decoration
+      expect(decoration).toBeDefined(); // Active file — has remote tooltip
+      expect(decoration!.tooltip).toContain('Server: host:22 (root)');
       expect(winFileService.getFileMapping).toHaveBeenCalledWith(
         'c:\\Users\\user\\AppData\\Local\\Temp\\ssh-lite\\conn1\\file.ts'
       );
@@ -480,6 +491,347 @@ describe('SSHFileDecorationProvider', () => {
       const decoration = provider.provideFileDecoration(emptyUri);
       expect(decoration).toBeDefined();
       expect(decoration!.tooltip).toBe('Not matching filter');
+    });
+  });
+
+  describe('local file tooltips', () => {
+    const mockedFs = fs as jest.Mocked<typeof fs>;
+    const localFile = '/home/user/project/src/app.ts';
+    const localDir = '/home/user/project/src';
+
+    afterEach(() => {
+      clearMockConfig();
+    });
+
+    it('should show tooltip with file info for local files', () => {
+      const uri = { scheme: 'file', fsPath: localFile } as any;
+      (mockedFs.statSync as jest.Mock).mockReturnValue({
+        isDirectory: () => false,
+        size: 4300,
+        mtimeMs: 1706947170000,
+        atimeMs: 1706950770000,
+        mode: 0o100644, // rw-r--r--
+      });
+
+      const decoration = provider.provideFileDecoration(uri);
+
+      expect(decoration).toBeDefined();
+      expect(decoration!.tooltip).toContain(`Path: ${localFile}`);
+      expect(decoration!.tooltip).toContain('Size:');
+      expect(decoration!.tooltip).toContain('Modified:');
+      expect(decoration!.tooltip).toContain('Accessed:');
+      expect(decoration!.tooltip).toContain('Permissions:');
+      expect(decoration!.badge).toBeUndefined();
+      expect(decoration!.color).toBeUndefined();
+    });
+
+    it('should show "Directory" for folder size', () => {
+      const uri = { scheme: 'file', fsPath: localDir } as any;
+      (mockedFs.statSync as jest.Mock).mockReturnValue({
+        isDirectory: () => true,
+        size: 4096,
+        mtimeMs: 1706947170000,
+        atimeMs: 1706950770000,
+        mode: 0o40755, // rwxr-xr-x
+      });
+
+      const decoration = provider.provideFileDecoration(uri);
+
+      expect(decoration).toBeDefined();
+      expect(decoration!.tooltip).toContain('Size: Directory');
+    });
+
+    it('should format permissions correctly from mode bitmask', () => {
+      const uri = { scheme: 'file', fsPath: localFile } as any;
+      (mockedFs.statSync as jest.Mock).mockReturnValue({
+        isDirectory: () => false,
+        size: 100,
+        mtimeMs: 1706947170000,
+        atimeMs: 1706950770000,
+        mode: 0o100755, // rwxr-xr-x
+      });
+
+      const decoration = provider.provideFileDecoration(uri);
+      expect(decoration!.tooltip).toContain('rwxr-xr-x');
+    });
+
+    it('should format rw-r--r-- permissions', () => {
+      const uri = { scheme: 'file', fsPath: localFile } as any;
+      (mockedFs.statSync as jest.Mock).mockReturnValue({
+        isDirectory: () => false,
+        size: 100,
+        mtimeMs: 1706947170000,
+        atimeMs: 1706950770000,
+        mode: 0o100644,
+      });
+
+      const decoration = provider.provideFileDecoration(uri);
+      expect(decoration!.tooltip).toContain('rw-r--r--');
+    });
+
+    it('should return undefined when fs.statSync throws', () => {
+      const uri = { scheme: 'file', fsPath: '/nonexistent/file.ts' } as any;
+      (mockedFs.statSync as jest.Mock).mockImplementation(() => {
+        throw new Error('ENOENT');
+      });
+
+      const decoration = provider.provideFileDecoration(uri);
+      expect(decoration).toBeUndefined();
+    });
+
+    it('should return undefined when localFileTooltips setting is false', () => {
+      setMockConfig('sshLite.localFileTooltips', false);
+      const uri = { scheme: 'file', fsPath: localFile } as any;
+      (mockedFs.statSync as jest.Mock).mockClear();
+
+      const decoration = provider.provideFileDecoration(uri);
+      expect(decoration).toBeUndefined();
+      expect(mockedFs.statSync).not.toHaveBeenCalled();
+    });
+
+    it('should show tooltip when localFileTooltips setting is true', () => {
+      setMockConfig('sshLite.localFileTooltips', true);
+      const uri = { scheme: 'file', fsPath: localFile } as any;
+      (mockedFs.statSync as jest.Mock).mockReturnValue({
+        isDirectory: () => false,
+        size: 1024,
+        mtimeMs: 1706947170000,
+        atimeMs: 1706950770000,
+        mode: 0o100644,
+      });
+
+      const decoration = provider.provideFileDecoration(uri);
+      expect(decoration).toBeDefined();
+      expect(decoration!.tooltip).toContain('Path:');
+    });
+
+    it('should show tooltip by default (setting not explicitly set)', () => {
+      // Default is true — no setMockConfig call
+      const uri = { scheme: 'file', fsPath: localFile } as any;
+      (mockedFs.statSync as jest.Mock).mockReturnValue({
+        isDirectory: () => false,
+        size: 512,
+        mtimeMs: 1706947170000,
+        atimeMs: 1706950770000,
+        mode: 0o100644,
+      });
+
+      const decoration = provider.provideFileDecoration(uri);
+      expect(decoration).toBeDefined();
+    });
+  });
+
+  describe('local file tooltips — Windows paths', () => {
+    const mockedFs = fs as jest.Mocked<typeof fs>;
+    const winTempDir2 = 'c:\\users\\dev\\appdata\\local\\temp\\ssh-lite';
+    let winProvider2: SSHFileDecorationProvider;
+    let winFileService2: ReturnType<typeof createMockFileService>;
+    let winConnMgr2: ReturnType<typeof createMockConnectionManager>;
+
+    beforeEach(() => {
+      winFileService2 = createMockFileService(winTempDir2);
+      winConnMgr2 = createMockConnectionManager();
+      winProvider2 = new SSHFileDecorationProvider(winFileService2 as any, winConnMgr2 as any);
+    });
+
+    afterEach(() => {
+      winProvider2.dispose();
+      clearMockConfig();
+    });
+
+    it('should show tooltip for Windows local files outside SSH temp dir', () => {
+      const uri = { scheme: 'file', fsPath: 'D:\\Projects\\app\\main.ts' } as any;
+      (mockedFs.statSync as jest.Mock).mockReturnValue({
+        isDirectory: () => false,
+        size: 2048,
+        mtimeMs: 1706947170000,
+        atimeMs: 1706950770000,
+        mode: 0o100666, // rw-rw-rw- (Windows typical)
+      });
+
+      const decoration = winProvider2.provideFileDecoration(uri);
+
+      expect(decoration).toBeDefined();
+      expect(decoration!.tooltip).toContain('Path: D:\\Projects\\app\\main.ts');
+      expect(decoration!.tooltip).toContain('rw-rw-rw-');
+    });
+
+    it('should not show tooltip for Windows files when setting disabled', () => {
+      setMockConfig('sshLite.localFileTooltips', false);
+      const uri = { scheme: 'file', fsPath: 'D:\\Projects\\app\\main.ts' } as any;
+
+      const decoration = winProvider2.provideFileDecoration(uri);
+      expect(decoration).toBeUndefined();
+    });
+  });
+
+  describe('remote tooltip on SSH temp files', () => {
+    afterEach(() => {
+      clearMockConfig();
+    });
+
+    it('should show remote file info with full IRemoteFile', () => {
+      const localPath = `${tempDir}/conn1/app.log`;
+      const uri = { scheme: 'file', fsPath: localPath } as any;
+
+      fileService.getFileMapping.mockReturnValue({
+        connectionId: 'myserver:22:root',
+        remotePath: '/var/log/app.log',
+        remoteFile: {
+          path: '/var/log/app.log',
+          size: 498073,
+          modifiedTime: 1706947170000,
+          accessTime: 1706950770000,
+          owner: 'root',
+          group: 'root',
+          permissions: 'rw-r--r--',
+        },
+      });
+      connectionManager.getConnection.mockReturnValue({ id: 'conn1' });
+
+      const decoration = provider.provideFileDecoration(uri);
+
+      expect(decoration).toBeDefined();
+      expect(decoration!.tooltip).toContain('Path: /var/log/app.log');
+      expect(decoration!.tooltip).toContain('Server: myserver:22 (root)');
+      expect(decoration!.tooltip).toContain('Owner: root:root');
+      expect(decoration!.tooltip).toContain('Permissions: rw-r--r--');
+      expect(decoration!.badge).toBeUndefined();
+    });
+
+    it('should fallback to lastRemoteSize/lastRemoteModTime when remoteFile is undefined', () => {
+      const localPath = `${tempDir}/conn1/preloaded.txt`;
+      const uri = { scheme: 'file', fsPath: localPath } as any;
+
+      fileService.getFileMapping.mockReturnValue({
+        connectionId: 'host:2222:admin',
+        remotePath: '/home/admin/preloaded.txt',
+        lastRemoteSize: 1024,
+        lastRemoteModTime: 1706947170000,
+        // remoteFile is undefined (preloaded file)
+      });
+      connectionManager.getConnection.mockReturnValue({ id: 'conn1' });
+
+      const decoration = provider.provideFileDecoration(uri);
+
+      expect(decoration).toBeDefined();
+      expect(decoration!.tooltip).toContain('Path: /home/admin/preloaded.txt');
+      expect(decoration!.tooltip).toContain('Server: host:2222 (admin)');
+      expect(decoration!.tooltip).toContain('Modified:');
+      // Size and Modified should be resolved from fallbacks; Accessed/Owner/Permissions are N/A (no remoteFile)
+      expect(decoration!.tooltip).toMatch(/Size: \d/); // not "Size: N/A"
+      expect(decoration!.tooltip).not.toMatch(/Modified: N\/A/);
+    });
+
+    it('should show N/A for missing fields when no remoteFile and no fallbacks', () => {
+      const localPath = `${tempDir}/conn1/minimal.txt`;
+      const uri = { scheme: 'file', fsPath: localPath } as any;
+
+      fileService.getFileMapping.mockReturnValue({
+        connectionId: 'srv:22:user',
+        remotePath: '/tmp/minimal.txt',
+        // No remoteFile, no lastRemoteSize, no lastRemoteModTime
+      });
+      connectionManager.getConnection.mockReturnValue({ id: 'conn1' });
+
+      const decoration = provider.provideFileDecoration(uri);
+
+      expect(decoration!.tooltip).toContain('Size: N/A');
+      expect(decoration!.tooltip).toContain('Modified: N/A');
+      expect(decoration!.tooltip).toContain('Accessed: N/A');
+      expect(decoration!.tooltip).toContain('Owner: N/A');
+      expect(decoration!.tooltip).toContain('Permissions: N/A');
+    });
+
+    it('should append remote tooltip to upload badge', () => {
+      const localPath = `${tempDir}/conn1/file.ts`;
+      const uri = { scheme: 'file', fsPath: localPath } as any;
+
+      fileService.isFileUploading.mockReturnValue(true);
+      fileService.getFileMapping.mockReturnValue({
+        connectionId: 'host:22:root',
+        remotePath: '/app/file.ts',
+        remoteFile: {
+          path: '/app/file.ts',
+          size: 500,
+          modifiedTime: 1706947170000,
+          owner: 'root',
+          group: 'root',
+          permissions: 'rw-r--r--',
+        },
+      });
+
+      const decoration = provider.provideFileDecoration(uri);
+
+      expect(decoration!.badge).toBe('↑');
+      expect(decoration!.tooltip).toContain('Uploading to server...');
+      expect(decoration!.tooltip).toContain('Path: /app/file.ts');
+      expect(decoration!.tooltip).toContain('Server: host:22 (root)');
+    });
+
+    it('should append remote tooltip to failed upload badge', () => {
+      const localPath = `${tempDir}/conn1/file.ts`;
+      const uri = { scheme: 'file', fsPath: localPath } as any;
+
+      fileService.isFileUploadFailed.mockReturnValue(true);
+      fileService.getFileMapping.mockReturnValue({
+        connectionId: 'host:22:root',
+        remotePath: '/app/file.ts',
+      });
+
+      const decoration = provider.provideFileDecoration(uri);
+
+      expect(decoration!.badge).toBe('✗');
+      expect(decoration!.tooltip).toContain('Upload failed');
+      expect(decoration!.tooltip).toContain('Server: host:22 (root)');
+    });
+
+    it('should append remote tooltip to connection lost state', () => {
+      const localPath = `${tempDir}/conn1/file.ts`;
+      const uri = { scheme: 'file', fsPath: localPath } as any;
+
+      fileService.getFileMapping.mockReturnValue({
+        connectionId: 'host:22:root',
+        remotePath: '/app/file.ts',
+      });
+      connectionManager.getConnection.mockReturnValue(undefined);
+
+      const decoration = provider.provideFileDecoration(uri);
+
+      expect(decoration!.tooltip).toContain('Connection lost');
+      expect(decoration!.tooltip).toContain('Server: host:22 (root)');
+    });
+
+    it('should not show remote tooltip when setting is disabled', () => {
+      setMockConfig('sshLite.localFileTooltips', false);
+      const localPath = `${tempDir}/conn1/file.ts`;
+      const uri = { scheme: 'file', fsPath: localPath } as any;
+
+      fileService.getFileMapping.mockReturnValue({
+        connectionId: 'host:22:root',
+        remotePath: '/app/file.ts',
+      });
+      connectionManager.getConnection.mockReturnValue({ id: 'conn1' });
+
+      const decoration = provider.provideFileDecoration(uri);
+
+      // Should return undefined (no tooltip when setting off and file is live)
+      expect(decoration).toBeUndefined();
+    });
+
+    it('should still show upload badge when tooltips disabled (badge is independent)', () => {
+      setMockConfig('sshLite.localFileTooltips', false);
+      const localPath = `${tempDir}/conn1/file.ts`;
+      const uri = { scheme: 'file', fsPath: localPath } as any;
+
+      fileService.isFileUploading.mockReturnValue(true);
+
+      const decoration = provider.provideFileDecoration(uri);
+
+      expect(decoration!.badge).toBe('↑');
+      expect(decoration!.tooltip).toBe('Uploading to server...');
+      // No remote info appended
+      expect(decoration!.tooltip).not.toContain('Server:');
     });
   });
 

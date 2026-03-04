@@ -117,6 +117,18 @@ File opened → size > progressiveDownloadThreshold (1MB)?
 
 ---
 
+## File Tooltips
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `sshLite.localFileTooltips` | `boolean` | `true` | Show file info tooltip (path, size, modified, accessed, permissions) when hovering files in VS Code explorer. Also controls SSH remote file tooltips on editor tabs |
+
+**Local files**: Uses `fs.statSync()` to read metadata. Shows path, size (or "Directory"), modified time, accessed time, and permissions (`rwxr-xr-x` from `stat.mode` bitmask).
+
+**SSH temp files**: Shows remote path, server (host:port:user), size, modified, accessed, owner:group, and permissions from `IRemoteFile`. Falls back to `lastRemoteSize`/`lastRemoteModTime` for preloaded files.
+
+---
+
 ## Temp Files & Audit
 
 | Setting | Type | Default | Min | Description |

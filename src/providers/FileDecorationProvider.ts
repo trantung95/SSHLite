@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
-import { FileService } from '../services/FileService';
+import * as fs from 'fs';
+import { FileService, FileMapping } from '../services/FileService';
 import { ConnectionManager } from '../connection/ConnectionManager';
-import { normalizeLocalPath } from '../utils/helpers';
+import { normalizeLocalPath, formatFileSize, formatDateTime } from '../utils/helpers';
 
 /**
  * Provides file decorations for SSH temp files:
@@ -150,36 +151,46 @@ export class SSHFileDecorationProvider implements vscode.FileDecorationProvider 
       }
     }
 
-    // Handle file:// URIs — gray out SSH temp files that are not live-refreshing
+    // Handle file:// URIs
     if (uri.scheme === 'file') {
       const filePath = normalizeLocalPath(uri.fsPath);
+      const tooltipsEnabled = vscode.workspace.getConfiguration('sshLite').get<boolean>('localFileTooltips', true);
 
-      // Only decorate files in the SSH temp directory
+      // Non-SSH local files — tooltip only
       if (!filePath.startsWith(this.tempDir)) {
-        return undefined;
+        if (!tooltipsEnabled) return undefined;
+        const tooltip = this._buildLocalTooltip(uri.fsPath);
+        return tooltip ? { tooltip } : undefined;
       }
+
+      // SSH temp files — badges + remote tooltip
+      const remoteTooltipSuffix = (mapping: FileMapping) => {
+        if (!tooltipsEnabled) return '';
+        return '\n\n' + this._buildRemoteTooltip(mapping);
+      };
 
       // Upload state badges take priority
       if (this.fileService.isFileUploading(filePath)) {
+        const mapping = this.fileService.getFileMapping(filePath);
         return {
           badge: '↑',
           color: new vscode.ThemeColor('charts.yellow'),
-          tooltip: 'Uploading to server...',
+          tooltip: 'Uploading to server...' + (mapping ? remoteTooltipSuffix(mapping) : ''),
         };
       }
 
       if (this.fileService.isFileUploadFailed(filePath)) {
+        const mapping = this.fileService.getFileMapping(filePath);
         return {
           badge: '✗',
           color: new vscode.ThemeColor('errorForeground'),
-          tooltip: 'Upload failed — save again to retry',
+          tooltip: 'Upload failed — save again to retry' + (mapping ? remoteTooltipSuffix(mapping) : ''),
         };
       }
 
       // Check if this file has an active mapping
       const mapping = this.fileService.getFileMapping(filePath);
       if (!mapping) {
-        // SSH temp file with no mapping — orphaned/stale
         return {
           color: new vscode.ThemeColor('disabledForeground'),
           tooltip: 'Not connected — click "Reconnect" to enable live refresh',
@@ -189,18 +200,68 @@ export class SSHFileDecorationProvider implements vscode.FileDecorationProvider 
       // Has mapping — check if the connection is still active
       const connection = this.connectionManager.getConnection(mapping.connectionId);
       if (!connection) {
-        // Mapping exists but connection dropped
         return {
           color: new vscode.ThemeColor('disabledForeground'),
-          tooltip: 'Connection lost — file is not being refreshed',
+          tooltip: 'Connection lost — file is not being refreshed' + remoteTooltipSuffix(mapping),
         };
       }
 
-      // File is live — no special decoration needed
+      // File is live — show remote tooltip only
+      if (tooltipsEnabled) {
+        return { tooltip: this._buildRemoteTooltip(mapping) };
+      }
       return undefined;
     }
 
     return undefined;
+  }
+
+  private _formatPermissions(mode: number): string {
+    const chars = 'rwx';
+    let result = '';
+    for (let i = 8; i >= 0; i--) {
+      result += (mode & (1 << i)) ? chars[(8 - i) % 3] : '-';
+    }
+    return result;
+  }
+
+  private _buildLocalTooltip(fsPath: string): string | undefined {
+    try {
+      const stat = fs.statSync(fsPath);
+      const lines: string[] = [
+        `Path: ${fsPath}`,
+        `Size: ${stat.isDirectory() ? 'Directory' : formatFileSize(stat.size)}`,
+        `Modified: ${formatDateTime(stat.mtimeMs)}`,
+        `Accessed: ${formatDateTime(stat.atimeMs)}`,
+        `Permissions: ${this._formatPermissions(stat.mode)}`,
+      ];
+      return lines.join('\n');
+    } catch {
+      return undefined;
+    }
+  }
+
+  private _buildRemoteTooltip(mapping: FileMapping): string {
+    const rf = mapping.remoteFile;
+    const parts = mapping.connectionId.split(':');
+    const serverLine = `Server: ${parts[0]}:${parts[1]} (${parts[2]})`;
+
+    const size = rf ? formatFileSize(rf.size) : (mapping.lastRemoteSize != null ? formatFileSize(mapping.lastRemoteSize) : 'N/A');
+    const modified = rf ? formatDateTime(rf.modifiedTime) : (mapping.lastRemoteModTime != null ? formatDateTime(mapping.lastRemoteModTime) : 'N/A');
+    const accessed = rf?.accessTime ? formatDateTime(rf.accessTime) : 'N/A';
+    const owner = rf ? `${rf.owner || 'N/A'}:${rf.group || 'N/A'}` : 'N/A';
+    const perms = rf?.permissions || 'N/A';
+
+    const lines: string[] = [
+      `Path: ${rf?.path || mapping.remotePath}`,
+      serverLine,
+      `Size: ${size}`,
+      `Modified: ${modified}`,
+      `Accessed: ${accessed}`,
+      `Owner: ${owner}`,
+      `Permissions: ${perms}`,
+    ];
+    return lines.join('\n');
   }
 
   dispose(): void {

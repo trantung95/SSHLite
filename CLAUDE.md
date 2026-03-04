@@ -165,6 +165,13 @@ This project is designed to grow itself. The `.adn/growth/` folder contains ever
 
 ## Release Notes
 
+### v0.5.0 — Local file tooltips in VS Code explorer
+
+- **Local file tooltips**: Hovering any file or folder in VS Code's default file explorer now shows a tooltip with file metadata: path, size, modified time, accessed time, and permissions. Uses `fs.statSync()` for instant local file stats. Directories show "Directory" instead of size.
+- **SSH temp file tooltips**: Hovering SSH remote files opened in editor tabs now shows remote server info: remote path, server (host:port:user), size, modified, accessed, owner:group, and permissions. Tooltip is appended to existing upload/connection status messages.
+- **New setting `sshLite.localFileTooltips`**: Boolean (default: `true`). Controls both local and SSH remote file tooltips. When disabled, only badge decorations (upload ↑, failed ✗) remain.
+- **Permission formatting**: Unix permission string (`rwxr-xr-x`) derived from `stat.mode` bitmask. Works cross-platform — Windows shows simplified permissions.
+
 ### v0.4.7 — Search priority throttling & concurrent search tabs
 
 - **Lower default workers**: Default `searchParallelProcesses` reduced from 20 to **5**, minimum from 5 to **1**. Search is now lighter on server resources out of the box.
