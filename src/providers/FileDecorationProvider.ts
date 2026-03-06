@@ -229,8 +229,8 @@ export class SSHFileDecorationProvider implements vscode.FileDecorationProvider 
     try {
       const stat = fs.statSync(fsPath);
       const lines: string[] = [
-        `Path: ${fsPath}`,
         `Size: ${stat.isDirectory() ? 'Directory' : formatFileSize(stat.size)}`,
+        `Created: ${formatDateTime(stat.birthtimeMs)}`,
         `Modified: ${formatDateTime(stat.mtimeMs)}`,
         `Accessed: ${formatDateTime(stat.atimeMs)}`,
         `Permissions: ${this._formatPermissions(stat.mode)}`,

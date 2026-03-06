@@ -508,6 +508,7 @@ describe('SSHFileDecorationProvider', () => {
       (mockedFs.statSync as jest.Mock).mockReturnValue({
         isDirectory: () => false,
         size: 4300,
+        birthtimeMs: 1706940000000,
         mtimeMs: 1706947170000,
         atimeMs: 1706950770000,
         mode: 0o100644, // rw-r--r--
@@ -516,8 +517,9 @@ describe('SSHFileDecorationProvider', () => {
       const decoration = provider.provideFileDecoration(uri);
 
       expect(decoration).toBeDefined();
-      expect(decoration!.tooltip).toContain(`Path: ${localFile}`);
+      expect(decoration!.tooltip).not.toContain('Path:');
       expect(decoration!.tooltip).toContain('Size:');
+      expect(decoration!.tooltip).toContain('Created:');
       expect(decoration!.tooltip).toContain('Modified:');
       expect(decoration!.tooltip).toContain('Accessed:');
       expect(decoration!.tooltip).toContain('Permissions:');
@@ -530,6 +532,7 @@ describe('SSHFileDecorationProvider', () => {
       (mockedFs.statSync as jest.Mock).mockReturnValue({
         isDirectory: () => true,
         size: 4096,
+        birthtimeMs: 1706940000000,
         mtimeMs: 1706947170000,
         atimeMs: 1706950770000,
         mode: 0o40755, // rwxr-xr-x
@@ -546,6 +549,7 @@ describe('SSHFileDecorationProvider', () => {
       (mockedFs.statSync as jest.Mock).mockReturnValue({
         isDirectory: () => false,
         size: 100,
+        birthtimeMs: 1706940000000,
         mtimeMs: 1706947170000,
         atimeMs: 1706950770000,
         mode: 0o100755, // rwxr-xr-x
@@ -560,6 +564,7 @@ describe('SSHFileDecorationProvider', () => {
       (mockedFs.statSync as jest.Mock).mockReturnValue({
         isDirectory: () => false,
         size: 100,
+        birthtimeMs: 1706940000000,
         mtimeMs: 1706947170000,
         atimeMs: 1706950770000,
         mode: 0o100644,
@@ -595,6 +600,7 @@ describe('SSHFileDecorationProvider', () => {
       (mockedFs.statSync as jest.Mock).mockReturnValue({
         isDirectory: () => false,
         size: 1024,
+        birthtimeMs: 1706940000000,
         mtimeMs: 1706947170000,
         atimeMs: 1706950770000,
         mode: 0o100644,
@@ -602,7 +608,7 @@ describe('SSHFileDecorationProvider', () => {
 
       const decoration = provider.provideFileDecoration(uri);
       expect(decoration).toBeDefined();
-      expect(decoration!.tooltip).toContain('Path:');
+      expect(decoration!.tooltip).toContain('Size:');
     });
 
     it('should show tooltip by default (setting not explicitly set)', () => {
@@ -611,6 +617,7 @@ describe('SSHFileDecorationProvider', () => {
       (mockedFs.statSync as jest.Mock).mockReturnValue({
         isDirectory: () => false,
         size: 512,
+        birthtimeMs: 1706940000000,
         mtimeMs: 1706947170000,
         atimeMs: 1706950770000,
         mode: 0o100644,
@@ -644,6 +651,7 @@ describe('SSHFileDecorationProvider', () => {
       (mockedFs.statSync as jest.Mock).mockReturnValue({
         isDirectory: () => false,
         size: 2048,
+        birthtimeMs: 1706940000000,
         mtimeMs: 1706947170000,
         atimeMs: 1706950770000,
         mode: 0o100666, // rw-rw-rw- (Windows typical)
@@ -652,7 +660,8 @@ describe('SSHFileDecorationProvider', () => {
       const decoration = winProvider2.provideFileDecoration(uri);
 
       expect(decoration).toBeDefined();
-      expect(decoration!.tooltip).toContain('Path: D:\\Projects\\app\\main.ts');
+      expect(decoration!.tooltip).not.toContain('Path:');
+      expect(decoration!.tooltip).toContain('Created:');
       expect(decoration!.tooltip).toContain('rw-rw-rw-');
     });
 
