@@ -32,6 +32,9 @@ RUN mkdir -p /home/admin/configs && \
     chmod +x /home/admin/scripts/deploy.sh && \
     chown -R admin:admin /home/admin
 
+RUN mkdir -p /var/log/sshd
+
 EXPOSE 22
 
-CMD ["/usr/sbin/sshd", "-D", "-e"]
+# Log to both stderr (docker logs) and /var/log/sshd/sshd.log (volume mount)
+CMD ["/bin/sh", "-c", "/usr/sbin/sshd -D -e 2>&1 | tee /var/log/sshd/sshd.log"]

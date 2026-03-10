@@ -12,7 +12,54 @@ npm run test:chaos:deep               # Deep mode (10+ min, 8 servers)
 CHAOS_SEED=42 npm run test:chaos      # Reproducible run
 ```
 
-**Requires**: Docker Desktop running with both `docker-compose.yml` and `docker-compose.multios.yml` containers.
+**Requires**: Docker Desktop running. Containers are managed automatically (see below).
+
+---
+
+## Container Lifecycle
+
+Chaos tests fully manage their own Docker containers — no manual `docker compose up/down` needed.
+
+| Phase | What happens | File |
+|-------|-------------|------|
+| **Log cleanup** | `globalSetup.chaos.ts` deletes `logs/chaos-container-logs.txt` and all `test-docker/logs/*/sshd.log` files from the previous run | `test-docker/globalSetup.chaos.ts` |
+| **Setup** | Starts both compose stacks (`docker-compose.yml` ports 2201-2203, `docker-compose.multios.yml` ports 2210-2214), waits for SSH readiness on all 8 servers | `test-docker/globalSetup.chaos.ts` |
+| **Log collection** | `globalTeardown.chaos.ts` collects last 200 lines from all 8 containers to `logs/chaos-container-logs.txt` — must happen before stop | `test-docker/globalTeardown.chaos.ts` |
+| **Teardown** | Cleans test artifacts (`rm -rf chaos-*`), then stops and removes all 8 containers by exact name | `test-docker/globalTeardown.chaos.ts` |
+| **Abnormal exit** | Signal handlers (`SIGINT`/`SIGTERM`) registered during setup stop containers if Jest is killed mid-run (Ctrl+C, VS Code close) | `test-docker/globalSetup.chaos.ts` |
+
+**Key design decisions:**
+- Containers are stopped by **exact name** (`sshlite-test-server-1`, `sshlite-os-alpine`, etc.), never by `docker compose down` or wildcard — this ensures other projects' containers are never touched
+- Skip-if-running check compares services defined in each compose file against running containers, because both stacks share the same Docker Compose project directory
+- Teardown collects container logs → cleans artifacts → stops containers (in that order: logs and artifacts are lost after docker rm)
+- sshd logs are volume-mounted to `test-docker/logs/<container-name>/sshd.log` on the host — persists after `docker rm`
+
+### Container Log Collection
+
+Container logs are collected at **three levels**:
+
+| Level | What | Where | When |
+|-------|------|-------|------|
+| **Per-scenario** | Full sshd logs from the target server's container | `logs/chaos-container-logs.txt` (per-scenario snapshots) | After each scenario in `ChaosEngine.runScenario()` |
+| **Final teardown** | Full logs from all 8 containers | Appended to `logs/chaos-container-logs.txt` | In `globalTeardown.chaos.ts` before stopping containers |
+| **Volume mount** | Live sshd log file | `test-docker/logs/<container-name>/sshd.log` | Continuously during container lifetime |
+
+### Post-Run Log Analysis
+
+After every chaos run, **analyze all container logs** (both `logs/chaos-container-logs.txt` and `test-docker/logs/*/sshd.log`) for:
+
+| Pattern | What it means |
+|---------|--------------|
+| `MaxSessions` / `max sessions` | SSH channel limit hit — too many concurrent connections |
+| `out of memory` / `oom` | Container memory exhaustion from file ops or connections |
+| `no space left on device` | Disk full — chaos test artifacts not cleaned up |
+| `too many open files` / `EMFILE` | File descriptor exhaustion from rapid SSH channel creation |
+| `segfault` / `segmentation fault` | sshd crash (exit 139) |
+| `fatal` / `panic` | Critical server error |
+| `connection reset` / `broken pipe` | Client disconnected unexpectedly mid-operation |
+| `authentication failure` | Credential mismatch or auth module error |
+
+These server-side patterns reveal issues invisible to the client-side chaos engine. Always review this file after a chaos run, especially when scenarios pass but behavior seems suspicious.
 
 ---
 

@@ -3,6 +3,7 @@
 #
 # Usage: docker compose -f test-docker/docker-compose.multios.yml up -d --build
 # Cleanup: docker compose -f test-docker/docker-compose.multios.yml down
+# Logs: ./logs/<container-name>/sshd.log on host (volume-mounted)
 
 services:
   # Alpine 3.19 (musl libc, ash shell, BusyBox utilities)
@@ -14,6 +15,8 @@ services:
     ports:
       - "2210:22"
     hostname: alpine-server
+    volumes:
+      - ./logs/sshlite-os-alpine:/var/log/sshd
 
   # Ubuntu 22.04 LTS (glibc, bash, GNU coreutils)
   ssh-ubuntu:
@@ -24,6 +27,8 @@ services:
     ports:
       - "2211:22"
     hostname: ubuntu-server
+    volumes:
+      - ./logs/sshlite-os-ubuntu:/var/log/sshd
 
   # Debian 12 Bookworm (glibc, bash, GNU coreutils)
   ssh-debian:
@@ -34,6 +39,8 @@ services:
     ports:
       - "2212:22"
     hostname: debian-server
+    volumes:
+      - ./logs/sshlite-os-debian:/var/log/sshd
 
   # Fedora 40 (glibc, bash, GNU coreutils, dnf-based)
   ssh-fedora:
@@ -44,6 +51,8 @@ services:
     ports:
       - "2213:22"
     hostname: fedora-server
+    volumes:
+      - ./logs/sshlite-os-fedora:/var/log/sshd
 
   # Rocky Linux 9 (RHEL-compatible, glibc, bash, GNU coreutils)
   ssh-rocky:
@@ -54,3 +63,5 @@ services:
     ports:
       - "2214:22"
     hostname: rocky-server
+    volumes:
+      - ./logs/sshlite-os-rocky:/var/log/sshd

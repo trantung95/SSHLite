@@ -56,6 +56,8 @@ export class ChaosEngine {
   private allCollectedData: CollectedData[] = [];
   private healthMonitor: ContainerHealthMonitor;
   private deadServers: Set<string> = new Set();
+  /** Per-scenario container log snapshots: [scenarioName, serverLabel, logs] */
+  private scenarioLogs: Array<{ scenario: string; server: string; logs: string }> = [];
 
   constructor(config?: ChaosRunConfig) {
     this.config = config || getRunConfig();
@@ -198,7 +200,45 @@ export class ChaosEngine {
     this.logger.writeToFile(result);
     this.logger.printSummary(result);
 
+    // Write all per-scenario container logs to file
+    this.writeContainerLogs();
+
     return result.failed;
+  }
+
+  /**
+   * Write all collected per-scenario container logs to logs/chaos-container-logs.txt.
+   * Each scenario's log snapshot shows the full container output at that point in time.
+   */
+  private writeContainerLogs(): void {
+    if (this.scenarioLogs.length === 0) return;
+
+    const logsDir = path.resolve(__dirname, '../../logs');
+    if (!fs.existsSync(logsDir)) {
+      fs.mkdirSync(logsDir, { recursive: true });
+    }
+
+    const logFile = path.join(logsDir, 'chaos-container-logs.txt');
+    const sections: string[] = [];
+    const timestamp = new Date().toISOString();
+
+    sections.push('='.repeat(80));
+    sections.push(`CHAOS CONTAINER LOGS — ${timestamp}`);
+    sections.push(`Mode: ${this.config.mode} | Seed: ${this.config.seed}`);
+    sections.push(`Scenarios with logs: ${this.scenarioLogs.length}`);
+    sections.push('='.repeat(80));
+    sections.push('');
+
+    for (const { scenario, server, logs } of this.scenarioLogs) {
+      sections.push('─'.repeat(60));
+      sections.push(`Scenario: ${scenario} | Server: ${server}`);
+      sections.push('─'.repeat(60));
+      sections.push(logs || '(empty)');
+      sections.push('');
+    }
+
+    fs.writeFileSync(logFile, sections.join('\n'), 'utf-8');
+    console.log(`[Chaos] Container logs saved to ${logFile} (${this.scenarioLogs.length} snapshots)`);
   }
 
   /**
@@ -301,6 +341,16 @@ export class ChaosEngine {
         } catch { /* ignore */ }
         await safeChaosDisconnect(conn);
       }
+
+      // Collect container logs after each scenario
+      try {
+        const logs = await withTimeout(
+          this.healthMonitor.collectLogsForServer(server.label),
+          5000,
+          `collect logs for ${server.label}`
+        );
+        this.scenarioLogs.push({ scenario: scenario.name, server: server.label, logs });
+      } catch { /* ignore timeout */ }
     }
   }
 

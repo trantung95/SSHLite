@@ -258,18 +258,48 @@ export class ContainerHealthMonitor {
   }
 
   /**
-   * Get the last N lines of container logs (async).
+   * Get container logs. If tailLines is provided, returns last N lines; otherwise returns all logs.
    */
-  private async getContainerLogs(containerName: string, tailLines = 50): Promise<string> {
+  private async getContainerLogs(containerName: string, tailLines?: number): Promise<string> {
     try {
+      const tailArg = tailLines ? `--tail ${tailLines}` : '';
       const { stdout, stderr } = await execAsync(
-        `docker logs --tail ${tailLines} ${containerName}`,
-        { timeout: 5000 }
+        `docker logs ${tailArg} ${containerName}`,
+        { timeout: 10000 }
       );
       return (stdout + stderr).trim();
     } catch {
       return '(failed to retrieve container logs)';
     }
+  }
+
+  /**
+   * Collect all logs from a specific server's container.
+   * Used for per-scenario log snapshots.
+   */
+  async collectLogsForServer(serverLabel: string): Promise<string> {
+    const containerName = this.monitoredContainers.get(serverLabel);
+    if (!containerName) return '(unknown container)';
+    return this.getContainerLogs(containerName);
+  }
+
+  /**
+   * Collect all logs from ALL monitored containers.
+   * Returns a map of serverLabel -> full logs.
+   */
+  async collectAllLogs(): Promise<Map<string, string>> {
+    const results = new Map<string, string>();
+    const entries = Array.from(this.monitoredContainers.entries());
+    const logs = await Promise.all(
+      entries.map(async ([serverLabel, containerName]) => ({
+        serverLabel,
+        logs: await this.getContainerLogs(containerName),
+      }))
+    );
+    for (const { serverLabel, logs: log } of logs) {
+      results.set(serverLabel, log);
+    }
+    return results;
   }
 
   /**

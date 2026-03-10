@@ -1,6 +1,7 @@
 # SSH test servers for integration testing
 # Usage: docker compose -f test-docker/docker-compose.yml up -d
 # Cleanup: docker compose -f test-docker/docker-compose.yml down
+# Logs: ./logs/<container-name>/sshd.log on host (volume-mounted)
 
 services:
   # Server 1: "Production" - port 2201
@@ -12,6 +13,8 @@ services:
     ports:
       - "2201:22"
     hostname: prod-server
+    volumes:
+      - ./logs/sshlite-test-server-1:/var/log/sshd
 
   # Server 2: "Staging" - port 2202
   ssh-server-2:
@@ -22,6 +25,8 @@ services:
     ports:
       - "2202:22"
     hostname: staging-server
+    volumes:
+      - ./logs/sshlite-test-server-2:/var/log/sshd
 
   # Server 3: "Dev" - port 2203
   ssh-server-3:
@@ -32,3 +37,5 @@ services:
     ports:
       - "2203:22"
     hostname: dev-server
+    volumes:
+      - ./logs/sshlite-test-server-3:/var/log/sshd
