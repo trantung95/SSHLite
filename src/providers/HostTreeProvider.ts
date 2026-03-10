@@ -4,6 +4,7 @@ import { HostService } from '../services/HostService';
 import { ConnectionManager } from '../connection/ConnectionManager';
 import { CredentialService, SavedCredential, PinnedFolder } from '../services/CredentialService';
 import { IHostConfig, ILastConnectionAttempt } from '../types';
+import { formatRelativeTime } from '../utils/helpers';
 
 // Get extension path for custom icons
 let extensionPath: string = '';
@@ -30,7 +31,8 @@ export class ServerTreeItem extends vscode.TreeItem {
     serverKey: string,
     hosts: IHostConfig[],
     isConnected: boolean,
-    lastFailedAttempt?: ILastConnectionAttempt
+    lastFailedAttempt?: ILastConnectionAttempt,
+    isReconnecting?: boolean
   ) {
     // Use first host's name as display name
     const displayName = hosts[0].name;
@@ -56,7 +58,11 @@ export class ServerTreeItem extends vscode.TreeItem {
     const isManuallyAdded = hosts.some(h => h.source === 'saved');
     const isSavedOrHasCredentials = hasSavedCredential || isManuallyAdded;
 
-    if (isConnected) {
+    if (isReconnecting) {
+      // Reconnecting: show spinning icon and reconnectingServer contextValue so disconnect button appears
+      this.contextValue = isSavedOrHasCredentials ? 'reconnectingServer.saved' : 'reconnectingServer';
+      this.iconPath = new vscode.ThemeIcon('sync~spin', new vscode.ThemeColor('charts.yellow'));
+    } else if (isConnected) {
       // Use different context for saved vs config hosts so menu items work correctly
       this.contextValue = isSavedOrHasCredentials ? 'connectedServer.saved' : 'connectedServer';
       this.iconPath = new vscode.ThemeIcon('vm-running', new vscode.ThemeColor('charts.green'));
@@ -73,8 +79,15 @@ export class ServerTreeItem extends vscode.TreeItem {
 
     // Tooltip with server info + failed connection details
     const usernames = hosts.map(h => h.username).join(', ');
-    if (!isConnected && lastFailedAttempt && !lastFailedAttempt.success) {
-      const ago = this.formatTimeAgo(lastFailedAttempt.timestamp);
+    if (isReconnecting) {
+      this.tooltip = new vscode.MarkdownString(
+        `**${displayName}**\n\n` +
+          `- Server: ${serverKey}\n` +
+          `- Users: ${usernames}\n` +
+          `- Status: Reconnecting...`
+      );
+    } else if (!isConnected && lastFailedAttempt && !lastFailedAttempt.success) {
+      const ago = formatRelativeTime(lastFailedAttempt.timestamp);
       this.tooltip = new vscode.MarkdownString(
         `**${displayName}** \u26A0\uFE0F\n\n` +
           `- Server: ${serverKey}\n` +
@@ -90,20 +103,6 @@ export class ServerTreeItem extends vscode.TreeItem {
           `- Status: ${isConnected ? 'Connected' : 'Disconnected'}`
       );
     }
-  }
-
-  /**
-   * Format a timestamp as relative time ago
-   */
-  private formatTimeAgo(timestamp: number): string {
-    const seconds = Math.floor((Date.now() - timestamp) / 1000);
-    if (seconds < 60) return 'just now';
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes}m ago`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}h ago`;
-    const days = Math.floor(hours / 24);
-    return `${days}d ago`;
   }
 
   /**
@@ -245,14 +244,15 @@ export class HostTreeProvider implements vscode.TreeDataProvider<TreeItemType> {
 
   // Filter pattern for host tree (matches against name, host, username)
   private filterPattern: string = '';
+  private readonly _connectionListenerDisposable: vscode.Disposable;
 
   constructor() {
     this.hostService = HostService.getInstance();
     this.connectionManager = ConnectionManager.getInstance();
     this.credentialService = CredentialService.getInstance();
 
-    // Refresh when connections change
-    this.connectionManager.onDidChangeConnections(() => {
+    // Refresh when connections change (store disposable to prevent leak)
+    this._connectionListenerDisposable = this.connectionManager.onDidChangeConnections(() => {
       this.refresh();
     });
   }
@@ -372,10 +372,10 @@ export class HostTreeProvider implements vscode.TreeDataProvider<TreeItemType> {
     const connections = this.connectionManager.getAllConnections();
     const connectedIds = new Set(connections.map((c) => c.id));
 
-    // DEBUG: Log connections on startup
-    if (connections.length > 0) {
-      console.log('[SSH Lite] getServerItems - Active connections:', connections.map(c => c.id));
-    }
+    // Build set of host IDs that are currently reconnecting
+    const reconnectingIds = new Set(
+      this.connectionManager.getReconnectingConnections().map(r => r.connectionId)
+    );
 
     // Group hosts by server key (host:port)
     const serverMap = new Map<string, IHostConfig[]>();
@@ -394,8 +394,9 @@ export class HostTreeProvider implements vscode.TreeDataProvider<TreeItemType> {
       if (!this.matchesFilter(serverKey, serverHosts)) {
         continue;
       }
-      // Check if any username for this server is connected
+      // Check if any username for this server is connected or reconnecting
       const isConnected = serverHosts.some(h => connectedIds.has(h.id));
+      const isReconnecting = !isConnected && serverHosts.some(h => reconnectingIds.has(h.id));
 
       // Get last failed connection attempt for disconnected servers
       let lastFailedAttempt: ILastConnectionAttempt | undefined;
@@ -411,7 +412,7 @@ export class HostTreeProvider implements vscode.TreeDataProvider<TreeItemType> {
           }
         }
       }
-      items.push(new ServerTreeItem(serverKey, serverHosts, isConnected, lastFailedAttempt));
+      items.push(new ServerTreeItem(serverKey, serverHosts, isConnected, lastFailedAttempt, isReconnecting));
     }
 
     return items;
@@ -455,6 +456,7 @@ export class HostTreeProvider implements vscode.TreeDataProvider<TreeItemType> {
    * Dispose of resources
    */
   dispose(): void {
+    this._connectionListenerDisposable.dispose();
     this._onDidChangeTreeData.dispose();
   }
 }

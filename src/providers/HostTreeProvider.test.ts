@@ -43,6 +43,7 @@ jest.mock('../connection/ConnectionManager', () => {
         get getAllConnections() { return mockGetAllConnections; },
         onDidChangeConnections: emitter.event,
         get getLastConnectionAttempt() { return mockGetLastConnectionAttempt; },
+        getReconnectingConnections: jest.fn().mockReturnValue([]),
       })),
     },
   };

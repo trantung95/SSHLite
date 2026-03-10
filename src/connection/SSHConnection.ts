@@ -526,20 +526,30 @@ export class SSHConnection implements ISSHConnection {
     }
   }
 
+  /** Serialization promise for SFTP session creation — prevents duplicate sessions from concurrent calls */
+  private _sftpPromise: Promise<SFTPWrapper> | null = null;
+
   /**
-   * Get or create SFTP session
+   * Get or create SFTP session.
+   * Serialized: concurrent calls wait on the same creation promise.
    */
   private async getSFTP(): Promise<SFTPWrapper> {
     if (this._sftp) {
       return this._sftp;
     }
 
+    // If another call is already creating the SFTP session, wait for it
+    if (this._sftpPromise) {
+      return this._sftpPromise;
+    }
+
     if (!this._client || this.state !== ConnectionState.Connected) {
       throw new ConnectionError('Not connected');
     }
 
-    return new Promise((resolve, reject) => {
+    this._sftpPromise = new Promise<SFTPWrapper>((resolve, reject) => {
       this._client!.sftp((err, sftp) => {
+        this._sftpPromise = null;
         if (err) {
           reject(new SFTPError(`Failed to create SFTP session: ${err.message}`, err));
           return;
@@ -548,6 +558,8 @@ export class SSHConnection implements ISSHConnection {
         resolve(sftp);
       });
     });
+
+    return this._sftpPromise;
   }
 
   /**
@@ -1010,30 +1022,31 @@ export class SSHConnection implements ISSHConnection {
     const escapedPath = remotePath.replace(/'/g, "'\\''");
     const command = `tail -c +${tailOffset} '${escapedPath}'`;
 
+    // Use _execChannel for retry on "Channel open failure" under SSH session pressure
+    let stream: ClientChannel;
+    try {
+      stream = await this._execChannel(command);
+    } catch (err) {
+      throw new SFTPError(`Failed to read file tail: ${(err as Error).message}`, err as Error);
+    }
+
     return new Promise((resolve, reject) => {
-      this._client!.exec(command, (err, stream) => {
-        if (err) {
-          reject(new SFTPError(`Failed to read file tail: ${err.message}`, err));
-          return;
+      const chunks: Buffer[] = [];
+
+      stream.on('data', (chunk: Buffer) => {
+        chunks.push(chunk);
+      });
+
+      stream.on('close', (code: number) => {
+        if (code !== 0 && chunks.length === 0) {
+          reject(new SFTPError(`Failed to read file tail (exit code ${code})`));
+        } else {
+          resolve(Buffer.concat(chunks));
         }
+      });
 
-        const chunks: Buffer[] = [];
-
-        stream.on('data', (chunk: Buffer) => {
-          chunks.push(chunk);
-        });
-
-        stream.on('close', (code: number) => {
-          if (code !== 0 && chunks.length === 0) {
-            reject(new SFTPError(`Failed to read file tail (exit code ${code})`));
-          } else {
-            resolve(Buffer.concat(chunks));
-          }
-        });
-
-        stream.stderr.on('data', () => {
-          // Ignore stderr - tail may output warnings that don't affect result
-        });
+      stream.stderr.on('data', () => {
+        // Ignore stderr - tail may output warnings that don't affect result
       });
     });
   }
@@ -1223,6 +1236,9 @@ export class SSHConnection implements ISSHConnection {
               socket.end();
               return;
             }
+            // Handle errors on both sides to prevent unhandled 'error' events crashing the process
+            stream.on('error', () => socket.destroy());
+            socket.on('error', () => stream.destroy());
             socket.pipe(stream).pipe(socket);
           }
         );

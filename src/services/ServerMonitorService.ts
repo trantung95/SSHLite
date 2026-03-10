@@ -128,31 +128,25 @@ export class ServerMonitorService {
           this.outputChannel.appendLine(`  ${content}`);
           break;
         case 'MEMORY':
-          this.outputChannel.appendLine(`\nMemory Usage:`);
-          content.split('\n').forEach((line) => this.outputChannel.appendLine(`  ${line}`));
+          this.outputChannel.appendLine(`\nMemory Usage:\n${content.split('\n').map(l => `  ${l}`).join('\n')}`);
           break;
         case 'DISK':
-          this.outputChannel.appendLine(`\nDisk Usage:`);
-          content.split('\n').forEach((line) => this.outputChannel.appendLine(`  ${line}`));
+          this.outputChannel.appendLine(`\nDisk Usage:\n${content.split('\n').map(l => `  ${l}`).join('\n')}`);
           break;
-        case 'TOP_CPU':
-          this.outputChannel.appendLine(`\nTop CPU Processes:`);
-          content.split('\n').slice(0, 5).forEach((line) => {
-            const parts = line.trim().split(/\s+/);
-            if (parts.length > 10) {
-              this.outputChannel.appendLine(`  ${parts[1]} ${parts[2]}% CPU - ${parts.slice(10).join(' ').substring(0, 50)}`);
-            }
-          });
+        case 'TOP_CPU': {
+          const cpuLines = content.split('\n').slice(0, 5)
+            .map(line => { const p = line.trim().split(/\s+/); return p.length > 10 ? `  ${p[1]} ${p[2]}% CPU - ${p.slice(10).join(' ').substring(0, 50)}` : null; })
+            .filter(Boolean);
+          this.outputChannel.appendLine(`\nTop CPU Processes:\n${cpuLines.join('\n')}`);
           break;
-        case 'TOP_MEM':
-          this.outputChannel.appendLine(`\nTop Memory Processes:`);
-          content.split('\n').slice(0, 5).forEach((line) => {
-            const parts = line.trim().split(/\s+/);
-            if (parts.length > 10) {
-              this.outputChannel.appendLine(`  ${parts[1]} ${parts[3]}% MEM - ${parts.slice(10).join(' ').substring(0, 50)}`);
-            }
-          });
+        }
+        case 'TOP_MEM': {
+          const memLines = content.split('\n').slice(0, 5)
+            .map(line => { const p = line.trim().split(/\s+/); return p.length > 10 ? `  ${p[1]} ${p[3]}% MEM - ${p.slice(10).join(' ').substring(0, 50)}` : null; })
+            .filter(Boolean);
+          this.outputChannel.appendLine(`\nTop Memory Processes:\n${memLines.join('\n')}`);
           break;
+        }
         case 'CONNECTIONS':
           this.outputChannel.appendLine(`\nNetwork Connections: ${content}`);
           break;
@@ -252,32 +246,34 @@ export class ServerMonitorService {
       // Check for CPU-hungry processes
       this.outputChannel.appendLine('\nChecking CPU-hungry processes...');
       const cpuProcs = await connection.exec("ps aux --sort=-%cpu | head -4 | tail -3");
-      cpuProcs.trim().split('\n').forEach((line) => {
+      const cpuOutputLines: string[] = [];
+      for (const line of cpuProcs.trim().split('\n')) {
         const parts = line.trim().split(/\s+/);
         if (parts.length > 10) {
           const cpu = parseFloat(parts[2]);
           if (cpu > 50) {
-            const cmd = parts.slice(10).join(' ').substring(0, 40);
-            issues.push(`HIGH CPU PROCESS: ${cmd} (${cpu}%)`);
+            issues.push(`HIGH CPU PROCESS: ${parts.slice(10).join(' ').substring(0, 40)} (${cpu}%)`);
           }
-          this.outputChannel.appendLine(`  ${parts[2]}% - ${parts.slice(10).join(' ').substring(0, 50)}`);
+          cpuOutputLines.push(`  ${parts[2]}% - ${parts.slice(10).join(' ').substring(0, 50)}`);
         }
-      });
+      }
+      if (cpuOutputLines.length > 0) this.outputChannel.appendLine(cpuOutputLines.join('\n'));
 
       // Check for memory-hungry processes
       this.outputChannel.appendLine('\nChecking memory-hungry processes...');
       const memProcs = await connection.exec("ps aux --sort=-%mem | head -4 | tail -3");
-      memProcs.trim().split('\n').forEach((line) => {
+      const memOutputLines: string[] = [];
+      for (const line of memProcs.trim().split('\n')) {
         const parts = line.trim().split(/\s+/);
         if (parts.length > 10) {
           const mem = parseFloat(parts[3]);
           if (mem > 30) {
-            const cmd = parts.slice(10).join(' ').substring(0, 40);
-            issues.push(`HIGH MEM PROCESS: ${cmd} (${mem}%)`);
+            issues.push(`HIGH MEM PROCESS: ${parts.slice(10).join(' ').substring(0, 40)} (${mem}%)`);
           }
-          this.outputChannel.appendLine(`  ${parts[3]}% - ${parts.slice(10).join(' ').substring(0, 50)}`);
+          memOutputLines.push(`  ${parts[3]}% - ${parts.slice(10).join(' ').substring(0, 50)}`);
         }
-      });
+      }
+      if (memOutputLines.length > 0) this.outputChannel.appendLine(memOutputLines.join('\n'));
 
       // Check network
       this.outputChannel.appendLine('\nChecking network connections...');

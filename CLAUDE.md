@@ -180,6 +180,26 @@ This project is designed to grow itself. The `.adn/growth/` folder contains ever
 
 ## Release Notes
 
+### v0.5.3 — Security hardening, race condition fixes, disconnect reconnecting servers
+
+- **Command injection fix**: Backup exec commands (`createServerBackup`, `restoreFromServerBackup`, `createDirectoryBackup`) now use single-quote escaping instead of double-quote wrapping, preventing shell injection via crafted file paths
+- **SFTP race condition fix**: `getSFTP()` now serializes concurrent callers via a shared promise, preventing duplicate SFTP sessions when multiple operations trigger `getSFTP()` simultaneously
+- **Disconnect reconnecting servers**: Servers stuck in "Waiting for reconnection..." now show a disconnect button. Clicking it stops the reconnect loop permanently. New `reconnectingServer` contextValue with spinning yellow icon
+- **Worker pool done signal fix**: `pendingDirListings` is now decremented before the done check in search worker pools, fixing false `done: false` on empty directories. Non-worker-pool search tasks use simple `completedCount >= totalCount` check (no longer reference out-of-scope `isDone()`)
+- **Port forward stream error handlers**: Added `stream.on('error')` and `socket.on('error')` handlers to `forwardPort()`, preventing unhandled errors from crashing the extension when either side drops
+- **readFileTail retry**: Changed from raw `this._client.exec()` to `this._execChannel()` with exponential backoff, fixing "Channel open failure" under concurrent load
+- **FileService.dispose() cleanup**: Now stops watch heartbeat, disposes all `fileChangeSubscriptions`, and disposes `_onWatchedFileChanged`/`_onOpenFilesChanged`/`_onFileLoadingChanged` emitters
+- **Connection listener leaks**: `HostTreeProvider` now stores and disposes its `onDidChangeConnections` listener. Three `connectionManager` listeners in `extension.ts` pushed to `context.subscriptions`
+- **Deactivate cleanup**: `activityService.dispose()` and `portForwardService.dispose()` added to `deactivate()`
+- **cleanupServerBackups fix**: Changed from `find -delete; find | wc -l` (always 0) to `find -print -delete | wc -l` so deleted count is actually reported
+- **Normalize getLocalFilePath()**: Return value now uses `normalizeLocalPath()` for consistent Map lookups on Windows
+- **buildServerSearchEntries fix**: Connected check now uses `c.host.id` instead of `c.id` to match host config IDs correctly
+- **ReDoS prevention**: `highlightMatch` regex construction wrapped in try/catch — invalid patterns fall back to plain text instead of crashing
+- **Duplicate ready handler removed**: SearchPanel no longer registers two `ready` message handlers
+- **ServerMonitorService logging**: Replaced per-line `appendLine` in loops with collected array + single `appendLine` call
+- **Dead code removed**: Deleted unused `SearchResultsProvider.ts` and its test file. Removed duplicate `formatTimeAgo` (uses shared `formatRelativeTime`)
+- **fileChangeSubscriptions cleanup on disconnect**: Subscriptions are now disposed when heartbeat detects connection loss
+
 ### v0.5.1 — Tooltip improvements: add Created time, remove duplicate path
 
 - **Created time**: Local file tooltips now show file creation time (`birthtimeMs`) between Size and Modified

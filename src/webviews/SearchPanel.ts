@@ -303,16 +303,7 @@ export class SearchPanel {
       this.disposables
     );
 
-    // Send initial state when webview is ready
-    this.panel.webview.onDidReceiveMessage(
-      (message: WebviewMessage) => {
-        if (message.type === 'ready') {
-          this.sendState();
-        }
-      },
-      undefined,
-      this.disposables
-    );
+    // Note: 'ready' message is already handled by handleMessage() above (case 'ready': this.sendState())
   }
 
   /**
@@ -986,6 +977,9 @@ export class SearchPanel {
                 const allWorkerPromises: Promise<void>[] = [];
                 const poolKey = `${server.id}:${sp.path}`;
 
+                // Safe done check: only true when ALL work is complete (no pending dir listings, queue fully consumed)
+                const isDone = () => completedCount >= totalCount && pendingDirListings === 0 && workIndex >= workQueue.length;
+
                 const runWorker = async (): Promise<void> => {
                   activeWorkerCount++;
                   try {
@@ -1039,17 +1033,19 @@ export class SearchPanel {
                           addWorker();
                         }
 
-                        // Dir listing done — send progress-only batch
+                        // Dir listing done — decrement pending BEFORE done check
+                        pendingDirListings--;
                         completedCount++;
                         if (!this.activeSearches.has(searchId)) return;
                         this.postMessage({
                           type: 'searchBatch', searchId, results: [],
                           totalResults: globalSeen.size, completedCount: completedCount, totalCount: totalCount,
                           hitLimit: false, limit: maxResults,
-                          done: completedCount === totalCount,
+                          done: isDone(),
                         });
                       } catch {
                         // listEntries failed — fallback to recursive grep on this dir
+                        pendingDirListings--;
                         const actId = activityService.startActivity(
                           'search', connection.id, connection.host.name,
                           `${findFiles ? 'Find' : 'Search'}: "${query.substring(0, 30)}${query.length > 30 ? '...' : ''}"`,
@@ -1082,7 +1078,7 @@ export class SearchPanel {
                             type: 'searchBatch', searchId, results: unique,
                             totalResults: globalSeen.size, completedCount: completedCount, totalCount: totalCount,
                             hitLimit: globalSeen.size >= maxResults, limit: maxResults,
-                            done: completedCount === totalCount,
+                            done: isDone(),
                           });
                         } catch (error) {
                           activityService.failActivity(actId, (error as Error).message);
@@ -1093,11 +1089,9 @@ export class SearchPanel {
                             type: 'searchBatch', searchId, results: [],
                             totalResults: globalSeen.size, completedCount: completedCount, totalCount: totalCount,
                             hitLimit: false, limit: maxResults,
-                            done: completedCount === totalCount,
+                            done: isDone(),
                           });
                         }
-                      } finally {
-                        pendingDirListings--;
                       }
                     } else if (item.type === 'files') {
                       // SEARCH: grep this batch of files
@@ -1134,7 +1128,7 @@ export class SearchPanel {
                           type: 'searchBatch', searchId, results: unique,
                           totalResults: globalSeen.size, completedCount: completedCount, totalCount: totalCount,
                           hitLimit: globalSeen.size >= maxResults, limit: maxResults,
-                          done: completedCount === totalCount,
+                          done: isDone(),
                         });
                       } catch (error) {
                         activityService.failActivity(actId, (error as Error).message);
@@ -1145,7 +1139,7 @@ export class SearchPanel {
                           type: 'searchBatch', searchId, results: [],
                           totalResults: globalSeen.size, completedCount: completedCount, totalCount: totalCount,
                           hitLimit: false, limit: maxResults,
-                          done: completedCount === totalCount,
+                          done: isDone(),
                         });
                       }
                     }
@@ -1222,7 +1216,7 @@ export class SearchPanel {
               totalCount: totalCount,
               hitLimit: globalSeen.size >= maxResults,
               limit: maxResults,
-              done: completedCount === totalCount,
+              done: completedCount >= totalCount,
             });
             return unique;
           }).catch(() => {
@@ -1237,7 +1231,7 @@ export class SearchPanel {
               totalCount: totalCount,
               hitLimit: false,
               limit: maxResults,
-              done: completedCount === totalCount,
+              done: completedCount >= totalCount,
             });
             return [] as WebviewSearchResult[];
           })
@@ -3761,7 +3755,13 @@ export class SearchPanel {
       // Escape query for regex special chars if not using regex mode
       const escapedQuery = query.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\$&');
       const flags = isCaseSensitive ? 'g' : 'gi';
-      const regex = new RegExp('(' + escapedQuery + ')', flags);
+      let regex;
+      try {
+        regex = new RegExp('(' + escapedQuery + ')', flags);
+      } catch {
+        // Invalid regex (e.g., catastrophic backtracking pattern) — fall back to plain text
+        return escapeHtml(text);
+      }
 
       // Split text by matches and rebuild with highlights
       const parts = text.split(regex);

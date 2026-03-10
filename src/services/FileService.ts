@@ -405,12 +405,16 @@ export class FileService {
           activityService.failActivity(this.currentWatchActivityId, 'Connection lost');
           this.currentWatchActivityId = null;
         }
-        // Clear watched state
+        // Clear watched state and dispose stale file change subscriptions
         this.currentWatchedFile = null;
         this.usingNativeWatch = false;
         this._onWatchedFileChanged.fire(null);
         this.stopWatchHeartbeat();
         this.stopFocusedFilePollTimer();
+        for (const [id, sub] of this.fileChangeSubscriptions) {
+          sub.dispose();
+        }
+        this.fileChangeSubscriptions.clear();
         return;
       }
 
@@ -938,7 +942,7 @@ export class FileService {
     const prefix = getConnectionPrefix(connectionId);
     const fileName = path.basename(remotePath);
     const prefixedFileName = `[${prefix}] ${fileName}`;
-    return path.join(connDir, prefixedFileName);
+    return normalizeLocalPath(path.join(connDir, prefixedFileName));
   }
 
   /**
@@ -1181,17 +1185,19 @@ export class FileService {
       const backupPath = `${SERVER_BACKUP_FOLDER}/${backupFileName}`;
 
       // Ensure backup folder exists and copy file in one command (more reliable)
-      // Use || true to prevent errors from propagating
+      // Use single-quote escaping to prevent command injection via paths containing $() or backticks
+      const escRemote = remotePath.replace(/'/g, "'\\''");
+      const escBackup = backupPath.replace(/'/g, "'\\''");
       await connection.exec(
-        `mkdir -p ${SERVER_BACKUP_FOLDER} 2>/dev/null; cp "${remotePath}" "${backupPath}" 2>/dev/null || true`
+        `mkdir -p ${SERVER_BACKUP_FOLDER} 2>/dev/null; cp '${escRemote}' '${escBackup}' 2>/dev/null || true`
       );
 
       // Verify backup was created
-      const verifyResult = await connection.exec(`test -f "${backupPath}" && echo "ok" || echo "fail"`).catch(() => 'fail');
+      const verifyResult = await connection.exec(`test -f '${escBackup}' && echo "ok" || echo "fail"`).catch(() => 'fail');
       if (verifyResult.trim() === 'ok') {
         // Append to index file for cross-session change tracking
         await connection.exec(
-          `echo "${remotePath}|${backupPath}" >> ${SERVER_BACKUP_FOLDER}/.ssh-lite-index 2>/dev/null || true`
+          `echo '${escRemote}|${escBackup}' >> ${SERVER_BACKUP_FOLDER}/.ssh-lite-index 2>/dev/null || true`
         );
         vscode.window.setStatusBarMessage(`$(archive) Server backup: ${backupFileName}`, 2000);
         return backupPath;
@@ -1495,8 +1501,10 @@ export class FileService {
       // Create backup of current version before restoring
       await this.createServerBackup(connection, remotePath);
 
-      // Restore from backup
-      await connection.exec(`cp "${backupPath}" "${remotePath}"`);
+      // Restore from backup (single-quote escaping prevents command injection)
+      const escBackupRestore = backupPath.replace(/'/g, "'\\''");
+      const escRemoteRestore = remotePath.replace(/'/g, "'\\''");
+      await connection.exec(`cp '${escBackupRestore}' '${escRemoteRestore}'`);
 
       // Update local file if open
       const localPath = this.findLocalPath(connection.id, remotePath);
@@ -1776,11 +1784,10 @@ export class FileService {
     }
 
     try {
-      // Delete files older than retention period
+      // Count while deleting in a single pipeline (find -print -delete outputs each deleted file)
       const retentionMinutes = retentionHours * 60;
       const result = await connection.exec(
-        `find ${SERVER_BACKUP_FOLDER} -type f -mmin +${retentionMinutes} -delete 2>/dev/null; ` +
-        `find ${SERVER_BACKUP_FOLDER} -type f -mmin +${retentionMinutes} 2>/dev/null | wc -l || echo 0`
+        `find ${SERVER_BACKUP_FOLDER} -type f -mmin +${retentionMinutes} -print -delete 2>/dev/null | wc -l || echo 0`
       );
 
       const deletedCount = parseInt(result.trim(), 10) || 0;
@@ -3616,13 +3623,16 @@ export class FileService {
       const backupFileName = `${dirName}_${timestamp}.tar.gz`;
       const backupPath = `${SERVER_BACKUP_FOLDER}/${backupFileName}`;
 
-      // Create backup folder and tar the directory
+      // Create backup folder and tar the directory (single-quote escaping prevents command injection)
+      const escDirParent = path.dirname(remotePath).replace(/'/g, "'\\''");
+      const escDirName = dirName.replace(/'/g, "'\\''");
+      const escDirBackup = backupPath.replace(/'/g, "'\\''");
       await connection.exec(
-        `mkdir -p ${SERVER_BACKUP_FOLDER} 2>/dev/null; cd "${path.dirname(remotePath)}" && tar -czf "${backupPath}" "${dirName}" 2>/dev/null || true`
+        `mkdir -p ${SERVER_BACKUP_FOLDER} 2>/dev/null; cd '${escDirParent}' && tar -czf '${escDirBackup}' '${escDirName}' 2>/dev/null || true`
       );
 
       // Verify backup was created
-      const verifyResult = await connection.exec(`test -f "${backupPath}" && echo "ok" || echo "fail"`).catch(() => 'fail');
+      const verifyResult = await connection.exec(`test -f '${escDirBackup}' && echo "ok" || echo "fail"`).catch(() => 'fail');
       if (verifyResult.trim() === 'ok') {
         return backupPath;
       }
@@ -4069,6 +4079,13 @@ export class FileService {
     this.stopGlobalRefreshTimer();
     this.stopAutoCleanupTimer();
     this.stopFocusedFilePollTimer();
+    this.stopWatchHeartbeat();
+
+    // Dispose file change subscriptions (prevents stale callbacks after reconnect)
+    for (const sub of this.fileChangeSubscriptions.values()) {
+      sub.dispose();
+    }
+    this.fileChangeSubscriptions.clear();
 
     if (this.saveListenerDisposable) {
       this.saveListenerDisposable.dispose();
@@ -4080,6 +4097,9 @@ export class FileService {
 
     this._onFileMappingsChanged.dispose();
     this._onUploadStateChanged.dispose();
+    this._onWatchedFileChanged.dispose();
+    this._onOpenFilesChanged.dispose();
+    this._onFileLoadingChanged.dispose();
 
     for (const timer of this.debounceTimers.values()) {
       clearTimeout(timer);

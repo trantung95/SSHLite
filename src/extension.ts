@@ -14,7 +14,7 @@ import { ProgressiveDownloadManager } from './services/ProgressiveDownloadManage
 import { HostTreeProvider, ServerTreeItem, UserCredentialTreeItem, CredentialTreeItem, PinnedFolderTreeItem, setExtensionPath } from './providers/HostTreeProvider';
 import { SavedCredential, PinnedFolder } from './services/CredentialService';
 import { IHostConfig, ConnectionState } from './types';
-import { FileTreeProvider, FileTreeItem, ConnectionTreeItem, ParentFolderTreeItem, setFileTreeExtensionPath, FilterMode } from './providers/FileTreeProvider';
+import { FileTreeProvider, FileTreeItem, ConnectionTreeItem, ReconnectingConnectionTreeItem, ParentFolderTreeItem, setFileTreeExtensionPath, FilterMode } from './providers/FileTreeProvider';
 import { PortForwardTreeProvider, PortForwardTreeItem, SavedForwardTreeItem } from './providers/PortForwardTreeProvider';
 import { ActivityTreeProvider, ActivityTreeItem, ServerGroupTreeItem } from './providers/ActivityTreeProvider';
 import { ActivityService } from './services/ActivityService';
@@ -65,18 +65,21 @@ function buildServerSearchEntries(
 ): ServerSearchEntry[] {
   const hosts = hostService.getAllHosts();
   const connections = connectionManager.getAllConnections();
-  const connectedIds = new Set(connections.map((c) => c.id));
+  // Connection IDs are "host:port:username" format — build a Set of host config IDs
+  // that have active connections, so we can match against host.id
+  const connectedHostIds = new Set(connections.map((c) => c.host.id));
 
   return hosts.map((host) => {
     const credentials = credentialService.listCredentials(host.id);
     const firstCredential = credentials.length > 0 ? credentials[0] : null;
+    const isConnected = connectedHostIds.has(host.id);
     return {
       id: host.id,
       hostConfig: host,
       credential: firstCredential,
-      connected: connectedIds.has(host.id),
+      connected: isConnected,
       checked: false,
-      disabled: firstCredential === null && !connectedIds.has(host.id),
+      disabled: firstCredential === null && !isConnected,
       searchPaths: [],
     };
   });
@@ -381,40 +384,42 @@ export function activate(context: vscode.ExtensionContext): void {
     }, 2000); // LITE: Update every 2 seconds instead of 500ms
   }
 
-  // Start tracking when connections exist
-  connectionManager.onDidChangeConnections(() => {
-    if (connectionManager.getAllConnections().length > 0) {
-      startPreloadProgressTracking();
-    }
-
-    // Update search panel server states when connections change
-    const searchPanel = SearchPanel.getInstance();
-    const connectedIds = new Set(connectionManager.getAllConnections().map((c) => c.id));
-    for (const conn of connectionManager.getAllConnections()) {
-      searchPanel.updateServerConnection(conn.id, true);
-    }
-    // Mark disconnected servers
-    const allHosts = hostService.getAllHosts();
-    for (const host of allHosts) {
-      if (!connectedIds.has(host.id)) {
-        searchPanel.updateServerConnection(host.id, false);
+  // Start tracking when connections exist (push to subscriptions to prevent leak on reload)
+  context.subscriptions.push(
+    connectionManager.onDidChangeConnections(() => {
+      if (connectionManager.getAllConnections().length > 0) {
+        startPreloadProgressTracking();
       }
-    }
-  });
 
-  // Clear cache on any disconnect (manual or unexpected)
-  connectionManager.onConnectionStateChange((event) => {
-    if (event.state === ConnectionState.Disconnected) {
-      fileTreeProvider.clearCache(event.connection.id);
-    }
-  });
+      // Update search panel server states when connections change
+      const searchPanel = SearchPanel.getInstance();
+      const connectedIds = new Set(connectionManager.getAllConnections().map((c) => c.id));
+      for (const conn of connectionManager.getAllConnections()) {
+        searchPanel.updateServerConnection(conn.id, true);
+      }
+      // Mark disconnected servers
+      const allHosts = hostService.getAllHosts();
+      for (const host of allHosts) {
+        if (!connectedIds.has(host.id)) {
+          searchPanel.updateServerConnection(host.id, false);
+        }
+      }
+    }),
 
-  // Auto-restore saved port forwards when connection established
-  connectionManager.onConnectionStateChange(async (event) => {
-    if (event.state === ConnectionState.Connected) {
-      await portForwardService.restoreForwardsForConnection(event.connection);
-    }
-  });
+    // Clear cache on any disconnect (manual or unexpected)
+    connectionManager.onConnectionStateChange((event) => {
+      if (event.state === ConnectionState.Disconnected) {
+        fileTreeProvider.clearCache(event.connection.id);
+      }
+    }),
+
+    // Auto-restore saved port forwards when connection established
+    connectionManager.onConnectionStateChange(async (event) => {
+      if (event.state === ConnectionState.Connected) {
+        await portForwardService.restoreForwardsForConnection(event.connection);
+      }
+    })
+  );
 
   // Register commands
   let lastFilterMode: FilterMode = 'files'; // Remember last selected filter mode across invocations
@@ -509,27 +514,48 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
 
-    vscode.commands.registerCommand('sshLite.disconnect', async (item?: ServerTreeItem | ConnectionTreeItem) => {
+    vscode.commands.registerCommand('sshLite.disconnect', async (item?: ServerTreeItem | ConnectionTreeItem | ReconnectingConnectionTreeItem) => {
       let connections: SSHConnection[] = [];
+      let reconnectingIds: string[] = [];
+      let displayName = '';
 
       if (item instanceof ConnectionTreeItem) {
-        // From file explorer - single connection
+        // From file explorer - single active connection
         connections = [item.connection];
+        displayName = item.connection.host.name;
+      } else if (item instanceof ReconnectingConnectionTreeItem) {
+        // From file explorer - reconnecting connection (no active SSHConnection)
+        reconnectingIds = [item.connectionId];
+        displayName = item.host.name;
       } else if (item instanceof ServerTreeItem) {
-        // From server tree - find all connections for this server
+        // From server tree - find all connections and reconnecting for this server
         for (const host of item.hosts) {
           const conn = connectionManager.getConnection(host.id);
           if (conn) {
             connections.push(conn);
           }
+          // Also stop any reconnection attempts for this host
+          if (connectionManager.isReconnecting(host.id)) {
+            reconnectingIds.push(host.id);
+          }
         }
+        displayName = item.hosts[0]?.name || 'server';
       }
 
-      if (connections.length === 0) {
+      if (connections.length === 0 && reconnectingIds.length === 0) {
         return;
       }
 
-      // Disconnect all connections for this server
+      // Stop reconnection attempts first (prevents auto-reconnect from restarting)
+      for (const id of reconnectingIds) {
+        logCommand('stop-reconnect', id);
+        connectionManager.stopReconnect(id);
+        fileTreeProvider.clearCache(id);
+        fileTreeProvider.clearExpansionState(id);
+        logResult('stop-reconnect', true, id);
+      }
+
+      // Disconnect active connections
       for (const connection of connections) {
         logCommand('disconnect', connection.host.name);
 
@@ -545,8 +571,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       // Auto-dismiss disconnect success (non-blocking UX)
-      const serverName = connections[0].host.name;
-      vscode.window.setStatusBarMessage(`$(check) Disconnected from ${serverName}`, 3000);
+      vscode.window.setStatusBarMessage(`$(check) Disconnected from ${displayName}`, 3000);
     }),
 
     // Reconnect orphaned SSH file - connects to server and enables editing
@@ -2971,6 +2996,8 @@ export function deactivate(): void {
   const auditService = AuditService.getInstance();
   const monitorService = ServerMonitorService.getInstance();
   const folderHistory = FolderHistoryService.getInstance();
+  const activityService = ActivityService.getInstance();
+  const portForwardService = PortForwardService.getInstance();
 
   fileService.dispose();
   terminalService.dispose();
@@ -2978,6 +3005,8 @@ export function deactivate(): void {
   auditService.dispose();
   monitorService.dispose();
   folderHistory.dispose();
+  activityService.dispose();
+  portForwardService.dispose();
   connectionManager.dispose();
 
   log('SSH Lite extension deactivated');
