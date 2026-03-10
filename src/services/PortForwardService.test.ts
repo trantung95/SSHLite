@@ -10,17 +10,17 @@ import { createMockConnection, createMockHostConfig, createMockPortForward } fro
 
 // Mock ConnectionManager - declare mocks before jest.mock so they're initialized
 // before the module factory runs (jest.mock is hoisted above imports)
-const mockGetConnection = jest.fn();
-const mockGetAllConnections = jest.fn().mockReturnValue([]);
+var mockGetConnection = jest.fn();
+var mockGetAllConnections = jest.fn().mockReturnValue([]);
 jest.mock('../connection/ConnectionManager', () => {
   const { EventEmitter } = require('../__mocks__/vscode');
   return {
     ConnectionManager: {
-      getInstance: jest.fn().mockReturnValue({
-        getAllConnections: mockGetAllConnections,
-        getConnection: mockGetConnection,
+      getInstance: jest.fn().mockImplementation(() => ({
+        get getAllConnections() { return mockGetAllConnections; },
+        get getConnection() { return mockGetConnection; },
         onDidChangeConnections: new EventEmitter().event,
-      }),
+      })),
     },
   };
 });

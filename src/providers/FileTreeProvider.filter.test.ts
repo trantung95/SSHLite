@@ -18,75 +18,75 @@ import { createMockConnection, createMockRemoteFile } from '../__mocks__/testHel
 
 // --- Mock service instances ---
 
-const mockGetConnection = jest.fn();
-const mockGetAllConnections = jest.fn().mockReturnValue([]);
-const mockGetAllConnectionsWithReconnecting = jest.fn().mockReturnValue({ active: [], reconnecting: [] });
-const mockConnectionChangeEmitter = new (require('../__mocks__/vscode').EventEmitter)();
-const mockReconnectingEmitter = new (require('../__mocks__/vscode').EventEmitter)();
-const mockOnOpenFilesChanged = new (require('../__mocks__/vscode').EventEmitter)();
-const mockOnFileLoadingChanged = new (require('../__mocks__/vscode').EventEmitter)();
-const mockEnqueue = jest.fn().mockResolvedValue(undefined);
-const mockStartActivity = jest.fn().mockReturnValue('activity-1');
-const mockCompleteActivity = jest.fn();
-const mockFailActivity = jest.fn();
+var mockGetConnection = jest.fn();
+var mockGetAllConnections = jest.fn().mockReturnValue([]);
+var mockGetAllConnectionsWithReconnecting = jest.fn().mockReturnValue({ active: [], reconnecting: [] });
+var mockConnectionChangeEmitter = new (require('../__mocks__/vscode').EventEmitter)();
+var mockReconnectingEmitter = new (require('../__mocks__/vscode').EventEmitter)();
+var mockOnOpenFilesChanged = new (require('../__mocks__/vscode').EventEmitter)();
+var mockOnFileLoadingChanged = new (require('../__mocks__/vscode').EventEmitter)();
+var mockEnqueue = jest.fn().mockResolvedValue(undefined);
+var mockStartActivity = jest.fn().mockReturnValue('activity-1');
+var mockCompleteActivity = jest.fn();
+var mockFailActivity = jest.fn();
 
 // --- jest.mock calls ---
 
 jest.mock('../connection/ConnectionManager', () => ({
   ConnectionManager: {
-    getInstance: jest.fn().mockReturnValue({
+    getInstance: jest.fn().mockImplementation(() => ({
       getConnection: mockGetConnection,
       getAllConnections: mockGetAllConnections,
       getAllConnectionsWithReconnecting: mockGetAllConnectionsWithReconnecting,
-      onDidChangeConnections: mockConnectionChangeEmitter.event,
-      onReconnecting: mockReconnectingEmitter.event,
+      get onDidChangeConnections() { return mockConnectionChangeEmitter.event; },
+      get onReconnecting() { return mockReconnectingEmitter.event; },
       getLastConnectionAttempt: jest.fn().mockReturnValue(undefined),
-    }),
+    })),
   },
 }));
 
 jest.mock('../services/FileService', () => ({
   FileService: {
-    getInstance: jest.fn().mockReturnValue({
-      onOpenFilesChanged: mockOnOpenFilesChanged.event,
-      onFileLoadingChanged: mockOnFileLoadingChanged.event,
+    getInstance: jest.fn().mockImplementation(() => ({
+      get onOpenFilesChanged() { return mockOnOpenFilesChanged.event; },
+      get onFileLoadingChanged() { return mockOnFileLoadingChanged.event; },
       preloadFrequentFiles: jest.fn().mockResolvedValue(undefined),
-    }),
+    })),
   },
 }));
 
 jest.mock('../services/FolderHistoryService', () => ({
   FolderHistoryService: {
-    getInstance: jest.fn().mockReturnValue({
+    getInstance: jest.fn().mockImplementation(() => ({
       recordVisit: jest.fn(),
       getFrequentFolders: jest.fn().mockReturnValue([]),
       getPreloadTargets: jest.fn().mockReturnValue([]),
-    }),
+    })),
   },
 }));
 
 jest.mock('../services/PriorityQueueService', () => ({
   PriorityQueueService: {
-    getInstance: jest.fn().mockReturnValue({
+    getInstance: jest.fn().mockImplementation(() => ({
       enqueue: mockEnqueue,
       cancelAll: jest.fn(),
       isConnectionCancelled: jest.fn().mockReturnValue(false),
       isPreloadingInProgress: jest.fn().mockReturnValue(false),
       resetConnection: jest.fn(),
       getStatus: jest.fn().mockReturnValue({ active: 0, queued: 0, completed: 0, total: 0, byPriority: {} }),
-    }),
+    })),
   },
   PreloadPriority: { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, IDLE: 4 },
 }));
 
 jest.mock('../services/ActivityService', () => ({
   ActivityService: {
-    getInstance: jest.fn().mockReturnValue({
+    getInstance: jest.fn().mockImplementation(() => ({
       startActivity: mockStartActivity,
       completeActivity: mockCompleteActivity,
       failActivity: mockFailActivity,
       cancelActivity: jest.fn(),
-    }),
+    })),
   },
 }));
 

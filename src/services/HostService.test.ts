@@ -10,23 +10,23 @@
 import { setMockConfig, clearMockConfig, workspace } from '../__mocks__/vscode';
 
 // Mock fs and ssh-config
-const mockWriteFileSync = jest.fn();
+var mockWriteFileSync = jest.fn();
 jest.mock('fs', () => ({
   existsSync: jest.fn().mockReturnValue(false),
   readFileSync: jest.fn().mockReturnValue(''),
   statSync: jest.fn().mockReturnValue({ mtimeMs: 1000 }),
-  writeFileSync: mockWriteFileSync,
+  get writeFileSync() { return mockWriteFileSync; },
 }));
 
-const mockRemove = jest.fn();
-const mockToString = jest.fn().mockReturnValue('');
+var mockRemove = jest.fn();
+var mockToString = jest.fn().mockReturnValue('');
 jest.mock('ssh-config', () => ({
-  parse: jest.fn().mockReturnValue({
+  parse: jest.fn().mockImplementation(() => ({
     [Symbol.iterator]: function* () {},
     compute: jest.fn().mockReturnValue({}),
-    remove: mockRemove,
-    toString: mockToString,
-  }),
+    get remove() { return mockRemove; },
+    get toString() { return mockToString; },
+  })),
   DIRECTIVE: 1,
 }));
 

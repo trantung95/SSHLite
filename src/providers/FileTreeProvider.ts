@@ -1875,15 +1875,19 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     const expandPaths = new Set<string>();
 
     let p = originalPath;
-    while (p !== '/' && p !== '') {
+    while (p !== '/' && p !== '' && p !== '.') {
       expandPaths.add(p);
-      p = path.posix.dirname(p);
+      const parent = path.posix.dirname(p);
+      if (parent === p) { break; } // Safety: prevent infinite loop
+      p = parent;
     }
 
     p = parentPath;
-    while (p !== '/' && p !== '') {
+    while (p !== '/' && p !== '' && p !== '.') {
       expandPaths.add(p);
-      p = path.posix.dirname(p);
+      const parent = path.posix.dirname(p);
+      if (parent === p) { break; } // Safety: prevent infinite loop
+      p = parent;
     }
 
     // Also include any currently expanded folders so they stay expanded

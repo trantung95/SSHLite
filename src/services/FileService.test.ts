@@ -28,7 +28,7 @@ jest.mock('os', () => ({
 }));
 
 // Mock ConnectionManager
-const mockConnection = {
+var mockConnection = {
   id: 'test-host:22:testuser',
   host: { name: 'Test Server', host: 'test-host', port: 22, username: 'testuser' },
   state: 'connected',

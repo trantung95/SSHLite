@@ -1,6 +1,5 @@
-/** @type {import('ts-jest').JestConfigWithTsJest} */
+/** @type {import('jest').Config} */
 module.exports = {
-  preset: 'ts-jest',
   testEnvironment: 'node',
   roots: ['<rootDir>/src'],
   testMatch: ['**/*.test.ts'],
@@ -18,14 +17,25 @@ module.exports = {
   moduleNameMapper: {
     '^vscode$': '<rootDir>/src/__mocks__/vscode.ts',
   },
-  // Transform TypeScript files
+  // Transform TypeScript files with @swc/jest (3-5x faster than ts-jest)
   transform: {
-    '^.+\\.ts$': ['ts-jest', {
-      tsconfig: 'tsconfig.json',
+    '^.+\\.ts$': ['@swc/jest', {
+      jsc: {
+        parser: {
+          syntax: 'typescript',
+          decorators: true,
+        },
+        target: 'es2020',
+      },
+      module: {
+        type: 'commonjs',
+      },
     }],
   },
   // Ignore node_modules except for specific packages if needed
   transformIgnorePatterns: [
     'node_modules/(?!.*)',
   ],
+  // Limit workers to avoid overwhelming the system (50% of CPUs)
+  maxWorkers: '50%',
 };

@@ -17,90 +17,87 @@ import { createMockConnection, createMockHostConfig, createMockRemoteFile } from
 
 // --- Mock service instances (must be declared before jest.mock calls) ---
 
-const mockGetConnection = jest.fn();
-const mockGetAllConnections = jest.fn().mockReturnValue([]);
-const mockGetAllConnectionsWithReconnecting = jest.fn().mockReturnValue({ active: [], reconnecting: [] });
-const mockConnectionChangeEmitter = new (require('../__mocks__/vscode').EventEmitter)();
-const mockReconnectingEmitter = new (require('../__mocks__/vscode').EventEmitter)();
+var mockGetConnection = jest.fn();
+var mockGetAllConnections = jest.fn().mockReturnValue([]);
+var mockGetAllConnectionsWithReconnecting = jest.fn().mockReturnValue({ active: [], reconnecting: [] });
+var mockConnectionChangeEmitter = new (require('../__mocks__/vscode').EventEmitter)();
+var mockReconnectingEmitter = new (require('../__mocks__/vscode').EventEmitter)();
 
-const mockOnOpenFilesChanged = new (require('../__mocks__/vscode').EventEmitter)();
-const mockOnFileLoadingChanged = new (require('../__mocks__/vscode').EventEmitter)();
+var mockOnOpenFilesChanged = new (require('../__mocks__/vscode').EventEmitter)();
+var mockOnFileLoadingChanged = new (require('../__mocks__/vscode').EventEmitter)();
 
-const mockRecordVisit = jest.fn();
-const mockGetFrequentFolders = jest.fn().mockReturnValue([]);
-const mockGetPreloadTargets = jest.fn().mockReturnValue([]);
+var mockRecordVisit = jest.fn();
+var mockGetFrequentFolders = jest.fn().mockReturnValue([]);
+var mockGetPreloadTargets = jest.fn().mockReturnValue([]);
 
-const mockEnqueue = jest.fn().mockResolvedValue(undefined);
-const mockCancelAll = jest.fn();
-const mockIsConnectionCancelled = jest.fn().mockReturnValue(false);
-const mockIsPreloadingInProgress = jest.fn().mockReturnValue(false);
-const mockResetConnection = jest.fn();
-const mockGetStatus = jest.fn().mockReturnValue({ active: 0, queued: 0, completed: 0, total: 0, byPriority: {} });
+var mockEnqueue = jest.fn().mockResolvedValue(undefined);
+var mockCancelAll = jest.fn();
+var mockIsConnectionCancelled = jest.fn().mockReturnValue(false);
+var mockIsPreloadingInProgress = jest.fn().mockReturnValue(false);
+var mockResetConnection = jest.fn();
+var mockGetStatus = jest.fn().mockReturnValue({ active: 0, queued: 0, completed: 0, total: 0, byPriority: {} });
 
-const mockStartActivity = jest.fn().mockReturnValue('activity-1');
-const mockCompleteActivity = jest.fn();
-const mockFailActivity = jest.fn();
-const mockCancelActivity = jest.fn();
+var mockStartActivity = jest.fn().mockReturnValue('activity-1');
+var mockCompleteActivity = jest.fn();
+var mockFailActivity = jest.fn();
+var mockCancelActivity = jest.fn();
 
 // --- jest.mock calls ---
 
-jest.mock('../connection/ConnectionManager', () => ({
-  ConnectionManager: {
-    getInstance: jest.fn().mockReturnValue({
-      getConnection: mockGetConnection,
-      getAllConnections: mockGetAllConnections,
-      getAllConnectionsWithReconnecting: mockGetAllConnectionsWithReconnecting,
-      onDidChangeConnections: mockConnectionChangeEmitter.event,
-      onReconnecting: mockReconnectingEmitter.event,
-      getLastConnectionAttempt: jest.fn().mockReturnValue(undefined),
-    }),
-  },
-}));
+jest.mock('../connection/ConnectionManager', () => {
+  const instance = {
+    get getConnection() { return mockGetConnection; },
+    get getAllConnections() { return mockGetAllConnections; },
+    get getAllConnectionsWithReconnecting() { return mockGetAllConnectionsWithReconnecting; },
+    get onDidChangeConnections() { return mockConnectionChangeEmitter.event; },
+    get onReconnecting() { return mockReconnectingEmitter.event; },
+    getLastConnectionAttempt: jest.fn().mockReturnValue(undefined),
+  };
+  return { ConnectionManager: { getInstance: jest.fn().mockReturnValue(instance) } };
+});
 
-jest.mock('../services/FileService', () => ({
-  FileService: {
-    getInstance: jest.fn().mockReturnValue({
-      onOpenFilesChanged: mockOnOpenFilesChanged.event,
-      onFileLoadingChanged: mockOnFileLoadingChanged.event,
-      preloadFrequentFiles: jest.fn().mockResolvedValue(undefined),
-    }),
-  },
-}));
+jest.mock('../services/FileService', () => {
+  const instance = {
+    get onOpenFilesChanged() { return mockOnOpenFilesChanged.event; },
+    get onFileLoadingChanged() { return mockOnFileLoadingChanged.event; },
+    preloadFrequentFiles: jest.fn().mockResolvedValue(undefined),
+  };
+  return { FileService: { getInstance: jest.fn().mockReturnValue(instance) } };
+});
 
-jest.mock('../services/FolderHistoryService', () => ({
-  FolderHistoryService: {
-    getInstance: jest.fn().mockReturnValue({
-      recordVisit: mockRecordVisit,
-      getFrequentFolders: mockGetFrequentFolders,
-      getPreloadTargets: mockGetPreloadTargets,
-    }),
-  },
-}));
+jest.mock('../services/FolderHistoryService', () => {
+  const instance = {
+    get recordVisit() { return mockRecordVisit; },
+    get getFrequentFolders() { return mockGetFrequentFolders; },
+    get getPreloadTargets() { return mockGetPreloadTargets; },
+  };
+  return { FolderHistoryService: { getInstance: jest.fn().mockReturnValue(instance) } };
+});
 
-jest.mock('../services/PriorityQueueService', () => ({
-  PriorityQueueService: {
-    getInstance: jest.fn().mockReturnValue({
-      enqueue: mockEnqueue,
-      cancelAll: mockCancelAll,
-      isConnectionCancelled: mockIsConnectionCancelled,
-      isPreloadingInProgress: mockIsPreloadingInProgress,
-      resetConnection: mockResetConnection,
-      getStatus: mockGetStatus,
-    }),
-  },
-  PreloadPriority: { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, IDLE: 4 },
-}));
+jest.mock('../services/PriorityQueueService', () => {
+  const instance = {
+    get enqueue() { return mockEnqueue; },
+    get cancelAll() { return mockCancelAll; },
+    get isConnectionCancelled() { return mockIsConnectionCancelled; },
+    get isPreloadingInProgress() { return mockIsPreloadingInProgress; },
+    get resetConnection() { return mockResetConnection; },
+    get getStatus() { return mockGetStatus; },
+  };
+  return {
+    PriorityQueueService: { getInstance: jest.fn().mockReturnValue(instance) },
+    PreloadPriority: { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, IDLE: 4 },
+  };
+});
 
-jest.mock('../services/ActivityService', () => ({
-  ActivityService: {
-    getInstance: jest.fn().mockReturnValue({
-      startActivity: mockStartActivity,
-      completeActivity: mockCompleteActivity,
-      failActivity: mockFailActivity,
-      cancelActivity: mockCancelActivity,
-    }),
-  },
-}));
+jest.mock('../services/ActivityService', () => {
+  const instance = {
+    get startActivity() { return mockStartActivity; },
+    get completeActivity() { return mockCompleteActivity; },
+    get failActivity() { return mockFailActivity; },
+    get cancelActivity() { return mockCancelActivity; },
+  };
+  return { ActivityService: { getInstance: jest.fn().mockReturnValue(instance) } };
+});
 
 jest.mock('../utils/helpers', () => ({
   formatFileSize: jest.fn().mockReturnValue('1 KB'),
@@ -674,9 +671,20 @@ describe('FileTreeProvider - Change 7: Show Tree From Root', () => {
   let provider: FileTreeProvider;
 
   beforeEach(() => {
-    jest.clearAllMocks();
-    mockGetAllConnections.mockReturnValue([]);
-    mockGetAllConnectionsWithReconnecting.mockReturnValue({ active: [], reconnecting: [] });
+    mockGetConnection.mockReset();
+    mockGetAllConnections.mockReset().mockReturnValue([]);
+    mockGetAllConnectionsWithReconnecting.mockReset().mockReturnValue({ active: [], reconnecting: [] });
+    mockEnqueue.mockReset().mockResolvedValue(undefined);
+    mockStartActivity.mockReset().mockReturnValue('activity-1');
+    mockCompleteActivity.mockReset();
+    mockFailActivity.mockReset();
+    mockCancelActivity.mockReset();
+    mockRecordVisit.mockReset();
+    mockGetFrequentFolders.mockReset().mockReturnValue([]);
+    mockGetPreloadTargets.mockReset().mockReturnValue([]);
+    mockIsPreloadingInProgress.mockReset().mockReturnValue(false);
+    mockIsConnectionCancelled.mockReset().mockReturnValue(false);
+    mockGetStatus.mockReset().mockReturnValue({ active: 0, queued: 0, completed: 0, total: 0, byPriority: {} });
     provider = new FileTreeProvider();
   });
 
@@ -893,8 +901,13 @@ describe('FileTreeProvider - Change 7: Show Tree From Root', () => {
         connectionId: 'conn-1',
       };
 
-      // Cache the /home directory
+      // Pre-cache the /home directory so getChildren returns real items (not LoadingTreeItem)
       mockConn.listFiles.mockResolvedValue([userDir, otherDir]);
+      mockGetAllConnections.mockReturnValue([mockConn]);
+      mockGetAllConnectionsWithReconnecting.mockReturnValue({ active: [mockConn], reconnecting: [] });
+      provider.setCurrentPath('conn-1', '/home');
+      // Wait for the background loadDirectory to complete
+      await new Promise(resolve => setTimeout(resolve, 50));
 
       // Create a FileTreeItem for /home
       const homeItem = new FileTreeItem(homeDir, mockConn as any, false, false, false, true);
@@ -928,9 +941,20 @@ describe('FileTreeProvider - Change 8: Smart Reveal', () => {
   let provider: FileTreeProvider;
 
   beforeEach(() => {
-    jest.clearAllMocks();
-    mockGetAllConnections.mockReturnValue([]);
-    mockGetAllConnectionsWithReconnecting.mockReturnValue({ active: [], reconnecting: [] });
+    mockGetConnection.mockReset();
+    mockGetAllConnections.mockReset().mockReturnValue([]);
+    mockGetAllConnectionsWithReconnecting.mockReset().mockReturnValue({ active: [], reconnecting: [] });
+    mockEnqueue.mockReset().mockResolvedValue(undefined);
+    mockStartActivity.mockReset().mockReturnValue('activity-1');
+    mockCompleteActivity.mockReset();
+    mockFailActivity.mockReset();
+    mockCancelActivity.mockReset();
+    mockRecordVisit.mockReset();
+    mockGetFrequentFolders.mockReset().mockReturnValue([]);
+    mockGetPreloadTargets.mockReset().mockReturnValue([]);
+    mockIsPreloadingInProgress.mockReset().mockReturnValue(false);
+    mockIsConnectionCancelled.mockReset().mockReturnValue(false);
+    mockGetStatus.mockReset().mockReturnValue({ active: 0, queued: 0, completed: 0, total: 0, byPriority: {} });
     provider = new FileTreeProvider();
   });
 

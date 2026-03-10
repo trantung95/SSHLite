@@ -16,28 +16,28 @@ import { createMockConnection, createMockHostConfig } from '../__mocks__/testHel
 import { window } from '../__mocks__/vscode';
 
 // Mock ConnectionManager
-const mockGetConnection = jest.fn();
-const mockGetAllConnections = jest.fn().mockReturnValue([]);
+var mockGetConnection = jest.fn();
+var mockGetAllConnections = jest.fn().mockReturnValue([]);
 jest.mock('../connection/ConnectionManager', () => {
   const { EventEmitter } = require('../__mocks__/vscode');
   return {
     ConnectionManager: {
-      getInstance: jest.fn().mockReturnValue({
-        getAllConnections: mockGetAllConnections,
-        getConnection: mockGetConnection,
+      getInstance: jest.fn().mockImplementation(() => ({
+        get getAllConnections() { return mockGetAllConnections; },
+        get getConnection() { return mockGetConnection; },
         onDidChangeConnections: new EventEmitter().event,
-      }),
+      })),
     },
   };
 });
 
 // Mock HostService
-const mockGetAllHosts = jest.fn().mockReturnValue([]);
+var mockGetAllHosts = jest.fn().mockReturnValue([]);
 jest.mock('../services/HostService', () => ({
   HostService: {
-    getInstance: jest.fn().mockReturnValue({
-      getAllHosts: mockGetAllHosts,
-    }),
+    getInstance: jest.fn().mockImplementation(() => ({
+      get getAllHosts() { return mockGetAllHosts; },
+    })),
   },
 }));
 

@@ -6,6 +6,7 @@
  */
 
 import { ConnectionState } from '../types';
+import { ContainerHealthReport, ContainerDeathEvent } from './ContainerHealthMonitor';
 
 // ---- Modes ----
 
@@ -155,4 +156,11 @@ export interface ChaosRunResult {
     invariants_violated: number;
   };
   output_summary: Record<string, { lines: number; errors: number }>;
+  container_health: ContainerHealthReport;
+  scenarios_skipped: number;
+  early_termination?: {
+    reason: 'global_timeout' | 'all_servers_dead';
+    message: string;
+  };
+  post_run_analysis: string[];
 }

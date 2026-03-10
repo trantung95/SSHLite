@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ChaosRunResult, ScenarioResult, Anomaly, PerOSSummary } from './ChaosConfig';
 import { CollectedData } from './ChaosCollector';
+import { ContainerHealthReport } from './ContainerHealthMonitor';
 
 const LOGS_DIR = path.resolve(__dirname, '../../logs');
 const RESULTS_FILE = path.join(LOGS_DIR, 'chaos-results.jsonl');
@@ -97,7 +98,8 @@ export class ChaosLogger {
     durationMs: number,
     servers: Array<{ label: string; os: string; port: number }>,
     allCollectedData: CollectedData[],
-    allKnownActions: string[]
+    allKnownActions: string[],
+    containerHealth?: ContainerHealthReport
   ): ChaosRunResult {
     const passed = this.scenarioResults.filter(r => r.passed).length;
     const failed = this.scenarioResults.filter(r => !r.passed).length;
@@ -133,6 +135,9 @@ export class ChaosLogger {
         invariants_violated: this.totalInvariantsViolated,
       },
       output_summary: this.buildOutputSummary(allCollectedData),
+      container_health: containerHealth || { monitored: 0, healthy: 0, dead: 0, deaths: [], containerStatuses: [] },
+      scenarios_skipped: 0, // Populated by ChaosEngine after build
+      post_run_analysis: [], // Populated by ChaosEngine after build
     };
   }
 
@@ -169,8 +174,15 @@ export class ChaosLogger {
       console.log(`    ${os.padEnd(10)} ${summary.run} run, ${summary.passed} passed, ${summary.failed} failed [${status}]`);
     }
 
+    // Early termination warning
+    if (result.early_termination) {
+      console.log(`\n  EARLY TERMINATION: ${result.early_termination.reason}`);
+      console.log(`    ${result.early_termination.message}`);
+    }
+
     // Overall
-    console.log(`\n  Total: ${result.scenarios_run} scenarios, ${result.passed} passed, ${result.failed} failed`);
+    const skippedStr = result.scenarios_skipped > 0 ? `, ${result.scenarios_skipped} skipped` : '';
+    console.log(`\n  Total: ${result.scenarios_run} scenarios, ${result.passed} passed, ${result.failed} failed${skippedStr}`);
 
     // Failures
     if (result.failures.length > 0) {
@@ -216,6 +228,35 @@ export class ChaosLogger {
     console.log(`\n  Output Channel Summary:`);
     for (const [channel, stats] of Object.entries(result.output_summary)) {
       console.log(`    ${channel}: ${stats.lines} lines, ${stats.errors} errors`);
+    }
+
+    // Container health
+    if (result.container_health) {
+      console.log(`\n  Container Health:`);
+      console.log(`    Monitored: ${result.container_health.monitored} | Healthy: ${result.container_health.healthy} | Dead: ${result.container_health.dead}`);
+      if (result.container_health.deaths.length > 0) {
+        console.log(`\n  CONTAINER DEATHS (${result.container_health.deaths.length}):`);
+        for (const death of result.container_health.deaths) {
+          console.log(`    ${death.container} (${death.serverLabel}) — exit code ${death.exitCode}`);
+          console.log(`      Analysis: ${death.analysis}`);
+          // Show last 5 log lines
+          const logLines = death.lastLogs.split('\n').filter(l => l.trim()).slice(-5);
+          if (logLines.length > 0) {
+            console.log(`      Last logs:`);
+            for (const line of logLines) {
+              console.log(`        ${line}`);
+            }
+          }
+        }
+      }
+    }
+
+    // Post-run analysis
+    if (result.post_run_analysis && result.post_run_analysis.length > 0) {
+      console.log(`\n  POST-RUN ANALYSIS:`);
+      for (const line of result.post_run_analysis) {
+        console.log(`    ${line}`);
+      }
     }
 
     console.log(`\n${divider}\n`);

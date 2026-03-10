@@ -69,10 +69,28 @@ export function setupVscodeMocks(): void {
   (vscode.window.showQuickPick as jest.Mock).mockResolvedValue('No, use only for this session');
 }
 
+// ---- Timeout Utility ----
+
+/**
+ * Wrap any promise with a timeout. Resolves/rejects with the original result
+ * if it completes in time, otherwise rejects with a timeout error.
+ * Used to prevent cleanup and connection operations from hanging indefinitely.
+ */
+export function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Timeout after ${ms}ms: ${label}`)), ms);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); }
+    );
+  });
+}
+
 // ---- Connection Factory ----
 
 /**
  * Create a real SSHConnection to a chaos test server.
+ * Wrapped with 45s timeout to prevent TCP SYN hangs.
  */
 export async function createChaosConnection(server: ChaosServerConfig): Promise<SSHConnection> {
   const hostConfig: IHostConfig = {
@@ -91,7 +109,7 @@ export async function createChaosConnection(server: ChaosServerConfig): Promise<
   };
 
   const conn = new SSHConnection(hostConfig, credential);
-  await conn.connect();
+  await withTimeout(conn.connect(), 45000, `createChaosConnection(${server.label})`);
 
   // Wait for capability detection
   await new Promise(resolve => setTimeout(resolve, 1000));
@@ -101,13 +119,14 @@ export async function createChaosConnection(server: ChaosServerConfig): Promise<
 
 /**
  * Safely disconnect a connection, ignoring errors.
+ * Wrapped with 10s timeout to prevent hanging on stuck close events.
  */
 export async function safeChaosDisconnect(conn: SSHConnection | null): Promise<void> {
   if (!conn) return;
   try {
-    await conn.disconnect();
+    await withTimeout(conn.disconnect(), 10000, 'safeChaosDisconnect');
   } catch {
-    // Ignore disconnect errors in cleanup
+    // Ignore disconnect errors and timeouts in cleanup
   }
 }
 
@@ -145,7 +164,8 @@ export class SeededRandom {
   private state: number;
 
   constructor(seed: number) {
-    this.state = seed || 1;
+    // xorshift32 requires non-zero state; seed 0 explicitly maps to 1
+    this.state = seed === 0 ? 1 : (seed || 1);
   }
 
   /** Returns a float in [0, 1) */

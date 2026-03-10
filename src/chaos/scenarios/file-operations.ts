@@ -8,7 +8,7 @@
 import { SSHConnection } from '../../connection/SSHConnection';
 import { ScenarioDefinition, ScenarioContext, ScenarioResult } from '../ChaosConfig';
 import { ChaosValidator } from '../ChaosValidator';
-import { createChaosConnection, safeChaosDisconnect, SeededRandom } from '../chaos-helpers';
+import { createChaosConnection, safeChaosDisconnect, SeededRandom, withTimeout } from '../chaos-helpers';
 
 const CATEGORY = 'file-operations';
 
@@ -51,7 +51,7 @@ async function makeResult(
     };
   } finally {
     if (conn) {
-      try { await conn.exec(`rm -rf ${ctx.testDir}`); } catch {}
+      try { await withTimeout(conn.exec(`rm -rf ${ctx.testDir}`), 10000, 'cleanup rm -rf'); } catch {}
       await safeChaosDisconnect(conn);
     }
   }

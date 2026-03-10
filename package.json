@@ -1353,6 +1353,8 @@
     "ssh2": "^1.16.0"
   },
   "devDependencies": {
+    "@swc/core": "^1.15.18",
+    "@swc/jest": "^0.2.39",
     "@types/jest": "^30.0.0",
     "@types/node": "^20.11.0",
     "@types/ssh2": "^1.15.0",

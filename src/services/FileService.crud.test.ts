@@ -24,16 +24,16 @@ jest.mock('os', () => ({
   platform: jest.fn().mockReturnValue('linux'),
 }));
 
-const mockDeleteFile = jest.fn().mockResolvedValue(undefined);
-const mockRename = jest.fn().mockResolvedValue(undefined);
-const mockMkdir = jest.fn().mockResolvedValue(undefined);
-const mockExec = jest.fn().mockResolvedValue('');
-const mockWriteFile = jest.fn().mockResolvedValue(undefined);
-const mockReadFile = jest.fn().mockResolvedValue(Buffer.from('file-content'));
-const mockListFiles = jest.fn().mockResolvedValue([]);
-const mockStat = jest.fn().mockResolvedValue({ size: 100, isDirectory: false, name: 'test', path: '/test', modifiedTime: Date.now(), connectionId: 'test' });
+var mockDeleteFile = jest.fn().mockResolvedValue(undefined);
+var mockRename = jest.fn().mockResolvedValue(undefined);
+var mockMkdir = jest.fn().mockResolvedValue(undefined);
+var mockExec = jest.fn().mockResolvedValue('');
+var mockWriteFile = jest.fn().mockResolvedValue(undefined);
+var mockReadFile = jest.fn().mockResolvedValue(Buffer.from('file-content'));
+var mockListFiles = jest.fn().mockResolvedValue([]);
+var mockStat = jest.fn().mockResolvedValue({ size: 100, isDirectory: false, name: 'test', path: '/test', modifiedTime: Date.now(), connectionId: 'test' });
 
-const mockConnection = {
+var mockConnection = {
   id: 'test-host:22:testuser',
   host: { name: 'Test Server', host: 'test-host', port: 22, username: 'testuser' },
   state: 'connected',
@@ -52,18 +52,18 @@ const mockConnection = {
 
 jest.mock('../connection/ConnectionManager', () => ({
   ConnectionManager: {
-    getInstance: jest.fn().mockReturnValue({
+    getInstance: jest.fn().mockImplementation(() => ({
       getConnection: jest.fn().mockReturnValue(mockConnection),
       getAllConnections: jest.fn().mockReturnValue([mockConnection]),
       onDidChangeConnections: jest.fn().mockReturnValue({ dispose: jest.fn() }),
-    }),
+    })),
   },
 }));
 
-const mockLogAudit = jest.fn();
-const mockAuditLog = jest.fn();
+var mockLogAudit = jest.fn();
+var mockAuditLog = jest.fn();
 jest.mock('./AuditService', () => ({
-  AuditService: { getInstance: jest.fn().mockReturnValue({ logAudit: mockLogAudit, log: mockAuditLog, logEdit: jest.fn() }) },
+  AuditService: { getInstance: jest.fn().mockImplementation(() => ({ get logAudit() { return mockLogAudit; }, get log() { return mockAuditLog; }, logEdit: jest.fn() })) },
 }));
 jest.mock('./FolderHistoryService', () => ({
   FolderHistoryService: { getInstance: jest.fn().mockReturnValue({ recordVisit: jest.fn(), getFrequentPaths: jest.fn().mockReturnValue([]) }) },

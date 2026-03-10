@@ -14,16 +14,17 @@ import { SavedCredential, PinnedFolder } from '../services/CredentialService';
 import { createMockHostConfig, createMockCredential, createMockPinnedFolder } from '../__mocks__/testHelpers';
 
 // Mock dependencies
-const mockGetAllHosts = jest.fn().mockReturnValue([]);
-const mockGetAllConnections = jest.fn().mockReturnValue([]);
-const mockListCredentials = jest.fn().mockReturnValue([]);
+var mockGetAllHosts = jest.fn().mockReturnValue([]);
+var mockGetAllConnections = jest.fn().mockReturnValue([]);
+var mockListCredentials = jest.fn().mockReturnValue([]);
+var mockGetLastConnectionAttempt = jest.fn().mockReturnValue(undefined);
 let mockConnectionChangeCallback: (() => void) | null = null;
 
 jest.mock('../services/HostService', () => ({
   HostService: {
-    getInstance: jest.fn().mockReturnValue({
-      getAllHosts: mockGetAllHosts,
-    }),
+    getInstance: jest.fn().mockImplementation(() => ({
+      get getAllHosts() { return mockGetAllHosts; },
+    })),
   },
 }));
 
@@ -38,20 +39,20 @@ jest.mock('../connection/ConnectionManager', () => {
   };
   return {
     ConnectionManager: {
-      getInstance: jest.fn().mockReturnValue({
-        getAllConnections: mockGetAllConnections,
+      getInstance: jest.fn().mockImplementation(() => ({
+        get getAllConnections() { return mockGetAllConnections; },
         onDidChangeConnections: emitter.event,
-        getLastConnectionAttempt: jest.fn().mockReturnValue(undefined),
-      }),
+        get getLastConnectionAttempt() { return mockGetLastConnectionAttempt; },
+      })),
     },
   };
 });
 
 jest.mock('../services/CredentialService', () => ({
   CredentialService: {
-    getInstance: jest.fn().mockReturnValue({
-      listCredentials: mockListCredentials,
-    }),
+    getInstance: jest.fn().mockImplementation(() => ({
+      get listCredentials() { return mockListCredentials; },
+    })),
   },
 }));
 
@@ -71,6 +72,7 @@ describe('HostTreeProvider', () => {
     mockGetAllHosts.mockReturnValue([]);
     mockGetAllConnections.mockReturnValue([]);
     mockListCredentials.mockReturnValue([]);
+    mockGetLastConnectionAttempt.mockReturnValue(undefined);
     provider = new HostTreeProvider();
   });
 

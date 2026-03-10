@@ -13,24 +13,24 @@ import { IPortForward, ConnectionState } from '../types';
 import { createMockConnection, createMockHostConfig, createMockPortForward } from '../__mocks__/testHelpers';
 
 // Mock PortForwardService for saved rules
-const mockGetSavedRules = jest.fn().mockReturnValue([]);
-const mockGetHostIdsWithSavedRules = jest.fn().mockReturnValue([]);
+var mockGetSavedRules = jest.fn().mockReturnValue([]);
+var mockGetHostIdsWithSavedRules = jest.fn().mockReturnValue([]);
 jest.mock('../services/PortForwardService', () => ({
   PortForwardService: {
-    getInstance: jest.fn().mockReturnValue({
-      getSavedRules: mockGetSavedRules,
-      getHostIdsWithSavedRules: mockGetHostIdsWithSavedRules,
-    }),
+    getInstance: jest.fn().mockImplementation(() => ({
+      get getSavedRules() { return mockGetSavedRules; },
+      get getHostIdsWithSavedRules() { return mockGetHostIdsWithSavedRules; },
+    })),
   },
 }));
 
 // Mock HostService for host lookup
-const mockGetAllHosts = jest.fn().mockReturnValue([]);
+var mockGetAllHosts = jest.fn().mockReturnValue([]);
 jest.mock('../services/HostService', () => ({
   HostService: {
-    getInstance: jest.fn().mockReturnValue({
-      getAllHosts: mockGetAllHosts,
-    }),
+    getInstance: jest.fn().mockImplementation(() => ({
+      get getAllHosts() { return mockGetAllHosts; },
+    })),
   },
 }));
 

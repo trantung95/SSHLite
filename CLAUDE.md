@@ -13,7 +13,7 @@ For detailed architecture, design decisions, and deep documentation see the `.ad
 ```bash
 npm run compile                          # Compile TypeScript
 npm run watch                            # Watch mode
-npx jest --no-coverage                   # Run all unit tests (823 tests)
+npx jest --no-coverage                   # Run all unit tests (1127 tests, ~13s)
 npx jest -- HostTreeProvider             # Run specific file
 npx jest --testPathPattern=docker        # Docker integration tests
 npm run test:chaos                       # Chaos bug discovery (quick, 3-5 min)
@@ -82,6 +82,19 @@ SSH Lite must be **LITE** - minimize server resources and UI complexity, but **n
 
 ---
 
+## Performance First
+
+**Analyze every request for the best performance and fastest approach.**
+
+- Choose the most efficient algorithm/data structure for the job
+- Avoid unnecessary iterations, allocations, or async overhead
+- Prevent infinite loops: always add safety guards to `while` loops (e.g., `parent === p` break, max iteration count)
+- Prefer lazy evaluation over eager computation
+- Use caching to avoid redundant I/O or computation
+- Profile before optimizing — measure, don't guess
+
+---
+
 ## Code Quality
 
 - Remove unused files/code - no dead code
@@ -100,6 +113,8 @@ SSH Lite must be **LITE** - minimize server resources and UI complexity, but **n
 - Add tests for new functionality
 - Use shared mocks from `src/__mocks__/testHelpers.ts`
 - Reset singletons in `beforeEach`: `(Service as any)._instance = undefined`
+- **Transpiler**: `@swc/jest` (not `ts-jest`) — 3-5x faster compilation
+- **Mock hoisting rule**: `@swc/jest` does NOT hoist `const`/`let` into `jest.mock()` factories like `ts-jest` did. Use `var` for mock variables referenced inside `jest.mock()` factories, and use **getters** for properties that reference those vars (defers access to test runtime). Create singleton mock instances inside the factory with `mockReturnValue`, NOT `mockImplementation(() => ({...}))` which creates new objects per call and breaks event subscriptions.
 
 ---
 
