@@ -39,7 +39,7 @@ Singleton webview panel for searching across multiple SSH servers simultaneously
 
 **Webview → Extension** (`vscode.postMessage`):
 ```typescript
-{ type: 'search', query, include, exclude, mode }    // Start search
+{ type: 'search', query, include, exclude, mode, wholeWord }  // Start search
 { type: 'toggleServer', serverId, checked }           // Toggle checkbox
 { type: 'openResult', result: { connectionId, path, line } }
 { type: 'cancelSearch', searchId? }                      // Cancel search (specific or all)
@@ -100,13 +100,27 @@ Uses `isChildPath()` helper that correctly handles root `/` as parent (avoids `s
 
 ## Search Execution
 
+### Search Options (VS Code-style)
+
+| Toggle | Button | Grep Flag | Description |
+|--------|--------|-----------|-------------|
+| Match Case | `Aa` | `-i` (off) | Case-sensitive search |
+| Match Whole Word | `Ab\|` | `-w` | Word boundary matching (content search only) |
+| Use Regex | `.*` | `-F` (off) | Regex vs literal string |
+| Find Files | `📄` | — | Switch to filename search (`find` instead of `grep`) |
+
+**Comma-separated include patterns**: Users can enter `*.ts, *.js` in "files to include". Each pattern generates a separate `--include` flag for grep. `listEntries()` uses OR'ed `-name` clauses: `\( -name '*.ts' -o -name '*.js' \)`.
+
+**Default exclusions** (`sshLite.searchUseDefaultExcludes`, default: `true`): Auto-excludes `.git, .svn, .hg, CVS, .DS_Store, node_modules, bower_components, *.code-search` — matching VS Code's `files.exclude` + `search.exclude` defaults. Prepended to user's exclude patterns. Reduces unnecessary server work (LITE principle).
+
 ### Content Search (grep mode)
 
 ```
 For each checked server with non-redundant paths:
   1. Build grep command:
-     grep -rnHI --include="<include>" --exclude="<exclude>" -- "<query>" <paths>
-     -I: skip binary files
+     grep -rnHI [-F] [-w] [-i] --include='*.ts' --include='*.js' --exclude='.git'
+       --exclude-dir='.git' ... -- '<query>' <paths> 2>/dev/null
+     -I: skip binary, -F: literal, -w: whole word, -i: case-insensitive
   2. Execute via SSHConnection.searchFiles() (supports single path or string[])
   3. Parse results: filepath:linenum:content
   4. Send progressive searchBatch to webview as each task completes
@@ -302,7 +316,7 @@ Pin current search results as tabs for comparison. Session-only (not persisted).
 function createTabState() {
   return {
     id, query, include, exclude,           // Search parameters
-    caseSensitive, useRegex, findFilesMode, // Toggle states
+    caseSensitive, useRegex, wholeWord, findFilesMode, // Toggle states
     results, scopeServers, hitLimit, limit, // Result data
     searchId, searching,                    // Active search tracking
     expandedFiles, expandedTreeNodes,       // UI expand state

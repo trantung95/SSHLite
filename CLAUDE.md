@@ -180,6 +180,12 @@ This project is designed to grow itself. The `.adn/growth/` folder contains ever
 
 ## Release Notes
 
+### v0.5.4 — VS Code-style search enhancements
+
+- **Whole word search**: New `Ab|` toggle button (between `Aa` and `.*`) matches whole words only via grep `-w` flag. Works with both literal (`-F`) and regex modes. Content search only (not find-files mode). State saved per tab and restored on panel re-open
+- **Comma-separated include patterns**: "Files to include" field now accepts `*.ts, *.js` — generates multiple `--include` flags for grep. `listEntries()` uses OR'ed `-name` clauses in find: `\( -name '*.ts' -o -name '*.js' \)`. Worker pool `listEntriesPattern` guard updated to allow commas
+- **Default exclusions**: New `sshLite.searchUseDefaultExcludes` setting (default: `true`). Auto-excludes `.git, .svn, .hg, CVS, .DS_Store, node_modules, bower_components, *.code-search` — matching VS Code's `files.exclude` + `search.exclude` defaults. Prepended to user's exclude patterns in `performSearch()`
+
 ### v0.5.3 — Security hardening, race condition fixes, disconnect reconnecting servers
 
 - **Command injection fix**: Backup exec commands (`createServerBackup`, `restoreFromServerBackup`, `createDirectoryBackup`) now use single-quote escaping instead of double-quote wrapping, preventing shell injection via crafted file paths

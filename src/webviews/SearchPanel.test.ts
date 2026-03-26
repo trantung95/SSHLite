@@ -268,7 +268,7 @@ describe('SearchPanel', () => {
           caseSensitive: true,
           regex: true,
           filePattern: '*.ts',
-          excludePattern: '*.test.ts',
+          excludePattern: expect.stringContaining('*.test.ts'),
         })
       );
     });

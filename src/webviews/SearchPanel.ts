@@ -6,6 +6,9 @@ import { SavedCredential } from '../services/CredentialService';
 import { formatFileSize, formatRelativeTime } from '../utils/helpers';
 import { ActivityService } from '../services/ActivityService';
 
+/** Default exclude patterns matching VS Code's files.exclude + search.exclude defaults */
+const DEFAULT_SEARCH_EXCLUDES = '.git,.svn,.hg,CVS,.DS_Store,node_modules,bower_components,*.code-search';
+
 /**
  * Search scope - a folder or file to search in
  */
@@ -66,7 +69,7 @@ interface ServerSearchSettings {
  * Message types for webview communication
  */
 type WebviewMessage =
-  | { type: 'search'; query: string; include: string; exclude: string; caseSensitive: boolean; regex: boolean; findFiles?: boolean }
+  | { type: 'search'; query: string; include: string; exclude: string; caseSensitive: boolean; regex: boolean; findFiles?: boolean; wholeWord?: boolean }
   | { type: 'removeScope'; index: number }
   | { type: 'clearScopes' }
   | { type: 'openResult'; result: WebviewSearchResult; line?: number }
@@ -96,6 +99,7 @@ export class SearchPanel {
   private lastExcludePattern: string = '';
   private lastCaseSensitive: boolean = false;
   private lastRegex: boolean = false;
+  private lastWholeWord: boolean = false;
   private currentSearchId: number = 0;
 
   // Per-search tracking: each active search has its own abort controller and activity IDs
@@ -582,6 +586,7 @@ export class SearchPanel {
       })),
       isSearching: this.isSearching,
       findFilesMode: this.findFilesMode,
+      wholeWord: this.lastWholeWord,
       sortOrder: this.sortOrder,
       globalMaxSearchProcesses: vscode.workspace.getConfiguration('sshLite').get<number>('searchParallelProcesses', 5),
     });
@@ -593,7 +598,7 @@ export class SearchPanel {
   private async handleMessage(message: WebviewMessage): Promise<void> {
     switch (message.type) {
       case 'search':
-        await this.performSearch(message.query, message.include, message.exclude, message.caseSensitive, message.regex, message.findFiles);
+        await this.performSearch(message.query, message.include, message.exclude, message.caseSensitive, message.regex, message.findFiles, message.wholeWord);
         break;
 
       case 'removeScope':
@@ -743,7 +748,8 @@ export class SearchPanel {
     excludePattern: string,
     caseSensitive: boolean,
     regex: boolean,
-    findFiles?: boolean
+    findFiles?: boolean,
+    wholeWord?: boolean
   ): Promise<void> {
     // Determine which model to use: serverList (new) or searchScopes (legacy)
     // Checked servers without explicit paths default to searching from /
@@ -779,6 +785,7 @@ export class SearchPanel {
     this.lastExcludePattern = excludePattern;
     this.lastCaseSensitive = caseSensitive;
     this.lastRegex = regex;
+    this.lastWholeWord = !!wholeWord;
     this.findFilesMode = !!findFiles;
 
     // Build scope servers list for multi-server grouping (available before connections resolve)
@@ -792,6 +799,12 @@ export class SearchPanel {
     const config = vscode.workspace.getConfiguration('sshLite');
     const maxResults = config.get<number>('searchMaxResults', 2000);
     const connectionTimeout = config.get<number>('connectionTimeout', 30000);
+
+    // Apply default exclusions (VS Code-style: .git, node_modules, etc.)
+    const useDefaultExcludes = config.get<boolean>('searchUseDefaultExcludes', true);
+    const effectiveExcludePattern = useDefaultExcludes
+      ? (excludePattern ? `${DEFAULT_SEARCH_EXCLUDES},${excludePattern}` : DEFAULT_SEARCH_EXCLUDES)
+      : excludePattern;
 
     const activityService = ActivityService.getInstance();
     const autoConnectedIds = new Set<string>();
@@ -902,8 +915,9 @@ export class SearchPanel {
                 searchContent: !findFiles,
                 caseSensitive,
                 regex,
+                wholeWord: !!wholeWord,
                 filePattern: includePattern || '*',
-                excludePattern: excludePattern || undefined,
+                excludePattern: effectiveExcludePattern || undefined,
                 maxResults,
                 signal,
               });
@@ -956,8 +970,8 @@ export class SearchPanel {
             if (parallelProcesses > 1 && !sp.isFile) {
               // 32KB batch limit — safe across all server OS variants (Linux, macOS, FreeBSD, Solaris, AIX)
               const MAX_BATCH_BYTES = 32_000;
-              // Only pass simple glob patterns to listEntries (find -name doesn't support brace expansion)
-              const listEntriesPattern = (includePattern && !/[{,]/.test(includePattern))
+              // Pass glob patterns to listEntries (supports comma-separated, but not brace expansion)
+              const listEntriesPattern = (includePattern && !/[{]/.test(includePattern))
                 ? includePattern : undefined;
 
               const poolPromise = (async () => {
@@ -1054,9 +1068,9 @@ export class SearchPanel {
                         searchActivityIds.push(actId);
                         try {
                           const results = await connection.searchFiles(item.path, query, {
-                            searchContent: !findFiles, caseSensitive, regex,
+                            searchContent: !findFiles, caseSensitive, regex, wholeWord: !!wholeWord,
                             filePattern: includePattern || '*',
-                            excludePattern: excludePattern || undefined,
+                            excludePattern: effectiveExcludePattern || undefined,
                             maxResults, signal,
                           });
                           if (signal.aborted) { activityService.cancelActivity(actId); return; }
@@ -1104,9 +1118,9 @@ export class SearchPanel {
                       searchActivityIds.push(actId);
                       try {
                         const results = await connection.searchFiles(item.filePaths, query, {
-                          searchContent: !findFiles, caseSensitive, regex,
+                          searchContent: !findFiles, caseSensitive, regex, wholeWord: !!wholeWord,
                           filePattern: includePattern || '*',
-                          excludePattern: excludePattern || undefined,
+                          excludePattern: effectiveExcludePattern || undefined,
                           maxResults, signal,
                         });
                         if (signal.aborted) { activityService.cancelActivity(actId); return; }
@@ -1283,8 +1297,9 @@ export class SearchPanel {
               searchContent: !findFiles,
               caseSensitive,
               regex,
+              wholeWord: !!wholeWord,
               filePattern: includePattern || '*',
-              excludePattern: excludePattern || undefined,
+              excludePattern: effectiveExcludePattern || undefined,
               maxResults,
               signal,
             });
@@ -2419,6 +2434,7 @@ export class SearchPanel {
           <div class="search-input-wrapper">
             <input type="text" id="searchInput" class="search-input" placeholder="Search" autofocus>
             <button id="caseSensitiveBtn" class="toggle-btn" title="Match Case">Aa</button>
+            <button id="wholeWordBtn" class="toggle-btn" title="Match Whole Word">Ab|</button>
             <button id="regexBtn" class="toggle-btn" title="Use Regular Expression">.*</button>
             <button id="findFilesBtn" class="toggle-btn" title="Find Files by Name — search for filenames instead of file content">&#128196;</button>
           </div>
@@ -2484,6 +2500,7 @@ export class SearchPanel {
         exclude: '',
         caseSensitive: false,
         useRegex: false,
+        wholeWord: false,
         findFilesMode: false,
         results: [],
         scopeServers: [],
@@ -2508,6 +2525,7 @@ export class SearchPanel {
     // Per-tab state aliases (updated by save/restore on tab switch)
     let caseSensitive = false;
     let useRegex = false;
+    let wholeWord = false;
     let findFilesMode = false;
     let expandedFiles = new Set();
     let viewMode = 'list';
@@ -2534,6 +2552,7 @@ export class SearchPanel {
       tab.exclude = excludeInput.value;
       tab.caseSensitive = caseSensitive;
       tab.useRegex = useRegex;
+      tab.wholeWord = wholeWord;
       tab.findFilesMode = findFilesMode;
       tab.viewMode = viewMode;
       tab.searchExpandState = searchExpandState;
@@ -2548,6 +2567,7 @@ export class SearchPanel {
       excludeInput.value = tab.exclude || '';
       caseSensitive = tab.caseSensitive || false;
       useRegex = tab.useRegex || false;
+      wholeWord = tab.wholeWord || false;
       findFilesMode = tab.findFilesMode || false;
       viewMode = tab.viewMode || 'list';
       searchExpandState = tab.searchExpandState != null ? tab.searchExpandState : 2;
@@ -2556,6 +2576,7 @@ export class SearchPanel {
       treeViewFirstExpand = tab.treeViewFirstExpand != null ? tab.treeViewFirstExpand : true;
       // Update toggle button UI
       caseSensitiveBtn.classList.toggle('active', caseSensitive);
+      wholeWordBtn.classList.toggle('active', wholeWord);
       regexBtn.classList.toggle('active', useRegex);
       findFilesBtn.classList.toggle('active', findFilesMode);
       searchInput.placeholder = findFilesMode ? 'Find Files by Name' : 'Search';
@@ -2584,6 +2605,7 @@ export class SearchPanel {
     const includeInput = document.getElementById('includeInput');
     const excludeInput = document.getElementById('excludeInput');
     const caseSensitiveBtn = document.getElementById('caseSensitiveBtn');
+    const wholeWordBtn = document.getElementById('wholeWordBtn');
     const regexBtn = document.getElementById('regexBtn');
     const findFilesBtn = document.getElementById('findFilesBtn');
     const searchBtn = document.getElementById('searchBtn');
@@ -2643,6 +2665,12 @@ export class SearchPanel {
       caseSensitiveBtn.addEventListener('click', () => {
         caseSensitive = !caseSensitive;
         caseSensitiveBtn.classList.toggle('active', caseSensitive);
+        performSearch();
+      });
+
+      wholeWordBtn.addEventListener('click', () => {
+        wholeWord = !wholeWord;
+        wholeWordBtn.classList.toggle('active', wholeWord);
         performSearch();
       });
 
@@ -2731,6 +2759,7 @@ export class SearchPanel {
         exclude: excludeInput.value.trim(),
         caseSensitive,
         regex: useRegex,
+        wholeWord,
         findFiles: findFilesMode
       });
     }
@@ -3791,6 +3820,11 @@ export class SearchPanel {
             currentTab.findFilesMode = findFilesMode;
             findFilesBtn.classList.toggle('active', findFilesMode);
             searchInput.placeholder = findFilesMode ? 'Find Files by Name' : 'Search';
+          }
+          if (message.wholeWord !== undefined) {
+            wholeWord = message.wholeWord;
+            currentTab.wholeWord = wholeWord;
+            wholeWordBtn.classList.toggle('active', wholeWord);
           }
           if (message.sortOrder) {
             sortOrder = message.sortOrder;

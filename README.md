@@ -1,7 +1,7 @@
 # SSH Lite - Lightweight SSH Client for VS Code
 
-![Version](https://img.shields.io/badge/version-0.5.1-blue)
-![Status](https://img.shields.io/badge/status-stable-brightgreen)
+![Version](https://img.shields.io/badge/version-0.5.4-blue)
+![Status](https://img.shields.io/badge/status-beta-yellow)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-1.85.0+-purple)
 
@@ -36,7 +36,7 @@ Browse, edit, upload, and download files via SFTP. Upload state badges on editor
 ![Remote File Browser](docs/images/feature-file-browser.png)
 
 ### Search Across Servers
-Search files across multiple remote servers simultaneously with regex support. Include/exclude patterns, scoped search, and results grouped by server.
+Search files across multiple remote servers simultaneously with regex, whole word, and case-sensitive matching. Include/exclude patterns (comma-separated), default exclusions matching VS Code, scoped search, and results grouped by server.
 
 ![Search Across Servers](docs/images/feature-search.png)
 
@@ -198,6 +198,12 @@ Contributions welcome! Please submit Pull Requests on GitHub.
 Apache-2.0 License
 
 ## Release Notes
+
+### 0.5.4 — VS Code-style search enhancements
+
+- **Whole word search**: New `Ab|` toggle button matches whole words only (grep `-w` flag). Works with both literal and regex modes
+- **Comma-separated include patterns**: Enter `*.ts, *.js` in "files to include" to search multiple file types simultaneously
+- **Default exclusions**: Auto-excludes `.git`, `node_modules`, `.svn`, `.hg`, `CVS`, `.DS_Store`, `bower_components`, `*.code-search` — matching VS Code's default search behavior. Controlled by `sshLite.searchUseDefaultExcludes` setting (default: on)
 
 ### 0.2.1 (Beta)
 - **Comprehensive regression test suite** - 727 tests (30 suites) covering all features

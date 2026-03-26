@@ -1301,10 +1301,17 @@ export class SSHConnection implements ISSHConnection {
       throw new SFTPError('Not connected');
     }
     const escaped = dirPath.replace(/'/g, "'\\''");
-    const nameFilter =
-      filePattern && filePattern !== '*'
-        ? `-name '${filePattern.replace(/'/g, "'\\''")}'`
-        : '';
+    // Support comma-separated file patterns via OR'ed -name filters (VS Code-style)
+    let nameFilter = '';
+    if (filePattern && filePattern !== '*') {
+      const patterns = filePattern.split(',').map((p) => p.trim()).filter(Boolean);
+      if (patterns.length === 1) {
+        nameFilter = `-name '${patterns[0].replace(/'/g, "'\\''")}'`;
+      } else if (patterns.length > 1) {
+        const orClauses = patterns.map((p) => `-name '${p.replace(/'/g, "'\\''")}'`).join(' -o ');
+        nameFilter = `\\( ${orClauses} \\)`;
+      }
+    }
     // Single SSH exec: list files (with optional pattern), then dirs, separated by marker
     // -L follows symlinks so symlinked dirs/files are discovered (safe with -maxdepth 1)
     const command =
@@ -1337,7 +1344,8 @@ export class SSHConnection implements ISSHConnection {
       searchContent?: boolean; // Search file contents (grep) vs filenames (find)
       caseSensitive?: boolean;
       regex?: boolean; // Use regex matching (default: false = literal string matching)
-      filePattern?: string; // File glob pattern (e.g., *.ts)
+      wholeWord?: boolean; // Match whole words only (grep -w flag)
+      filePattern?: string; // File glob pattern (e.g., *.ts) — comma-separated for multiple
       excludePattern?: string; // Exclude pattern (e.g., node_modules, *.test.ts)
       maxResults?: number;
       signal?: AbortSignal; // Abort signal to cancel the search
@@ -1352,6 +1360,7 @@ export class SSHConnection implements ISSHConnection {
       searchContent = true,
       caseSensitive = false,
       regex = false,
+      wholeWord = false,
       filePattern = '*',
       excludePattern = '',
       maxResults = 2000,
@@ -1375,11 +1384,18 @@ export class SSHConnection implements ISSHConnection {
     // Support single path or multiple paths for parallel search
     const searchPaths = Array.isArray(searchPath) ? searchPath : [searchPath];
     const escapedSearchPaths = searchPaths.map((p) => `'${escapeForSingleQuotes(p)}'`).join(' ');
-    const escapedFilePattern = escapeForSingleQuotes(filePattern);
     const caseFlag = caseSensitive ? '' : '-i';
     // Use -F for fixed string matching (literal text, not regex) unless user wants regex
     // This allows searching for text with special chars like "audio/ogg; codecs=opus"
     const fixedStringFlag = regex ? '' : '-F';
+    // -w matches whole words only (word boundary matching)
+    const wholeWordFlag = wholeWord ? '-w' : '';
+
+    // Split comma-separated file patterns for multiple --include flags (VS Code-style)
+    const filePatterns = filePattern.split(',').map((p) => p.trim()).filter(Boolean);
+    const includeFlags = filePatterns.length > 0
+      ? filePatterns.map((p) => `--include='${escapeForSingleQuotes(p)}'`).join(' ')
+      : "--include='*'";
 
     // Build exclude flags for grep/find
     let excludeFlags = '';
@@ -1401,11 +1417,11 @@ export class SSHConnection implements ISSHConnection {
     if (searchContent) {
       // Use grep for content search
       // -r: recursive, -n: line numbers, -H: show filename, -I: skip binary files,
-      // -F: fixed string (literal, not regex)
-      // --include: file pattern filter, --exclude/--exclude-dir: exclude patterns
+      // -F: fixed string (literal, not regex), -w: whole word matching
+      // --include: file pattern filter (multiple supported), --exclude/--exclude-dir: exclude patterns
       // -- signals end of options, allowing patterns that start with dash (e.g., -lfsms-)
       const grepMaxFlag = validatedMaxResults > 0 ? `-m ${validatedMaxResults}` : '';
-      command = `grep -rnHI ${fixedStringFlag} ${caseFlag} --include='${escapedFilePattern}'${excludeFlags} ${grepMaxFlag} -- '${escapedPattern}' ${escapedSearchPaths} 2>/dev/null${headLimit}`;
+      command = `grep -rnHI ${fixedStringFlag} ${wholeWordFlag} ${caseFlag} ${includeFlags}${excludeFlags} ${grepMaxFlag} -- '${escapedPattern}' ${escapedSearchPaths} 2>/dev/null${headLimit}`;
     } else {
       // Use find for filename search
       const findCaseFlag = caseSensitive ? '-name' : '-iname';

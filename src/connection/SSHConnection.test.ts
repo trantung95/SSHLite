@@ -638,6 +638,50 @@ describe('SSHConnection - Actual Class', () => {
         expect(capturedCommand).toContain("'\\''");
         expect(capturedCommand).toMatch(/^grep /);
       });
+
+      it('should add -w flag when wholeWord is true', async () => {
+        await connection.searchFiles('/home', 'test', { searchContent: true, wholeWord: true });
+        expect(capturedCommand).toContain('-w');
+        expect(capturedCommand).toMatch(/^grep /);
+      });
+
+      it('should not add -w flag when wholeWord is false', async () => {
+        await connection.searchFiles('/home', 'test', { searchContent: true, wholeWord: false });
+        expect(capturedCommand).not.toContain('-w');
+      });
+
+      it('should combine -w with -F for whole word literal search', async () => {
+        await connection.searchFiles('/home', 'test', { searchContent: true, wholeWord: true, regex: false });
+        expect(capturedCommand).toContain('-F');
+        expect(capturedCommand).toContain('-w');
+      });
+
+      it('should support comma-separated include patterns', async () => {
+        await connection.searchFiles('/home', 'test', {
+          searchContent: true,
+          filePattern: '*.ts, *.js',
+        });
+        expect(capturedCommand).toContain("--include='*.ts'");
+        expect(capturedCommand).toContain("--include='*.js'");
+        expect(capturedCommand).toMatch(/^grep /);
+      });
+
+      it('should handle single include pattern without comma', async () => {
+        await connection.searchFiles('/home', 'test', {
+          searchContent: true,
+          filePattern: '*.ts',
+        });
+        expect(capturedCommand).toContain("--include='*.ts'");
+        expect(capturedCommand).not.toContain("--include='*'");
+      });
+
+      it('should default to --include=* when filePattern is empty', async () => {
+        await connection.searchFiles('/home', 'test', {
+          searchContent: true,
+          filePattern: '',
+        });
+        expect(capturedCommand).toContain("--include='*'");
+      });
     });
 
     describe('listDirectories', () => {
@@ -792,6 +836,28 @@ describe('SSHConnection - Actual Class', () => {
         expect(cmd).toContain('<<DIR_MARKER>>');
         expect(cmd).toContain('-type f');
         expect(cmd).toContain('-type d');
+      });
+
+      it('should support comma-separated file patterns with OR', async () => {
+        mockExecOutput('<<DIR_MARKER>>\n');
+        await connection.listEntries('/opt', '*.ts, *.js');
+        const cmd = execSpy.mock.calls[0][0] as string;
+        expect(cmd).toContain("\\( -name '*.ts' -o -name '*.js' \\)");
+      });
+
+      it('should use simple -name for single pattern', async () => {
+        mockExecOutput('<<DIR_MARKER>>\n');
+        await connection.listEntries('/opt', '*.ts');
+        const cmd = execSpy.mock.calls[0][0] as string;
+        expect(cmd).toContain("-name '*.ts'");
+        expect(cmd).not.toContain('\\(');
+      });
+
+      it('should handle three comma-separated patterns', async () => {
+        mockExecOutput('<<DIR_MARKER>>\n');
+        await connection.listEntries('/opt', '*.ts, *.js, *.json');
+        const cmd = execSpy.mock.calls[0][0] as string;
+        expect(cmd).toContain("\\( -name '*.ts' -o -name '*.js' -o -name '*.json' \\)");
       });
     });
   });
