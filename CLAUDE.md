@@ -82,6 +82,18 @@ SSH Lite must be **LITE** - minimize server resources and UI complexity, but **n
 
 ---
 
+## AI Behavior Rules (CRITICAL)
+
+**These rules govern how AI assistants must operate on this project.**
+
+1. **Plan first, code later.** Wrong mid-way? Stop, re-plan. Never force through a failing approach.
+2. **Delegate hard tasks to sub-agents.** Keep main context clean. Throw more compute at problems instead of doing everything in one thread.
+3. **Self-improvement loop.** Record every lesson learned to `.adn/lessons.md`. Next session reads it first, applies it. Errors decrease over time.
+4. **Prove it works.** Haven't run tests, haven't checked logs — it's not done.
+5. **Self-fix bugs.** Hit an error? Check logs, find root cause, fix it. No hand-holding needed.
+
+---
+
 ## Performance First
 
 **Analyze every request for the best performance and fastest approach.**
