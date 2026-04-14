@@ -888,4 +888,251 @@ describe('SSHConnection - Actual Class', () => {
       expect(connection.client).toBeNull();
     });
   });
+
+  describe('Sudo mode state management', () => {
+    it('should start with sudo mode disabled', () => {
+      expect(connection.sudoMode).toBe(false);
+      expect(connection.sudoPassword).toBeNull();
+    });
+
+    it('should enable sudo mode with password', () => {
+      connection.enableSudoMode('mypassword');
+      expect(connection.sudoMode).toBe(true);
+      expect(connection.sudoPassword).toBe('mypassword');
+    });
+
+    it('should disable sudo mode and clear password', () => {
+      connection.enableSudoMode('mypassword');
+      connection.disableSudoMode();
+      expect(connection.sudoMode).toBe(false);
+      expect(connection.sudoPassword).toBeNull();
+    });
+
+    it('should clear sudo mode on handleDisconnect', () => {
+      connection.enableSudoMode('mypassword');
+      // Trigger handleDisconnect via internal method
+      (connection as any).handleDisconnect();
+      expect(connection.sudoMode).toBe(false);
+      expect(connection.sudoPassword).toBeNull();
+    });
+
+    it('should allow re-enabling sudo mode with different password', () => {
+      connection.enableSudoMode('password1');
+      connection.enableSudoMode('password2');
+      expect(connection.sudoPassword).toBe('password2');
+    });
+  });
+
+  describe('Sudo operations', () => {
+    let writtenData: any[];
+    let lastExecCmd: string;
+
+    // Create a mock stream that fires close(0) immediately after end() is called
+    function createAutoStream(opts?: { exitCode?: number; stdout?: string; stderr?: string }) {
+      const exitCode = opts?.exitCode ?? 0;
+      const stdout = opts?.stdout ?? '';
+      const stderr = opts?.stderr ?? '';
+      const dataHandlers: any[] = [];
+      const stderrHandlers: any[] = [];
+      const closeHandlers: any[] = [];
+
+      const stream: any = {
+        on: jest.fn().mockImplementation((event: string, handler: any) => {
+          if (event === 'data') { dataHandlers.push(handler); }
+          if (event === 'close') { closeHandlers.push(handler); }
+          return stream;
+        }),
+        stderr: {
+          on: jest.fn().mockImplementation((event: string, handler: any) => {
+            if (event === 'data') { stderrHandlers.push(handler); }
+            return stream.stderr;
+          }),
+        },
+        write: jest.fn().mockImplementation((data: any) => {
+          writtenData.push(data);
+        }),
+        end: jest.fn().mockImplementation(() => {
+          // Fire events after end() — simulates server processing
+          process.nextTick(() => {
+            if (stdout) { dataHandlers.forEach(h => h(Buffer.from(stdout))); }
+            if (stderr) { stderrHandlers.forEach(h => h(Buffer.from(stderr))); }
+            closeHandlers.forEach(h => h(exitCode));
+          });
+        }),
+        destroy: jest.fn(),
+      };
+      return stream;
+    }
+
+    beforeEach(() => {
+      writtenData = [];
+      lastExecCmd = '';
+
+      (connection as any).state = ConnectionState.Connected;
+      (connection as any)._client = {
+        exec: jest.fn().mockImplementation((cmd: string, cb: (err: Error | null, stream: any) => void) => {
+          lastExecCmd = cmd;
+          cb(null, createAutoStream());
+        }),
+      };
+    });
+
+    describe('sudoExec', () => {
+      it('should send password via stdin followed by newline', async () => {
+        (connection as any)._client.exec.mockImplementation((cmd: string, cb: any) => {
+          lastExecCmd = cmd;
+          cb(null, createAutoStream({ stdout: 'root\n' }));
+        });
+        const result = await connection.sudoExec('whoami', 'secret');
+        expect(result).toBe('root\n');
+        expect(writtenData[0]).toBe('secret\n');
+      });
+
+      it('should construct sudo -S -p command', async () => {
+        await connection.sudoExec('ls /root', 'pass');
+        expect(lastExecCmd).toBe("sudo -S -p '' -- ls /root");
+      });
+
+      it('should throw on incorrect password', async () => {
+        (connection as any)._client.exec.mockImplementation((_cmd: string, cb: any) => {
+          cb(null, createAutoStream({ exitCode: 1, stderr: 'Sorry, try again.' }));
+        });
+        await expect(connection.sudoExec('ls /root', 'wrong')).rejects.toThrow('incorrect password');
+      });
+
+      it('should throw on non-zero exit code', async () => {
+        (connection as any)._client.exec.mockImplementation((_cmd: string, cb: any) => {
+          cb(null, createAutoStream({ exitCode: 2, stderr: 'No such file' }));
+        });
+        await expect(connection.sudoExec('ls /nonexistent', 'pass')).rejects.toThrow('exit 2');
+      });
+
+      it('should throw ConnectionError when not connected', async () => {
+        (connection as any).state = ConnectionState.Disconnected;
+        (connection as any)._client = null;
+        await expect(connection.sudoExec('whoami', 'pass')).rejects.toThrow('Not connected');
+      });
+    });
+
+    describe('sudoWriteFile', () => {
+      it('should pipe password then content for text files', async () => {
+        const content = Buffer.from('server { listen 80; }');
+        await connection.sudoWriteFile('/etc/nginx/nginx.conf', content, 'pass');
+        expect(writtenData[0]).toBe('pass\n');
+        expect(writtenData[1]).toEqual(content);
+      });
+
+      it('should use tee command for text files', async () => {
+        await connection.sudoWriteFile('/etc/hosts', Buffer.from('data'), 'pass');
+        expect(lastExecCmd).toContain('tee');
+        expect(lastExecCmd).toContain('/etc/hosts');
+        expect(lastExecCmd).toContain('> /dev/null');
+      });
+
+      it('should use base64 pipeline for binary files', async () => {
+        const content = Buffer.from([0x00, 0x01, 0x02, 0xFF]);
+        await connection.sudoWriteFile('/usr/bin/app', content, 'pass');
+        expect(lastExecCmd).toContain('base64 -d');
+        expect(writtenData[1]).toEqual(Buffer.from(content.toString('base64')));
+      });
+
+      it('should escape single quotes in path', async () => {
+        await connection.sudoWriteFile("/etc/it's/config", Buffer.from('x'), 'pass');
+        expect(lastExecCmd).toContain("it'\\''s");
+      });
+    });
+
+    describe('sudoReadFile', () => {
+      it('should use sudo cat to read file', async () => {
+        (connection as any)._client.exec.mockImplementation((cmd: string, cb: any) => {
+          lastExecCmd = cmd;
+          cb(null, createAutoStream({ stdout: 'root:x:0:0' }));
+        });
+        const result = await connection.sudoReadFile('/etc/shadow', 'pass');
+        expect(result.toString()).toBe('root:x:0:0');
+        expect(lastExecCmd).toContain("cat '/etc/shadow'");
+      });
+    });
+
+    describe('sudoDeleteFile', () => {
+      it('should use rm for files', async () => {
+        await connection.sudoDeleteFile('/etc/old.conf', 'pass', false);
+        expect(lastExecCmd).toContain("rm '/etc/old.conf'");
+        expect(lastExecCmd).not.toContain('-rf');
+      });
+
+      it('should use rm -rf for directories', async () => {
+        await connection.sudoDeleteFile('/opt/oldapp', 'pass', true);
+        expect(lastExecCmd).toContain("rm -rf '/opt/oldapp'");
+      });
+    });
+
+    describe('sudoMkdir', () => {
+      it('should use mkdir -p', async () => {
+        await connection.sudoMkdir('/opt/newapp/config', 'pass');
+        expect(lastExecCmd).toContain("mkdir -p '/opt/newapp/config'");
+      });
+    });
+
+    describe('sudoRename', () => {
+      it('should use mv with both paths escaped', async () => {
+        await connection.sudoRename('/etc/old.conf', '/etc/new.conf', 'pass');
+        expect(lastExecCmd).toContain("mv '/etc/old.conf' '/etc/new.conf'");
+      });
+    });
+
+    describe('sudoListFiles', () => {
+      it('should parse ls -la output into IRemoteFile array', async () => {
+        const lsOutput = [
+          'total 12',
+          'drwxr-xr-x 2 root root 4096 Jan  1 12:00 subdir',
+          '-rw-r--r-- 1 www-data www-data 1234 Feb 15 09:30 index.html',
+          'lrwxrwxrwx 1 root root   11 Mar  1 08:00 link -> /etc/hosts',
+        ].join('\n');
+        (connection as any)._client.exec.mockImplementation((cmd: string, cb: any) => {
+          lastExecCmd = cmd;
+          cb(null, createAutoStream({ stdout: lsOutput }));
+        });
+
+        const files = await connection.sudoListFiles('/var/www', 'pass');
+        expect(files).toHaveLength(3);
+        expect(files[0].name).toBe('subdir');
+        expect(files[0].isDirectory).toBe(true);
+        expect(files[0].path).toBe('/var/www/subdir');
+        expect(files[0].owner).toBe('root:root');
+        expect(files[0].connectionId).toBe(connection.id);
+        expect(files[1].name).toBe('index.html');
+        expect(files[1].size).toBe(1234);
+        expect(files[2].name).toBe('link');
+      });
+
+      it('should skip . and .. entries', async () => {
+        const lsOutput = [
+          'total 4',
+          'drwxr-xr-x 2 root root 4096 Jan  1 12:00 .',
+          'drwxr-xr-x 3 root root 4096 Jan  1 12:00 ..',
+          '-rw-r--r-- 1 root root  100 Jan  1 12:00 file.txt',
+        ].join('\n');
+        (connection as any)._client.exec.mockImplementation((_cmd: string, cb: any) => {
+          cb(null, createAutoStream({ stdout: lsOutput }));
+        });
+
+        const files = await connection.sudoListFiles('/root', 'pass');
+        expect(files).toHaveLength(1);
+        expect(files[0].name).toBe('file.txt');
+      });
+    });
+
+    describe('escapePath', () => {
+      it('should escape single quotes', () => {
+        const escape = (connection as any).escapePath.bind(connection);
+        expect(escape("it's a file")).toBe("it'\\''s a file");
+      });
+
+      it('should not modify paths without quotes', () => {
+        const escape = (connection as any).escapePath.bind(connection);
+        expect(escape('/etc/hosts')).toBe('/etc/hosts');
+      });
+    });
+  });
 });

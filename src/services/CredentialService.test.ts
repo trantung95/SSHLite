@@ -284,4 +284,69 @@ describe('CredentialService', () => {
       expect(password).toBeUndefined();
     });
   });
+
+  describe('Sudo password management', () => {
+    it('should return null when no sudo password is cached', () => {
+      expect(credentialService.getSudoPasswordCached('host1')).toBeNull();
+    });
+
+    it('should cache and retrieve sudo password', () => {
+      credentialService.cacheSudoPassword('host1', 'sudopass');
+      expect(credentialService.getSudoPasswordCached('host1')).toBe('sudopass');
+    });
+
+    it('should scope sudo password per host', () => {
+      credentialService.cacheSudoPassword('host1', 'pass1');
+      credentialService.cacheSudoPassword('host2', 'pass2');
+      expect(credentialService.getSudoPasswordCached('host1')).toBe('pass1');
+      expect(credentialService.getSudoPasswordCached('host2')).toBe('pass2');
+    });
+
+    it('should clear sudo password for specific host', () => {
+      credentialService.cacheSudoPassword('host1', 'pass1');
+      credentialService.cacheSudoPassword('host2', 'pass2');
+      credentialService.clearSudoPassword('host1');
+      expect(credentialService.getSudoPasswordCached('host1')).toBeNull();
+      expect(credentialService.getSudoPasswordCached('host2')).toBe('pass2');
+    });
+
+    it('should clear all sudo passwords on clearSession', () => {
+      credentialService.cacheSudoPassword('host1', 'pass1');
+      credentialService.cacheSudoPassword('host2', 'pass2');
+      credentialService.clearSession();
+      expect(credentialService.getSudoPasswordCached('host1')).toBeNull();
+      expect(credentialService.getSudoPasswordCached('host2')).toBeNull();
+    });
+
+    it('should clear all sudo passwords on dispose', () => {
+      credentialService.cacheSudoPassword('host1', 'pass1');
+      credentialService.dispose();
+      expect(credentialService.getSudoPasswordCached('host1')).toBeNull();
+    });
+
+    it('should prompt for sudo password with masked input', async () => {
+      (window.showInputBox as jest.Mock).mockResolvedValue('entered-pass');
+      const result = await credentialService.promptSudoPassword('web-server');
+
+      expect(window.showInputBox).toHaveBeenCalledWith(
+        expect.objectContaining({
+          password: true,
+          prompt: expect.stringContaining('web-server'),
+        })
+      );
+      expect(result).toBe('entered-pass');
+    });
+
+    it('should return null when user cancels sudo password prompt', async () => {
+      (window.showInputBox as jest.Mock).mockResolvedValue(undefined);
+      const result = await credentialService.promptSudoPassword('web-server');
+      expect(result).toBeNull();
+    });
+
+    it('should overwrite existing cached sudo password', () => {
+      credentialService.cacheSudoPassword('host1', 'old');
+      credentialService.cacheSudoPassword('host1', 'new');
+      expect(credentialService.getSudoPasswordCached('host1')).toBe('new');
+    });
+  });
 });

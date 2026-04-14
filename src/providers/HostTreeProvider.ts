@@ -32,7 +32,8 @@ export class ServerTreeItem extends vscode.TreeItem {
     hosts: IHostConfig[],
     isConnected: boolean,
     lastFailedAttempt?: ILastConnectionAttempt,
-    isReconnecting?: boolean
+    isReconnecting?: boolean,
+    isSudoMode?: boolean
   ) {
     // Use first host's name as display name
     const displayName = hosts[0].name;
@@ -62,6 +63,12 @@ export class ServerTreeItem extends vscode.TreeItem {
       // Reconnecting: show spinning icon and reconnectingServer contextValue so disconnect button appears
       this.contextValue = isSavedOrHasCredentials ? 'reconnectingServer.saved' : 'reconnectingServer';
       this.iconPath = new vscode.ThemeIcon('sync~spin', new vscode.ThemeColor('charts.yellow'));
+    } else if (isConnected && isSudoMode) {
+      // Connected with sudo mode active — shield icon
+      const base = isSavedOrHasCredentials ? 'connectedServer.saved' : 'connectedServer';
+      this.contextValue = `${base}.sudo`;
+      this.iconPath = new vscode.ThemeIcon('shield', new vscode.ThemeColor('charts.yellow'));
+      this.description = `${serverKey} (sudo)`;
     } else if (isConnected) {
       // Use different context for saved vs config hosts so menu items work correctly
       this.contextValue = isSavedOrHasCredentials ? 'connectedServer.saved' : 'connectedServer';
@@ -412,7 +419,18 @@ export class HostTreeProvider implements vscode.TreeDataProvider<TreeItemType> {
           }
         }
       }
-      items.push(new ServerTreeItem(serverKey, serverHosts, isConnected, lastFailedAttempt, isReconnecting));
+      // Check if any connected host has sudo mode active
+      let isSudoMode = false;
+      if (isConnected) {
+        for (const h of serverHosts) {
+          const conn = this.connectionManager.getConnection(h.id);
+          if (conn?.sudoMode) {
+            isSudoMode = true;
+            break;
+          }
+        }
+      }
+      items.push(new ServerTreeItem(serverKey, serverHosts, isConnected, lastFailedAttempt, isReconnecting, isSudoMode));
     }
 
     return items;

@@ -18,6 +18,7 @@ var mockGetAllHosts = jest.fn().mockReturnValue([]);
 var mockGetAllConnections = jest.fn().mockReturnValue([]);
 var mockListCredentials = jest.fn().mockReturnValue([]);
 var mockGetLastConnectionAttempt = jest.fn().mockReturnValue(undefined);
+var mockGetConnection = jest.fn().mockReturnValue(undefined);
 let mockConnectionChangeCallback: (() => void) | null = null;
 
 jest.mock('../services/HostService', () => ({
@@ -44,6 +45,7 @@ jest.mock('../connection/ConnectionManager', () => {
         onDidChangeConnections: emitter.event,
         get getLastConnectionAttempt() { return mockGetLastConnectionAttempt; },
         getReconnectingConnections: jest.fn().mockReturnValue([]),
+        getConnection: mockGetConnection,
       })),
     },
   };
@@ -152,6 +154,35 @@ describe('HostTreeProvider', () => {
       const items = provider.getChildren() as ServerTreeItem[];
       expect(items[0].contextValue).toBe('connectedServer.saved');
       expect((items[0].iconPath as any).id).toBe('vm-running');
+    });
+
+    it('should show shield icon when connected with sudo mode active', () => {
+      const host = createMockHostConfig({ id: '10.0.0.1:22:user', host: '10.0.0.1', port: 22, username: 'user', name: 'S1' });
+      const mockConn = { id: '10.0.0.1:22:user', state: ConnectionState.Connected };
+      mockGetAllHosts.mockReturnValue([host]);
+      mockGetAllConnections.mockReturnValue([mockConn]);
+      mockGetConnection.mockReturnValue({ sudoMode: true });
+
+      const items = provider.getChildren() as ServerTreeItem[];
+      expect(items[0].contextValue).toContain('sudo');
+      expect((items[0].iconPath as any).id).toBe('shield');
+      expect(items[0].description).toContain('(sudo)');
+
+      mockGetConnection.mockReturnValue(undefined);
+    });
+
+    it('should not show sudo indicator when connected without sudo mode', () => {
+      const host = createMockHostConfig({ id: '10.0.0.1:22:user', host: '10.0.0.1', port: 22, username: 'user', name: 'S1' });
+      const mockConn = { id: '10.0.0.1:22:user', state: ConnectionState.Connected };
+      mockGetAllHosts.mockReturnValue([host]);
+      mockGetAllConnections.mockReturnValue([mockConn]);
+      mockGetConnection.mockReturnValue({ sudoMode: false });
+
+      const items = provider.getChildren() as ServerTreeItem[];
+      expect(items[0].contextValue).not.toContain('sudo');
+      expect((items[0].iconPath as any).id).toBe('vm-running');
+
+      mockGetConnection.mockReturnValue(undefined);
     });
 
     it('should show vm icon when has saved credentials', () => {

@@ -12,6 +12,7 @@ import { ProgressiveDownloadManager } from './ProgressiveDownloadManager';
 import { PriorityQueueService, PreloadPriority } from './PriorityQueueService';
 import { ActivityService } from './ActivityService';
 import { CommandGuard } from './CommandGuard';
+import { CredentialService } from './CredentialService';
 import { formatFileSize, normalizeLocalPath } from '../utils/helpers';
 import { isLikelyBinary, DEFAULT_PROGRESSIVE_CONFIG } from '../types/progressive';
 import { registerTabLabel, getConnectionPrefix } from '../utils/connectionPrefix';
@@ -2083,6 +2084,52 @@ export class FileService {
         });
       }
     } catch (error) {
+      const err = error as Error;
+      const fileName = path.basename(mapping.remotePath);
+
+      // Permission denied — offer sudo retry before showing normal error
+      if (this.isPermissionDenied(err) && !connection.sudoMode) {
+        // Clear upload state before showing dialog
+        this.uploadingFiles.delete(mapping.localPath);
+        this.uploadSpinners.get(mapping.localPath)?.dispose();
+        this.uploadSpinners.delete(mapping.localPath);
+
+        const sudoHandled = await this.handlePermissionDenied(
+          connection,
+          fileName,
+          async (password: string) => {
+            const content = Buffer.from(newContent, 'utf-8');
+            if (connection.sudoMode) {
+              // "Sudo All" was chosen — CommandGuard now routes through sudo
+              await this.commandGuard.writeFile(connection, mapping.remotePath, content);
+            } else {
+              // "Sudo Once" — use explicit sudo write
+              await this.commandGuard.sudoWriteFile(connection, mapping.remotePath, content, password);
+            }
+
+            // Success — update state
+            this.auditService.logEdit(
+              connection.id, connection.host.name, connection.host.username,
+              mapping.remotePath, mapping.localPath,
+              oldContent, newContent, true
+            );
+            mapping.originalContent = newContent;
+            mapping.lastRemoteSize = content.length;
+            mapping.lastSyncTime = Date.now();
+            this.failedUploadFiles.delete(mapping.localPath);
+            this._onUploadStateChanged.fire();
+
+            const sudoLabel = connection.sudoMode ? ' (sudo)' : ' (sudo)';
+            vscode.window.setStatusBarMessage(
+              `$(cloud-upload) Saved ${fileName} to ${connection.host.name}${sudoLabel}`, 5000
+            );
+          }
+        );
+
+        if (sudoHandled) { return; }
+        // Fall through to normal error if user cancelled
+      }
+
       // Log failed upload
       this.auditService.logEdit(
         connection.id,
@@ -2093,7 +2140,7 @@ export class FileService {
         oldContent,
         newContent,
         false,
-        (error as Error).message
+        err.message
       );
       // Mark upload failed — tab shows ✗ badge via FileDecorationProvider
       this.uploadingFiles.delete(mapping.localPath);
@@ -2102,8 +2149,7 @@ export class FileService {
       // Dismiss spinner before showing error message
       this.uploadSpinners.get(mapping.localPath)?.dispose();
       this.uploadSpinners.delete(mapping.localPath);
-      const fileName = path.basename(mapping.remotePath);
-      vscode.window.showErrorMessage(`Failed to save ${fileName}: ${(error as Error).message}`);
+      vscode.window.showErrorMessage(`Failed to save ${fileName}: ${err.message}`);
       vscode.window.setStatusBarMessage(`$(error) Save failed: ${fileName}`, 5000);
     }
   }
@@ -3599,6 +3645,35 @@ export class FileService {
       }
       return true;
     } catch (error) {
+      const err = error as Error;
+
+      // Permission denied — offer sudo retry
+      if (this.isPermissionDenied(err) && !connection.sudoMode) {
+        const sudoHandled = await this.handlePermissionDenied(
+          connection,
+          remoteFile.name,
+          async (password: string) => {
+            if (connection.sudoMode) {
+              // "Sudo All" — deleteFile goes through CommandGuard which now routes via sudo
+              if (remoteFile.isDirectory) {
+                await connection.sudoDeleteFile(remoteFile.path, password, true);
+              } else {
+                await connection.sudoDeleteFile(remoteFile.path, password, false);
+              }
+            } else {
+              await this.commandGuard.sudoDeleteFile(connection, remoteFile.path, password, remoteFile.isDirectory);
+            }
+            this.auditService.log({
+              action: 'delete', connectionId: connection.id, hostName: connection.host.name,
+              username: connection.host.username, remotePath: remoteFile.path,
+              fileSize: remoteFile.size, success: true,
+            });
+            vscode.window.setStatusBarMessage(`$(check) Deleted ${remoteFile.name} (sudo)`, 3000);
+          }
+        );
+        if (sudoHandled) { return true; }
+      }
+
       this.auditService.log({
         action: 'delete',
         connectionId: connection.id,
@@ -3606,9 +3681,9 @@ export class FileService {
         username: connection.host.username,
         remotePath: remoteFile.path,
         success: false,
-        error: (error as Error).message,
+        error: err.message,
       });
-      vscode.window.showErrorMessage(`Failed to delete: ${(error as Error).message}`);
+      vscode.window.showErrorMessage(`Failed to delete: ${err.message}`);
       return false;
     }
   }
@@ -3700,7 +3775,31 @@ export class FileService {
       vscode.window.setStatusBarMessage(`$(check) Created folder ${folderName}`, 3000);
       return remotePath;
     } catch (error) {
-      vscode.window.showErrorMessage(`Failed to create folder: ${(error as Error).message}`);
+      const err = error as Error;
+
+      if (this.isPermissionDenied(err) && !connection.sudoMode) {
+        let sudoResult: string | undefined;
+        const sudoHandled = await this.handlePermissionDenied(
+          connection,
+          folderName,
+          async (password: string) => {
+            if (connection.sudoMode) {
+              await connection.sudoMkdir(remotePath, password);
+            } else {
+              await this.commandGuard.sudoMkdir(connection, remotePath, password);
+            }
+            this.auditService.log({
+              action: 'mkdir', connectionId: connection.id, hostName: connection.host.name,
+              username: connection.host.username, remotePath, success: true,
+            });
+            vscode.window.setStatusBarMessage(`$(check) Created folder ${folderName} (sudo)`, 3000);
+            sudoResult = remotePath;
+          }
+        );
+        if (sudoHandled) { return sudoResult; }
+      }
+
+      vscode.window.showErrorMessage(`Failed to create folder: ${err.message}`);
       return undefined;
     }
   }
@@ -3757,6 +3856,31 @@ export class FileService {
       vscode.window.setStatusBarMessage(`$(check) Renamed ${oldName} → ${newName.trim()}`, 3000);
       return newPath;
     } catch (error) {
+      const err = error as Error;
+
+      if (this.isPermissionDenied(err) && !connection.sudoMode) {
+        let sudoResult: string | undefined;
+        const sudoHandled = await this.handlePermissionDenied(
+          connection,
+          oldName,
+          async (password: string) => {
+            if (connection.sudoMode) {
+              await connection.sudoRename(remoteFile.path, newPath, password);
+            } else {
+              await this.commandGuard.sudoRename(connection, remoteFile.path, newPath, password);
+            }
+            this.updateFileMappingsAfterRename(connection.id, remoteFile.path, newPath, remoteFile.isDirectory);
+            this.auditService.log({
+              action: 'rename', connectionId: connection.id, hostName: connection.host.name,
+              username: connection.host.username, remotePath: remoteFile.path, localPath: newPath, success: true,
+            });
+            vscode.window.setStatusBarMessage(`$(check) Renamed ${oldName} → ${newName!.trim()} (sudo)`, 3000);
+            sudoResult = newPath;
+          }
+        );
+        if (sudoHandled) { return sudoResult; }
+      }
+
       this.auditService.log({
         action: 'rename',
         connectionId: connection.id,
@@ -3764,9 +3888,9 @@ export class FileService {
         username: connection.host.username,
         remotePath: remoteFile.path,
         success: false,
-        error: (error as Error).message,
+        error: err.message,
       });
-      vscode.window.showErrorMessage(`Failed to rename: ${(error as Error).message}`);
+      vscode.window.showErrorMessage(`Failed to rename: ${err.message}`);
       return undefined;
     }
   }
@@ -3822,6 +3946,32 @@ export class FileService {
       vscode.window.setStatusBarMessage(`$(check) Moved ${remoteFile.name} → ${newDir}/`, 3000);
       return trimmedPath;
     } catch (error) {
+      const err = error as Error;
+
+      if (this.isPermissionDenied(err) && !connection.sudoMode) {
+        let sudoResult: string | undefined;
+        const sudoHandled = await this.handlePermissionDenied(
+          connection,
+          remoteFile.name,
+          async (password: string) => {
+            if (connection.sudoMode) {
+              await connection.sudoRename(remoteFile.path, trimmedPath, password);
+            } else {
+              await this.commandGuard.sudoRename(connection, remoteFile.path, trimmedPath, password);
+            }
+            this.updateFileMappingsAfterRename(connection.id, remoteFile.path, trimmedPath, remoteFile.isDirectory);
+            this.auditService.log({
+              action: 'move', connectionId: connection.id, hostName: connection.host.name,
+              username: connection.host.username, remotePath: remoteFile.path, localPath: trimmedPath, success: true,
+            });
+            const newDir = trimmedPath.substring(0, trimmedPath.lastIndexOf('/'));
+            vscode.window.setStatusBarMessage(`$(check) Moved ${remoteFile.name} → ${newDir}/ (sudo)`, 3000);
+            sudoResult = trimmedPath;
+          }
+        );
+        if (sudoHandled) { return sudoResult; }
+      }
+
       this.auditService.log({
         action: 'move',
         connectionId: connection.id,
@@ -3829,9 +3979,9 @@ export class FileService {
         username: connection.host.username,
         remotePath: remoteFile.path,
         success: false,
-        error: (error as Error).message,
+        error: err.message,
       });
-      vscode.window.showErrorMessage(`Failed to move: ${(error as Error).message}`);
+      vscode.window.showErrorMessage(`Failed to move: ${err.message}`);
       return undefined;
     }
   }
@@ -4069,6 +4219,131 @@ export class FileService {
       }
     }
     this.fileMappings.clear();
+  }
+
+  // ─── Sudo Helpers ──────────────────────────────────────────────────
+
+  /** Check if an error is a permission denied error */
+  private isPermissionDenied(error: Error): boolean {
+    const msg = error.message.toLowerCase();
+    return msg.includes('permission denied') || msg.includes('eacces');
+  }
+
+  /**
+   * Prompt user for sudo action when permission is denied.
+   * Returns 'once' (sudo this op), 'connection' (sudo all), or null (cancel).
+   */
+  private async promptSudoAction(fileName: string, hostName: string): Promise<'once' | 'connection' | null> {
+    const action = await vscode.window.showErrorMessage(
+      `Permission denied: ${fileName} on ${hostName}. ` +
+      `You can retry this operation with sudo, or enable sudo for all operations on this connection (until disconnect).`,
+      'Sudo Once', 'Sudo All', 'Cancel'
+    );
+    if (action === 'Sudo Once') { return 'once'; }
+    if (action === 'Sudo All') { return 'connection'; }
+    return null;
+  }
+
+  /**
+   * Get sudo password — from cache or prompt.
+   * Returns null if user cancels.
+   */
+  private async getSudoPassword(connection: SSHConnection): Promise<string | null> {
+    const credService = CredentialService.getInstance();
+    const hostId = connection.host.id;
+
+    // Check cache first
+    let password = credService.getSudoPasswordCached(hostId);
+    if (password) { return password; }
+
+    // Prompt user
+    password = await credService.promptSudoPassword(connection.host.name);
+    if (!password) { return null; }
+
+    // Cache if setting enabled
+    const config = vscode.workspace.getConfiguration('sshLite');
+    if (config.get<boolean>('cacheSudoPassword', false)) {
+      credService.cacheSudoPassword(hostId, password);
+    }
+
+    return password;
+  }
+
+  /**
+   * Handle permission denied errors with 3-choice dialog.
+   * If user chooses sudo, calls retryFn with the password.
+   * Returns true if the operation was retried successfully, false otherwise.
+   */
+  private async handlePermissionDenied(
+    connection: SSHConnection,
+    fileName: string,
+    retryFn: (password: string) => Promise<void>
+  ): Promise<boolean> {
+    const action = await this.promptSudoAction(fileName, connection.host.name);
+    if (!action) { return false; }
+
+    const password = await this.getSudoPassword(connection);
+    if (!password) { return false; }
+
+    if (action === 'connection') {
+      connection.enableSudoMode(password);
+      vscode.window.setStatusBarMessage(
+        `$(shield) Sudo mode enabled for ${connection.host.name} — right-click to disable`,
+        8000
+      );
+      vscode.commands.executeCommand('sshLite.refreshHosts');
+    }
+
+    try {
+      await retryFn(password);
+      return true;
+    } catch (retryError) {
+      const err = retryError as Error;
+      const msg = err.message.toLowerCase();
+
+      if (msg.includes('incorrect password')) {
+        // Wrong password — clear cache, disable sudo mode, offer retry
+        CredentialService.getInstance().clearSudoPassword(connection.host.id);
+        connection.disableSudoMode();
+        vscode.commands.executeCommand('sshLite.refreshHosts');
+        const retry = await vscode.window.showErrorMessage(
+          `Incorrect sudo password for ${connection.host.name}`,
+          'Try Again', 'Cancel'
+        );
+        if (retry === 'Try Again') {
+          return this.handlePermissionDenied(connection, fileName, retryFn);
+        }
+      } else if (msg.includes('not in the sudoers') || msg.includes('not allowed')) {
+        // User is not authorized for sudo at all
+        connection.disableSudoMode();
+        vscode.commands.executeCommand('sshLite.refreshHosts');
+        vscode.window.showErrorMessage(
+          `User "${connection.host.username}" is not allowed to use sudo on ${connection.host.name}.`
+        );
+      } else if (msg.includes('command not found')) {
+        // sudo not installed
+        connection.disableSudoMode();
+        vscode.commands.executeCommand('sshLite.refreshHosts');
+        vscode.window.showErrorMessage(
+          `sudo is not installed on ${connection.host.name}. Cannot elevate permissions.`
+        );
+      } else {
+        // Other failure (disk full, file locked, network error, etc.)
+        // If "Sudo All" was just activated and immediately failed, revert it
+        if (action === 'connection') {
+          connection.disableSudoMode();
+          vscode.commands.executeCommand('sshLite.refreshHosts');
+        }
+        const retry = await vscode.window.showErrorMessage(
+          `Sudo operation failed on ${connection.host.name}: ${err.message}`,
+          'Try Again', 'Cancel'
+        );
+        if (retry === 'Try Again') {
+          return this.handlePermissionDenied(connection, fileName, retryFn);
+        }
+      }
+      return false;
+    }
   }
 
   /**

@@ -360,6 +360,40 @@ export class CredentialService {
     this.sessionCredentials.clear();
   }
 
+  // ─── Sudo Password Management ────────────────────────────────────────
+  // Sudo passwords are stored in-memory only (sessionCredentials map).
+  // Never persisted to disk. Cleared on VS Code restart.
+
+  private static sudoKey(hostId: string): string {
+    return `sudo:${hostId}`;
+  }
+
+  /** Prompt user for sudo password via VS Code input box (masked) */
+  async promptSudoPassword(hostName: string): Promise<string | null> {
+    const password = await vscode.window.showInputBox({
+      prompt: `Enter sudo password for ${hostName}`,
+      password: true,
+      ignoreFocusOut: true,
+      placeHolder: 'Sudo password',
+    });
+    return password ?? null;
+  }
+
+  /** Get cached sudo password for a connection (in-memory only) */
+  getSudoPasswordCached(hostId: string): string | null {
+    return this.sessionCredentials.get(CredentialService.sudoKey(hostId)) ?? null;
+  }
+
+  /** Cache sudo password in memory for this VS Code session */
+  cacheSudoPassword(hostId: string, password: string): void {
+    this.sessionCredentials.set(CredentialService.sudoKey(hostId), password);
+  }
+
+  /** Clear cached sudo password (e.g., on incorrect password) */
+  clearSudoPassword(hostId: string): void {
+    this.sessionCredentials.delete(CredentialService.sudoKey(hostId));
+  }
+
   dispose(): void {
     this.sessionCredentials.clear();
   }

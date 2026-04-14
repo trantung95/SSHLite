@@ -574,6 +574,44 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.window.setStatusBarMessage(`$(check) Disconnected from ${displayName}`, 3000);
     }),
 
+    // Enable sudo mode on a connected server
+    vscode.commands.registerCommand('sshLite.enableSudoMode', async (item?: ServerTreeItem) => {
+      if (!item?.isConnected) { return; }
+      const host = item.hosts[0];
+      const conn = connectionManager.getConnection(host.id);
+      if (!conn) { return; }
+
+      const password = await CredentialService.getInstance().promptSudoPassword(conn.host.name);
+      if (!password) { return; }
+
+      conn.enableSudoMode(password);
+      const config = vscode.workspace.getConfiguration('sshLite');
+      if (config.get<boolean>('cacheSudoPassword', false)) {
+        CredentialService.getInstance().cacheSudoPassword(host.id, password);
+      }
+      hostTreeProvider.refresh();
+      vscode.window.setStatusBarMessage(
+        `$(shield) Sudo mode enabled for ${conn.host.name} — right-click to disable`,
+        8000
+      );
+    }),
+
+    // Disable sudo mode on a connected server
+    vscode.commands.registerCommand('sshLite.disableSudoMode', async (item?: ServerTreeItem) => {
+      if (!item?.isConnected) { return; }
+      const host = item.hosts[0];
+      const conn = connectionManager.getConnection(host.id);
+      if (!conn) { return; }
+
+      conn.disableSudoMode();
+      CredentialService.getInstance().clearSudoPassword(host.id);
+      hostTreeProvider.refresh();
+      vscode.window.setStatusBarMessage(
+        `$(check) Sudo mode disabled for ${conn.host.name}`,
+        5000
+      );
+    }),
+
     // Reconnect orphaned SSH file - connects to server and enables editing
     vscode.commands.registerCommand('sshLite.reconnectOrphanedFile', async () => {
       const editor = vscode.window.activeTextEditor;

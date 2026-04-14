@@ -154,6 +154,10 @@ export class SSHConnection implements ISSHConnection {
   private _capabilities: ServerCapabilities | null = null;
   private _activeWatchers: Map<string, ClientChannel> = new Map(); // remotePath -> watcher channel
 
+  // Sudo mode state — scoped to this connection only, cleared on disconnect
+  private _sudoMode: boolean = false;
+  private _sudoPassword: string | null = null;
+
   private readonly _onStateChange = new vscode.EventEmitter<ConnectionState>();
   public readonly onStateChange = this._onStateChange.event;
 
@@ -172,6 +176,28 @@ export class SSHConnection implements ISSHConnection {
 
   get client(): Client | null {
     return this._client;
+  }
+
+  /** Whether sudo mode is active for this connection */
+  get sudoMode(): boolean {
+    return this._sudoMode;
+  }
+
+  /** The cached sudo password (only accessible internally for sudo operations) */
+  get sudoPassword(): string | null {
+    return this._sudoPassword;
+  }
+
+  /** Enable sudo mode — all CommandGuard operations will route through sudo */
+  enableSudoMode(password: string): void {
+    this._sudoMode = true;
+    this._sudoPassword = password;
+  }
+
+  /** Disable sudo mode — operations revert to normal SFTP */
+  disableSudoMode(): void {
+    this._sudoMode = false;
+    this._sudoPassword = null;
   }
 
   /**
@@ -469,6 +495,9 @@ export class SSHConnection implements ISSHConnection {
 
     this._client = null;
     this._capabilities = null;
+
+    // Clear sudo state on disconnect
+    this.disableSudoMode();
 
     // Close all port forwards with error handling
     for (const [, server] of this._portForwards) {
@@ -998,6 +1027,209 @@ export class SSHConnection implements ISSHConnection {
         resolve();
       });
     });
+  }
+
+  // ─── Sudo Operations ─────────────────────────────────────────────────
+  // All sudo methods use SSH exec channels (not local shell).
+  // Password is written to channel stdin, never in the command string.
+
+  /** Escape a path for safe use in single-quoted shell strings */
+  private escapePath(p: string): string {
+    return p.replace(/'/g, "'\\''");
+  }
+
+  /**
+   * Execute a sudo command, piping password via stdin.
+   * Returns { stdout, stderr, code } for callers that need fine-grained control.
+   */
+  private async _sudoExecRaw(
+    command: string,
+    password: string,
+    stdinPayload?: Buffer | string
+  ): Promise<{ stdout: Buffer; stderr: string; code: number }> {
+    if (!this._client || this.state !== ConnectionState.Connected) {
+      throw new ConnectionError('Not connected');
+    }
+
+    const sudoCmd = `sudo -S -p '' -- ${command}`;
+    logSSHCommand(this.host.name, `[sudo] ${command}`);
+
+    const stream = await this._execChannel(sudoCmd);
+    const TIMEOUT_MS = 60_000;
+
+    return new Promise((resolve, reject) => {
+      const stdoutChunks: Buffer[] = [];
+      let stderr = '';
+      let settled = false;
+
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          stream.destroy();
+          reject(new SFTPError('Sudo operation timed out after 60 seconds'));
+        }
+      }, TIMEOUT_MS);
+
+      stream.stderr.on('data', (data: Buffer) => {
+        stderr += data.toString();
+      });
+
+      stream.on('data', (data: Buffer) => {
+        stdoutChunks.push(data);
+      });
+
+      stream.on('close', (code: number) => {
+        if (settled) { return; }
+        settled = true;
+        clearTimeout(timer);
+        resolve({
+          stdout: Buffer.concat(stdoutChunks),
+          stderr,
+          code: code ?? 0,
+        });
+      });
+
+      // Write password + newline (sudo -S reads this from stdin)
+      stream.write(password + '\n');
+
+      // Write additional payload if provided (e.g., file content for tee)
+      if (stdinPayload !== undefined) {
+        stream.write(stdinPayload);
+      }
+
+      // Close stdin to signal EOF
+      stream.end();
+    });
+  }
+
+  /** Check sudo exec result for common error patterns and throw appropriate errors */
+  private checkSudoResult(result: { stderr: string; code: number }, operation: string): void {
+    if (result.code === 0) { return; }
+
+    const lower = result.stderr.toLowerCase();
+    if (lower.includes('incorrect password') || lower.includes('sorry, try again')) {
+      throw new SFTPError('Sudo authentication failed: incorrect password');
+    }
+    // Sanitize stderr to avoid leaking password-related info
+    const safeStderr = result.stderr.replace(/\[sudo\].*password.*/gi, '').trim();
+    throw new SFTPError(`${operation} failed (exit ${result.code}): ${safeStderr}`);
+  }
+
+  /**
+   * Execute a command with sudo. General-purpose wrapper.
+   * Password is piped via stdin, never appears in command string or logs.
+   */
+  async sudoExec(command: string, password: string): Promise<string> {
+    const result = await this._sudoExecRaw(command, password);
+    this.checkSudoResult(result, 'Sudo command');
+    return result.stdout.toString('utf8');
+  }
+
+  /**
+   * Write a file using sudo tee via SSH exec channel.
+   * Binary files use base64 encode/decode pipeline.
+   */
+  async sudoWriteFile(remotePath: string, content: Buffer, password: string): Promise<void> {
+    const escaped = this.escapePath(remotePath);
+    const isBinary = content.includes(0);
+
+    if (isBinary) {
+      // Binary: pipe base64-encoded content through base64 -d into tee
+      const command = `sh -c 'base64 -d > '\\''${escaped}'\\'''`;
+      const result = await this._sudoExecRaw(command, password, Buffer.from(content.toString('base64')));
+      this.checkSudoResult(result, 'Sudo write');
+    } else {
+      const command = `tee '${escaped}' > /dev/null`;
+      const result = await this._sudoExecRaw(command, password, content);
+      this.checkSudoResult(result, 'Sudo write');
+    }
+  }
+
+  /**
+   * Read a file using sudo cat.
+   */
+  async sudoReadFile(remotePath: string, password: string): Promise<Buffer> {
+    const escaped = this.escapePath(remotePath);
+    const result = await this._sudoExecRaw(`cat '${escaped}'`, password);
+    this.checkSudoResult(result, 'Sudo read');
+    return result.stdout;
+  }
+
+  /**
+   * Delete a file or directory using sudo rm.
+   */
+  async sudoDeleteFile(remotePath: string, password: string, isDirectory: boolean = false): Promise<void> {
+    const escaped = this.escapePath(remotePath);
+    const command = isDirectory ? `rm -rf '${escaped}'` : `rm '${escaped}'`;
+    const result = await this._sudoExecRaw(command, password);
+    this.checkSudoResult(result, 'Sudo delete');
+  }
+
+  /**
+   * Create a directory using sudo mkdir -p.
+   */
+  async sudoMkdir(remotePath: string, password: string): Promise<void> {
+    const escaped = this.escapePath(remotePath);
+    const result = await this._sudoExecRaw(`mkdir -p '${escaped}'`, password);
+    this.checkSudoResult(result, 'Sudo mkdir');
+  }
+
+  /**
+   * Rename/move a file or directory using sudo mv.
+   */
+  async sudoRename(oldPath: string, newPath: string, password: string): Promise<void> {
+    const escapedOld = this.escapePath(oldPath);
+    const escapedNew = this.escapePath(newPath);
+    const result = await this._sudoExecRaw(`mv '${escapedOld}' '${escapedNew}'`, password);
+    this.checkSudoResult(result, 'Sudo rename');
+  }
+
+  /**
+   * List directory contents using sudo ls -la, parsed into IRemoteFile[].
+   */
+  async sudoListFiles(remotePath: string, password: string): Promise<IRemoteFile[]> {
+    const escaped = this.escapePath(remotePath);
+    const result = await this._sudoExecRaw(`ls -la '${escaped}'`, password);
+    this.checkSudoResult(result, 'Sudo list');
+
+    const output = result.stdout.toString('utf8');
+    const files: IRemoteFile[] = [];
+
+    for (const line of output.split('\n')) {
+      // Skip total line and empty lines
+      if (!line.trim() || line.startsWith('total ')) { continue; }
+
+      // Parse ls -la output: drwxr-xr-x 2 user group 4096 Jan  1 12:00 filename
+      const match = line.match(
+        /^([d\-lbcps])([rwxsStT\-]{9})\s+\d+\s+(\S+)\s+(\S+)\s+(\d+)\s+(\w+\s+\d+\s+[\d:]+)\s+(.+)$/
+      );
+      if (!match) { continue; }
+
+      const [, typeChar, perms, owner, group, sizeStr, dateStr, name] = match;
+      if (name === '.' || name === '..') { continue; }
+
+      const isDirectory = typeChar === 'd';
+      const isSymlink = typeChar === 'l';
+      // For symlinks, strip " -> target" from name
+      const cleanName = isSymlink ? name.replace(/ -> .*$/, '') : name;
+      const filePath = remotePath.endsWith('/')
+        ? `${remotePath}${cleanName}`
+        : `${remotePath}/${cleanName}`;
+
+      files.push({
+        name: cleanName,
+        path: filePath,
+        isDirectory,
+        size: parseInt(sizeStr, 10),
+        modifiedTime: new Date(dateStr).getTime() / 1000,
+        accessTime: 0,
+        owner: `${owner}:${group}`,
+        permissions: perms,
+        connectionId: this.id,
+      });
+    }
+
+    return files;
   }
 
   /**

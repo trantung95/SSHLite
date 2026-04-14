@@ -86,8 +86,15 @@ export class CommandGuard {
       }
     );
 
+    // Note: exec() here is SSHConnection.exec() — remote SSH command execution,
+    // NOT local child_process.exec(). No local shell injection risk.
     try {
-      const result = await connection.exec(command);
+      let result: string;
+      if (connection.sudoMode && connection.sudoPassword) {
+        result = await connection.sudoExec(command, connection.sudoPassword);
+      } else {
+        result = await connection.exec(command);
+      }
       this.activityService.completeActivity(activityId);
       return result;
     } catch (error) {
@@ -97,7 +104,8 @@ export class CommandGuard {
   }
 
   /**
-   * Read a remote file with activity tracking
+   * Read a remote file with activity tracking.
+   * Automatically routes through sudo when connection sudo mode is active.
    */
   async readFile(
     connection: SSHConnection,
@@ -105,11 +113,12 @@ export class CommandGuard {
     options?: TrackingOptions
   ): Promise<Buffer> {
     const fileName = path.basename(remotePath);
+    const sudoPrefix = connection.sudoMode ? 'Sudo ' : '';
     const activityId = this.activityService.startActivity(
       options?.type || 'download',
       connection.id,
       connection.host.name,
-      options?.description || `Download: ${fileName}`,
+      options?.description || `${sudoPrefix}Download: ${fileName}`,
       {
         detail: options?.detail || remotePath,
         cancellable: options?.cancellable,
@@ -118,7 +127,12 @@ export class CommandGuard {
     );
 
     try {
-      const result = await connection.readFile(remotePath);
+      let result: Buffer;
+      if (connection.sudoMode && connection.sudoPassword) {
+        result = await connection.sudoReadFile(remotePath, connection.sudoPassword);
+      } else {
+        result = await connection.readFile(remotePath);
+      }
       this.activityService.completeActivity(activityId, formatFileSize(result.length));
       return result;
     } catch (error) {
@@ -128,7 +142,8 @@ export class CommandGuard {
   }
 
   /**
-   * Write a remote file with activity tracking
+   * Write a remote file with activity tracking.
+   * Automatically routes through sudo when connection sudo mode is active.
    */
   async writeFile(
     connection: SSHConnection,
@@ -138,11 +153,12 @@ export class CommandGuard {
   ): Promise<void> {
     const fileName = path.basename(remotePath);
     const size = typeof content === 'string' ? Buffer.byteLength(content) : content.length;
+    const sudoPrefix = connection.sudoMode ? 'Sudo ' : '';
     const activityId = this.activityService.startActivity(
       options?.type || 'upload',
       connection.id,
       connection.host.name,
-      options?.description || `Upload: ${fileName}`,
+      options?.description || `${sudoPrefix}Upload: ${fileName}`,
       {
         detail: options?.detail || `${formatFileSize(size)} to ${remotePath}`,
         cancellable: options?.cancellable,
@@ -152,7 +168,11 @@ export class CommandGuard {
 
     try {
       const buffer = typeof content === 'string' ? Buffer.from(content) : content;
-      await connection.writeFile(remotePath, buffer);
+      if (connection.sudoMode && connection.sudoPassword) {
+        await connection.sudoWriteFile(remotePath, buffer, connection.sudoPassword);
+      } else {
+        await connection.writeFile(remotePath, buffer);
+      }
       this.activityService.completeActivity(activityId, formatFileSize(size));
     } catch (error) {
       this.activityService.failActivity(activityId, (error as Error).message);
@@ -161,7 +181,8 @@ export class CommandGuard {
   }
 
   /**
-   * List directory contents with activity tracking
+   * List directory contents with activity tracking.
+   * Automatically routes through sudo when connection sudo mode is active.
    */
   async listFiles(
     connection: SSHConnection,
@@ -169,11 +190,12 @@ export class CommandGuard {
     options?: TrackingOptions
   ): Promise<IRemoteFile[]> {
     const folderName = remotePath === '~' ? 'Home' : path.basename(remotePath) || '/';
+    const sudoPrefix = connection.sudoMode ? 'Sudo ' : '';
     const activityId = this.activityService.startActivity(
       options?.type || 'directory-load',
       connection.id,
       connection.host.name,
-      options?.description || `List: ${folderName}`,
+      options?.description || `${sudoPrefix}List: ${folderName}`,
       {
         detail: options?.detail || remotePath,
         cancellable: options?.cancellable,
@@ -182,7 +204,12 @@ export class CommandGuard {
     );
 
     try {
-      const result = await connection.listFiles(remotePath);
+      let result: IRemoteFile[];
+      if (connection.sudoMode && connection.sudoPassword) {
+        result = await connection.sudoListFiles(remotePath, connection.sudoPassword);
+      } else {
+        result = await connection.listFiles(remotePath);
+      }
       this.activityService.completeActivity(activityId, `${result.length} items`);
       return result;
     } catch (error) {
@@ -345,6 +372,168 @@ export class CommandGuard {
       { cancellable: false }
     );
     this.activityService.completeActivity(activityId, 'Disconnected');
+  }
+
+  // ─── Explicit one-off sudo wrappers (per-action fallback) ──────────
+
+  /**
+   * Write a remote file using sudo (one-off, not connection-wide)
+   */
+  async sudoWriteFile(
+    connection: SSHConnection,
+    remotePath: string,
+    content: Buffer,
+    password: string,
+    options?: TrackingOptions
+  ): Promise<void> {
+    const fileName = path.basename(remotePath);
+    const size = content.length;
+    const activityId = this.activityService.startActivity(
+      options?.type || 'upload',
+      connection.id,
+      connection.host.name,
+      options?.description || `Sudo Save: ${fileName}`,
+      {
+        detail: options?.detail || `${formatFileSize(size)} to ${remotePath}`,
+        cancellable: options?.cancellable,
+        onCancel: options?.onCancel,
+      }
+    );
+
+    try {
+      await connection.sudoWriteFile(remotePath, content, password);
+      this.activityService.completeActivity(activityId, formatFileSize(size));
+    } catch (error) {
+      this.activityService.failActivity(activityId, (error as Error).message);
+      throw error;
+    }
+  }
+
+  /**
+   * Read a remote file using sudo (one-off)
+   */
+  async sudoReadFile(
+    connection: SSHConnection,
+    remotePath: string,
+    password: string,
+    options?: TrackingOptions
+  ): Promise<Buffer> {
+    const fileName = path.basename(remotePath);
+    const activityId = this.activityService.startActivity(
+      options?.type || 'download',
+      connection.id,
+      connection.host.name,
+      options?.description || `Sudo Read: ${fileName}`,
+      {
+        detail: options?.detail || remotePath,
+        cancellable: options?.cancellable,
+        onCancel: options?.onCancel,
+      }
+    );
+
+    try {
+      const result = await connection.sudoReadFile(remotePath, password);
+      this.activityService.completeActivity(activityId, formatFileSize(result.length));
+      return result;
+    } catch (error) {
+      this.activityService.failActivity(activityId, (error as Error).message);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete a remote file/directory using sudo (one-off)
+   */
+  async sudoDeleteFile(
+    connection: SSHConnection,
+    remotePath: string,
+    password: string,
+    isDirectory: boolean = false,
+    options?: TrackingOptions
+  ): Promise<void> {
+    const fileName = path.basename(remotePath);
+    const activityId = this.activityService.startActivity(
+      options?.type || 'upload',
+      connection.id,
+      connection.host.name,
+      options?.description || `Sudo Delete: ${fileName}`,
+      {
+        detail: options?.detail || remotePath,
+        cancellable: options?.cancellable,
+        onCancel: options?.onCancel,
+      }
+    );
+
+    try {
+      await connection.sudoDeleteFile(remotePath, password, isDirectory);
+      this.activityService.completeActivity(activityId, 'Deleted');
+    } catch (error) {
+      this.activityService.failActivity(activityId, (error as Error).message);
+      throw error;
+    }
+  }
+
+  /**
+   * Create a directory using sudo (one-off)
+   */
+  async sudoMkdir(
+    connection: SSHConnection,
+    remotePath: string,
+    password: string,
+    options?: TrackingOptions
+  ): Promise<void> {
+    const folderName = path.basename(remotePath);
+    const activityId = this.activityService.startActivity(
+      options?.type || 'directory-load',
+      connection.id,
+      connection.host.name,
+      options?.description || `Sudo Mkdir: ${folderName}`,
+      {
+        detail: options?.detail || remotePath,
+        cancellable: options?.cancellable,
+        onCancel: options?.onCancel,
+      }
+    );
+
+    try {
+      await connection.sudoMkdir(remotePath, password);
+      this.activityService.completeActivity(activityId, 'Created');
+    } catch (error) {
+      this.activityService.failActivity(activityId, (error as Error).message);
+      throw error;
+    }
+  }
+
+  /**
+   * Rename/move using sudo (one-off)
+   */
+  async sudoRename(
+    connection: SSHConnection,
+    oldPath: string,
+    newPath: string,
+    password: string,
+    options?: TrackingOptions
+  ): Promise<void> {
+    const fileName = path.basename(oldPath);
+    const activityId = this.activityService.startActivity(
+      options?.type || 'upload',
+      connection.id,
+      connection.host.name,
+      options?.description || `Sudo Rename: ${fileName}`,
+      {
+        detail: options?.detail || `${oldPath} → ${newPath}`,
+        cancellable: options?.cancellable,
+        onCancel: options?.onCancel,
+      }
+    );
+
+    try {
+      await connection.sudoRename(oldPath, newPath, password);
+      this.activityService.completeActivity(activityId, 'Renamed');
+    } catch (error) {
+      this.activityService.failActivity(activityId, (error as Error).message);
+      throw error;
+    }
   }
 
   /**
