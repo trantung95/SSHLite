@@ -1,0 +1,48 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install dependencies for VS Code + SSH
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    gnupg2 \
+    apt-transport-https \
+    ca-certificates \
+    openssh-client \
+    sshpass \
+    jq \
+    libx11-xcb1 \
+    libxkbfile1 \
+    libsecret-1-0 \
+    libasound2 \
+    libgbm1 \
+    libgtk-3-0 \
+    libxshmfence1 \
+    libgl1 \
+    libnss3 \
+    libatk-bridge2.0-0 \
+    libdrm2 \
+    xdg-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install VS Code
+RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/ms.gpg && \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/ms.gpg] https://packages.microsoft.com/repos/code stable main" > /etc/apt/sources.list.d/vscode.list && \
+    apt-get update && \
+    apt-get install -y code && \
+    rm -rf /var/lib/apt/lists/*
+
+# Bypass VS Code WSL detection in Docker
+ENV DONT_PROMPT_WSL_INSTALL=1
+
+# Create non-root user (VS Code won't run as root easily)
+RUN useradd -m -s /bin/bash tester
+USER tester
+WORKDIR /home/tester
+
+# Copy test script
+COPY --chown=tester:tester test-runner.sh /home/tester/test-runner.sh
+RUN chmod +x /home/tester/test-runner.sh
+
+ENTRYPOINT ["/home/tester/test-runner.sh"]

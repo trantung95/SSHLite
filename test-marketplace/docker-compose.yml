@@ -1,0 +1,58 @@
+# Marketplace installation test infrastructure
+# SSH target servers that test containers connect to
+
+services:
+  # SSH target server 1
+  ssh-target-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.sshd
+    container_name: marketplace-ssh-target-1
+    hostname: ssh-target-1
+    networks:
+      - marketplace-test
+
+  # SSH target server 2
+  ssh-target-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.sshd
+    container_name: marketplace-ssh-target-2
+    hostname: ssh-target-2
+    networks:
+      - marketplace-test
+
+  # SSH target server 3
+  ssh-target-3:
+    build:
+      context: .
+      dockerfile: Dockerfile.sshd
+    container_name: marketplace-ssh-target-3
+    hostname: ssh-target-3
+    networks:
+      - marketplace-test
+
+  # SSH target server 4
+  ssh-target-4:
+    build:
+      context: .
+      dockerfile: Dockerfile.sshd
+    container_name: marketplace-ssh-target-4
+    hostname: ssh-target-4
+    networks:
+      - marketplace-test
+
+  # SSH target server 5
+  ssh-target-5:
+    build:
+      context: .
+      dockerfile: Dockerfile.sshd
+    container_name: marketplace-ssh-target-5
+    hostname: ssh-target-5
+    networks:
+      - marketplace-test
+
+networks:
+  marketplace-test:
+    name: marketplace-test-net
+    driver: bridge

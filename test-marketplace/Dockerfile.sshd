@@ -1,0 +1,26 @@
+FROM alpine:3.19
+
+RUN apk add --no-cache openssh-server bash coreutils
+
+# Create test user
+RUN adduser -D -s /bin/bash testuser && echo "testuser:testpass" | chpasswd
+
+# Generate host keys
+RUN ssh-keygen -A
+
+# Configure sshd
+RUN sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && \
+    echo "UsePAM no" >> /etc/ssh/sshd_config && \
+    echo "MaxSessions 100" >> /etc/ssh/sshd_config && \
+    echo "MaxStartups 100:30:200" >> /etc/ssh/sshd_config && \
+    echo "Subsystem sftp /usr/lib/ssh/sftp-server" >> /etc/ssh/sshd_config
+
+# Create test files
+RUN mkdir -p /home/testuser/projects && \
+    echo 'hello from SSH server' > /home/testuser/projects/readme.txt && \
+    chown -R testuser:testuser /home/testuser
+
+EXPOSE 22
+
+CMD ["/usr/sbin/sshd", "-D", "-e"]
