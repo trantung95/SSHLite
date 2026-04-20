@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — PEM key authentication via UI
+
+- **Private key (PEM) credentials in Add User flow**: `sshLite.addCredential` now asks whether to authenticate with a password or a private key. PEM path validates the file exists/is readable, then asks for an optional passphrase (empty = passwordless key). Fixes #3
+- **Auto-use configured `privateKeyPath` on first connect**: `sshLite.connectWithCredential` no longer forces a password prompt when the host already has an Identity File (e.g. from `~/.ssh/config`). Creates/reuses a `privateKey` credential instead
+- **Retry path for bad passphrase**: connection failures on a `privateKey` credential now surface a "Re-enter Passphrase" action, mirroring the existing password-retry flow
+- **`CredentialService.addCredential` accepts empty secret**: skip writing to `SecretStorage` when the passphrase is empty so passwordless keys don't leave blank entries. `SSHConnection.buildAuthConfig` already gates passphrase auth on `getCredentialSecret` returning truthy
+
 ## v0.5.4 — VS Code-style search enhancements
 
 - **Whole word search**: New `Ab|` toggle button (between `Aa` and `.*`) matches whole words only via grep `-w` flag. Works with both literal (`-F`) and regex modes. Content search only (not find-files mode). State saved per tab and restored on panel re-open

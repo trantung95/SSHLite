@@ -2194,7 +2194,9 @@ export function activate(context: vscode.ExtensionContext): void {
         credentialValue = keyInfo.passphrase;
       }
 
-      // Create a new saved host with this username
+      // Create a new saved host with this username. Only attach
+      // `privateKeyPath` when we actually have one so password-only hosts
+      // don't persist a null field.
       const newHostId = `${host}:${port}:${username}`;
       const newHost: IHostConfig = {
         id: newHostId,
@@ -2202,8 +2204,8 @@ export function activate(context: vscode.ExtensionContext): void {
         host: host,
         port: port,
         username: username,
-        privateKeyPath,
         source: 'saved',
+        ...(privateKeyPath ? { privateKeyPath } : {}),
       };
 
       log(`addCredential: Adding new user "${username}" for server ${serverItem.serverKey} (auth=${authChoice.id})`);
@@ -2305,14 +2307,27 @@ export function activate(context: vscode.ExtensionContext): void {
           });
           if (passphrase === undefined) return; // user cancelled
 
+          // Reuse an existing privateKey credential for the same path instead
+          // of stacking duplicates if the user cancelled a previous attempt.
+          const existing = credentialService
+            .listCredentials(hostConfig.id)
+            .find((c) => c.type === 'privateKey' && c.privateKeyPath === hostConfig.privateKeyPath);
+
           try {
-            effectiveCredential = await credentialService.addCredential(
-              hostConfig.id,
-              'SSH Key',
-              'privateKey',
-              passphrase,
-              hostConfig.privateKeyPath
-            );
+            if (existing) {
+              if (passphrase) {
+                await credentialService.updateCredentialPassword(hostConfig.id, existing.id, passphrase);
+              }
+              effectiveCredential = existing;
+            } else {
+              effectiveCredential = await credentialService.addCredential(
+                hostConfig.id,
+                'SSH Key',
+                'privateKey',
+                passphrase,
+                hostConfig.privateKeyPath
+              );
+            }
             hostTreeProvider.refresh();
           } catch (error) {
             log(`Failed to save key credential: ${(error as Error).message}`);
@@ -2415,6 +2430,51 @@ export function activate(context: vscode.ExtensionContext): void {
               } catch (retryError) {
                 log(`Retry connection failed: ${(retryError as Error).message}`);
                 vscode.window.showErrorMessage(`Connection failed: ${(retryError as Error).message}. Verify your password.`);
+              }
+            }
+          }
+        } else if (isAuthError && effectiveCredential.type === 'privateKey') {
+          // Passphrase-protected key with the wrong (or stale) passphrase —
+          // offer to re-enter and retry, mirroring the password branch.
+          const action = await vscode.window.showErrorMessage(
+            `Connection failed: ${errMsg}`,
+            'Re-enter Passphrase',
+            'Cancel'
+          );
+
+          if (action === 'Re-enter Passphrase') {
+            const newPassphrase = await vscode.window.showInputBox({
+              prompt: `Passphrase for ${effectiveCredential.privateKeyPath ?? 'private key'} (leave empty if the key has no passphrase)`,
+              password: true,
+              ignoreFocusOut: true,
+            });
+
+            if (newPassphrase !== undefined) {
+              try {
+                // `updateCredentialPassword` is a misnomer — it writes to the
+                // same secret slot that `getCredentialSecret` reads the
+                // passphrase from.
+                await credentialService.updateCredentialPassword(hostConfig.id, effectiveCredential.id, newPassphrase);
+                log(`Updated passphrase for credential "${effectiveCredential.label}"`);
+
+                const updatedCredential = { ...effectiveCredential };
+                await vscode.window.withProgress(
+                  {
+                    location: vscode.ProgressLocation.Notification,
+                    title: `Reconnecting to ${hostConfig.name}...`,
+                    cancellable: false,
+                  },
+                  async () => {
+                    await connectionManager.connectWithCredential(hostConfig!, updatedCredential);
+                  }
+                );
+
+                log(`Connected to ${hostConfig.name}`);
+                vscode.window.setStatusBarMessage(`$(check) Connected to ${hostConfig.name}`, 3000);
+                hostTreeProvider.refresh();
+              } catch (retryError) {
+                log(`Retry connection failed: ${(retryError as Error).message}`);
+                vscode.window.showErrorMessage(`Connection failed: ${(retryError as Error).message}. Verify the key passphrase.`);
               }
             }
           }
