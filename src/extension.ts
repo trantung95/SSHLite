@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { ConnectionManager } from './connection/ConnectionManager';
 import { SSHConnection, setGlobalState } from './connection/SSHConnection';
 import { HostService } from './services/HostService';
@@ -22,10 +23,55 @@ import { SearchPanel, ServerSearchEntry } from './webviews/SearchPanel';
 import { SSHFileDecorationProvider } from './providers/FileDecorationProvider';
 import { ProgressiveFileContentProvider } from './providers/ProgressiveFileContentProvider';
 import { PROGRESSIVE_PREVIEW_SCHEME, parsePreviewUri } from './types/progressive';
-import { formatFileSize, formatRelativeTime, normalizeLocalPath } from './utils/helpers';
+import { formatFileSize, formatRelativeTime, normalizeLocalPath, expandPath } from './utils/helpers';
 import { parseHostInfoFromPath as parseHostInfo, isInSshTempDir, hasSshPrefix } from './utils/extensionHelpers';
 
 let outputChannel: vscode.OutputChannel;
+
+/**
+ * Prompt the user for a private-key path and passphrase. Returns `undefined`
+ * if the user cancels or if the file cannot be read. The passphrase is left
+ * empty when the key isn't obviously encrypted — callers should still ask
+ * the user to confirm, because OpenSSH-format encrypted keys can't be
+ * detected from the PEM armor alone.
+ */
+async function promptPrivateKeyAuth(
+  options: { initialPath?: string; promptLabel: string }
+): Promise<{ privateKeyPath: string; passphrase: string } | undefined> {
+  const keyPathInput = await vscode.window.showInputBox({
+    prompt: options.promptLabel,
+    placeHolder: '~/.ssh/id_rsa',
+    value: options.initialPath,
+    ignoreFocusOut: true,
+  });
+
+  if (!keyPathInput) return undefined;
+
+  const expanded = expandPath(keyPathInput);
+  if (!fs.existsSync(expanded)) {
+    vscode.window.showErrorMessage(`Private key not found: ${keyPathInput}`);
+    return undefined;
+  }
+
+  // Sanity-check that we can read the file — fail fast with a clear error
+  // instead of letting the connect path throw later.
+  try {
+    fs.readFileSync(expanded);
+  } catch (err) {
+    vscode.window.showErrorMessage(`Cannot read private key: ${(err as Error).message}`);
+    return undefined;
+  }
+
+  const entered = await vscode.window.showInputBox({
+    prompt: `Passphrase for ${keyPathInput} (leave empty if the key has no passphrase)`,
+    password: true,
+    ignoreFocusOut: true,
+  });
+  if (entered === undefined) return undefined; // user cancelled
+
+  // Store the un-expanded path so `~` stays portable across machines.
+  return { privateKeyPath: keyPathInput, passphrase: entered };
+}
 
 /**
  * Helper to select a connection from quick pick
@@ -2118,14 +2164,35 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
-      // Ask for password
-      const password = await vscode.window.showInputBox({
-        prompt: `Enter password for ${username}@${host}`,
-        password: true,
-        ignoreFocusOut: true,
-      });
+      // Ask which authentication method to use
+      const authChoice = await vscode.window.showQuickPick(
+        [
+          { label: 'Password', description: 'Authenticate with a password', id: 'password' as const },
+          { label: 'Private Key (PEM)', description: 'Authenticate with an SSH private key file', id: 'privateKey' as const },
+        ],
+        { placeHolder: `Authentication method for ${username}@${host}`, ignoreFocusOut: true }
+      );
+      if (!authChoice) return;
 
-      if (!password) return;
+      let credentialValue = '';
+      let privateKeyPath: string | undefined;
+
+      if (authChoice.id === 'password') {
+        const password = await vscode.window.showInputBox({
+          prompt: `Enter password for ${username}@${host}`,
+          password: true,
+          ignoreFocusOut: true,
+        });
+        if (!password) return;
+        credentialValue = password;
+      } else {
+        const keyInfo = await promptPrivateKeyAuth({
+          promptLabel: `Path to private key for ${username}@${host}`,
+        });
+        if (!keyInfo) return;
+        privateKeyPath = keyInfo.privateKeyPath;
+        credentialValue = keyInfo.passphrase;
+      }
 
       // Create a new saved host with this username
       const newHostId = `${host}:${port}:${username}`;
@@ -2135,17 +2202,24 @@ export function activate(context: vscode.ExtensionContext): void {
         host: host,
         port: port,
         username: username,
+        privateKeyPath,
         source: 'saved',
       };
 
-      log(`addCredential: Adding new user "${username}" for server ${serverItem.serverKey}, hostConfig=${JSON.stringify({ id: newHostId, name: newHost.name, host: newHost.host, port: newHost.port, username: newHost.username })}`);
+      log(`addCredential: Adding new user "${username}" for server ${serverItem.serverKey} (auth=${authChoice.id})`);
       try {
         // Save the host (must await to ensure it's persisted before tree refresh)
         await hostService.saveHost(newHost);
         log(`addCredential: Host saved to settings`);
 
-        // Save the credential (password)
-        const cred = await credentialService.addCredential(newHostId, 'Default', 'password', password);
+        const credLabel = authChoice.id === 'privateKey' ? 'SSH Key' : 'Default';
+        const cred = await credentialService.addCredential(
+          newHostId,
+          credLabel,
+          authChoice.id,
+          credentialValue,
+          privateKeyPath
+        );
         log(`addCredential: Success - created host ${newHostId} with credential ${cred.id}`);
 
         hostTreeProvider.refresh();
@@ -2210,31 +2284,72 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
-      // If no credential, prompt for password first
+      // If no credential, decide which auth method to collect. When the host
+      // already has a `privateKeyPath` (from saved config or ~/.ssh/config
+      // IdentityFile), default to key-based auth so passwordless PEM files
+      // work on first connect. Otherwise prompt for a password.
       let effectiveCredential = credential;
       if (!effectiveCredential) {
-        const password = await vscode.window.showInputBox({
-          prompt: `Enter password for ${hostConfig.username}@${hostConfig.host}`,
-          password: true,
-          ignoreFocusOut: true,
-        });
+        if (hostConfig.privateKeyPath) {
+          const expanded = expandPath(hostConfig.privateKeyPath);
+          if (!fs.existsSync(expanded)) {
+            vscode.window.showErrorMessage(
+              `Private key not found: ${hostConfig.privateKeyPath}. Update the host's Identity File or remove it to use password auth.`
+            );
+            return;
+          }
+          const passphrase = await vscode.window.showInputBox({
+            prompt: `Passphrase for ${hostConfig.privateKeyPath} (leave empty if the key has no passphrase)`,
+            password: true,
+            ignoreFocusOut: true,
+          });
+          if (passphrase === undefined) return; // user cancelled
 
-        if (!password) return;
+          try {
+            effectiveCredential = await credentialService.addCredential(
+              hostConfig.id,
+              'SSH Key',
+              'privateKey',
+              passphrase,
+              hostConfig.privateKeyPath
+            );
+            hostTreeProvider.refresh();
+          } catch (error) {
+            log(`Failed to save key credential: ${(error as Error).message}`);
+            effectiveCredential = {
+              id: 'temp',
+              label: 'Temporary',
+              type: 'privateKey',
+              privateKeyPath: hostConfig.privateKeyPath,
+            };
+            if (passphrase) {
+              credentialService.setSessionCredential(hostConfig.id, 'temp', passphrase);
+            }
+          }
+        } else {
+          const password = await vscode.window.showInputBox({
+            prompt: `Enter password for ${hostConfig.username}@${hostConfig.host}`,
+            password: true,
+            ignoreFocusOut: true,
+          });
 
-        // Save the credential for next time
-        try {
-          effectiveCredential = await credentialService.addCredential(hostConfig.id, 'Default', 'password', password);
-          hostTreeProvider.refresh();
-        } catch (error) {
-          log(`Failed to save credential: ${(error as Error).message}`);
-          // Continue anyway with a temporary credential object
-          effectiveCredential = {
-            id: 'temp',
-            label: 'Temporary',
-            type: 'password',
-          };
-          // Store in session only
-          credentialService.setSessionCredential(hostConfig.id, 'temp', password);
+          if (!password) return;
+
+          // Save the credential for next time
+          try {
+            effectiveCredential = await credentialService.addCredential(hostConfig.id, 'Default', 'password', password);
+            hostTreeProvider.refresh();
+          } catch (error) {
+            log(`Failed to save credential: ${(error as Error).message}`);
+            // Continue anyway with a temporary credential object
+            effectiveCredential = {
+              id: 'temp',
+              label: 'Temporary',
+              type: 'password',
+            };
+            // Store in session only
+            credentialService.setSessionCredential(hostConfig.id, 'temp', password);
+          }
         }
       }
 

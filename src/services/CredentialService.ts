@@ -95,6 +95,10 @@ export class CredentialService {
 
   /**
    * Add a new credential for a host
+   *
+   * `value` is the password (for `password` type) or the passphrase
+   * (for `privateKey` type). Pass an empty string for a passwordless
+   * private key — no secret is stored in that case.
    */
   async addCredential(
     hostId: string,
@@ -118,12 +122,15 @@ export class CredentialService {
       privateKeyPath,
     };
 
-    // Store the secret value (password or passphrase)
-    const secretKey = this.getSecretKey(hostId, id);
-    if (this.secretStorage) {
-      await this.secretStorage.store(secretKey, value);
+    // Store the secret value (password or passphrase). Skip when empty so a
+    // passwordless private key doesn't leave a blank entry in secret storage.
+    if (value) {
+      const secretKey = this.getSecretKey(hostId, id);
+      if (this.secretStorage) {
+        await this.secretStorage.store(secretKey, value);
+      }
+      this.sessionCredentials.set(secretKey, value);
     }
-    this.sessionCredentials.set(secretKey, value);
 
     // Add to index
     index[hostId].push(credential);

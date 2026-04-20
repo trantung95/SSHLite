@@ -104,6 +104,26 @@ describe('CredentialService', () => {
       const secret = await credentialService.getCredentialSecret('host1', credential.id);
       expect(secret).toBe('mypassword');
     });
+
+    it('should add a passwordless private key credential without storing a secret', async () => {
+      setMockConfig('sshLite.credentialIndex', {});
+
+      const credential = await credentialService.addCredential(
+        'host1',
+        'My SSH Key',
+        'privateKey',
+        '',
+        '~/.ssh/id_rsa'
+      );
+
+      expect(credential.type).toBe('privateKey');
+      expect(credential.privateKeyPath).toBe('~/.ssh/id_rsa');
+
+      // Passwordless key: nothing should be persisted as a secret, so
+      // SSHConnection's `if (passphrase)` check skips passphrase auth.
+      const secret = await credentialService.getCredentialSecret('host1', credential.id);
+      expect(secret).toBeUndefined();
+    });
   });
 
   describe('getCredentialSecret', () => {
