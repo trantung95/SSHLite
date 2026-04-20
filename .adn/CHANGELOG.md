@@ -1,9 +1,9 @@
 # Changelog
 
-## Unreleased — PEM key authentication via UI
+## v0.5.6 — PEM private key authentication via UI
 
-- **Private key (PEM) credentials in Add User flow**: `sshLite.addCredential` now asks whether to authenticate with a password or a private key. PEM path validates the file exists/is readable, then asks for an optional passphrase (empty = passwordless key). Fixes #3
-- **Auto-use configured `privateKeyPath` on first connect**: `sshLite.connectWithCredential` no longer forces a password prompt when the host already has an Identity File (e.g. from `~/.ssh/config`). Creates/reuses a `privateKey` credential instead
+- **Private key (PEM) credentials in Add User flow**: `sshLite.addCredential` now asks whether to authenticate with a password or a private key. PEM path validates the file exists/is readable, then asks for an optional passphrase (empty = passwordless key). Fixes [#3](https://github.com/trantung95/SSHLite/issues/3)
+- **Auto-use configured `privateKeyPath` on first connect**: `sshLite.connectWithCredential` no longer forces a password prompt when the host already has an Identity File (e.g. from `~/.ssh/config`). Creates or reuses a `privateKey` credential instead (dedup by `privateKeyPath`)
 - **Retry path for bad passphrase**: connection failures on a `privateKey` credential now surface a "Re-enter Passphrase" action, mirroring the existing password-retry flow
 - **`CredentialService.addCredential` accepts empty secret**: skip writing to `SecretStorage` when the passphrase is empty so passwordless keys don't leave blank entries. `SSHConnection.buildAuthConfig` already gates passphrase auth on `getCredentialSecret` returning truthy
 

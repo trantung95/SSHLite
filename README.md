@@ -1,6 +1,6 @@
 # SSH Lite - Lightweight SSH Client for VS Code
 
-![Version](https://img.shields.io/badge/version-0.5.4-blue)
+![Version](https://img.shields.io/badge/version-0.5.6-blue)
 ![Status](https://img.shields.io/badge/status-beta-yellow)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-1.85.0+-purple)
@@ -198,6 +198,13 @@ Contributions welcome! Please submit Pull Requests on GitHub.
 Apache-2.0 License
 
 ## Release Notes
+
+### 0.5.6 — PEM private key authentication via UI
+
+- **Add User** now asks whether to authenticate with a password or a private key (PEM). The key path is validated and a passphrase is optional — leave it empty for keys with no passphrase. Fixes [#3](https://github.com/trantung95/SSHLite/issues/3)
+- **First-time connect** no longer forces a password prompt when the host already has an Identity File (e.g. from `~/.ssh/config`) — it creates or reuses an SSH-key credential instead
+- **"Re-enter Passphrase"** retry action on authentication failure for key-based credentials, mirroring the existing password-retry flow
+- Internal: `CredentialService.addCredential` skips `SecretStorage` writes when the passphrase is empty so passwordless keys don't leave blank entries
 
 ### 0.5.4 — VS Code-style search enhancements
 
