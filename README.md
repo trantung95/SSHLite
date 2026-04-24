@@ -1,13 +1,13 @@
-# SSH Lite - Lightweight SSH Client for VS Code
+# SSH Lite (SSH Tools) — Lightweight SSH Suite for VS Code
 
-![Version](https://img.shields.io/badge/version-0.5.6-blue)
+![Version](https://img.shields.io/badge/version-0.7.0-blue)
 ![Status](https://img.shields.io/badge/status-beta-yellow)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-1.85.0+-purple)
 
 > This extension is in active development. Please report any issues on [GitHub](https://github.com/trantung95/SSHLite/issues).
 
-**The ultimate lightweight SSH extension for Visual Studio Code!** Connect to remote servers, browse files, open terminals, and forward ports - all **without installing anything on the remote server**. Perfect for small VMs, shared hosting, and resource-constrained environments.
+**The ultimate lightweight SSH extension for Visual Studio Code!** Connect to remote servers, browse files, open terminals, forward ports, manage processes and services, push SSH keys, run snippets and batch commands — all **without installing anything on the remote server**. Perfect for small VMs, shared hosting, and resource-constrained environments.
 
 ![SSH Lite Overview](docs/images/feature-overview.png)
 
@@ -50,6 +50,21 @@ Forward remote ports to localhost. Monitor server health with CPU, memory, disk,
 
 ![Port Forwarding & Server Monitor](docs/images/feature-port-forward.png)
 
+### SSH Tools Utilities (v0.7.0+)
+
+A growing suite of remote admin tools — all user-triggered, no background polling:
+
+- **Remote Copy / Paste** — Copy or cut files/folders within a server or across servers. `Ctrl+C` / `Ctrl+X` / `Ctrl+V` in the file explorer. Auto-renames on conflict (`file (copy).txt`)
+- **Process Viewer** — List processes by CPU, pick one, kill it (with optional sudo)
+- **Service Manager** — List systemd services, start / stop / restart with one click
+- **Environment Inspector** — View `env | sort` output as a read-only document
+- **Cron Editor** — Read and write crontabs on the remote server
+- **Snippet Library** — Save frequently used SSH commands, run with one click. Ships with 6 built-ins (disk usage, top CPU, top memory, listening ports, kernel, uptime)
+- **Batch Runner** — Run the same command on multiple connected hosts simultaneously
+- **Remote Script Runner** — Upload a local `.sh` / `.py` file and execute it on the remote
+- **SSH Key Manager** — Generate ed25519 / RSA keypairs locally and push the public key to a remote `authorized_keys` in one step
+- **Remote Diff** — Compare any remote file against a local file using VS Code's built-in diff editor
+
 ### All Features
 
 **Core**
@@ -57,6 +72,7 @@ Forward remote ports to localhost. Monitor server health with CPU, memory, disk,
 - Integrated Terminal — Multiple SSH terminals per connection
 - Port Forwarding — Forward local ports to remote services
 - File Transfer — Upload/download files and folders
+- Remote Copy / Paste — Copy or move files same-host or cross-host
 
 **Smart**
 - Auto-Save Credentials — Enter password once, auto-saved for next time
@@ -70,6 +86,17 @@ Forward remote ports to localhost. Monitor server health with CPU, memory, disk,
 - Activity Panel — Track all file operations in real-time
 - Server Monitoring — Quick status, diagnose slowness, check services
 - Large File Handling — Smart handling for files >100MB
+
+**SSH Tools (Admin Utilities)**
+- Process Viewer + Kill — `ps` list with one-click kill
+- Service Manager — systemd start / stop / restart
+- Env Inspector — read-only `env | sort` virtual document
+- Cron Editor — read and write remote crontabs
+- Snippet Library — saved commands, 6 built-ins + your own
+- Batch Runner — run a command on all connected hosts at once
+- SSH Key Manager — generate + push public keys
+- Remote Script Runner — upload and exec local scripts
+- Remote Diff — VS Code diff editor against any remote file
 
 **Simple & Fast**
 - One-click connect — Just click a host to connect
@@ -145,16 +172,62 @@ All settings are in VS Code Settings under "SSH Lite":
 
 ## Commands
 
+> **Full reference:** [docs/COMMANDS.md](https://github.com/trantung95/SSHLite/blob/main/docs/COMMANDS.md) — all 98 commands with keybindings and menu locations.
+
+### Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+Shift+C` | Connect to host |
+| `Ctrl+Shift+T` | Open terminal |
+| `Ctrl+Shift+R` | Refresh files |
+| `Ctrl+Shift+G` | Go to path |
+| `Ctrl+Shift+F` | Filter files |
+| `Ctrl+Shift+S` | Open search |
+| `F2` | Rename file/folder |
+| `Ctrl+C` | Copy remote item (file explorer focused) |
+| `Ctrl+X` | Cut remote item |
+| `Ctrl+V` | Paste remote item |
+
+### Right-click Context Menu — File Explorer
+
+| Action | When |
+|--------|------|
+| Open / Download / Upload | File or folder |
+| Copy · Cut · Paste | File or folder (Paste shown only when clipboard has content) |
+| Diff with Local File | File only |
+| Delete · Rename · Move | File or folder |
+
+### Right-click Context Menu — SSH Hosts panel
+
+| Action | When |
+|--------|------|
+| Connect / Disconnect | Any host |
+| Open Terminal · Monitor Server | Connected host |
+| Show Remote Processes | Connected host |
+| Manage Remote Service | Connected host |
+| Show Remote Environment | Connected host |
+| Edit Remote Crontab | Connected host |
+| Run Snippet | Connected host |
+| Run Local Script on Remote | Connected host |
+| Push Public Key to Host | Connected host |
+
+### Command Palette (`Ctrl+Shift+P`)
+
+All 98 commands are available. Key ones to know:
+
 | Command | Description |
 |---------|-------------|
-| `SSH Lite: Connect to Host` | Connect to an SSH host |
 | `SSH Lite: Add SSH Host` | Add a new host |
-| `SSH Lite: Open Terminal` | Open SSH terminal |
-| `SSH Lite: Forward Port` | Create port forward |
-| `SSH Lite: Monitor Server` | Server monitoring tools |
-| `SSH Lite: Quick Status` | Quick server status |
-| `SSH Lite: Diagnose Slowness` | Diagnose slow server |
-| `SSH Lite: Show Audit Log` | View file operation logs |
+| `SSH Lite: Add Snippet` | Save a new SSH command snippet |
+| `SSH Lite: Manage Snippets` | Rename, edit, or delete your snippets |
+| `SSH Lite: Batch Command on Hosts` | Run one command on multiple servers |
+| `SSH Lite: Generate SSH Key` | Create an ed25519 / RSA keypair locally |
+| `SSH Lite: Save Remote Crontab` | Write edited crontab back to the server |
+| `SSH Lite: Clear SSH Clipboard` | Empty the remote copy/paste clipboard |
+| `SSH Lite: Show Audit Log` | View file operation history |
+| `SSH Lite: Quick Status` | CPU · memory · disk snapshot |
+| `SSH Lite: Diagnose Slowness` | Find what's making the server slow |
 
 ## Requirements
 
@@ -198,6 +271,21 @@ Contributions welcome! Please submit Pull Requests on GitHub.
 Apache-2.0 License
 
 ## Release Notes
+
+### 0.7.0 — SSH Tools suite
+
+- **9 new utilities**: process viewer + kill, service manager (start/stop/restart), environment inspector, cron editor, snippet library (6 built-ins + custom), batch command runner, remote script runner, SSH key manager (generate + push), remote diff editor
+- **Snippet library**: ships with disk usage, top CPU, top memory, listening ports, kernel, and uptime built-ins. Add your own from the Command Palette
+- **SSH Key Manager**: generates ed25519 / RSA keypairs locally via `ssh-keygen` and installs the public key to remote `~/.ssh/authorized_keys` in one step
+- **Remote Diff**: compare any remote file against a local file using VS Code's built-in diff editor
+- **Busybox compatibility**: Process viewer works on Alpine/busybox servers (no systemd required)
+
+### 0.6.0 — SSH Tools rebrand + remote copy/paste
+
+- **Renamed** to "SSH Lite (SSH Tools)" — positioning the extension as a growing SSH utility suite
+- **Remote copy/paste**: right-click Copy/Cut on any file or folder, right-click Paste on a destination. Works same-host (`cp -r`) and cross-host (SFTP stream). `Ctrl+C` / `Ctrl+X` / `Ctrl+V` keybindings in the file explorer
+- **Auto-rename on conflict**: pasting into a folder that already has the same filename produces `name (copy).ext`, `name (copy) 2.ext`, etc.
+- Cancellable progress notification for large transfers
 
 ### 0.5.6 — PEM private key authentication via UI
 

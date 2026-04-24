@@ -11,6 +11,10 @@ import { CredentialService } from './services/CredentialService';
 import { AuditService } from './services/AuditService';
 import { ServerMonitorService, showMonitorQuickPick } from './services/ServerMonitorService';
 import { FolderHistoryService } from './services/FolderHistoryService';
+import { RemoteClipboardService } from './services/RemoteClipboardService';
+import { SnippetService } from './services/SnippetService';
+import { RemoteEnvDocumentProvider, RemoteCronDocumentProvider, ENV_SCHEME, CRON_SCHEME } from './providers/VirtualDocProviders';
+import { registerSshToolsCommands } from './commands/sshToolsCommands';
 import { ProgressiveDownloadManager } from './services/ProgressiveDownloadManager';
 import { HostTreeProvider, ServerTreeItem, UserCredentialTreeItem, CredentialTreeItem, PinnedFolderTreeItem, setExtensionPath } from './providers/HostTreeProvider';
 import { SavedCredential, PinnedFolder } from './services/CredentialService';
@@ -163,6 +167,19 @@ export function activate(context: vscode.ExtensionContext): void {
   // Initialize folder history service for smart preloading
   const folderHistoryService = FolderHistoryService.getInstance();
   folderHistoryService.initialize(context);
+
+  // Initialize snippet service (SSH Tools)
+  SnippetService.getInstance().initialize(context);
+
+  // Register virtual-doc providers for env + cron viewers (SSH Tools)
+  const envProvider = new RemoteEnvDocumentProvider();
+  const cronProvider = new RemoteCronDocumentProvider();
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(ENV_SCHEME, envProvider),
+    vscode.workspace.registerTextDocumentContentProvider(CRON_SCHEME, cronProvider),
+    { dispose: () => envProvider.dispose() },
+    { dispose: () => cronProvider.dispose() },
+  );
 
   // Set extension path for custom icons
   setExtensionPath(context.extensionPath);
@@ -1141,6 +1158,158 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       await vscode.env.clipboard.writeText(item.file.path);
       vscode.window.setStatusBarMessage(`$(check) Copied: ${item.file.path}`, 2000);
+    }),
+
+    // Copy a remote file/folder into the in-memory SSH clipboard
+    vscode.commands.registerCommand('sshLite.copyRemoteItem', async (item?: FileTreeItem, items?: FileTreeItem[]) => {
+      const selected = (items && items.length > 0) ? items : (item ? [item] : []);
+      const fileItems = selected.filter((i) => i instanceof FileTreeItem) as FileTreeItem[];
+      if (fileItems.length === 0) {
+        return;
+      }
+      const entries = fileItems.map((f) => ({
+        connectionId: f.connection.id,
+        remotePath: f.file.path,
+        isDirectory: f.file.isDirectory,
+        name: f.file.name,
+      }));
+      RemoteClipboardService.getInstance().setClipboard(entries, 'copy');
+      const label = entries.length === 1 ? entries[0].name : `${entries.length} items`;
+      vscode.window.setStatusBarMessage(`$(copy) Copied ${label}`, 2000);
+      logCommand('copyRemoteItem', label);
+    }),
+
+    // Cut a remote file/folder into the in-memory SSH clipboard
+    vscode.commands.registerCommand('sshLite.cutRemoteItem', async (item?: FileTreeItem, items?: FileTreeItem[]) => {
+      const selected = (items && items.length > 0) ? items : (item ? [item] : []);
+      const fileItems = selected.filter((i) => i instanceof FileTreeItem) as FileTreeItem[];
+      if (fileItems.length === 0) {
+        return;
+      }
+      const entries = fileItems.map((f) => ({
+        connectionId: f.connection.id,
+        remotePath: f.file.path,
+        isDirectory: f.file.isDirectory,
+        name: f.file.name,
+      }));
+      RemoteClipboardService.getInstance().setClipboard(entries, 'cut');
+      const label = entries.length === 1 ? entries[0].name : `${entries.length} items`;
+      vscode.window.setStatusBarMessage(`$(files) Cut ${label}`, 2000);
+      logCommand('cutRemoteItem', label);
+    }),
+
+    // Clear the in-memory SSH clipboard
+    vscode.commands.registerCommand('sshLite.clearRemoteClipboard', () => {
+      RemoteClipboardService.getInstance().clear();
+      vscode.window.setStatusBarMessage('$(clear-all) SSH clipboard cleared', 2000);
+    }),
+
+    // Paste clipboard contents into a destination folder (same-host or cross-host)
+    vscode.commands.registerCommand('sshLite.pasteRemoteItem', async (item?: FileTreeItem | ConnectionTreeItem) => {
+      const clipboard = RemoteClipboardService.getInstance().getClipboard();
+      if (!clipboard || clipboard.items.length === 0) {
+        vscode.window.showInformationMessage('SSH clipboard is empty');
+        return;
+      }
+      if (!item) {
+        return;
+      }
+
+      let destConnection: SSHConnection;
+      let destFolder: string;
+
+      if (item instanceof ConnectionTreeItem) {
+        destConnection = item.connection;
+        destFolder = await fileService.resolveDefaultRemotePath(destConnection);
+      } else if (item instanceof FileTreeItem && item.file.isDirectory) {
+        destConnection = item.connection;
+        destFolder = item.file.path;
+      } else {
+        return;
+      }
+
+      const existing = await destConnection.listFiles(destFolder).catch(() => []);
+      const existingNames = new Set(existing.map((e) => e.name));
+
+      const sourceConnections = new Map<string, SSHConnection>();
+      for (const entry of clipboard.items) {
+        if (!sourceConnections.has(entry.connectionId)) {
+          const conn = connectionManager.getConnection(entry.connectionId);
+          if (!conn) {
+            vscode.window.showErrorMessage(`Source connection no longer active for ${entry.name}`);
+            return;
+          }
+          sourceConnections.set(entry.connectionId, conn);
+        }
+      }
+
+      logCommand('pasteRemoteItem', `${clipboard.operation} → ${destFolder} on ${destConnection.host.name}`);
+
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `${clipboard.operation === 'cut' ? 'Moving' : 'Copying'} to ${destConnection.host.name}:${destFolder}`,
+          cancellable: true,
+        },
+        async (progress, token) => {
+          const movedSources: Array<{ srcConnId: string; srcPath: string }> = [];
+          let doneCount = 0;
+
+          for (const entry of clipboard.items) {
+            if (token.isCancellationRequested) { break; }
+            const srcConn = sourceConnections.get(entry.connectionId)!;
+            const isSameHost = srcConn.id === destConnection.id;
+            const destName = fileService.nextCopyName(entry.name, existingNames);
+            existingNames.add(destName);
+            const destPath = destFolder.endsWith('/') ? `${destFolder}${destName}` : `${destFolder}/${destName}`;
+
+            progress.report({ message: `${doneCount + 1}/${clipboard.items.length}: ${entry.name}` });
+
+            try {
+              if (clipboard.operation === 'copy') {
+                if (isSameHost) {
+                  await fileService.copyRemoteSameHost(srcConn, entry.remotePath, destPath, entry.isDirectory);
+                } else {
+                  await fileService.copyRemoteCrossHost(srcConn, entry.remotePath, destConnection, destPath, entry.isDirectory, token);
+                }
+              } else {
+                if (isSameHost) {
+                  await fileService.moveRemoteSameHost(srcConn, entry.remotePath, destPath);
+                } else {
+                  await fileService.copyRemoteCrossHost(srcConn, entry.remotePath, destConnection, destPath, entry.isDirectory, token);
+                  try {
+                    await fileService.deleteRemotePath(srcConn, entry.remotePath, entry.isDirectory);
+                  } catch (delErr) {
+                    vscode.window.showWarningMessage(
+                      `Copied ${entry.name} to destination, but failed to remove source: ${(delErr as Error).message}`
+                    );
+                  }
+                }
+                movedSources.push({ srcConnId: srcConn.id, srcPath: entry.remotePath });
+              }
+              doneCount++;
+              logResult('pasteRemoteItem', true, `${entry.name} → ${destPath}`);
+            } catch (err) {
+              logResult('pasteRemoteItem', false, `${entry.name}: ${(err as Error).message}`);
+              vscode.window.showErrorMessage(`Failed to paste ${entry.name}: ${(err as Error).message}`);
+            }
+          }
+
+          fileTreeProvider.refreshFolder(destConnection.id, destFolder);
+          if (clipboard.operation === 'cut') {
+            RemoteClipboardService.getInstance().clear();
+            const refreshedSrcDirs = new Set<string>();
+            for (const { srcConnId, srcPath } of movedSources) {
+              const srcParent = path.dirname(srcPath) || '/';
+              const key = `${srcConnId}:${srcParent}`;
+              if (!refreshedSrcDirs.has(key)) {
+                refreshedSrcDirs.add(key);
+                fileTreeProvider.refreshFolder(srcConnId, srcParent);
+              }
+            }
+          }
+        }
+      );
     }),
 
     // Copy host to clipboard
@@ -2961,6 +3130,18 @@ export function activate(context: vscode.ExtensionContext): void {
     portForwardTreeProvider,
     activityTreeProvider,
     ...commands
+  );
+
+  // Register SSH Tools commands (phases 3-5: process viewer, service manager, env,
+  // cron, snippets, batch, script runner, key manager, diff)
+  context.subscriptions.push(
+    ...registerSshToolsCommands({
+      log: (event, detail) => logCommand(event, detail),
+      logResult,
+      envProvider,
+      cronProvider,
+      outputChannel,
+    })
   );
 
   // Set initial context

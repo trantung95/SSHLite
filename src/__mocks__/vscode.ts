@@ -27,6 +27,11 @@ export class Uri {
   }
 
   static parse(value: string): Uri {
+    // Parse scheme://authority/path?query#fragment
+    const match = value.match(/^([a-zA-Z][a-zA-Z0-9+\-.]*):\/\/([^/?#]*)([^?#]*)(?:\?([^#]*))?(?:#(.*))?$/);
+    if (match) {
+      return new Uri(match[1], match[2], match[3] || '/', match[4] || '', match[5] || '');
+    }
     return new Uri('file', '', value, '', '');
   }
 
@@ -43,7 +48,10 @@ export class Uri {
   }
 
   toString(): string {
-    return `${this.scheme}://${this.path}`;
+    const auth = this.authority ? `//${this.authority}` : '';
+    const q = this.query ? `?${this.query}` : '';
+    const f = this.fragment ? `#${this.fragment}` : '';
+    return `${this.scheme}:${auth}${this.path}${q}${f}`;
   }
 
   with(change: { scheme?: string; authority?: string; path?: string; query?: string; fragment?: string }): Uri {
@@ -298,11 +306,38 @@ export const window = {
   },
 };
 
-// Commands mock
+/**
+ * Reset window mock once-queues between tests.
+ * Call this in a global beforeEach in command handler test files.
+ */
+export function resetWindowMocks(): void {
+  (window.showQuickPick as jest.Mock).mockReset().mockResolvedValue(undefined);
+  (window.showInputBox as jest.Mock).mockReset().mockResolvedValue(undefined);
+  (window.showWarningMessage as jest.Mock).mockReset().mockResolvedValue(undefined);
+  (window.showInformationMessage as jest.Mock).mockReset().mockResolvedValue(undefined);
+  (window.showErrorMessage as jest.Mock).mockReset().mockResolvedValue(undefined);
+  (window.showOpenDialog as jest.Mock).mockReset().mockResolvedValue(undefined);
+  (window.showTextDocument as jest.Mock).mockReset().mockResolvedValue({ document: { getText: () => '', uri: { scheme: 'file', authority: '' } } });
+  (workspace.openTextDocument as jest.Mock).mockReset().mockResolvedValue({ uri: Uri.file('/test'), getText: () => '', save: jest.fn() });
+}
+
+// Commands mock — real registry so executeCommand actually invokes registered handlers
+const _commandRegistry = new Map<string, (...args: any[]) => any>();
 export const commands = {
-  registerCommand: jest.fn().mockReturnValue({ dispose: jest.fn() }),
-  executeCommand: jest.fn().mockResolvedValue(undefined),
+  registerCommand: jest.fn().mockImplementation((id: string, handler: (...args: any[]) => any) => {
+    _commandRegistry.set(id, handler);
+    return {
+      dispose: jest.fn().mockImplementation(() => { _commandRegistry.delete(id); }),
+    };
+  }),
+  executeCommand: jest.fn().mockImplementation(async (id: string, ...args: any[]) => {
+    const handler = _commandRegistry.get(id);
+    if (handler) { return handler(...args); }
+    return undefined;
+  }),
   getCommands: jest.fn().mockResolvedValue([]),
+  // expose for test cleanup
+  _clearRegistry: () => _commandRegistry.clear(),
 };
 
 // Extensions mock

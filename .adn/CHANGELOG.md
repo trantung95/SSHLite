@@ -1,5 +1,59 @@
 # Changelog
 
+## v0.7.0 — SSH Tools suite: process/service control, snippets, batch, keys, diff
+
+Nine net-new utilities shipped as the next wave of the "SSH Tools" expansion. Overlap with existing `ServerMonitorService` (disk, network, basic process/service readouts) is intentionally left alone; this release adds **interactivity** where the monitor only showed data, and introduces fully new workflows for day-to-day SSH admin.
+
+### New services
+- **`SystemToolsService`**: interactive process listing + kill; systemd service list + start/stop/restart; hardened input validation (PID range, signal charset, unit-name regex)
+- **`SnippetService`**: globalState-backed command library. Ships with 6 built-in snippets (disk usage, top CPU, top memory, listening ports, kernel/OS, uptime)
+- **`SshKeyService`**: local `ssh-keygen` spawn + remote `authorized_keys` install (creates `~/.ssh` with mode 700, skips if key is already present, falls back to `/home/<user>` when `$HOME` resolves empty)
+- **`RemoteDiffService`**: downloads a remote file to a temp path and opens it in VS Code's diff editor against a chosen local file
+- **Virtual-doc providers** (`VirtualDocProviders.ts`): read-only `sshlite-env://` (environment inspector) and `sshlite-cron://` (crontab viewer) text-document content providers
+
+### New commands (13)
+- `sshLite.showRemoteProcesses` — ps table QuickPick → pick → kill (optionally with sudo)
+- `sshLite.manageRemoteService` — systemctl units QuickPick → action picker (status/start/stop/restart)
+- `sshLite.showRemoteEnv` — opens `env | sort` as a virtual read-only document
+- `sshLite.editRemoteCron` + `sshLite.saveRemoteCron` — crontab viewer with explicit save-back flow (write to `/tmp/sshlite-cron-*.txt` → `crontab <file>` → delete temp)
+- `sshLite.runSnippet`, `sshLite.addSnippet`, `sshLite.manageSnippets` — snippet library with rename/edit-command/delete actions
+- `sshLite.batchRun` — multi-host QuickPick (≥2) + command prompt; runs in parallel via `Promise.allSettled`; output channel groups by `[host]`
+- `sshLite.runLocalScriptRemote` — uploads a local script to `/tmp/sshlite-run-*`, chmod +x, executes, cleans up in `finally`
+- `sshLite.generateSshKey` — wraps local `ssh-keygen` (ed25519 / rsa 3072/4096) with comment + passphrase prompts
+- `sshLite.pushPubKeyToHost` — installs a local `.pub` file into the remote `~/.ssh/authorized_keys`
+- `sshLite.diffWithLocal` — right-click a remote file → pick local file → VS Code diff editor
+
+### Context-menu / command-palette placement
+- Host context (`connectedServer`) gains a `5_tools` group: Processes, Services, Env, Cron, Run Snippet, Run Local Script, Push Pub Key
+- File context (`file` viewItem) gains a `4_compare` group with "Diff with Local File"
+- Batch Run, Add/Manage Snippets, Generate SSH Key, Save Crontab are palette-only
+- All new commands use the "SSH Tools" category
+
+### Modular command registration
+- New `src/commands/` folder with feature-scoped handler files (`processAndServiceCommands.ts`, `envAndCronCommands.ts`, `snippetCommands.ts`, `batchAndScriptCommands.ts`, `keyCommands.ts`, `diffCommand.ts`) wired through a single `registerSshToolsCommands()` entry point from `extension.ts`
+
+### Deferred
+- **Jump Host / Bastion support** deferred to its own Phase 6 spec — requires ssh2 `sock` proxy chain, multi-hop key handling, and host-config UI changes
+
+### Tests
+- +30 tests: `SnippetService` (singleton, add/rename/update/remove, built-ins, invalid input), `SystemToolsService` (ps/systemctl parsers, kill input validation, service-name regex, sudo routing), `SshKeyService` (pushPublicKey variants — missing/empty/present/cached, `$HOME` fallback), `RemoteDiffService` (missing-local guard, temp-write + `vscode.diff` invocation)
+- Full suite: **42 suites, 1252 passing** (was 1222 in v0.6.0)
+
+### Audit
+- `AuditAction` unchanged — new ops log via the existing `log()`/`logResult()` extension helpers, not the audit trail (they're ephemeral tool usage, not durable file mutations)
+
+## v0.6.0 — SSH Tools rebrand + remote copy/paste
+
+- **Rebrand to "SSH Lite (SSH Tools)"**: `displayName` updated in `package.json`, positioning the extension as a growing suite of SSH utilities rather than a narrow file browser. Marketplace keywords extended with `ssh tools`, `ssh utilities`, `ssh manager`, `ssh suite`, `remote tools`
+- **Remote copy/paste**: right-click Copy/Cut on any remote file or folder, then right-click Paste on a destination folder or connection root. Also bound to `Ctrl+C` / `Ctrl+X` / `Ctrl+V` inside the file explorer view. Works on the same host (fast `cp -r`) and across different hosts (SFTP stream, recursive for folders). Multi-selection supported
+- **Auto-rename on conflict**: pasting into a folder that already contains an entry with the same name produces `name (copy).ext`, `name (copy) 2.ext`, ...
+- **Progress notification**: the paste flow shows a cancellable `withProgress` notification, listing the current item as `N/M`
+- **Cut semantics**: on success, the SSH clipboard is cleared and both the source parent and destination folder are refreshed; cross-host cut uses copy + source delete
+- **New services/methods**: `RemoteClipboardService` (singleton, in-memory, exposes `sshLite.hasClipboard` context key + `onDidChange`). `FileService.copyRemoteSameHost`, `moveRemoteSameHost`, `copyRemoteCrossHost`, `nextCopyName`, `resolveDefaultRemotePath`, `deleteRemotePath`
+- **New commands**: `sshLite.copyRemoteItem`, `sshLite.cutRemoteItem`, `sshLite.pasteRemoteItem`, `sshLite.clearRemoteClipboard`
+- **Audit trail**: new `copy` action type; cross-host audits record `localPath` as `destHost:destPath`
+- **Tests**: +27 tests (RemoteClipboardService singleton/state/context-key/events; FileService copy-same-host quoting + audit, cross-host stream + folder recursion, `nextCopyName` edge cases). Full suite: 1222 passing
+
 ## v0.5.6 — PEM private key authentication via UI
 
 - **Private key (PEM) credentials in Add User flow**: `sshLite.addCredential` now asks whether to authenticate with a password or a private key. PEM path validates the file exists/is readable, then asks for an optional passphrase (empty = passwordless key). Fixes [#3](https://github.com/trantung95/SSHLite/issues/3)

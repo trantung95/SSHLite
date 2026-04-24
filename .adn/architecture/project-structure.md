@@ -1,6 +1,6 @@
 # Project Structure
 
-Complete file listing for SSH Lite, organized by component.
+Complete file listing for SSH Lite (SSH Tools), organized by component.
 
 ---
 
@@ -49,6 +49,25 @@ SSHLite/
       ProgressiveDownloadManager.test.ts  # Progressive download tests
       PriorityQueueService.ts             # Priority queue for preloading
       PriorityQueueService.test.ts        # Priority queue tests
+      RemoteClipboardService.ts           # In-memory SSH clipboard (copy/cut/paste state)
+      RemoteClipboardService.test.ts      # Remote clipboard tests
+      FileService.copy.test.ts            # Remote copy/paste tests
+      SnippetService.ts                   # Command snippet library (SSH Tools)
+      SnippetService.test.ts              # Snippet library tests
+      SshKeyService.ts                    # SSH keygen + remote authorized_keys install
+      SshKeyService.test.ts               # Key service tests
+      SystemToolsService.ts               # Interactive process kill + systemctl actions
+      SystemToolsService.test.ts          # System tools parsers + input validation tests
+      RemoteDiffService.ts                # Remote file ↔ local file diff
+      RemoteDiffService.test.ts           # Diff service tests
+    commands/
+      sshToolsCommands.ts                 # Entry point + helpers for SSH Tools commands
+      processAndServiceCommands.ts        # showRemoteProcesses + manageRemoteService handlers
+      envAndCronCommands.ts               # Env inspector + crontab editor handlers
+      snippetCommands.ts                  # Snippet run/add/manage handlers
+      batchAndScriptCommands.ts           # Batch run + local-script runner handlers
+      keyCommands.ts                      # Generate + push SSH key handlers
+      diffCommand.ts                      # Diff-with-local handler
     providers/
       HostTreeProvider.ts                 # SSH hosts tree (Server > User > PinnedFolder)
       HostTreeProvider.test.ts            # Host tree tests
@@ -64,6 +83,7 @@ SSHLite/
       SearchResultsProvider.test.ts       # Search results tests
       ProgressiveFileContentProvider.ts   # Custom URI scheme for previews
       ProgressiveFileContentProvider.test.ts
+      VirtualDocProviders.ts              # sshlite-env:// and sshlite-cron:// providers
     webviews/
       SearchPanel.ts                      # Cross-server search webview
       SearchPanel.test.ts                 # Search panel tests

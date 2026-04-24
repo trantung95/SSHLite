@@ -1,6 +1,6 @@
 # Architecture Overview
 
-SSH Lite is a VS Code extension that provides SSH/SFTP file browsing, editing, terminal, and search capabilities **without** installing a VS Code server on remote machines. Built with TypeScript, it uses the `ssh2` library for SSH/SFTP operations and VS Code's extension API for UI.
+SSH Lite (SSH Tools) is a VS Code extension that provides SSH/SFTP file browsing, editing, terminal, search, and a suite of remote-admin utilities (processes, services, snippets, keys, cron, diff, batch runner) **without** installing a VS Code server on remote machines. Built with TypeScript, it uses the `ssh2` library for SSH/SFTP operations and VS Code's extension API for UI.
 
 ---
 
@@ -41,7 +41,9 @@ SSH Lite is a VS Code extension that provides SSH/SFTP file browsing, editing, t
 │  TerminalService  PortForwardService             │
 │  ServerMonitorService  FolderHistoryService       │
 │  CommandGuard  ProgressiveDownloadManager         │
-│  PriorityQueueService                            │
+│  PriorityQueueService  RemoteClipboardService     │
+│  SnippetService  SshKeyService                    │
+│  SystemToolsService  RemoteDiffService            │
 ├─────────────────────────────────────────────────┤
 │         Connection Layer                          │
 │  SSHConnection (ssh2 Client + SFTPWrapper)        │

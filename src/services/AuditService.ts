@@ -6,7 +6,7 @@ import * as os from 'os';
 /**
  * Audit action types
  */
-export type AuditAction = 'create' | 'edit' | 'delete' | 'download' | 'upload' | 'mkdir' | 'rename' | 'move';
+export type AuditAction = 'create' | 'edit' | 'delete' | 'download' | 'upload' | 'mkdir' | 'rename' | 'move' | 'copy';
 
 /**
  * Audit log entry

@@ -2,7 +2,7 @@
 
 > **ADN** is the Vietnamese word for DNA — this folder encodes the project's complete genetic blueprint for self-sustaining growth.
 
-This folder contains the complete documentation ("DNA") of **SSH Lite** -- a lightweight VS Code extension for SSH connections that works WITHOUT installing a VS Code server on remote machines.
+This folder contains the complete documentation ("DNA") of **SSH Lite (SSH Tools)** -- a lightweight VS Code extension for SSH connections, file management, and remote-admin utilities that works WITHOUT installing a VS Code server on remote machines.
 
 ## Purpose
 
@@ -40,7 +40,7 @@ The `.adn/` folder allows any AI assistant (or new developer) to fully understan
     search-flow.md                       # Search webview -> grep/find -> results
   configuration/
     settings-reference.md                # All sshLite.* settings with defaults
-    commands-reference.md                # All 80+ commands, context values, when clauses
+    commands-reference.md                # All 98 commands, context values, when clauses
   testing/
     testing-strategy.md                  # Unit/Docker/MultiOS, mock architecture
     chaos-testing.md                     # Chaos bug discovery module + AI review checklist

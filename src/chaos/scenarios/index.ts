@@ -12,6 +12,8 @@ import { serverMonitorScenarios } from './server-monitor';
 import { concurrentOperationsScenarios } from './concurrent-operations';
 import { errorPathsScenarios } from './error-paths';
 import { mixedWorkflowsScenarios } from './mixed-workflows';
+import { sshToolsScenarios } from './ssh-tools';
+import { sshToolsKeyScenarios } from './ssh-tools-keys';
 
 export const ALL_SCENARIOS: ScenarioDefinition[] = [
   ...connectionLifecycleScenarios,
@@ -21,6 +23,8 @@ export const ALL_SCENARIOS: ScenarioDefinition[] = [
   ...concurrentOperationsScenarios,
   ...errorPathsScenarios,
   ...mixedWorkflowsScenarios,
+  ...sshToolsScenarios,
+  ...sshToolsKeyScenarios,
 ];
 
 export {
@@ -31,4 +35,6 @@ export {
   concurrentOperationsScenarios,
   errorPathsScenarios,
   mixedWorkflowsScenarios,
+  sshToolsScenarios,
+  sshToolsKeyScenarios,
 };

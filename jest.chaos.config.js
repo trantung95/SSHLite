@@ -3,7 +3,7 @@ module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
   roots: ['<rootDir>/src'],
-  testMatch: ['**/chaos/chaos.test.ts'],
+  testMatch: ['**/chaos/chaos.test.ts', '**/chaos/chaos-ssh-tools.test.ts'],
   moduleFileExtensions: ['ts', 'js', 'json'],
   globalSetup: '<rootDir>/test-docker/globalSetup.chaos.ts',
   globalTeardown: '<rootDir>/test-docker/globalTeardown.chaos.ts',

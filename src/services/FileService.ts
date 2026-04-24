@@ -3986,6 +3986,278 @@ export class FileService {
     }
   }
 
+  // ─── Remote Copy/Paste ─────────────────────────────────────────────────
+
+  /**
+   * Escape a path for safe use in single-quoted shell strings.
+   */
+  private escapePathForShell(p: string): string {
+    return p.replace(/'/g, "'\\''");
+  }
+
+  /**
+   * Resolve the default remote path for a connection, expanding ~ when needed.
+   * Falls back to /home/{user} if $HOME lookup fails.
+   */
+  async resolveDefaultRemotePath(connection: SSHConnection): Promise<string> {
+    const config = vscode.workspace.getConfiguration('sshLite');
+    let remotePath = config.get<string>('defaultRemotePath', '~');
+    if (remotePath === '~') {
+      try {
+        const result = await connection.exec('echo $HOME');
+        remotePath = result.trim();
+      } catch {
+        remotePath = '/home/' + connection.host.username;
+      }
+    }
+    return remotePath;
+  }
+
+  /**
+   * Delete a remote file or folder (thin wrapper used by paste-cut flow).
+   * Uses `rm -rf` for folders to handle non-empty directories; SFTP rmdir
+   * only works on empty dirs.
+   */
+  async deleteRemotePath(connection: SSHConnection, remotePath: string, isDirectory: boolean): Promise<void> {
+    if (isDirectory) {
+      const esc = this.escapePathForShell(remotePath);
+      await connection.exec(`rm -rf -- '${esc}'`);
+    } else {
+      await connection.deleteFile(remotePath);
+    }
+  }
+
+  /**
+   * Copy a remote file or folder on the same host.
+   * Runs `cp -r` over the SSH channel; paths are single-quote escaped.
+   */
+  async copyRemoteSameHost(
+    connection: SSHConnection,
+    srcPath: string,
+    destPath: string,
+    isDirectory: boolean
+  ): Promise<void> {
+    const srcEsc = this.escapePathForShell(srcPath);
+    const destEsc = this.escapePathForShell(destPath);
+    const flag = isDirectory ? '-r ' : '';
+    const cmd = `cp ${flag}-- '${srcEsc}' '${destEsc}'`;
+
+    try {
+      await connection.exec(cmd);
+      this.auditService.log({
+        action: 'copy',
+        connectionId: connection.id,
+        hostName: connection.host.name,
+        username: connection.host.username,
+        remotePath: srcPath,
+        localPath: destPath,
+        success: true,
+      });
+    } catch (error) {
+      const err = error as Error;
+      if (this.isPermissionDenied(err) && !connection.sudoMode) {
+        const sudoHandled = await this.handlePermissionDenied(
+          connection,
+          srcPath.split('/').pop() || srcPath,
+          async (password: string) => {
+            await connection.sudoExec(cmd, password);
+            this.auditService.log({
+              action: 'copy', connectionId: connection.id, hostName: connection.host.name,
+              username: connection.host.username, remotePath: srcPath, localPath: destPath, success: true,
+            });
+          }
+        );
+        if (sudoHandled) { return; }
+      }
+      this.auditService.log({
+        action: 'copy',
+        connectionId: connection.id,
+        hostName: connection.host.name,
+        username: connection.host.username,
+        remotePath: srcPath,
+        success: false,
+        error: err.message,
+      });
+      throw err;
+    }
+  }
+
+  /**
+   * Compute a non-conflicting destination name when pasting into a folder that already
+   * contains an entry with the same name. Produces "name (copy).ext", "name (copy) 2.ext", etc.
+   */
+  nextCopyName(originalName: string, existingNames: Set<string>): string {
+    if (!existingNames.has(originalName)) {
+      return originalName;
+    }
+    const dotIdx = originalName.lastIndexOf('.');
+    const hasExt = dotIdx > 0;
+    const base = hasExt ? originalName.substring(0, dotIdx) : originalName;
+    const ext = hasExt ? originalName.substring(dotIdx) : '';
+
+    const copyBase = `${base} (copy)`;
+    let candidate = `${copyBase}${ext}`;
+    if (!existingNames.has(candidate)) {
+      return candidate;
+    }
+    for (let i = 2; i < 1000; i++) {
+      candidate = `${copyBase} ${i}${ext}`;
+      if (!existingNames.has(candidate)) {
+        return candidate;
+      }
+    }
+    return `${copyBase} ${Date.now()}${ext}`;
+  }
+
+  /**
+   * Move a remote file/folder on the same host using SFTP rename.
+   * SFTP rename only works within the same filesystem; callers can fall back to
+   * cross-host copy+delete if this throws.
+   */
+  async moveRemoteSameHost(
+    connection: SSHConnection,
+    srcPath: string,
+    destPath: string
+  ): Promise<void> {
+    try {
+      await connection.rename(srcPath, destPath);
+      this.auditService.log({
+        action: 'move',
+        connectionId: connection.id,
+        hostName: connection.host.name,
+        username: connection.host.username,
+        remotePath: srcPath,
+        localPath: destPath,
+        success: true,
+      });
+    } catch (error) {
+      const err = error as Error;
+      if (this.isPermissionDenied(err) && !connection.sudoMode) {
+        const sudoHandled = await this.handlePermissionDenied(
+          connection,
+          srcPath.split('/').pop() || srcPath,
+          async (password: string) => {
+            await this.commandGuard.sudoRename(connection, srcPath, destPath, password);
+            this.auditService.log({
+              action: 'move', connectionId: connection.id, hostName: connection.host.name,
+              username: connection.host.username, remotePath: srcPath, localPath: destPath, success: true,
+            });
+          }
+        );
+        if (sudoHandled) { return; }
+      }
+      this.auditService.log({
+        action: 'move',
+        connectionId: connection.id,
+        hostName: connection.host.name,
+        username: connection.host.username,
+        remotePath: srcPath,
+        success: false,
+        error: err.message,
+      });
+      throw err;
+    }
+  }
+
+  /**
+   * Copy a remote file or folder across two hosts.
+   * Streams via SFTP read → SFTP write, recursing into folders. No local temp files.
+   */
+  async copyRemoteCrossHost(
+    srcConn: SSHConnection,
+    srcPath: string,
+    destConn: SSHConnection,
+    destPath: string,
+    isDirectory: boolean,
+    token?: vscode.CancellationToken
+  ): Promise<void> {
+    try {
+      if (isDirectory) {
+        await this.copyFolderCrossHost(srcConn, srcPath, destConn, destPath, token);
+      } else {
+        await this.copyFileCrossHost(srcConn, srcPath, destConn, destPath, token);
+      }
+      this.auditService.log({
+        action: 'copy',
+        connectionId: srcConn.id,
+        hostName: srcConn.host.name,
+        username: srcConn.host.username,
+        remotePath: srcPath,
+        localPath: `${destConn.host.name}:${destPath}`,
+        success: true,
+      });
+    } catch (error) {
+      const err = error as Error;
+      this.auditService.log({
+        action: 'copy',
+        connectionId: srcConn.id,
+        hostName: srcConn.host.name,
+        username: srcConn.host.username,
+        remotePath: srcPath,
+        success: false,
+        error: err.message,
+      });
+      throw err;
+    }
+  }
+
+  /**
+   * Copy a single file across two hosts by reading into memory then writing.
+   */
+  private async copyFileCrossHost(
+    srcConn: SSHConnection,
+    srcPath: string,
+    destConn: SSHConnection,
+    destPath: string,
+    token?: vscode.CancellationToken
+  ): Promise<void> {
+    if (token?.isCancellationRequested) {
+      throw new Error('Cancelled');
+    }
+    const buffer = await srcConn.readFile(srcPath);
+    if (token?.isCancellationRequested) {
+      throw new Error('Cancelled');
+    }
+    await destConn.writeFile(destPath, buffer);
+  }
+
+  /**
+   * Recursively copy a folder across two hosts.
+   */
+  private async copyFolderCrossHost(
+    srcConn: SSHConnection,
+    srcPath: string,
+    destConn: SSHConnection,
+    destPath: string,
+    token?: vscode.CancellationToken
+  ): Promise<void> {
+    if (token?.isCancellationRequested) {
+      throw new Error('Cancelled');
+    }
+    try {
+      await destConn.mkdir(destPath);
+    } catch (err) {
+      const msg = (err as Error).message.toLowerCase();
+      if (!msg.includes('file exists') && !msg.includes('eexist')) {
+        throw err;
+      }
+    }
+
+    const entries = await srcConn.listFiles(srcPath);
+    for (const entry of entries) {
+      if (token?.isCancellationRequested) {
+        throw new Error('Cancelled');
+      }
+      const childSrc = `${srcPath}/${entry.name}`;
+      const childDest = `${destPath}/${entry.name}`;
+      if (entry.isDirectory) {
+        await this.copyFolderCrossHost(srcConn, childSrc, destConn, childDest, token);
+      } else {
+        await this.copyFileCrossHost(srcConn, childSrc, destConn, childDest, token);
+      }
+    }
+  }
+
   /**
    * Update file mappings after a rename/move so open tabs track the new remote path.
    */

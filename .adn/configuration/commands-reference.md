@@ -1,6 +1,6 @@
 # Commands Reference
 
-All 80+ commands registered by SSH Lite, organized by category.
+All 98 commands registered by SSH Lite (SSH Tools), organized by category.
 
 ---
 
@@ -63,6 +63,37 @@ All 80+ commands registered by SSH Lite, organized by category.
 | `sshLite.clearCache` | Clear Cache | View title |
 | `sshLite.copyPath` | Copy Path | Tree context |
 | `sshLite.revealInTree` | Reveal in Tree | View title / Editor title |
+
+### Remote Clipboard (SSH Tools)
+
+| Command | Title | Source |
+|---------|-------|--------|
+| `sshLite.copyRemoteItem` | Copy | Tree context / `Ctrl+C` in file explorer |
+| `sshLite.cutRemoteItem` | Cut | Tree context / `Ctrl+X` in file explorer |
+| `sshLite.pasteRemoteItem` | Paste | Tree context on folder or connection root / `Ctrl+V` (gated on `sshLite.hasClipboard`) |
+| `sshLite.clearRemoteClipboard` | Clear SSH Clipboard | Palette |
+
+Backed by `RemoteClipboardService` (in-memory singleton). Paste handles same-host (`cp -r`) and cross-host (SFTP stream, recursive for folders); auto-renames conflicts as `name (copy).ext`, cancellable via progress notification.
+
+### SSH Tools Utilities (v0.7.0)
+
+| Command | Title | Source |
+|---------|-------|--------|
+| `sshLite.showRemoteProcesses` | Show Remote Processes | Host context (connected) / Palette |
+| `sshLite.manageRemoteService` | Manage Remote Service | Host context (connected) / Palette |
+| `sshLite.showRemoteEnv` | Show Remote Environment | Host context (connected) / Palette |
+| `sshLite.editRemoteCron` | Edit Remote Crontab | Host context (connected) / Palette |
+| `sshLite.saveRemoteCron` | Save Remote Crontab | Palette (while a `sshlite-cron://` doc is active) |
+| `sshLite.runSnippet` | Run Snippet | Host context (connected) / Palette |
+| `sshLite.addSnippet` | Add Snippet | Palette |
+| `sshLite.manageSnippets` | Manage Snippets | Palette |
+| `sshLite.batchRun` | Batch Command on Hosts | Palette (requires ≥2 active connections) |
+| `sshLite.runLocalScriptRemote` | Run Local Script on Remote | Host context (connected) / Palette |
+| `sshLite.generateSshKey` | Generate SSH Key | Palette |
+| `sshLite.pushPubKeyToHost` | Push Public Key to Host | Host context (connected) / Palette |
+| `sshLite.diffWithLocal` | Diff with Local File | File tree context |
+
+Backing services: `SystemToolsService` (processes + systemctl), `SnippetService` (globalState), `SshKeyService` (local `ssh-keygen` + remote `authorized_keys`), `RemoteDiffService` (SFTP read → temp file → `vscode.diff`). Virtual documents use the `sshlite-env://` and `sshlite-cron://` schemes.
 
 ### Pinned Folders
 

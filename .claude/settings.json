@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Write(*package.json)|Edit(*package.json)",
+            "command": "node scripts/generate-commands-doc.js 2>/dev/null || true",
+            "statusMessage": "Regenerating docs/COMMANDS.md..."
+          }
+        ]
+      }
+    ]
+  }
+}

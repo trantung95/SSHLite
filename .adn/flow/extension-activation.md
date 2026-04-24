@@ -52,4 +52,4 @@ All commands push to `context.subscriptions`.
 
 ## Command Handler Pattern
 
-All 80+ commands: determine target (TreeItem from context menu or `selectConnection()` from palette) → perform operation → update UI → catch errors. Must handle both tree item and `undefined` (command palette) invocation.
+All 98 commands: determine target (TreeItem from context menu or `selectConnection()` from palette) → perform operation → update UI → catch errors. Must handle both tree item and `undefined` (command palette) invocation.
