@@ -35,7 +35,7 @@ export class TerminalService {
    * Create a new SSH terminal for a connection.
    * Multiple terminals can be opened on the same connection without re-authentication.
    */
-  async createTerminal(connection: SSHConnection): Promise<vscode.Terminal> {
+  async createTerminal(connection: SSHConnection, preOpenedShell?: ClientChannel): Promise<vscode.Terminal> {
     // Increment terminal counter for this connection
     const currentCount = this.terminalCounters.get(connection.id) || 0;
     const terminalNumber = currentCount + 1;
@@ -45,7 +45,7 @@ export class TerminalService {
 
     try {
       // Create a new shell channel on the existing SSH connection (no re-auth needed)
-      const shell = await connection.shell();
+      const shell = preOpenedShell ?? await connection.shell();
       const terminalInfo = this.createPseudoTerminal(connection, shell, terminalId, terminalNumber);
 
       this.terminals.set(terminalId, terminalInfo);
