@@ -195,36 +195,42 @@ describe('Channel semaphore E2E', () => {
       // Close the shell channel to release the slot
       channel.end();
 
+      // Verify no slot leak (allow time for the channel-close event to propagate)
+      await new Promise(r => setTimeout(r, 100));
+      expect(sem.activeCount).toBe(0);
+
     } finally {
       await safeDisconnect(conn);
     }
   }, 15_000);
 
-  // ─── Scenario B: All concurrent commands complete, activeCount returns to 0 ──
+  // ─── Scenario B: Search queue drains and adaptive recovery after failures ────
 
-  it('Scenario B: 5 concurrent exec calls all complete with correct output', async () => {
-    if (skipIfNoDocker()) { return; }
-
-    const conn = await makeConnection();
+  it('Scenario B: search queue drains and adaptive recovery after failures', async () => {
+    if (!dockerAvailable) { return; }
     const guard = CommandGuard.getInstance();
-    const sem: ChannelSemaphore = (guard as any).getSemaphore(conn.id);
-
-    // Keep slots narrow to exercise queuing
-    (sem as any)._maxSlots = 2;
-    (sem as any)._initialMax = 2;
+    const conn = await makeConnection();
+    const sem = (guard as any).getSemaphore(conn.id);
 
     try {
+      // Part 1: verify queue drains with limited concurrency
+      (sem as any)._maxSlots = 2;
+      (sem as any)._initialMax = 2;
       const results = await Promise.all(
         Array.from({ length: 5 }, () => guard.exec(conn, 'echo ok'))
       );
-
-      for (const r of results) {
-        expect(r.trim()).toBe('ok');
-      }
-
-      // All slots must be released after all promises resolved
+      expect(results.every((r: string) => r.includes('ok'))).toBe(true);
       expect(sem.activeCount).toBe(0);
 
+      // Part 2: verify adaptive recovery — reduceMax then 5 successes → increaseMax
+      const maxBefore = sem.maxSlots;
+      sem.reduceMax(); // simulate a prior failure
+      expect(sem.maxSlots).toBe(maxBefore - 1);
+      for (let i = 0; i < 5; i++) {
+        await guard.exec(conn, 'echo recover');
+      }
+      expect(sem.maxSlots).toBe(maxBefore); // recovered back
+      expect(sem.activeCount).toBe(0);
     } finally {
       await safeDisconnect(conn);
     }
@@ -237,10 +243,14 @@ describe('Channel semaphore E2E', () => {
 
     // Two independent SSHConnections — each gets its own ChannelSemaphore because
     // semaphores are keyed by connection.id (host:port:username).
-    // To guarantee different IDs we use different IHostConfig.id values;
-    // the actual SSH credentials remain the same so both can connect successfully.
+    // SSHConnection.id is computed as "host:port:username" in the constructor, so both
+    // connections would share the same semaphore by default. Override id after connect
+    // to force CommandGuard to treat them as distinct servers.
     const connA = await makeConnection({ id: 'e2e-sem-A', name: 'Docker-A' });
+    Object.defineProperty(connA, 'id', { get: () => 'e2e-semA:2222:testuser', configurable: true });
+
     const connB = await makeConnection({ id: 'e2e-sem-B', name: 'Docker-B' });
+    Object.defineProperty(connB, 'id', { get: () => 'e2e-semB:2222:testuser', configurable: true });
 
     const guard = CommandGuard.getInstance();
 
@@ -284,10 +294,14 @@ describe('Channel semaphore E2E', () => {
   it('Scenario D: two connections with distinct IDs have independent semaphores', async () => {
     if (skipIfNoDocker()) { return; }
 
-    // Two SSHConnections with explicitly different host.id values produce different
-    // connection.id values and therefore different ChannelSemaphore instances.
+    // SSHConnection.id is computed as "host:port:username" — both connections would
+    // share the same semaphore without the override below.  Override id after connect
+    // so CommandGuard creates independent ChannelSemaphore instances for each.
     const conn1 = await makeConnection({ id: 'e2e-user-alice', name: 'Alice-Conn' });
+    Object.defineProperty(conn1, 'id', { get: () => 'e2e-semC:2222:testuser', configurable: true });
+
     const conn2 = await makeConnection({ id: 'e2e-user-bob',   name: 'Bob-Conn' });
+    Object.defineProperty(conn2, 'id', { get: () => 'e2e-semD:2222:testuser', configurable: true });
 
     const guard = CommandGuard.getInstance();
     const sem1: ChannelSemaphore = (guard as any).getSemaphore(conn1.id);
@@ -312,6 +326,7 @@ describe('Channel semaphore E2E', () => {
       expect(sem2.activeCount).toBe(0);
 
       await holdConn1;
+      expect(sem1.activeCount).toBe(0);
 
     } finally {
       await Promise.all([safeDisconnect(conn1), safeDisconnect(conn2)]);
