@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2026 SSH Lite Contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,10 +15,13 @@
  */
 
 import * as path from 'path';
+import * as vscode from 'vscode';
+import { ClientChannel } from 'ssh2';
 import { SSHConnection } from '../connection/SSHConnection';
 import { IRemoteFile } from '../types';
 import { ActivityService, ActivityType } from './ActivityService';
 import { formatFileSize } from '../utils/helpers';
+import { ChannelSemaphore, ChannelLimitError } from './ChannelSemaphore';
 
 /**
  * Options for tracked operations
@@ -52,6 +55,10 @@ export interface TrackingOptions {
 export class CommandGuard {
   private static _instance: CommandGuard;
   private activityService: ActivityService;
+  private semaphores: Map<string, ChannelSemaphore> = new Map();
+  private static readonly EXEC_MAX_RETRIES = 3;
+  private static readonly EXEC_RETRY_DELAY_MS = 100;
+  private static readonly SHELL_TIMEOUT_MS = 30_000;
 
   private constructor() {
     this.activityService = ActivityService.getInstance();
@@ -64,9 +71,63 @@ export class CommandGuard {
     return CommandGuard._instance;
   }
 
+  private getSemaphore(connectionId: string): ChannelSemaphore {
+    if (!this.semaphores.has(connectionId)) {
+      const config = vscode.workspace.getConfiguration('sshLite');
+      const maxSlots = config.get<number>('maxChannelsPerServer', 8);
+      this.semaphores.set(connectionId, new ChannelSemaphore(maxSlots));
+    }
+    return this.semaphores.get(connectionId)!;
+  }
+
+  removeSemaphore(connectionId: string): void {
+    const sem = this.semaphores.get(connectionId);
+    if (sem) {
+      sem.destroy(new Error('Connection closed'));
+      this.semaphores.delete(connectionId);
+    }
+  }
+
   /**
-   * Execute a shell command with activity tracking
+   * Open an interactive shell channel with activity tracking and semaphore slot management.
+   * The acquired slot is held until the channel emits 'close' or 'exit'.
+   * Times out after SHELL_TIMEOUT_MS (30 s) if no slot is available.
+   *
+   * Note: connection.shell() is SSHConnection.shell() - opens a remote interactive shell,
+   * NOT a local shell. No local injection risk.
+   */
+  async openShell(connection: SSHConnection): Promise<ClientChannel> {
+    const semaphore = this.getSemaphore(connection.id);
+    const release = await semaphore.acquire(CommandGuard.SHELL_TIMEOUT_MS);
+
+    let channel: ClientChannel;
+    try {
+      channel = await connection.shell();
+    } catch (error) {
+      release();
+      throw error;
+    }
+
+    let released = false;
+    const releaseOnce = () => {
+      if (!released) {
+        released = true;
+        release();
+      }
+    };
+    channel.on('close', releaseOnce);
+    channel.on('exit', releaseOnce);
+
+    return channel;
+  }
+
+  /**
+   * Execute a shell command with activity tracking and channel semaphore protection.
+   * Automatically retries up to EXEC_MAX_RETRIES times on SSH "open failure" errors.
    * Use for significant commands (search, find, etc.)
+   *
+   * Note: connection.exec() is SSHConnection.exec() - remote SSH command execution,
+   * NOT local child_process. No local shell injection risk.
    */
   async exec(
     connection: SSHConnection,
@@ -86,21 +147,41 @@ export class CommandGuard {
       }
     );
 
-    // Note: exec() here is SSHConnection.exec() — remote SSH command execution,
-    // NOT local child_process.exec(). No local shell injection risk.
-    try {
-      let result: string;
-      if (connection.sudoMode && connection.sudoPassword) {
-        result = await connection.sudoExec(command, connection.sudoPassword);
-      } else {
-        result = await connection.exec(command);
+    const semaphore = this.getSemaphore(connection.id);
+    let lastError: Error | undefined;
+
+    for (let attempt = 0; attempt <= CommandGuard.EXEC_MAX_RETRIES; attempt++) {
+      const release = await semaphore.acquire();
+      try {
+        let result: string;
+        if (connection.sudoMode && connection.sudoPassword) {
+          result = await connection.sudoExec(command, connection.sudoPassword);
+        } else {
+          result = await connection.exec(command);
+        }
+        semaphore.recordSuccess();
+        this.activityService.completeActivity(activityId);
+        return result;
+      } catch (error) {
+        const err = error as Error;
+        if (err.message?.includes('open failure')) {
+          semaphore.reduceMax();
+          lastError = new ChannelLimitError();
+          if (attempt < CommandGuard.EXEC_MAX_RETRIES) {
+            await new Promise<void>(r => setTimeout(r, CommandGuard.EXEC_RETRY_DELAY_MS));
+          }
+          // continue to next attempt or fall through to post-loop throw
+        } else {
+          this.activityService.failActivity(activityId, err.message);
+          throw error;
+        }
+      } finally {
+        release();
       }
-      this.activityService.completeActivity(activityId);
-      return result;
-    } catch (error) {
-      this.activityService.failActivity(activityId, (error as Error).message);
-      throw error;
     }
+
+    this.activityService.failActivity(activityId, lastError!.message);
+    throw lastError!;
   }
 
   /**
@@ -374,7 +455,7 @@ export class CommandGuard {
     this.activityService.completeActivity(activityId, 'Disconnected');
   }
 
-  // ─── Explicit one-off sudo wrappers (per-action fallback) ──────────
+  // --- Explicit one-off sudo wrappers (per-action fallback) ---
 
   /**
    * Write a remote file using sudo (one-off, not connection-wide)
@@ -521,7 +602,7 @@ export class CommandGuard {
       connection.host.name,
       options?.description || `Sudo Rename: ${fileName}`,
       {
-        detail: options?.detail || `${oldPath} → ${newPath}`,
+        detail: options?.detail || `${oldPath} -> ${newPath}`,
         cancellable: options?.cancellable,
         onCancel: options?.onCancel,
       }
