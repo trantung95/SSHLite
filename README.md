@@ -1,6 +1,6 @@
 # SSH Lite (SSH Tools) — Lightweight SSH Suite for VS Code
 
-![Version](https://img.shields.io/badge/version-0.7.1-blue)
+![Version](https://img.shields.io/badge/version-0.7.2-blue)
 ![Status](https://img.shields.io/badge/status-beta-yellow)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-1.85.0+-purple)
@@ -271,6 +271,14 @@ Contributions welcome! Please submit Pull Requests on GitHub.
 Apache-2.0 License
 
 ## Release Notes
+
+### 0.7.2 — SSH channel semaphore
+
+- Per-connection channel semaphore prevents terminal opens from failing when parallel content search is running
+- Terminal open shows "Waiting for a free channel..." progress notification and opens automatically when a slot frees up
+- Terminal times out after 30s with a clear error if all channels remain busy
+- Search automatically reduces concurrency on channel-limit failures and retries transparently (up to 3 times)
+- New setting: `sshLite.maxChannelsPerServer` (default 8) — adjustable for servers with non-standard `MaxSessions`
 
 ### 0.7.1 — Filter UX improvements
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.7.2 — SSH channel semaphore
+
+- New `ChannelSemaphore` class: per-connection slot tracking, FIFO queue, timeout, destroy-on-disconnect, adaptive max
+- `CommandGuard.exec()` gated by semaphore; retries up to 3x on channel-limit errors, reduces maxSlots each time
+- `CommandGuard.openShell()` acquires slot with 30s timeout, releases on channel close/exit
+- `TerminalService.createTerminal()` accepts optional pre-opened `ClientChannel`
+- Terminal handlers show progress notification while waiting; `ChannelTimeoutError` shows friendly error
+- `removeSemaphore(connectionId)` rejects queued waiters on disconnect
+- New setting: `sshLite.maxChannelsPerServer` (default 8)
+- Tests: unit, E2E Docker (5 scenarios), chaos (6 scenarios)
+
 ## v0.7.1 — Filter UX improvements
 
 - `setFilenameFilter` now reads `sshLite.filterMaxResults` (was hardcoded 500); stores the limit in `ActiveFilter.maxResults`
