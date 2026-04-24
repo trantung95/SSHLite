@@ -142,12 +142,16 @@ describe('ChannelSemaphore', () => {
       r1();
     });
 
-    it('resets activeCount to 0 on destroy', async () => {
+    it('resets activeCount to 0 on destroy and held releases do not corrupt counter', async () => {
       const sem = new ChannelSemaphore(2);
-      await sem.acquire();
-      await sem.acquire();
+      const r1 = await sem.acquire();
+      const r2 = await sem.acquire();
       sem.destroy(new Error('done'));
       expect(sem.activeCount).toBe(0);
+      // Calling held releases after destroy must not corrupt the counter
+      r1();
+      r2();
+      expect(sem.activeCount).toBe(0); // must not go negative
     });
   });
 });

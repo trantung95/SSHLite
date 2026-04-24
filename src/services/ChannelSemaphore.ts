@@ -26,6 +26,7 @@ export class ChannelSemaphore {
   private _activeCount = 0;
   private _waitQueue: Waiter[] = [];
   private _consecutiveSuccesses = 0;
+  private _destroyed = false;
 
   constructor(maxSlots: number) {
     this._maxSlots = maxSlots;
@@ -80,6 +81,7 @@ export class ChannelSemaphore {
   }
 
   destroy(err: Error): void {
+    this._destroyed = true;
     for (const waiter of this._waitQueue) {
       if (waiter.timer) clearTimeout(waiter.timer);
       waiter.reject(err);
@@ -93,6 +95,7 @@ export class ChannelSemaphore {
     return () => {
       if (released) return;
       released = true;
+      if (this._destroyed) return;
       this._activeCount--;
       if (this._waitQueue.length > 0) {
         this._waitQueue.shift()!.resolve();
