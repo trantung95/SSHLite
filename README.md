@@ -1,6 +1,6 @@
 # SSH Lite (SSH Tools) — Lightweight SSH Suite for VS Code
 
-![Version](https://img.shields.io/badge/version-0.7.0-blue)
+![Version](https://img.shields.io/badge/version-0.7.1-blue)
 ![Status](https://img.shields.io/badge/status-beta-yellow)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-1.85.0+-purple)
@@ -271,6 +271,13 @@ Contributions welcome! Please submit Pull Requests on GitHub.
 Apache-2.0 License
 
 ## Release Notes
+
+### 0.7.1 — Filter UX improvements
+
+- Filter results always show the configured limit in the success message
+- Long messages (e.g. filter results) now appear as a popup notification instead of truncating in the status bar
+- When a filter hits its limit, a warning popup offers an **Increase Limit** option to update `sshLite.filterMaxResults` directly
+- Hover tooltips on filtered folders and the deep-filter header now show the configured limit and flag when it was reached
 
 ### 0.7.0 — SSH Tools suite
 

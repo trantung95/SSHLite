@@ -1918,12 +1918,34 @@ export function activate(context: vscode.ExtensionContext): void {
       });
 
       if (filterResult) {
-        await fileTreeProvider.setFilenameFilter(filterResult.pattern, basePath, connection, filterResult.mode);
-        // Rebuild decoration provider state from all active filters
+        const result = await fileTreeProvider.setFilenameFilter(filterResult.pattern, basePath, connection, filterResult.mode);
+        // Rebuild decoration provider state BEFORE any dialogs so colors apply immediately
         fileDecorationProvider.rebuildFilterState(fileTreeProvider.getFilenameFilterState());
         vscode.commands.executeCommand('setContext', 'sshLite.hasFilenameFilter', true);
         const modeLabel = filterResult.mode === 'files' ? '' : ` (${filterResult.mode})`;
         vscode.window.setStatusBarMessage(`$(filter) Filtering: ${filterResult.pattern}${modeLabel} in ${displayName}`, 0);
+
+        if (result?.hitLimit) {
+          const action = await vscode.window.showWarningMessage(
+            `Found ${result.count} ${modeLabel || 'files'} matching "${filterResult.pattern}" — limit of ${result.limit} reached. Results may be incomplete.`,
+            'Increase Limit',
+            'OK'
+          );
+          if (action === 'Increase Limit') {
+            const input = await vscode.window.showInputBox({
+              prompt: 'New maximum number of filter results',
+              value: String(result.limit),
+              validateInput: v => (isNaN(Number(v)) || Number(v) < 1 ? 'Enter a positive number' : null),
+            });
+            if (input) {
+              await vscode.workspace.getConfiguration('sshLite').update(
+                'filterMaxResults',
+                Number(input),
+                vscode.ConfigurationTarget.Global
+              );
+            }
+          }
+        }
       }
     }),
 

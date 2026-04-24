@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.7.1 — Filter UX improvements
+
+- `setFilenameFilter` now reads `sshLite.filterMaxResults` (was hardcoded 500); stores the limit in `ActiveFilter.maxResults`
+- Success message always shows configured limit; messages >60 chars route to `vscode.window.showInformationMessage` popup instead of status bar
+- Hit-limit warning popup with **Increase Limit** action (same pattern as deep filter) updates `filterMaxResults` globally
+- `FilterResultsHeaderItem` accepts optional `limit` param; tooltip shows count vs. limit and flags when reached
+- `FileTreeItem` accepts optional `filterLimit` param; tooltip shows per-folder match count and limit when a filter is active
+
 ## v0.7.0 — SSH Tools suite: process/service control, snippets, batch, keys, diff
 
 Nine net-new utilities shipped as the next wave of the "SSH Tools" expansion. Overlap with existing `ServerMonitorService` (disk, network, basic process/service readouts) is intentionally left alone; this release adds **interactivity** where the monitor only showed data, and introduces fully new workflows for day-to-day SSH admin.

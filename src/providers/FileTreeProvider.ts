@@ -29,6 +29,7 @@ interface ActiveFilter {
   connectionId: string;
   highlightedPaths: Set<string>;
   matchCounts: Map<string, number>;     // folderPath → recursive match count
+  maxResults?: number;                  // configured limit at time filter was applied
   filterMode: FilterMode;
 }
 
@@ -144,7 +145,8 @@ export class FileTreeItem extends vscode.TreeItem {
     public readonly isFiltered: boolean = false,
     public readonly filterPattern: string = '',
     public readonly isEmptyAfterFilter: boolean = false,
-    public readonly matchCount: number = 0
+    public readonly matchCount: number = 0,
+    public readonly filterLimit: number = 0
   ) {
     super(
       file.name,
@@ -208,6 +210,9 @@ export class FileTreeItem extends vscode.TreeItem {
     const permStr = file.permissions || 'N/A';
     const openStr = isOpenInTab ? '**Open in Editor**\n\n' : '';
     const loadingStr = isLoading ? '**Loading from server...**\n\n' : '';
+    const filterStr = matchCount > 0 && filterLimit > 0
+      ? `\n- Filter matches: ${matchCount}${matchCount >= filterLimit ? ` *(limit ${filterLimit} reached)*` : ` (limit: ${filterLimit})`}`
+      : '';
     this.tooltip = new vscode.MarkdownString(
       loadingStr + openStr +
       `**${file.name}**\n\n` +
@@ -216,7 +221,8 @@ export class FileTreeItem extends vscode.TreeItem {
         `- Modified: ${modifiedStr}\n` +
         `- Accessed: ${accessStr}\n` +
         `- Owner: ${ownerStr}:${groupStr}\n` +
-        `- Permissions: \`${permStr}\``
+        `- Permissions: \`${permStr}\`` +
+        filterStr
     );
 
     // Double-click to open file
@@ -250,7 +256,8 @@ export class FilterResultsHeaderItem extends vscode.TreeItem {
   constructor(
     public readonly connection: SSHConnection,
     public readonly resultCount: number,
-    public readonly isSearching: boolean
+    public readonly isSearching: boolean,
+    public readonly limit?: number
   ) {
     super(
       isSearching ? 'Searching remote files...' : `Filter Results (${resultCount} files)`,
@@ -264,6 +271,16 @@ export class FilterResultsHeaderItem extends vscode.TreeItem {
       ? new vscode.ThemeIcon('sync~spin')
       : new vscode.ThemeIcon('filter-filled', new vscode.ThemeColor('charts.blue'));
     this.description = isSearching ? '' : 'from recursive search';
+
+    if (!isSearching && limit !== undefined) {
+      const hitLimit = resultCount >= limit;
+      this.tooltip = new vscode.MarkdownString(
+        `**Filter Results**\n\n` +
+        `- Files found: ${resultCount}\n` +
+        `- Limit: ${limit}${hitLimit ? ' *(limit reached — results may be incomplete)*' : ''}\n\n` +
+        `*Change limit via Settings → \`sshLite.filterMaxResults\` (default: 1000)*`
+      );
+    }
   }
 }
 
@@ -472,6 +489,11 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
    * Show success indicator in status bar (briefly)
    */
   private showSuccess(message: string): void {
+    if (message.length > 60) {
+      vscode.window.showInformationMessage(message);
+      this.hideLoading();
+      return;
+    }
     this.loadingStatusBar.text = `$(check) ${message}`;
     this.loadingStatusBar.backgroundColor = undefined;
     this.loadingStatusBar.tooltip = `SSH Lite: ${message}`;
@@ -1199,7 +1221,8 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
             isFolderFiltered,
             activeFilter?.pattern || '',
             isEmpty,
-            matchCount
+            matchCount,
+            activeFilter?.maxResults || 0
           );
         });
         // Preload subdirectories in background
@@ -1266,7 +1289,8 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
         isFolderFiltered,
         activeFilter?.pattern || '',
         isEmpty,
-        matchCount
+        matchCount,
+        activeFilter?.maxResults || 0
       );
     }));
 
@@ -1277,7 +1301,8 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
       // Only show if searching or has results
       if (isSearching || deepResults.length > 0) {
-        items.push(new FilterResultsHeaderItem(connection, deepResults.length, isSearching));
+        const filterLimit = vscode.workspace.getConfiguration('sshLite').get<number>('filterMaxResults', 1000);
+        items.push(new FilterResultsHeaderItem(connection, deepResults.length, isSearching, filterLimit));
       }
     }
 
@@ -1924,7 +1949,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
    * @param connection - The SSH connection to search on
    * @param filterMode - What to match: 'files', 'folders', or 'both'
    */
-  async setFilenameFilter(pattern: string, basePath: string, connection: SSHConnection, filterMode: FilterMode = 'files'): Promise<void> {
+  async setFilenameFilter(pattern: string, basePath: string, connection: SSHConnection, filterMode: FilterMode = 'files'): Promise<{ hitLimit: boolean; count: number; limit: number } | undefined> {
     const filterKey = `${connection.id}:${basePath}`;
 
     if (!pattern) {
@@ -1953,11 +1978,15 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       // Map filter mode to find type
       const findType: 'f' | 'd' | 'both' = filterMode === 'files' ? 'f' : filterMode === 'folders' ? 'd' : 'both';
 
+      // Read configurable limit (default 500 for per-folder filter)
+      const filterConfig = vscode.workspace.getConfiguration('sshLite');
+      const maxResults = filterConfig.get<number>('filterMaxResults', 500);
+
       // Search for files/folders matching the pattern
       const results = await connection.searchFiles(basePath, pattern, {
         searchContent: false,
         caseSensitive: false,
-        maxResults: 500,
+        maxResults,
         findType,
       });
 
@@ -1993,17 +2022,20 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
         highlightedPaths,
         matchCounts,
         filterMode,
+        maxResults,
       });
 
-      activityService.completeActivity(activityId, `${results.length} results`);
-      this.showSuccess(`Found ${results.length} ${modeLabel} matching "${pattern}"`);
+      const hitLimit = results.length >= maxResults;
+      activityService.completeActivity(activityId, `${results.length} results${hitLimit ? ' (limit reached)' : ''}`);
+      this.showSuccess(`Found ${results.length} ${modeLabel} matching "${pattern}" (limit: ${maxResults})`);
+      this._onDidChangeTreeData.fire();
+
+      return { hitLimit, count: results.length, limit: maxResults };
     } catch (error) {
       activityService.failActivity(activityId, (error as Error).message);
       vscode.window.showErrorMessage(`Failed to search: ${(error as Error).message}`);
       this.hideLoading();
     }
-
-    this._onDidChangeTreeData.fire();
   }
 
   /**
