@@ -151,8 +151,9 @@ export class CommandGuard {
     let lastError: Error | undefined;
 
     for (let attempt = 0; attempt <= CommandGuard.EXEC_MAX_RETRIES; attempt++) {
-      const release = await semaphore.acquire();
+      let release: (() => void) | undefined;
       try {
+        release = await semaphore.acquire();
         let result: string;
         if (connection.sudoMode && connection.sudoPassword) {
           result = await connection.sudoExec(command, connection.sudoPassword);
@@ -176,7 +177,7 @@ export class CommandGuard {
           throw error;
         }
       } finally {
-        release();
+        release?.();
       }
     }
 
