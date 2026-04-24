@@ -14,6 +14,7 @@ import { errorPathsScenarios } from './error-paths';
 import { mixedWorkflowsScenarios } from './mixed-workflows';
 import { sshToolsScenarios } from './ssh-tools';
 import { sshToolsKeyScenarios } from './ssh-tools-keys';
+import { channelSemaphoreScenarios } from './channel-semaphore';
 
 export const ALL_SCENARIOS: ScenarioDefinition[] = [
   ...connectionLifecycleScenarios,
@@ -25,6 +26,7 @@ export const ALL_SCENARIOS: ScenarioDefinition[] = [
   ...mixedWorkflowsScenarios,
   ...sshToolsScenarios,
   ...sshToolsKeyScenarios,
+  ...channelSemaphoreScenarios,
 ];
 
 export {
@@ -37,4 +39,5 @@ export {
   mixedWorkflowsScenarios,
   sshToolsScenarios,
   sshToolsKeyScenarios,
+  channelSemaphoreScenarios,
 };
