@@ -43,6 +43,18 @@ Terminal created → shell channel active → user interacts
 
 ---
 
+## Channel Limit Handling
+
+SSH servers enforce a maximum number of concurrent channels (`MaxSessions`, typically 10). During heavy parallel content search, terminal opens may be delayed.
+
+**Terminal behaviour:** shows "Waiting for a free channel to open terminal..." progress notification while queued. Opens automatically when a search channel frees up. Times out after 30 seconds and shows: *"Failed to open terminal: all SSH channels are busy (30s timeout). Stop a search or wait and try again."*
+
+**Search behaviour:** automatically reduces max concurrent search threads on channel-limit failure and retries the failed command (up to 3 times). Users see search completing at reduced parallelism without any error.
+
+**Configuration:** `sshLite.maxChannelsPerServer` (default 8) — reduce if your server has `MaxSessions` set below 10; increase for servers with higher limits.
+
+---
+
 ## PortForwardService (`src/services/PortForwardService.ts`)
 
 Singleton service for SSH port forwarding (local → remote tunnels) with **persistent saved rules**.

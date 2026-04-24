@@ -111,6 +111,7 @@ File opened → size > progressiveDownloadThreshold (1MB)?
 | `sshLite.filterMaxResults` | `number` | `1000` | `1` | Max file filter results |
 | `sshLite.searchParallelProcesses` | `number` | `5` | `1`/`50` | Default parallel search workers per folder. Each server can override this inline in the search panel. Workers process file batches concurrently for faster results. Auto-throttled when user has active non-search operations, and divided equally among concurrent searches |
 | `sshLite.searchUseDefaultExcludes` | `boolean` | `true` | — | Auto-exclude common directories from search (`.git`, `node_modules`, `.svn`, `.hg`, `CVS`, `.DS_Store`, `bower_components`, `*.code-search`). Matches VS Code's default search behavior |
+| `sshLite.maxChannelsPerServer` | `number` | `8` | — | Max concurrent SSH channels per server. Adapts downward on channel limit errors. Increase if your server has MaxSessions > 10. |
 
 **Parallel search (file-level worker pool)**: When `searchParallelProcesses > 1`, the search panel uses a file-level worker pool. Workers share a mixed queue of `dir` and `files` items. A `dir` item calls `listEntries()` to discover files + subdirs at one level, batches files by byte size (32KB limit for cross-OS safety), and adds file batches + subdirs back to the queue. A `files` item calls `searchFiles()` with an explicit file path array. Workers pick items from the queue until exhausted. This gives perfect load balancing — workers never idle, no duplication, no missed files.
 
