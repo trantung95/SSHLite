@@ -1476,6 +1476,12 @@
           "type": "boolean",
           "default": true,
           "description": "Show file info tooltip (size, modified, permissions) when hovering files in VS Code explorer"
+        },
+        "sshLite.maxChannelsPerServer": {
+          "type": "number",
+          "default": 8,
+          "minimum": 1,
+          "description": "Maximum concurrent SSH channels per server connection. Default 8 leaves headroom on servers with MaxSessions 10. Adapts downward automatically when the server limit is hit."
         }
       }
     },

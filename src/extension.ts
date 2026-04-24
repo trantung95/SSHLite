@@ -13,6 +13,7 @@ import { ServerMonitorService, showMonitorQuickPick } from './services/ServerMon
 import { FolderHistoryService } from './services/FolderHistoryService';
 import { RemoteClipboardService } from './services/RemoteClipboardService';
 import { SnippetService } from './services/SnippetService';
+import { CommandGuard } from './services/CommandGuard';
 import { RemoteEnvDocumentProvider, RemoteCronDocumentProvider, ENV_SCHEME, CRON_SCHEME } from './providers/VirtualDocProviders';
 import { registerSshToolsCommands } from './commands/sshToolsCommands';
 import { ProgressiveDownloadManager } from './services/ProgressiveDownloadManager';
@@ -151,6 +152,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const credentialService = CredentialService.getInstance();
   const auditService = AuditService.getInstance();
   const monitorService = ServerMonitorService.getInstance();
+  const commandGuard = CommandGuard.getInstance();
 
   // Initialize credential service with extension context
   credentialService.initialize(context);
@@ -472,7 +474,9 @@ export function activate(context: vscode.ExtensionContext): void {
     // Clear cache on any disconnect (manual or unexpected)
     connectionManager.onConnectionStateChange((event) => {
       if (event.state === ConnectionState.Disconnected) {
-        fileTreeProvider.clearCache(event.connection.id);
+        const connectionId = event.connection.id;
+        fileTreeProvider.clearCache(connectionId);
+        commandGuard.removeSemaphore(connectionId);
       }
     }),
 
@@ -2117,10 +2121,29 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       logCommand('openTerminalHere', targetPath);
-      const terminal = await terminalService.createTerminal(connection);
-      if (terminal) {
-        terminal.sendText(`cd "${targetPath}"`);
-        logResult('openTerminalHere', true, `cd "${targetPath}"`);
+      try {
+        const shell = await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: 'Waiting for a free channel to open terminal...',
+            cancellable: false,
+          },
+          () => commandGuard.openShell(connection)
+        );
+        const terminal = await terminalService.createTerminal(connection, shell);
+        if (terminal) {
+          terminal.sendText(`cd "${targetPath}"`);
+          logResult('openTerminalHere', true, `cd "${targetPath}"`);
+        }
+      } catch (error) {
+        const { ChannelTimeoutError } = await import('./services/ChannelSemaphore');
+        if (error instanceof ChannelTimeoutError) {
+          vscode.window.showErrorMessage(
+            'Failed to open terminal: all SSH channels are busy (30s timeout). Stop a search or wait and try again.'
+          );
+          return;
+        }
+        throw error;
       }
     }),
 
@@ -2167,8 +2190,29 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       logCommand('openTerminal', connection.host.name);
-      await terminalService.createTerminal(connection);
-      logResult('openTerminal', true, connection.host.name);
+      try {
+        const shell = await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: 'Waiting for a free channel to open terminal...',
+            cancellable: false,
+          },
+          () => commandGuard.openShell(connection)
+        );
+        const terminal = await terminalService.createTerminal(connection, shell);
+        if (terminal) {
+          logResult('openTerminal', true, connection.host.name);
+        }
+      } catch (error) {
+        const { ChannelTimeoutError } = await import('./services/ChannelSemaphore');
+        if (error instanceof ChannelTimeoutError) {
+          vscode.window.showErrorMessage(
+            'Failed to open terminal: all SSH channels are busy (30s timeout). Stop a search or wait and try again.'
+          );
+          return;
+        }
+        throw error;
+      }
     }),
 
     // Port forward commands
