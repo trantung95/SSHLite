@@ -3,6 +3,7 @@ import { SSHConnection } from './SSHConnection';
 import { IHostConfig, ConnectionState, AuthenticationError, ILastConnectionAttempt, SSHError } from '../types';
 import { SavedCredential, CredentialService } from '../services/CredentialService';
 import { ActivityService } from '../services/ActivityService';
+import { infoLog, diagLog } from '../utils/diagnosticLog';
 
 /**
  * Info about a disconnected connection that we should try to reconnect
@@ -103,6 +104,17 @@ export class ConnectionManager {
    */
   async connect(host: IHostConfig): Promise<SSHConnection> {
     const connectionId = `${host.host}:${host.port}:${host.username}`;
+    infoLog('connection-manager', 'connect/begin', {
+      connectionId,
+      hostName: host.name,
+      host: host.host,
+      port: host.port,
+      username: host.username,
+      source: host.source,
+      withCredential: false,
+      hasExisting: this._connections.has(connectionId),
+      isReconnecting: this._activeReconnectAttempts.has(connectionId),
+    });
 
     // Clear any pending reconnect for this host (but not during active attemptReconnect)
     if (!this._activeReconnectAttempts.has(connectionId)) {
@@ -112,6 +124,7 @@ export class ConnectionManager {
     // Return existing connection if already connected
     const existing = this._connections.get(connectionId);
     if (existing && existing.state === ConnectionState.Connected) {
+      diagLog('connection-manager', 'connect/reuse-existing', { connectionId });
       return existing;
     }
 
@@ -120,29 +133,34 @@ export class ConnectionManager {
 
     // Listen to state changes
     connection.onStateChange((state) => {
-      console.log(`[SSH Lite] State change for ${connectionId}: ${state}`);
+      diagLog('connection-manager', 'state-change', { connectionId, state });
       this._onConnectionStateChange.fire({ connection, state });
 
       // Handle unexpected disconnect - start auto-reconnect
       if (state === ConnectionState.Disconnected) {
         const disconnectInfo = this._disconnectedConnections.get(connectionId);
         const isActiveAttempt = this._activeReconnectAttempts.has(connectionId);
-        console.log(`[SSH Lite] Disconnect handler - connectionId: ${connectionId}, isManualDisconnect: ${disconnectInfo?.isManualDisconnect}, isActiveAttempt: ${isActiveAttempt}`);
+        diagLog('connection-manager', 'disconnect-handler', {
+          connectionId,
+          isManualDisconnect: disconnectInfo?.isManualDisconnect,
+          isActiveAttempt,
+          hasReconnectTimer: !!disconnectInfo?.reconnectTimer,
+        });
 
         // If currently in the middle of a reconnect attempt, don't start another
         if (isActiveAttempt) {
-          console.log(`[SSH Lite] Active reconnect attempt in progress, skipping: ${connectionId}`);
+          diagLog('connection-manager', 'skip-active-reconnect', { connectionId });
           return;
         }
 
         if (disconnectInfo?.isManualDisconnect) {
           // Manual disconnect - remove from maps
-          console.log(`[SSH Lite] Manual disconnect, cleaning up: ${connectionId}`);
+          infoLog('connection-manager', 'manual-disconnect-cleanup', { connectionId });
           this._connections.delete(connectionId);
           this._disconnectedConnections.delete(connectionId);
         } else if (!disconnectInfo?.reconnectTimer) {
           // Unexpected disconnect and no reconnect scheduled - start auto-reconnect
-          console.log(`[SSH Lite] Starting auto-reconnect for: ${connectionId}`);
+          infoLog('connection-manager', 'auto-reconnect-start', { connectionId });
           this.startReconnect(connectionId, host);
         }
       }
@@ -193,6 +211,20 @@ export class ConnectionManager {
    */
   async connectWithCredential(host: IHostConfig, credential: SavedCredential): Promise<SSHConnection> {
     const connectionId = `${host.host}:${host.port}:${host.username}`;
+    infoLog('connection-manager', 'connect/begin', {
+      connectionId,
+      hostName: host.name,
+      host: host.host,
+      port: host.port,
+      username: host.username,
+      source: host.source,
+      withCredential: true,
+      credentialId: credential.id,
+      credentialLabel: credential.label,
+      credentialType: credential.type,
+      hasExisting: this._connections.has(connectionId),
+      isReconnecting: this._activeReconnectAttempts.has(connectionId),
+    });
 
     // Clear any pending reconnect for this host (but not during active attemptReconnect)
     if (!this._activeReconnectAttempts.has(connectionId)) {
@@ -202,6 +234,7 @@ export class ConnectionManager {
     // Return existing connection if already connected
     const existing = this._connections.get(connectionId);
     if (existing && existing.state === ConnectionState.Connected) {
+      diagLog('connection-manager', 'connect/reuse-existing', { connectionId, withCredential: true });
       return existing;
     }
 
@@ -210,29 +243,35 @@ export class ConnectionManager {
 
     // Listen to state changes
     connection.onStateChange((state) => {
-      console.log(`[SSH Lite] State change (withCred) for ${connectionId}: ${state}`);
+      diagLog('connection-manager', 'state-change', { connectionId, state, withCredential: true });
       this._onConnectionStateChange.fire({ connection, state });
 
       // Handle unexpected disconnect - start auto-reconnect
       if (state === ConnectionState.Disconnected) {
         const disconnectInfo = this._disconnectedConnections.get(connectionId);
         const isActiveAttempt = this._activeReconnectAttempts.has(connectionId);
-        console.log(`[SSH Lite] Disconnect handler (withCred) - connectionId: ${connectionId}, isManualDisconnect: ${disconnectInfo?.isManualDisconnect}, isActiveAttempt: ${isActiveAttempt}`);
+        diagLog('connection-manager', 'disconnect-handler', {
+          connectionId,
+          withCredential: true,
+          isManualDisconnect: disconnectInfo?.isManualDisconnect,
+          isActiveAttempt,
+          hasReconnectTimer: !!disconnectInfo?.reconnectTimer,
+        });
 
         // If currently in the middle of a reconnect attempt, don't start another
         if (isActiveAttempt) {
-          console.log(`[SSH Lite] Active reconnect attempt in progress (withCred), skipping: ${connectionId}`);
+          diagLog('connection-manager', 'skip-active-reconnect', { connectionId, withCredential: true });
           return;
         }
 
         if (disconnectInfo?.isManualDisconnect) {
           // Manual disconnect - remove from maps
-          console.log(`[SSH Lite] Manual disconnect (withCred), cleaning up: ${connectionId}`);
+          infoLog('connection-manager', 'manual-disconnect-cleanup', { connectionId, withCredential: true });
           this._connections.delete(connectionId);
           this._disconnectedConnections.delete(connectionId);
         } else if (!disconnectInfo?.reconnectTimer) {
           // Unexpected disconnect and no reconnect scheduled - start auto-reconnect
-          console.log(`[SSH Lite] Starting auto-reconnect (withCred) for: ${connectionId}`);
+          infoLog('connection-manager', 'auto-reconnect-start', { connectionId, withCredential: true });
           this.startReconnect(connectionId, host, credential);
         }
       }
@@ -282,9 +321,18 @@ export class ConnectionManager {
    * Start auto-reconnect for a disconnected connection
    */
   private startReconnect(connectionId: string, host: IHostConfig, credential?: SavedCredential): void {
+    infoLog('connection-manager', 'reconnect/start', {
+      connectionId,
+      hostName: host.name,
+      host: host.host,
+      withCredential: !!credential,
+      intervalMs: this.RECONNECT_INTERVAL_MS,
+      maxAttempts: this.MAX_RECONNECT_ATTEMPTS,
+    });
     // Don't start if already reconnecting
     if (this._disconnectedConnections.has(connectionId) &&
         this._disconnectedConnections.get(connectionId)?.reconnectTimer) {
+      diagLog('connection-manager', 'reconnect/start-skipped-already-scheduled', { connectionId });
       return;
     }
 
@@ -341,6 +389,10 @@ export class ConnectionManager {
   private async attemptReconnect(connectionId: string): Promise<void> {
     const info = this._disconnectedConnections.get(connectionId);
     if (!info || info.isManualDisconnect) {
+      diagLog('connection-manager', 'reconnect/attempt-aborted', {
+        connectionId,
+        reason: !info ? 'no-info' : 'manual-disconnect',
+      });
       return;
     }
 
@@ -348,6 +400,13 @@ export class ConnectionManager {
     this._activeReconnectAttempts.add(connectionId);
 
     info.reconnectAttempts++;
+    infoLog('connection-manager', 'reconnect/attempt', {
+      connectionId,
+      hostName: info.host.name,
+      attempt: info.reconnectAttempts,
+      maxAttempts: this.MAX_RECONNECT_ATTEMPTS,
+      withCredential: !!info.credential,
+    });
 
     // Check max attempts (0 = unlimited)
     if (this.MAX_RECONNECT_ATTEMPTS > 0 && info.reconnectAttempts > this.MAX_RECONNECT_ATTEMPTS) {
@@ -387,6 +446,11 @@ export class ConnectionManager {
       }
 
       // Success! Clean up
+      infoLog('connection-manager', 'reconnect/success', {
+        connectionId,
+        hostName: info.host.name,
+        attempt: info.reconnectAttempts,
+      });
       this._activeReconnectAttempts.delete(connectionId);
       this.stopReconnect(connectionId);
       vscode.window.setStatusBarMessage(
@@ -424,7 +488,16 @@ export class ConnectionManager {
 
       const isNonRecoverable = isAuthError || isDnsError;
 
-      console.log(`[SSH Lite] Reconnect failed for ${connectionId}: errorMsg="${errorMsg}", isNonRecoverable=${isNonRecoverable} (auth=${isAuthError}, dns=${isDnsError}), errorType=${error?.constructor?.name}, host=${JSON.stringify({ name: info.host.name, host: info.host.host, port: info.host.port, username: info.host.username })}`);
+      infoLog('connection-manager', 'reconnect-failed', {
+        connectionId,
+        attempt: info.reconnectAttempts,
+        errorMsg,
+        isNonRecoverable,
+        isAuthError,
+        isDnsError,
+        errorType: error?.constructor?.name,
+        host: { name: info.host.name, host: info.host.host, port: info.host.port, username: info.host.username },
+      });
 
       if (isNonRecoverable) {
         // Stop reconnecting. Keep _activeReconnectAttempts set briefly so the
@@ -514,7 +587,7 @@ export class ConnectionManager {
    * Disconnect a specific connection
    */
   async disconnect(connectionId: string): Promise<void> {
-    console.log(`[SSH Lite] disconnect() called for: ${connectionId}`);
+    infoLog('connection-manager', 'disconnect-requested', { connectionId });
 
     // Mark as manual disconnect to prevent auto-reconnect
     // IMPORTANT: Set this BEFORE calling connection.disconnect() so the state change
@@ -534,7 +607,7 @@ export class ConnectionManager {
     }
 
     this._disconnectedConnections.set(connectionId, disconnectInfo);
-    console.log(`[SSH Lite] Set isManualDisconnect=true for: ${connectionId}`);
+    diagLog('connection-manager', 'manual-flag-set', { connectionId });
 
     const connection = this._connections.get(connectionId);
     if (connection) {
@@ -548,9 +621,9 @@ export class ConnectionManager {
         { detail: `${connection.host.username}@${connection.host.host}:${connection.host.port}` }
       );
 
-      console.log(`[SSH Lite] Calling connection.disconnect() for: ${connectionId}`);
+      diagLog('connection-manager', 'calling-connection-disconnect', { connectionId });
       await connection.disconnect();
-      console.log(`[SSH Lite] connection.disconnect() returned for: ${connectionId}`);
+      diagLog('connection-manager', 'connection-disconnect-returned', { connectionId });
 
       // Complete activity tracking
       activityService.completeActivity(activityId, 'Disconnected');
@@ -655,6 +728,11 @@ export class ConnectionManager {
    * Dispose of all resources
    */
   dispose(): void {
+    infoLog('connection-manager', 'dispose', {
+      activeConnections: this._connections.size,
+      disconnectedTracked: this._disconnectedConnections.size,
+      activeReconnectAttempts: this._activeReconnectAttempts.size,
+    });
     // Stop all reconnect timers
     for (const connectionId of this._disconnectedConnections.keys()) {
       this.stopReconnect(connectionId);

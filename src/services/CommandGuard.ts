@@ -21,7 +21,8 @@ import { SSHConnection } from '../connection/SSHConnection';
 import { IRemoteFile } from '../types';
 import { ActivityService, ActivityType } from './ActivityService';
 import { formatFileSize } from '../utils/helpers';
-import { ChannelSemaphore, ChannelLimitError } from './ChannelSemaphore';
+import { ChannelSemaphore, ChannelLimitError, ChannelTimeoutError } from './ChannelSemaphore';
+import { diagLog, infoLog } from '../utils/diagnosticLog';
 
 /**
  * Options for tracked operations
@@ -75,7 +76,8 @@ export class CommandGuard {
     if (!this.semaphores.has(connectionId)) {
       const config = vscode.workspace.getConfiguration('sshLite');
       const maxSlots = config.get<number>('maxChannelsPerServer', 8);
-      this.semaphores.set(connectionId, new ChannelSemaphore(maxSlots));
+      infoLog('command-guard', 'create-semaphore', { connectionId, maxSlots });
+      this.semaphores.set(connectionId, new ChannelSemaphore(maxSlots, connectionId));
     }
     return this.semaphores.get(connectionId)!;
   }
@@ -83,6 +85,12 @@ export class CommandGuard {
   removeSemaphore(connectionId: string): void {
     const sem = this.semaphores.get(connectionId);
     if (sem) {
+      infoLog('command-guard', 'remove-semaphore', {
+        connectionId,
+        active: sem.activeCount,
+        queued: sem.queued,
+        max: sem.maxSlots,
+      });
       sem.destroy(new Error('Connection closed'));
       this.semaphores.delete(connectionId);
     }
@@ -98,25 +106,63 @@ export class CommandGuard {
    */
   async openShell(connection: SSHConnection): Promise<ClientChannel> {
     const semaphore = this.getSemaphore(connection.id);
-    const release = await semaphore.acquire(CommandGuard.SHELL_TIMEOUT_MS);
+    const acquireStart = Date.now();
+    diagLog('command-guard', 'openShell/begin', {
+      connectionId: connection.id,
+      timeoutMs: CommandGuard.SHELL_TIMEOUT_MS,
+    });
+    let release: () => void;
+    try {
+      release = await semaphore.acquire(CommandGuard.SHELL_TIMEOUT_MS);
+    } catch (err) {
+      const e = err as Error;
+      infoLog('command-guard', 'openShell/acquire-failed', {
+        connectionId: connection.id,
+        waitedMs: Date.now() - acquireStart,
+        errorName: e.name,
+        errorMessage: e.message,
+      });
+      throw err;
+    }
+    diagLog('command-guard', 'openShell/slot-acquired', {
+      connectionId: connection.id,
+      waitedMs: Date.now() - acquireStart,
+    });
 
     let channel: ClientChannel;
+    const shellStart = Date.now();
     try {
       channel = await connection.shell();
     } catch (error) {
+      const e = error as Error;
+      infoLog('command-guard', 'openShell/shell-failed', {
+        connectionId: connection.id,
+        durationMs: Date.now() - shellStart,
+        errorName: e.name,
+        errorMessage: e.message,
+      });
       release();
       throw error;
     }
+    diagLog('command-guard', 'openShell/ready', {
+      connectionId: connection.id,
+      shellMs: Date.now() - shellStart,
+      totalMs: Date.now() - acquireStart,
+    });
 
     let released = false;
-    const releaseOnce = () => {
+    const releaseOnce = (event: string) => () => {
       if (!released) {
         released = true;
+        diagLog('command-guard', 'openShell/release', {
+          connectionId: connection.id,
+          via: event,
+        });
         release();
       }
     };
-    channel.on('close', releaseOnce);
-    channel.on('exit', releaseOnce);
+    channel.on('close', releaseOnce('close'));
+    channel.on('exit', releaseOnce('exit'));
 
     return channel;
   }
@@ -149,9 +195,17 @@ export class CommandGuard {
 
     const semaphore = this.getSemaphore(connection.id);
     let lastError: Error | undefined;
+    const cmdPreview = command.length > 80 ? command.slice(0, 80) + '…' : command;
+    const execStart = Date.now();
+    diagLog('command-guard', 'exec/begin', {
+      connectionId: connection.id,
+      cmd: cmdPreview,
+      sudo: !!(connection.sudoMode && connection.sudoPassword),
+    });
 
     for (let attempt = 0; attempt <= CommandGuard.EXEC_MAX_RETRIES; attempt++) {
       let release: (() => void) | undefined;
+      const attemptStart = Date.now();
       try {
         release = await semaphore.acquire();
         let result: string;
@@ -162,17 +216,43 @@ export class CommandGuard {
         }
         semaphore.recordSuccess();
         this.activityService.completeActivity(activityId);
+        diagLog('command-guard', 'exec/success', {
+          connectionId: connection.id,
+          attempt,
+          attemptMs: Date.now() - attemptStart,
+          totalMs: Date.now() - execStart,
+          bytes: result.length,
+        });
         return result;
       } catch (error) {
         const err = error as Error;
         if (err.message?.includes('open failure')) {
           semaphore.reduceMax();
           lastError = new ChannelLimitError();
+          infoLog('command-guard', 'exec/channel-limit-retry', {
+            connectionId: connection.id,
+            attempt,
+            maxRetries: CommandGuard.EXEC_MAX_RETRIES,
+            attemptMs: Date.now() - attemptStart,
+            cmd: cmdPreview,
+            originalError: err.message,
+            newMaxSlots: semaphore.maxSlots,
+          });
           if (attempt < CommandGuard.EXEC_MAX_RETRIES) {
             await new Promise<void>(r => setTimeout(r, CommandGuard.EXEC_RETRY_DELAY_MS));
           }
           // continue to next attempt or fall through to post-loop throw
         } else {
+          infoLog('command-guard', 'exec/failed', {
+            connectionId: connection.id,
+            attempt,
+            attemptMs: Date.now() - attemptStart,
+            totalMs: Date.now() - execStart,
+            cmd: cmdPreview,
+            errorName: err.name,
+            errorMessage: err.message,
+            isTimeout: err instanceof ChannelTimeoutError,
+          });
           this.activityService.failActivity(activityId, err.message);
           throw error;
         }
@@ -181,6 +261,14 @@ export class CommandGuard {
       }
     }
 
+    infoLog('command-guard', 'exec/exhausted', {
+      connectionId: connection.id,
+      attempts: CommandGuard.EXEC_MAX_RETRIES + 1,
+      totalMs: Date.now() - execStart,
+      cmd: cmdPreview,
+      finalMaxSlots: semaphore.maxSlots,
+      lastError: lastError!.message,
+    });
     this.activityService.failActivity(activityId, lastError!.message);
     throw lastError!;
   }
@@ -208,6 +296,8 @@ export class CommandGuard {
       }
     );
 
+    const t0 = Date.now();
+    diagLog('command-guard', 'readFile/begin', { connectionId: connection.id, remotePath, sudo: !!(connection.sudoMode && connection.sudoPassword) });
     try {
       let result: Buffer;
       if (connection.sudoMode && connection.sudoPassword) {
@@ -216,9 +306,12 @@ export class CommandGuard {
         result = await connection.readFile(remotePath);
       }
       this.activityService.completeActivity(activityId, formatFileSize(result.length));
+      diagLog('command-guard', 'readFile/success', { connectionId: connection.id, remotePath, bytes: result.length, durationMs: Date.now() - t0 });
       return result;
     } catch (error) {
-      this.activityService.failActivity(activityId, (error as Error).message);
+      const e = error as Error;
+      infoLog('command-guard', 'readFile/failed', { connectionId: connection.id, remotePath, durationMs: Date.now() - t0, errorName: e.name, errorMessage: e.message });
+      this.activityService.failActivity(activityId, e.message);
       throw error;
     }
   }
@@ -248,6 +341,8 @@ export class CommandGuard {
       }
     );
 
+    const t0 = Date.now();
+    diagLog('command-guard', 'writeFile/begin', { connectionId: connection.id, remotePath, bytes: size, sudo: !!(connection.sudoMode && connection.sudoPassword) });
     try {
       const buffer = typeof content === 'string' ? Buffer.from(content) : content;
       if (connection.sudoMode && connection.sudoPassword) {
@@ -256,8 +351,11 @@ export class CommandGuard {
         await connection.writeFile(remotePath, buffer);
       }
       this.activityService.completeActivity(activityId, formatFileSize(size));
+      diagLog('command-guard', 'writeFile/success', { connectionId: connection.id, remotePath, bytes: size, durationMs: Date.now() - t0 });
     } catch (error) {
-      this.activityService.failActivity(activityId, (error as Error).message);
+      const e = error as Error;
+      infoLog('command-guard', 'writeFile/failed', { connectionId: connection.id, remotePath, bytes: size, durationMs: Date.now() - t0, errorName: e.name, errorMessage: e.message });
+      this.activityService.failActivity(activityId, e.message);
       throw error;
     }
   }
@@ -285,6 +383,8 @@ export class CommandGuard {
       }
     );
 
+    const t0 = Date.now();
+    diagLog('command-guard', 'listFiles/begin', { connectionId: connection.id, remotePath, sudo: !!(connection.sudoMode && connection.sudoPassword) });
     try {
       let result: IRemoteFile[];
       if (connection.sudoMode && connection.sudoPassword) {
@@ -293,9 +393,12 @@ export class CommandGuard {
         result = await connection.listFiles(remotePath);
       }
       this.activityService.completeActivity(activityId, `${result.length} items`);
+      diagLog('command-guard', 'listFiles/success', { connectionId: connection.id, remotePath, count: result.length, durationMs: Date.now() - t0 });
       return result;
     } catch (error) {
-      this.activityService.failActivity(activityId, (error as Error).message);
+      const e = error as Error;
+      infoLog('command-guard', 'listFiles/failed', { connectionId: connection.id, remotePath, durationMs: Date.now() - t0, errorName: e.name, errorMessage: e.message });
+      this.activityService.failActivity(activityId, e.message);
       throw error;
     }
   }
@@ -327,12 +430,17 @@ export class CommandGuard {
       }
     );
 
+    const t0 = Date.now();
+    diagLog('command-guard', 'searchFiles/begin', { connectionId: connection.id, searchPath, pattern: pattern.length > 80 ? pattern.slice(0, 80) + '…' : pattern, searchContent: !!searchOptions.searchContent, caseSensitive: !!searchOptions.caseSensitive, filePattern: searchOptions.filePattern, maxResults: searchOptions.maxResults });
     try {
       const result = await connection.searchFiles(searchPath, pattern, searchOptions);
       this.activityService.completeActivity(activityId, `${result.length} results`);
+      diagLog('command-guard', 'searchFiles/success', { connectionId: connection.id, searchPath, count: result.length, durationMs: Date.now() - t0 });
       return result;
     } catch (error) {
-      this.activityService.failActivity(activityId, (error as Error).message);
+      const e = error as Error;
+      infoLog('command-guard', 'searchFiles/failed', { connectionId: connection.id, searchPath, durationMs: Date.now() - t0, errorName: e.name, errorMessage: e.message });
+      this.activityService.failActivity(activityId, e.message);
       throw error;
     }
   }
@@ -482,11 +590,16 @@ export class CommandGuard {
       }
     );
 
+    const t0 = Date.now();
+    diagLog('command-guard', 'sudoWriteFile/begin', { connectionId: connection.id, remotePath, bytes: size });
     try {
       await connection.sudoWriteFile(remotePath, content, password);
       this.activityService.completeActivity(activityId, formatFileSize(size));
+      diagLog('command-guard', 'sudoWriteFile/success', { connectionId: connection.id, remotePath, bytes: size, durationMs: Date.now() - t0 });
     } catch (error) {
-      this.activityService.failActivity(activityId, (error as Error).message);
+      const e = error as Error;
+      infoLog('command-guard', 'sudoWriteFile/failed', { connectionId: connection.id, remotePath, bytes: size, durationMs: Date.now() - t0, errorName: e.name, errorMessage: e.message });
+      this.activityService.failActivity(activityId, e.message);
       throw error;
     }
   }
@@ -513,12 +626,17 @@ export class CommandGuard {
       }
     );
 
+    const t0 = Date.now();
+    diagLog('command-guard', 'sudoReadFile/begin', { connectionId: connection.id, remotePath });
     try {
       const result = await connection.sudoReadFile(remotePath, password);
       this.activityService.completeActivity(activityId, formatFileSize(result.length));
+      diagLog('command-guard', 'sudoReadFile/success', { connectionId: connection.id, remotePath, bytes: result.length, durationMs: Date.now() - t0 });
       return result;
     } catch (error) {
-      this.activityService.failActivity(activityId, (error as Error).message);
+      const e = error as Error;
+      infoLog('command-guard', 'sudoReadFile/failed', { connectionId: connection.id, remotePath, durationMs: Date.now() - t0, errorName: e.name, errorMessage: e.message });
+      this.activityService.failActivity(activityId, e.message);
       throw error;
     }
   }
@@ -546,11 +664,16 @@ export class CommandGuard {
       }
     );
 
+    const t0 = Date.now();
+    diagLog('command-guard', 'sudoDeleteFile/begin', { connectionId: connection.id, remotePath, isDirectory });
     try {
       await connection.sudoDeleteFile(remotePath, password, isDirectory);
       this.activityService.completeActivity(activityId, 'Deleted');
+      diagLog('command-guard', 'sudoDeleteFile/success', { connectionId: connection.id, remotePath, isDirectory, durationMs: Date.now() - t0 });
     } catch (error) {
-      this.activityService.failActivity(activityId, (error as Error).message);
+      const e = error as Error;
+      infoLog('command-guard', 'sudoDeleteFile/failed', { connectionId: connection.id, remotePath, isDirectory, durationMs: Date.now() - t0, errorName: e.name, errorMessage: e.message });
+      this.activityService.failActivity(activityId, e.message);
       throw error;
     }
   }
@@ -577,11 +700,16 @@ export class CommandGuard {
       }
     );
 
+    const t0 = Date.now();
+    diagLog('command-guard', 'sudoMkdir/begin', { connectionId: connection.id, remotePath });
     try {
       await connection.sudoMkdir(remotePath, password);
       this.activityService.completeActivity(activityId, 'Created');
+      diagLog('command-guard', 'sudoMkdir/success', { connectionId: connection.id, remotePath, durationMs: Date.now() - t0 });
     } catch (error) {
-      this.activityService.failActivity(activityId, (error as Error).message);
+      const e = error as Error;
+      infoLog('command-guard', 'sudoMkdir/failed', { connectionId: connection.id, remotePath, durationMs: Date.now() - t0, errorName: e.name, errorMessage: e.message });
+      this.activityService.failActivity(activityId, e.message);
       throw error;
     }
   }
@@ -609,11 +737,16 @@ export class CommandGuard {
       }
     );
 
+    const t0 = Date.now();
+    diagLog('command-guard', 'sudoRename/begin', { connectionId: connection.id, oldPath, newPath });
     try {
       await connection.sudoRename(oldPath, newPath, password);
       this.activityService.completeActivity(activityId, 'Renamed');
+      diagLog('command-guard', 'sudoRename/success', { connectionId: connection.id, oldPath, newPath, durationMs: Date.now() - t0 });
     } catch (error) {
-      this.activityService.failActivity(activityId, (error as Error).message);
+      const e = error as Error;
+      infoLog('command-guard', 'sudoRename/failed', { connectionId: connection.id, oldPath, newPath, durationMs: Date.now() - t0, errorName: e.name, errorMessage: e.message });
+      this.activityService.failActivity(activityId, e.message);
       throw error;
     }
   }

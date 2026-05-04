@@ -30,6 +30,7 @@ import { ProgressiveFileContentProvider } from './providers/ProgressiveFileConte
 import { PROGRESSIVE_PREVIEW_SCHEME, parsePreviewUri } from './types/progressive';
 import { formatFileSize, formatRelativeTime, normalizeLocalPath, expandPath } from './utils/helpers';
 import { parseHostInfoFromPath as parseHostInfo, isInSshTempDir, hasSshPrefix } from './utils/extensionHelpers';
+import { setDiagOutputChannel, refreshDiagEnabled, infoLog } from './utils/diagnosticLog';
 
 let outputChannel: vscode.OutputChannel;
 
@@ -141,7 +142,24 @@ function buildServerSearchEntries(
  */
 export function activate(context: vscode.ExtensionContext): void {
   outputChannel = vscode.window.createOutputChannel('SSH Lite');
+  setDiagOutputChannel(outputChannel);
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('sshLite.diagnosticLogging')) {
+        refreshDiagEnabled();
+        infoLog('config', 'diagnosticLogging changed', {
+          enabled: vscode.workspace.getConfiguration('sshLite').get<boolean>('diagnosticLogging', false),
+        });
+      }
+    })
+  );
   log('SSH Lite extension activating...');
+  infoLog('lifecycle', 'extension activating', {
+    version: context.extension?.packageJSON?.version,
+    vscode: vscode.version,
+    platform: process.platform,
+    diagnosticLogging: vscode.workspace.getConfiguration('sshLite').get<boolean>('diagnosticLogging', false),
+  });
 
   // Get service instances
   const connectionManager = ConnectionManager.getInstance();
@@ -3447,6 +3465,7 @@ async function autoReconnectFromOpenFiles(
  */
 export function deactivate(): void {
   log('SSH Lite extension deactivating...');
+  infoLog('lifecycle', 'extension deactivating');
 
   // Clean up services
   const connectionManager = ConnectionManager.getInstance();
@@ -3470,6 +3489,7 @@ export function deactivate(): void {
   connectionManager.dispose();
 
   log('SSH Lite extension deactivated');
+  infoLog('lifecycle', 'extension deactivated');
 }
 
 /**

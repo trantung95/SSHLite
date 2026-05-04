@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { SSHConnection } from '../connection/SSHConnection';
 import { ClientChannel } from 'ssh2';
+import { diagLog, infoLog } from '../utils/diagnosticLog';
 
 /**
  * Terminal info for tracking resources
@@ -42,6 +43,13 @@ export class TerminalService {
     this.terminalCounters.set(connection.id, terminalNumber);
 
     const terminalId = `${connection.id}-${terminalNumber}`;
+    const t0 = Date.now();
+    infoLog('terminal', 'create/begin', {
+      connectionId: connection.id,
+      hostName: connection.host.name,
+      terminalNumber,
+      preOpened: !!preOpenedShell,
+    });
 
     try {
       // Create a new shell channel on the existing SSH connection (no re-auth needed)
@@ -51,9 +59,22 @@ export class TerminalService {
       this.terminals.set(terminalId, terminalInfo);
       terminalInfo.terminal.show();
 
+      infoLog('terminal', 'create/success', {
+        connectionId: connection.id,
+        terminalNumber,
+        durationMs: Date.now() - t0,
+      });
       return terminalInfo.terminal;
     } catch (error) {
-      vscode.window.showErrorMessage(`Failed to create terminal: ${(error as Error).message}`);
+      const e = error as Error;
+      infoLog('terminal', 'create/failed', {
+        connectionId: connection.id,
+        terminalNumber,
+        durationMs: Date.now() - t0,
+        errorName: e.name,
+        errorMessage: e.message,
+      });
+      vscode.window.showErrorMessage(`Failed to create terminal: ${e.message}`);
       throw error;
     }
   }
@@ -113,11 +134,13 @@ export class TerminalService {
 
         // Handle shell close
         shell.on('close', () => {
+          diagLog('terminal', 'shell-close', { connectionId: connection.id, terminalId });
           closeEmitter.fire();
           cleanup();
         });
 
         shell.on('error', (err: Error) => {
+          infoLog('terminal', 'shell-error', { connectionId: connection.id, terminalId, errorName: err.name, errorMessage: err.message });
           writeEmitter.fire(`\r\nConnection error: ${err.message}\r\n`);
           closeEmitter.fire();
           cleanup();
@@ -162,13 +185,18 @@ export class TerminalService {
    * Close all terminals for a connection
    */
   closeTerminalsForConnection(connectionId: string): void {
+    let count = 0;
     for (const [terminalId, info] of this.terminals) {
       if (terminalId.startsWith(connectionId)) {
         info.terminal.dispose();
         info.writeEmitter.dispose();
         info.closeEmitter.dispose();
         this.terminals.delete(terminalId);
+        count++;
       }
+    }
+    if (count > 0) {
+      infoLog('terminal', 'close-for-connection', { connectionId, closed: count });
     }
   }
 

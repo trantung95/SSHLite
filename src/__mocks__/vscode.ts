@@ -267,6 +267,14 @@ export const window = {
     hide: jest.fn(),
     dispose: jest.fn(),
   }),
+  createTerminal: jest.fn().mockReturnValue({
+    name: 'mock-terminal',
+    show: jest.fn(),
+    hide: jest.fn(),
+    sendText: jest.fn(),
+    dispose: jest.fn(),
+    processId: Promise.resolve(1234),
+  }),
   createTreeView: jest.fn().mockReturnValue({
     reveal: jest.fn(),
     dispose: jest.fn(),

@@ -1,5 +1,50 @@
 # Changelog
 
+## v0.7.4 — Log unit-test coverage + reusable test helpers
+
+- New test helper `setupLogCapture()` in [src/__mocks__/testHelpers.ts](../src/__mocks__/testHelpers.ts): installs a mock `OutputChannel`, sets `sshLite.diagnosticLogging` config, returns `{ lines, rawLines, find(level, category, msgSubstring), reset() }`. Includes a greedy parser that handles k=v values containing spaces (cmd previews, error messages)
+- Added `vscode.window.createTerminal` to the shared vscode mock (was missing — required for TerminalService end-to-end tests)
+- 7 new test files / extensions (+59 tests), all matching the v0.7.3 instrumentation 1:1:
+  - `src/utils/__tests__/diagnosticLog.test.ts` (11 tests) — gating, formatting, JSON serialization, truncation, circular refs, no-channel safety
+  - `src/__tests__/ChannelSemaphore.test.ts` (+11 tests) — every acquire/release/destroy/adaptive event, label fallback
+  - `src/__tests__/CommandGuard.logs.test.ts` (14 tests) — exec lifecycle + retry, openShell, semaphore wiring, all file-op wrappers, sudo routing
+  - `src/connection/ConnectionManager.logs.test.ts` (7 tests) — connect/begin (with credential variants), reuse-existing, state-change, disconnect, dispose
+  - `src/connection/SSHConnection.logs.test.ts` (8 tests) — connect-begin, auth-methods, ssh2 error with level/code, close, disconnect/dispose/handleDisconnect, sftp/not-connected
+  - `src/services/TerminalService.logs.test.ts` (4 tests) — create begin/success/failed, terminal-number incrementing
+  - `src/services/PortForwardService.logs.test.ts` (4 tests) — create + stop, both happy + error paths
+- Suite total: **52 → 58 suites, 1372 → 1431 tests**, runtime ~17s → ~20s
+- No production code changes vs 0.7.3 — pure test-coverage release
+
+## v0.7.3 — Diagnostic logging (full coverage)
+
+- New `sshLite.diagnosticLogging` boolean setting (default `false`)
+- New module `src/utils/diagnosticLog.ts` exporting `infoLog` (always emits) and `diagLog` (gated on the setting); both write to the existing `SSH Lite` Output channel. Cached flag refreshed on `onDidChangeConfiguration`
+- `extension.ts` activate/deactivate log lifecycle (version, vscode, platform, diagnosticLogging state)
+- All existing 1372 tests still pass; no behavior changes
+
+### Coverage
+
+**Channel semaphore** — `ChannelSemaphore` now takes optional `label` arg (passed as `connectionId`); logs `create`, `acquire/immediate`, `acquire/queued`, `acquire/woken` (with `waitedMs`), `acquire/timeout`, `release` (with `wokeNext`), `release/post-destroy-ignored`, `adaptive/reduce`, `adaptive/increase`, `destroy` (with `queueRejected` + `activeAtDestroy`)
+
+**CommandGuard** — every wrapper logs `begin` / `success` (with bytes + durationMs) / `failed` (with errorName + errorMessage):
+- `exec` — adds `channel-limit-retry` and `exhausted` for the retry loop
+- `openShell` — `begin` / `slot-acquired` (with waitedMs) / `ready` (with shellMs + totalMs) / `release` (with via=close/exit) / `acquire-failed` / `shell-failed`
+- `readFile`, `writeFile`, `listFiles`, `searchFiles`
+- `sudoReadFile`, `sudoWriteFile`, `sudoDeleteFile`, `sudoMkdir`, `sudoRename`
+- `getSemaphore` and `removeSemaphore` (lifecycle)
+
+**SSHConnection** — `connect/begin`, `auth-methods` (which methods advertised + key bytes), `handshake` (kex / serverHostKey / cs / sc), `server-banner`, `ready`, `error` (with ssh2 `level` + `code`), `ready-timeout`, `close`, `end`, `keyboard-interactive-prompt`, `host-key-verify` / `host-key-decision` / `host-key-error`, `connect/threw`. Plus teardown: `disconnect/begin` (state snapshot), `handleDisconnect`, `dispose`. SFTP: `sftp/wait-pending`, `sftp/create-begin`, `sftp/create-success` (with durationMs), `sftp/create-failed`, `sftp/not-connected`. Background: `capabilities/detect-begin`, `capabilities/detect-success` (os, hasInotifywait, hasFswatch, watchMethod), `capabilities/detect-failed-fallback-poll`. Port forward: `forwardPort/duplicate`, `forwardPort/begin`, `forwardPort/incoming-connection`, `forwardPort/forwardOut-error`, `forwardPort/server-error`, `forwardPort/listening`, `stopForward`, `stopForward/not-found`
+
+**ConnectionManager** — replaces every `console.log('[SSH Lite] ...')` with `infoLog` / `diagLog` so output reaches the user-facing channel. Adds `connect/begin` (full host details), `connect/reuse-existing`, `reconnect/start`, `reconnect/start-skipped-already-scheduled`, `reconnect/attempt`, `reconnect/attempt-aborted`, `reconnect/success`, `reconnect-failed` (with classification), `disconnect-requested`, `manual-flag-set`, `calling-connection-disconnect`, `dispose`
+
+**TerminalService** — `create/begin`, `create/success`, `create/failed`, `shell-close`, `shell-error`, `close-for-connection`
+
+**PortForwardService** — `create/begin`, `create/success`, `create/failed`, `stop/begin`, `stop/success`, `stop/failed`
+
+### Motivation
+
+Triage of GitHub issue #4 ("After yesterday's update — Your extension stopped working on my cLAB environment") — report has no logs, no error message, no version. Shipping comprehensive diagnostics so the reporter (and any future reporter) can enable the setting, reproduce, and paste a meaningful trace.
+
 ## v0.7.2 — SSH channel semaphore
 
 - New `ChannelSemaphore` class: per-connection slot tracking, FIFO queue, timeout, destroy-on-disconnect, adaptive max

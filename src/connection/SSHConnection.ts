@@ -14,6 +14,7 @@ import {
 } from '../types';
 import { expandPath } from '../utils/helpers';
 import { CredentialService, SavedCredential } from '../services/CredentialService';
+import { diagLog, infoLog } from '../utils/diagnosticLog';
 
 // Shared output channel for SSH command logging
 let sshOutputChannel: vscode.OutputChannel | null = null;
@@ -236,22 +237,85 @@ export class SSHConnection implements ISSHConnection {
     const config = vscode.workspace.getConfiguration('sshLite');
     const timeout = config.get<number>('connectionTimeout', 10000);
     const keepaliveInterval = config.get<number>('keepaliveInterval', 30000);
+    const connectStart = Date.now();
+
+    infoLog('ssh-connect', 'begin', {
+      connectionId: this.id,
+      host: this.host.host,
+      port: this.host.port,
+      username: this.host.username,
+      hostName: this.host.name,
+      source: this.host.source,
+      readyTimeoutMs: timeout,
+      keepaliveIntervalMs: keepaliveInterval,
+      hasCredential: !!this._credential,
+      credentialType: this._credential?.type,
+    });
 
     try {
       const authConfig = await this.buildAuthConfig();
+      const advertisedAuth = Object.keys(authConfig).filter(k => k !== 'passphrase');
+      infoLog('ssh-connect', 'auth-methods', {
+        connectionId: this.id,
+        methods: advertisedAuth,
+        privateKeyBytes: typeof authConfig.privateKey === 'object' && authConfig.privateKey instanceof Buffer ? authConfig.privateKey.length : undefined,
+        agent: !!authConfig.agent,
+        tryKeyboard: !!authConfig.tryKeyboard,
+      });
 
       await new Promise<void>((resolve, reject) => {
         const timeoutId = setTimeout(() => {
+          infoLog('ssh-connect', 'ready-timeout', {
+            connectionId: this.id,
+            timeoutMs: timeout,
+            elapsedMs: Date.now() - connectStart,
+          });
           reject(new ConnectionError(`Connection timeout after ${timeout}ms`));
         }, timeout);
 
         this._client!.on('ready', () => {
           clearTimeout(timeoutId);
+          infoLog('ssh-connect', 'ready', {
+            connectionId: this.id,
+            elapsedMs: Date.now() - connectStart,
+          });
           resolve();
+        });
+
+        // ssh2 fires 'handshake' with negotiated cipher/kex/server algorithms — gold for diagnosing protocol mismatches
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (this._client as any).on('handshake', (negotiated: Record<string, unknown>) => {
+          diagLog('ssh-connect', 'handshake', {
+            connectionId: this.id,
+            elapsedMs: Date.now() - connectStart,
+            kex: (negotiated as { kex?: string }).kex,
+            serverHostKey: (negotiated as { serverHostKey?: string }).serverHostKey,
+            cs: (negotiated as { cs?: unknown }).cs,
+            sc: (negotiated as { sc?: unknown }).sc,
+          });
+        });
+
+        // ssh2 emits the SSH server's banner string on the 'banner' event
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (this._client as any).on('banner', (banner: string) => {
+          infoLog('ssh-connect', 'server-banner', {
+            connectionId: this.id,
+            banner: banner?.replace(/\s+/g, ' ').trim(),
+          });
         });
 
         this._client!.on('error', (err) => {
           clearTimeout(timeoutId);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const e = err as Error & { level?: string; code?: string };
+          infoLog('ssh-connect', 'error', {
+            connectionId: this.id,
+            elapsedMs: Date.now() - connectStart,
+            level: e.level,
+            code: e.code,
+            errorName: e.name,
+            errorMessage: e.message,
+          });
           getOutputChannel().appendLine(`[${new Date().toISOString()}] [CONNECT] SSH2 error for ${this.host.host}:${this.host.port}: ${err.message}`);
           const msg = err.message.toLowerCase();
           if (msg.includes('authentication') || msg.includes('auth') || msg.includes('permission denied') || msg.includes('publickey') || msg.includes('invalid username')) {
@@ -264,11 +328,26 @@ export class SSHConnection implements ISSHConnection {
         });
 
         this._client!.on('close', () => {
+          infoLog('ssh-connect', 'close', {
+            connectionId: this.id,
+            connectedFor: Date.now() - connectStart,
+          });
           this.handleDisconnect();
+        });
+
+        // ssh2 'end' fires when remote sends SSH_MSG_DISCONNECT
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (this._client as any).on('end', () => {
+          diagLog('ssh-connect', 'end', { connectionId: this.id });
         });
 
         // Handle keyboard-interactive authentication
         this._client!.on('keyboard-interactive', (_name, _instructions, _instructionsLang, prompts, finish) => {
+          diagLog('ssh-connect', 'keyboard-interactive-prompt', {
+            connectionId: this.id,
+            promptCount: prompts.length,
+            prompts: prompts.map(p => ({ prompt: p.prompt, echo: p.echo })),
+          });
           // Use saved password for keyboard-interactive prompts
           const responses = prompts.map(() => authConfig.password as string || '');
           finish(responses);
@@ -283,8 +362,16 @@ export class SSHConnection implements ISSHConnection {
           ...authConfig,
           // Host key verification for MITM protection
           hostVerifier: (key: Buffer, verify: (valid: boolean) => void) => {
+            diagLog('ssh-connect', 'host-key-verify', {
+              connectionId: this.id,
+              keyBytes: key.length,
+            });
             verifyHostKey(this.host.host, this.host.port, key)
               .then((accepted) => {
+                infoLog('ssh-connect', 'host-key-decision', {
+                  connectionId: this.id,
+                  accepted,
+                });
                 if (accepted) {
                   verify(true);
                 } else {
@@ -292,7 +379,11 @@ export class SSHConnection implements ISSHConnection {
                   reject(new ConnectionError('Host key verification failed - connection rejected by user'));
                 }
               })
-              .catch(() => {
+              .catch((err) => {
+                infoLog('ssh-connect', 'host-key-error', {
+                  connectionId: this.id,
+                  errorMessage: (err as Error).message,
+                });
                 verify(false);
                 reject(new ConnectionError('Host key verification failed'));
               });
@@ -473,6 +564,14 @@ export class SSHConnection implements ISSHConnection {
    * Handle disconnect event
    */
   private handleDisconnect(): void {
+    infoLog('ssh-connect', 'handleDisconnect', {
+      connectionId: this.id,
+      hadSftp: !!this._sftp,
+      activeWatcherCount: this._activeWatchers.size,
+      portForwardCount: this._portForwards.size,
+      hadCapabilities: !!this._capabilities,
+      previousState: this.state,
+    });
     // Close SFTP session properly
     if (this._sftp) {
       try {
@@ -523,12 +622,20 @@ export class SSHConnection implements ISSHConnection {
    * Disconnect from the SSH host
    */
   async disconnect(): Promise<void> {
+    infoLog('ssh-connect', 'disconnect/begin', {
+      connectionId: this.id,
+      hasSftp: !!this._sftp,
+      portForwardCount: this._portForwards.size,
+      activeWatcherCount: this._activeWatchers.size,
+      hasClient: !!this._client,
+      currentState: this.state,
+    });
     // Close SFTP session first
     if (this._sftp) {
       try {
         this._sftp.end();
-      } catch {
-        // Ignore cleanup errors
+      } catch (err) {
+        diagLog('ssh-connect', 'disconnect/sftp-end-error', { connectionId: this.id, errorMessage: (err as Error).message });
       }
       this._sftp = null;
     }
@@ -537,8 +644,8 @@ export class SSHConnection implements ISSHConnection {
     for (const [, server] of this._portForwards) {
       try {
         server.close();
-      } catch {
-        // Ignore cleanup errors
+      } catch (err) {
+        diagLog('ssh-connect', 'disconnect/forward-close-error', { connectionId: this.id, errorMessage: (err as Error).message });
       }
     }
     this._portForwards.clear();
@@ -569,20 +676,34 @@ export class SSHConnection implements ISSHConnection {
 
     // If another call is already creating the SFTP session, wait for it
     if (this._sftpPromise) {
+      diagLog('ssh-connect', 'sftp/wait-pending', { connectionId: this.id });
       return this._sftpPromise;
     }
 
     if (!this._client || this.state !== ConnectionState.Connected) {
+      infoLog('ssh-connect', 'sftp/not-connected', {
+        connectionId: this.id,
+        hasClient: !!this._client,
+        state: this.state,
+      });
       throw new ConnectionError('Not connected');
     }
 
+    diagLog('ssh-connect', 'sftp/create-begin', { connectionId: this.id });
+    const t0 = Date.now();
     this._sftpPromise = new Promise<SFTPWrapper>((resolve, reject) => {
       this._client!.sftp((err, sftp) => {
         this._sftpPromise = null;
         if (err) {
+          infoLog('ssh-connect', 'sftp/create-failed', {
+            connectionId: this.id,
+            durationMs: Date.now() - t0,
+            errorMessage: err.message,
+          });
           reject(new SFTPError(`Failed to create SFTP session: ${err.message}`, err));
           return;
         }
+        diagLog('ssh-connect', 'sftp/create-success', { connectionId: this.id, durationMs: Date.now() - t0 });
         this._sftp = sftp;
         resolve(sftp);
       });
@@ -1453,11 +1574,18 @@ export class SSHConnection implements ISSHConnection {
     }
 
     if (this._portForwards.has(localPort)) {
+      infoLog('ssh-connect', 'forwardPort/duplicate', { connectionId: this.id, localPort });
       throw new SFTPError(`Port ${localPort} is already forwarded`);
     }
 
+    diagLog('ssh-connect', 'forwardPort/begin', { connectionId: this.id, localPort, remoteHost, remotePort });
     return new Promise((resolve, reject) => {
       const server = net.createServer((socket) => {
+        diagLog('ssh-connect', 'forwardPort/incoming-connection', {
+          connectionId: this.id,
+          localPort,
+          from: socket.remoteAddress + ':' + socket.remotePort,
+        });
         this._client!.forwardOut(
           socket.remoteAddress || '127.0.0.1',
           socket.remotePort || 0,
@@ -1465,6 +1593,13 @@ export class SSHConnection implements ISSHConnection {
           remotePort,
           (err, stream) => {
             if (err) {
+              infoLog('ssh-connect', 'forwardPort/forwardOut-error', {
+                connectionId: this.id,
+                localPort,
+                remoteHost,
+                remotePort,
+                errorMessage: err.message,
+              });
               socket.end();
               return;
             }
@@ -1477,10 +1612,16 @@ export class SSHConnection implements ISSHConnection {
       });
 
       server.on('error', (err) => {
+        infoLog('ssh-connect', 'forwardPort/server-error', {
+          connectionId: this.id,
+          localPort,
+          errorMessage: err.message,
+        });
         reject(new SFTPError(`Failed to start port forward: ${err.message}`, err));
       });
 
       server.listen(localPort, '127.0.0.1', () => {
+        infoLog('ssh-connect', 'forwardPort/listening', { connectionId: this.id, localPort, remoteHost, remotePort });
         this._portForwards.set(localPort, server);
         resolve();
       });
@@ -1493,8 +1634,11 @@ export class SSHConnection implements ISSHConnection {
   async stopForward(localPort: number): Promise<void> {
     const server = this._portForwards.get(localPort);
     if (server) {
+      diagLog('ssh-connect', 'stopForward', { connectionId: this.id, localPort });
       server.close();
       this._portForwards.delete(localPort);
+    } else {
+      diagLog('ssh-connect', 'stopForward/not-found', { connectionId: this.id, localPort });
     }
   }
 
@@ -1833,6 +1977,7 @@ export class SSHConnection implements ISSHConnection {
    * Dispose of resources
    */
   dispose(): void {
+    infoLog('ssh-connect', 'dispose', { connectionId: this.id });
     this.disconnect();
     this._onStateChange.dispose();
   }

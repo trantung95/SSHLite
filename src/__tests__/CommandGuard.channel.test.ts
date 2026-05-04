@@ -1,6 +1,6 @@
 ﻿import { CommandGuard } from '../services/CommandGuard';
 import { ChannelLimitError } from '../services/ChannelSemaphore';
-import { createMockConnection } from '../__mocks__/testHelpers';
+import { createMockConnection, setupLogCapture } from '../__mocks__/testHelpers';
 
 beforeEach(() => {
   (CommandGuard as any)._instance = undefined;

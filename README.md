@@ -1,6 +1,6 @@
 # SSH Lite (SSH Tools) — Lightweight SSH Suite for VS Code
 
-![Version](https://img.shields.io/badge/version-0.7.2-blue)
+![Version](https://img.shields.io/badge/version-0.7.4-blue)
 ![Status](https://img.shields.io/badge/status-beta-yellow)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-1.85.0+-purple)
@@ -271,6 +271,29 @@ Contributions welcome! Please submit Pull Requests on GitHub.
 Apache-2.0 License
 
 ## Release Notes
+
+### 0.7.4 — Log unit-test coverage + reusable test helpers
+
+- **+59 unit tests** verifying every diagnostic log added in 0.7.3 (ChannelSemaphore, CommandGuard, ConnectionManager, SSHConnection, TerminalService, PortForwardService, plus the `diagnosticLog` helper itself). Total suite is now **1431 tests across 58 suites** (was 1372 / 52)
+- New `setupLogCapture()` test helper in [src/__mocks__/testHelpers.ts](src/__mocks__/testHelpers.ts) — installs a fresh mock `OutputChannel`, sets the `diagnosticLogging` config flag, returns a structured `find(level, category, msgSubstring)` matcher with greedy parsing for multi-word values like `errorMessage=No such file` or 80-char `cmd=` previews
+- Added missing `vscode.window.createTerminal` mock (let TerminalService run end-to-end in unit tests)
+- No production code changes vs 0.7.3 — pure test-coverage release
+
+### 0.7.3 — Diagnostic logging (full coverage)
+
+- New `sshLite.diagnosticLogging` setting (default **off**) — when enabled, the **SSH Lite** Output channel emits a verbose trace covering every SSH operation:
+  - **Connect lifecycle**: begin, advertised auth methods (password / privateKey / agent / keyboard), handshake (kex, server host key, ciphers), server banner, ready, error (with `level` + `code`), close, host-key verify decision, keyboard-interactive prompts, post-connect capability detection (OS, inotifywait/fswatch)
+  - **Channel semaphore**: every acquire (immediate vs queued), wait time, release, adaptive max changes, destroy, post-destroy release-after-disconnect
+  - **CommandGuard wrappers** (every file op flows through these): `exec`, `openShell`, `readFile`, `writeFile`, `listFiles`, `searchFiles`, plus all `sudo*` one-offs — each logged with begin/success/failed, bytes, duration, sudo flag
+  - **ConnectionManager**: connect/begin (with full host details), reconnect lifecycle (start/attempt/success/failed with classification), disconnect, dispose
+  - **TerminalService**: terminal create begin/success/failed (with shell-channel timing), shell-close, shell-error
+  - **PortForwardService** + **SSHConnection.forwardPort**: create/listen/incoming-connection/forwardOut-error/server-error/stop
+  - **SFTP**: getSFTP create timing, race-condition serialization, not-connected guard
+  - **Teardown**: disconnect (state snapshot), handleDisconnect, dispose
+  - **Extension lifecycle**: activate (version, vscode, platform), deactivate
+- Existing `console.log` lines in `ConnectionManager` now route to the user-visible Output channel via `infoLog`
+- Always-on **info** events emit even with diagnostic logging off, so a baseline lifecycle trail is always available
+- Use this when filing issues — see [issue #4](https://github.com/trantung95/SSHLite/issues/4)
 
 ### 0.7.2 — SSH channel semaphore
 

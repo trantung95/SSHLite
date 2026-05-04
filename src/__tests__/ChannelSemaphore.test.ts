@@ -1,5 +1,6 @@
 // src/__tests__/ChannelSemaphore.test.ts
 import { ChannelSemaphore, ChannelLimitError, ChannelTimeoutError } from '../services/ChannelSemaphore';
+import { setupLogCapture } from '../__mocks__/testHelpers';
 
 describe('ChannelSemaphore', () => {
   describe('immediate acquire', () => {
@@ -171,5 +172,137 @@ describe('ChannelTimeoutError', () => {
     expect(err.name).toBe('ChannelTimeoutError');
     expect(err.timeoutMs).toBe(30000);
     expect(err).toBeInstanceOf(Error);
+  });
+});
+
+describe('ChannelSemaphore — diagnostic logs', () => {
+  describe('always-on (infoLog)', () => {
+    it('emits adaptive/reduce when reduceMax actually decreases the cap', () => {
+      const cap = setupLogCapture({ enableDiag: false });
+      const sem = new ChannelSemaphore(3, 'host:22:user');
+      sem.reduceMax();
+      const found = cap.find('INFO', 'semaphore', 'adaptive/reduce');
+      expect(found).toHaveLength(1);
+      expect(found[0].data.label).toBe('host:22:user');
+      expect(found[0].data.from).toBe('3');
+      expect(found[0].data.to).toBe('2');
+    });
+
+    it('does NOT emit adaptive/reduce when already at the floor', () => {
+      const cap = setupLogCapture({ enableDiag: false });
+      const sem = new ChannelSemaphore(1, 'host');
+      cap.reset();
+      sem.reduceMax();
+      expect(cap.find('INFO', 'semaphore', 'adaptive/reduce')).toHaveLength(0);
+    });
+
+    it('emits acquire/timeout with waitedMs and queue position', async () => {
+      const cap = setupLogCapture({ enableDiag: false });
+      const sem = new ChannelSemaphore(1, 'host');
+      const r1 = await sem.acquire();
+      cap.reset();
+      await expect(sem.acquire(40)).rejects.toBeInstanceOf(ChannelTimeoutError);
+      const found = cap.find('INFO', 'semaphore', 'acquire/timeout');
+      expect(found).toHaveLength(1);
+      expect(found[0].data.label).toBe('host');
+      expect(found[0].data.timeoutMs).toBe('40');
+      expect(Number(found[0].data.waitedMs)).toBeGreaterThanOrEqual(40);
+      r1();
+    });
+
+    it('emits destroy with queueRejected count and activeAtDestroy snapshot', async () => {
+      const cap = setupLogCapture({ enableDiag: false });
+      const sem = new ChannelSemaphore(1, 'host');
+      await sem.acquire();
+      sem.acquire().catch(() => {/* expected */});
+      sem.acquire().catch(() => {/* expected */});
+      cap.reset();
+      sem.destroy(new Error('Connection closed'));
+      const found = cap.find('INFO', 'semaphore', 'destroy');
+      expect(found).toHaveLength(1);
+      expect(found[0].data.queueRejected).toBe('2');
+      expect(found[0].data.activeAtDestroy).toBe('1');
+      expect(found[0].data.reason).toBe('Connection closed');
+    });
+  });
+
+  describe('verbose (diagLog) — only when diagnosticLogging=true', () => {
+    it('emits create on construction with label + maxSlots', () => {
+      const cap = setupLogCapture({ enableDiag: true });
+      new ChannelSemaphore(5, 'host:22:user');
+      const found = cap.find('DIAG', 'semaphore', 'create');
+      expect(found).toHaveLength(1);
+      expect(found[0].data.label).toBe('host:22:user');
+      expect(found[0].data.maxSlots).toBe('5');
+    });
+
+    it('emits acquire/immediate when a slot is free', async () => {
+      const cap = setupLogCapture({ enableDiag: true });
+      const sem = new ChannelSemaphore(2, 'h');
+      cap.reset();
+      const r = await sem.acquire();
+      const found = cap.find('DIAG', 'semaphore', 'acquire/immediate');
+      expect(found).toHaveLength(1);
+      expect(found[0].data.active).toBe('1');
+      r();
+    });
+
+    it('emits acquire/queued then acquire/woken with waitedMs when slot frees', async () => {
+      const cap = setupLogCapture({ enableDiag: true });
+      const sem = new ChannelSemaphore(1, 'h');
+      const r1 = await sem.acquire();
+      cap.reset();
+      const p2 = sem.acquire();
+      expect(cap.find('DIAG', 'semaphore', 'acquire/queued')).toHaveLength(1);
+      r1();
+      const r2 = await p2;
+      expect(cap.find('DIAG', 'semaphore', 'acquire/woken')).toHaveLength(1);
+      const woken = cap.find('DIAG', 'semaphore', 'acquire/woken')[0];
+      expect(Number(woken.data.waitedMs)).toBeGreaterThanOrEqual(0);
+      r2();
+    });
+
+    it('emits release with wokeNext=true when there is a waiter', async () => {
+      const cap = setupLogCapture({ enableDiag: true });
+      const sem = new ChannelSemaphore(1, 'h');
+      const r1 = await sem.acquire();
+      sem.acquire(); // queue a waiter
+      cap.reset();
+      r1();
+      const releases = cap.find('DIAG', 'semaphore', 'release');
+      expect(releases).toHaveLength(1);
+      expect(releases[0].data.wokeNext).toBe('true');
+    });
+
+    it('emits release/post-destroy-ignored when held release fires after destroy', async () => {
+      const cap = setupLogCapture({ enableDiag: true });
+      const sem = new ChannelSemaphore(1, 'h');
+      const r1 = await sem.acquire();
+      sem.destroy(new Error('done'));
+      cap.reset();
+      r1();
+      expect(cap.find('DIAG', 'semaphore', 'release/post-destroy-ignored')).toHaveLength(1);
+    });
+
+    it('emits adaptive/increase when increaseMax actually grows the cap', () => {
+      const cap = setupLogCapture({ enableDiag: true });
+      const sem = new ChannelSemaphore(4, 'h');
+      sem.reduceMax();
+      cap.reset();
+      sem.increaseMax();
+      const found = cap.find('DIAG', 'semaphore', 'adaptive/increase');
+      expect(found).toHaveLength(1);
+      expect(found[0].data.from).toBe('3');
+      expect(found[0].data.to).toBe('4');
+    });
+  });
+
+  describe('label fallback', () => {
+    it('defaults to "unknown" when no label provided', () => {
+      const cap = setupLogCapture({ enableDiag: true });
+      new ChannelSemaphore(2);
+      const found = cap.find('DIAG', 'semaphore', 'create');
+      expect(found[0].data.label).toBe('unknown');
+    });
   });
 });

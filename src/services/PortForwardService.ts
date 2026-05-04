@@ -3,6 +3,7 @@ import { ConnectionManager } from '../connection/ConnectionManager';
 import { SSHConnection } from '../connection/SSHConnection';
 import { PortForwardTreeProvider } from '../providers/PortForwardTreeProvider';
 import { IPortForward, ISavedPortForwardRule } from '../types';
+import { infoLog } from '../utils/diagnosticLog';
 
 /**
  * Saved port forward rules indexed by hostId
@@ -238,6 +239,14 @@ export class PortForwardService {
     remoteHost: string,
     remotePort: number
   ): Promise<void> {
+    const t0 = Date.now();
+    infoLog('port-forward', 'create/begin', {
+      connectionId: connection.id,
+      hostName: connection.host.name,
+      localPort,
+      remoteHost,
+      remotePort,
+    });
     try {
       await connection.forwardPort(localPort, remoteHost, remotePort);
 
@@ -249,11 +258,28 @@ export class PortForwardService {
       // Auto-save the rule for persistence
       await this.saveRule(connection.id, localPort, remoteHost, remotePort);
 
+      infoLog('port-forward', 'create/success', {
+        connectionId: connection.id,
+        localPort,
+        remoteHost,
+        remotePort,
+        durationMs: Date.now() - t0,
+      });
       vscode.window.setStatusBarMessage(
         `$(check) Port forward: localhost:${localPort} → ${remoteHost}:${remotePort}`, 5000
       );
     } catch (error) {
-      vscode.window.showErrorMessage(`Failed to create port forward: ${(error as Error).message}`);
+      const e = error as Error;
+      infoLog('port-forward', 'create/failed', {
+        connectionId: connection.id,
+        localPort,
+        remoteHost,
+        remotePort,
+        durationMs: Date.now() - t0,
+        errorName: e.name,
+        errorMessage: e.message,
+      });
+      vscode.window.showErrorMessage(`Failed to create port forward: ${e.message}`);
     }
   }
 
@@ -269,6 +295,12 @@ export class PortForwardService {
       return;
     }
 
+    infoLog('port-forward', 'stop/begin', {
+      connectionId: forward.connectionId,
+      localPort: forward.localPort,
+      remoteHost: forward.remoteHost,
+      remotePort: forward.remotePort,
+    });
     try {
       await connection.stopForward(forward.localPort);
 
@@ -277,9 +309,12 @@ export class PortForwardService {
         this.treeProvider.removeForward(forward.localPort, forward.connectionId);
       }
 
+      infoLog('port-forward', 'stop/success', { connectionId: forward.connectionId, localPort: forward.localPort });
       vscode.window.setStatusBarMessage(`$(check) Port forward stopped: localhost:${forward.localPort}`, 3000);
     } catch (error) {
-      vscode.window.showErrorMessage(`Failed to stop port forward: ${(error as Error).message}`);
+      const e = error as Error;
+      infoLog('port-forward', 'stop/failed', { connectionId: forward.connectionId, localPort: forward.localPort, errorName: e.name, errorMessage: e.message });
+      vscode.window.showErrorMessage(`Failed to stop port forward: ${e.message}`);
     }
   }
 
