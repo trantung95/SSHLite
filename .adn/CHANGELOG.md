@@ -1,5 +1,51 @@
 # Changelog
 
+## v0.7.7 — Chaos suite re-anchored to its basis
+
+The chaos suite's stated basis (`.adn/testing/chaos-testing.md`) is **dynamic bug discovery via real Docker containers + invariants**. Recent runs violated that basis on two axes: coverage erosion (49 uncovered methods) and budget collapse (182 of ~1,120 deep scenarios completing before `global_timeout`). A separate prior run logged 351 failures rooted in a single sshd dying mid-run, after which every subsequent scenario on that server cascaded into ECONNREFUSED before the 5s polling caught up.
+
+This release re-aligns the suite with its basis: the plan doc spells out the rules of engagement, and the engine is fixed so cascading failures and slow scenarios can no longer bury real signal.
+
+### Plan doc additions ([.adn/testing/chaos-testing.md](testing/chaos-testing.md))
+
+- **Basis & Non-Goals** — every scenario must advance one of the 8 strategies. Not a unit-test substitute, perf benchmark, or smoke test.
+- **Budget Policy** — deep budget = 780s; average ceiling ~695ms/scenario; per-scenario p95 ≤ 4× average; on `global_timeout`, post-run analysis names the slowest 10.
+- **Coverage Triage** — P0 (must cover, user-facing call sites), P1 (stateful lifecycles), P2 (defer to unit tests).
+- **Scenario Authoring Policy** — every new scenario declares strategy mapping, invariant, and cost budget; the engine has the `weight: 'heavy'` opt-out for unavoidably slow ones.
+- **Scenario Heat Map** — `post_run_analysis.slowest_scenarios` is the canonical surface for budget regressions.
+- **Weekly checklist reordered** — Step 1 is now "did the run early-terminate? Fix budget BEFORE adding scenarios."
+
+### Engine fixes ([src/chaos/ChaosEngine.ts](../src/chaos/ChaosEngine.ts), [src/chaos/ChaosConfig.ts](../src/chaos/ChaosConfig.ts), [src/chaos/ChaosLogger.ts](../src/chaos/ChaosLogger.ts))
+
+- **Dead-server cascade detection** — when sshd dies but `docker inspect` still says "running", the 5s health-monitor poll is too slow; every subsequent scenario hits ECONNREFUSED. Engine now tracks consecutive connection failures per server (ECONNREFUSED, "Connection lost before handshake", handshake timeouts, getaddrinfo) and marks the server dead after 3 in a row. Skips remaining scenarios on it. Verified: deep re-run = 0 failures across 8 containers.
+- **`weight: 'heavy'` sampling** — added optional `weight?: 'normal' | 'heavy'` field on `ScenarioDefinition`. Heavy scenarios run at `ceil(variations / 3)` instead of `variations`.
+- **Slowest-scenarios telemetry** — `ChaosRunResult.slowest_scenarios: Array<{name, p95_ms, runs}>` populated from per-scenario duration samples. Surfaced in console summary and JSONL. When `early_termination=global_timeout` fires, the post-run analysis explicitly names the offenders and recommends `weight: 'heavy'`.
+
+### New P0 coverage scenarios
+
+- [scenarios/connection-lifecycle.ts](../src/chaos/scenarios/connection-lifecycle.ts) — `dispose-after-use` (post-dispose ops throw, state reaches Disconnected)
+- [scenarios/file-operations.ts](../src/chaos/scenarios/file-operations.ts) — `file-exists-roundtrip` (covers `fileExists`); `read-chunked-matches-full` (covers `readFileChunked`, `readFileFirstLines`, `readFileLastLines`, `readFileTail` — chunked ≡ full content; firstN/lastN are subsets; tail bytes match `slice(offset)`)
+- [scenarios/command-guard.ts](../src/chaos/scenarios/command-guard.ts) — `connect-lifecycle` (start/complete/fail/trackDisconnect; running count balances); `monitoring-lifecycle` (start/update/stop including cancelled, refresh start/complete/fail)
+- [scenarios/port-forward.ts](../src/chaos/scenarios/port-forward.ts) — new file. `lifecycle` covers `forwardPort` / `stopForward` / `getActiveForwards` registry contract (no real TCP traffic — registry is what user-facing commands rely on)
+
+### Heavy tagging applied
+
+- `channel-semaphore` (×6) — concurrency stress, real disconnect storms
+- `ssh-tools-keys:ssh-push-pubkey` — local `ssh-keygen` shell-out is slow on every OS
+- `server-monitor` (×5) — `top` / `free` / `netstat` / `journalctl` are inherently slow
+- `connection-lifecycle:rapid-reconnect` — heat map confirmed it ate 60% of the deep budget at full multiplicity (5818ms p95 × 80 runs)
+
+### Coverage manifest
+
+[src/chaos/coverage-manifest.json](../src/chaos/coverage-manifest.json) — 18 previously-empty entries now mapped: `dispose`, `fileExists`, `readFileChunked`, `readFileFirstLines`, `readFileLastLines`, `readFileTail`, `forwardPort`, `stopForward`, `getActiveForwards`, `CommandGuard.startConnect` / `completeConnect` / `failConnect` / `trackDisconnect` / `startMonitoring` / `updateMonitoring` / `stopMonitoring` / `startRefresh` / `completeRefresh` / `failRefresh`, `ActivityService.getRunningActivities`.
+
+### Verification
+
+- `npm run compile` — clean
+- `npx jest --no-coverage` — 1431/1431 pass (58 suites)
+- `npm run test:chaos` — 75/75 pass (was 351 failures pre-fix on a sick container)
+- `npm run test:chaos:deep` — 231/231 pass after `rapid-reconnect` heavy-tag; `slowest_scenarios` correctly identifies remaining budget offenders for the next iteration
+
 ## v0.7.6 — Windows-client → Linux-server cross-coverage tests
 
 Adds a dedicated integration target that runs on a real Windows host against the existing multi-OS Docker stack. Closes the cross-platform coverage gap noted in 0.7.5: CI runs Linux→Linux, but actual users hit Windows-specific issues we never exercised.

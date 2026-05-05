@@ -137,6 +137,7 @@ export class ChaosLogger {
       output_summary: this.buildOutputSummary(allCollectedData),
       container_health: containerHealth || { monitored: 0, healthy: 0, dead: 0, deaths: [], containerStatuses: [] },
       scenarios_skipped: 0, // Populated by ChaosEngine after build
+      slowest_scenarios: [], // Populated by ChaosEngine after build
       post_run_analysis: [], // Populated by ChaosEngine after build
     };
   }
@@ -248,6 +249,14 @@ export class ChaosLogger {
             }
           }
         }
+      }
+    }
+
+    // Slowest scenarios (heat map)
+    if (result.slowest_scenarios && result.slowest_scenarios.length > 0) {
+      console.log(`\n  SLOWEST SCENARIOS (top ${result.slowest_scenarios.length} by p95):`);
+      for (const s of result.slowest_scenarios) {
+        console.log(`    ${s.p95_ms.toString().padStart(6)} ms  ${s.name}  (${s.runs} run${s.runs === 1 ? '' : 's'})`);
       }
     }
 

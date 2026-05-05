@@ -58,6 +58,10 @@ export class ChaosEngine {
   private deadServers: Set<string> = new Set();
   /** Per-scenario container log snapshots: [scenarioName, serverLabel, logs] */
   private scenarioLogs: Array<{ scenario: string; server: string; logs: string }> = [];
+  /** Per-scenario duration samples for p95 / heat-map analysis. Keyed by scenario name. */
+  private scenarioDurations: Map<string, number[]> = new Map();
+  /** Consecutive scenario failures per server, used to detect dead-server cascades */
+  private consecutiveServerFailures: Map<string, number> = new Map();
 
   constructor(config?: ChaosRunConfig) {
     this.config = config || getRunConfig();
@@ -131,7 +135,14 @@ export class ChaosEngine {
             continue;
           }
 
-          for (let variation = 0; variation < this.config.variationsPerScenario; variation++) {
+          // Heavy scenarios are sampled at ceil(variations / 3) — they consume disproportionate
+          // budget (channel-semaphore, key push, monitor diagnostics) and starve coverage of
+          // the rest of the suite if run at full multiplicity.
+          const variationsForScenario = scenario.weight === 'heavy'
+            ? Math.max(1, Math.ceil(this.config.variationsPerScenario / 3))
+            : this.config.variationsPerScenario;
+
+          for (let variation = 0; variation < variationsForScenario; variation++) {
             // Check global time budget
             if (Date.now() - startTime > maxTotalRunTime) {
               console.error(`[Chaos] GLOBAL TIMEOUT: ${maxTotalRunTime}ms exceeded, stopping remaining scenarios`);
@@ -142,11 +153,36 @@ export class ChaosEngine {
             const result = await this.runScenario(scenario, server, variation);
             this.logger.addResult(result);
 
+            // Track duration for heat-map / p95 analysis
+            const samples = this.scenarioDurations.get(result.name) ?? [];
+            samples.push(result.duration_ms);
+            this.scenarioDurations.set(result.name, samples);
+
             // Record the actions exercised by this scenario category
             this.logger.recordAction(scenario.category);
 
             if (!result.passed) {
               console.log(`  FAIL: ${scenario.name} on ${server.label} (v${variation}): ${result.error || result.invariantViolations.join('; ')}`);
+            }
+
+            // Detect dead-server cascades: ContainerHealthMonitor polls every 5s, so
+            // when sshd dies (MaxSessions, OOM) but `docker inspect` still says "running",
+            // every subsequent scenario on this server fails with ECONNREFUSED or
+            // "Connection lost before handshake". Without this guard, prior runs logged
+            // 351 failures on a single sick server before the polling cycle caught up.
+            // Mark the server dead after 3 consecutive connection failures and skip the rest.
+            const isConnFailure = !!result.error && /ECONNREFUSED|Connection lost before handshake|Timed out while waiting for handshake|getaddrinfo/i.test(result.error);
+            if (isConnFailure) {
+              const count = (this.consecutiveServerFailures.get(server.label) ?? 0) + 1;
+              this.consecutiveServerFailures.set(server.label, count);
+              if (count >= 3 && !this.deadServers.has(server.label)) {
+                console.error(`[Chaos] DEAD SERVER DETECTED: ${server.label} — ${count} consecutive connection failures. Skipping remaining scenarios.`);
+                this.deadServers.add(server.label);
+                break; // exit variation loop; outer skip handles remaining scenarios
+              }
+            } else {
+              // Reset counter on any successful or non-connection error
+              this.consecutiveServerFailures.set(server.label, 0);
             }
           }
         }
@@ -193,6 +229,9 @@ export class ChaosEngine {
         message: `All ${this.config.servers.length} servers are dead. ${scenariosSkipped} scenarios were skipped.`,
       };
     }
+
+    // Compute slowest scenarios (heat map) — top 10 by p95 duration_ms
+    result.slowest_scenarios = this.computeSlowestScenarios(10);
 
     // Generate post-run analysis
     result.post_run_analysis = this.generatePostRunAnalysis(result);
@@ -442,7 +481,36 @@ export class ChaosEngine {
       : '0';
     analysis.push(`Total duration: ${durationSec}s, avg ${avgPerScenario}s per scenario`);
 
+    // Slowest scenarios — surfaced when budget is tight or early termination fires
+    if (result.slowest_scenarios.length > 0) {
+      const top3 = result.slowest_scenarios.slice(0, 3)
+        .map(s => `${s.name}=${s.p95_ms}ms`)
+        .join(', ');
+      analysis.push(`Slowest p95: ${top3}`);
+      if (result.early_termination?.reason === 'global_timeout') {
+        analysis.push(`Budget action: tag the slowest scenarios with weight: 'heavy' or split them — see post_run_analysis.slowest_scenarios for the full top-${result.slowest_scenarios.length} list.`);
+      }
+    }
+
     return analysis;
+  }
+
+  /**
+   * Compute top-N slowest scenarios by p95 duration_ms.
+   * p95 makes outliers visible while still being driven by typical (not single) cost.
+   */
+  private computeSlowestScenarios(topN: number): Array<{ name: string; p95_ms: number; runs: number }> {
+    const entries: Array<{ name: string; p95_ms: number; runs: number }> = [];
+    for (const [name, samples] of this.scenarioDurations) {
+      if (samples.length === 0) continue;
+      const sorted = [...samples].sort((a, b) => a - b);
+      // p95 with linear interpolation: for small N, idx clamps to last element
+      const idx = Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1);
+      const p95 = sorted[Math.max(0, idx)];
+      entries.push({ name, p95_ms: p95, runs: samples.length });
+    }
+    entries.sort((a, b) => b.p95_ms - a.p95_ms);
+    return entries.slice(0, topN);
   }
 
   /**

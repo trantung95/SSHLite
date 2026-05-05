@@ -63,6 +63,8 @@ async function runSshPushPubKey(ctx: ScenarioContext): Promise<ScenarioResult> {
   }
 }
 
+// ssh-keygen invocation + remote authorized_keys push is slow on every OS.
+// Tagged 'heavy' so the engine samples it at ceil(variations / 3).
 export const sshToolsKeyScenarios: ScenarioDefinition[] = [
-  { name: 'ssh-push-pubkey', category: CATEGORY, fn: runSshPushPubKey },
+  { name: 'ssh-push-pubkey', category: CATEGORY, fn: runSshPushPubKey, weight: 'heavy' },
 ];

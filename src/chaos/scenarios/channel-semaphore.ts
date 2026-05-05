@@ -500,6 +500,13 @@ const scenarioMultiUserAdaptation: ScenarioDefinition = {
 // Export
 // ---------------------------------------------------------------------------
 
+// Channel-semaphore scenarios drive concurrency stress (multiple connections, slot
+// contention, abrupt disconnects). They consistently dominate per-scenario duration,
+// so they are tagged 'heavy' to be sampled at ceil(variations / 3).
+function asHeavy(s: ScenarioDefinition): ScenarioDefinition {
+  return { ...s, weight: 'heavy' };
+}
+
 export const channelSemaphoreScenarios: ScenarioDefinition[] = [
   scenarioRandomConcurrentMix,
   scenarioOpenFailures,
@@ -507,4 +514,4 @@ export const channelSemaphoreScenarios: ScenarioDefinition[] = [
   scenarioRapidAcquireRelease,
   scenarioMultiServerNoLeakage,
   scenarioMultiUserAdaptation,
-];
+].map(asHeavy);

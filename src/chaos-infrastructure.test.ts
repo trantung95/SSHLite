@@ -534,12 +534,14 @@ describe('ChaosRunResult type', () => {
         reason: 'global_timeout',
         message: 'Budget exceeded',
       },
+      slowest_scenarios: [{ name: 'file-operations:write', p95_ms: 1200, runs: 24 }],
       post_run_analysis: ['Pass rate: 80%'],
     };
 
     expect(result.scenarios_skipped).toBe(5);
     expect(result.early_termination?.reason).toBe('global_timeout');
     expect(result.post_run_analysis).toHaveLength(1);
+    expect(result.slowest_scenarios).toHaveLength(1);
   });
 
   it('early_termination is optional', () => {
@@ -566,6 +568,7 @@ describe('ChaosRunResult type', () => {
       output_summary: {},
       container_health: { monitored: 0, healthy: 0, dead: 0, deaths: [], containerStatuses: [] },
       scenarios_skipped: 0,
+      slowest_scenarios: [],
       post_run_analysis: [],
     };
 

@@ -57,10 +57,14 @@ async function makeResult(
   }
 }
 
+// ServerMonitor scenarios run real diagnostic commands (top, free, netstat, journalctl).
+// They are slow on every OS and tagged 'heavy' so the engine samples them at
+// ceil(variations / 3) — preserving cross-OS coverage without budget starvation.
 export const serverMonitorScenarios: ScenarioDefinition[] = [
   {
     name: 'quickStatus',
     category: CATEGORY,
+    weight: 'heavy',
     fn: (ctx) => makeResult('quickStatus', ctx, async (conn, monitor) => {
       // quickStatus should not throw on any OS
       await monitor.quickStatus(conn);
@@ -70,6 +74,7 @@ export const serverMonitorScenarios: ScenarioDefinition[] = [
   {
     name: 'diagnoseSlowness',
     category: CATEGORY,
+    weight: 'heavy',
     fn: (ctx) => makeResult('diagnoseSlowness', ctx, async (conn, monitor) => {
       await monitor.diagnoseSlowness(conn);
       return [];
@@ -78,6 +83,7 @@ export const serverMonitorScenarios: ScenarioDefinition[] = [
   {
     name: 'listServices',
     category: CATEGORY,
+    weight: 'heavy',
     fn: (ctx) => makeResult('listServices', ctx, async (conn, monitor) => {
       await monitor.listServices(conn);
       return [];
@@ -86,6 +92,7 @@ export const serverMonitorScenarios: ScenarioDefinition[] = [
   {
     name: 'recentLogs',
     category: CATEGORY,
+    weight: 'heavy',
     fn: (ctx) => makeResult('recentLogs', ctx, async (conn, monitor) => {
       await monitor.recentLogs(conn);
       return [];
@@ -94,6 +101,7 @@ export const serverMonitorScenarios: ScenarioDefinition[] = [
   {
     name: 'networkDiagnostics',
     category: CATEGORY,
+    weight: 'heavy',
     fn: (ctx) => makeResult('networkDiagnostics', ctx, async (conn, monitor) => {
       await monitor.networkDiagnostics(conn);
       return [];

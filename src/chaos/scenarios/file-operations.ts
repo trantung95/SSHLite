@@ -385,4 +385,89 @@ export const fileOperationsScenarios: ScenarioDefinition[] = [
       return [...violations, ...validator.getViolations()];
     }),
   },
+  {
+    name: 'file-exists-roundtrip',
+    category: CATEGORY,
+    fn: (ctx) => makeResult('file-exists-roundtrip', ctx, async (conn, _validator, rng) => {
+      // P0 coverage: SSHConnection.fileExists. Contract: fileExists(p) === stat(p) succeeds.
+      const violations: string[] = [];
+      const presentPath = `${ctx.testDir}/exists-${rng.string(6)}.txt`;
+      const absentPath = `${ctx.testDir}/missing-${rng.string(10)}.txt`;
+
+      await conn.writeFile(presentPath, Buffer.from('exists'));
+
+      const presentResult = await conn.fileExists(presentPath);
+      if (presentResult !== true) {
+        violations.push(`fileExists invariant: returned ${presentResult} for present path ${presentPath}`);
+      }
+
+      const absentResult = await conn.fileExists(absentPath);
+      if (absentResult !== false) {
+        violations.push(`fileExists invariant: returned ${absentResult} for absent path ${absentPath}`);
+      }
+
+      // Cross-check with stat for the present path
+      const stat = await conn.stat(presentPath);
+      if (stat.size !== 6) {
+        violations.push(`fileExists/stat consistency: stat reports size ${stat.size}, expected 6`);
+      }
+
+      return violations;
+    }),
+  },
+  {
+    name: 'read-chunked-matches-full',
+    category: CATEGORY,
+    fn: (ctx) => makeResult('read-chunked-matches-full', ctx, async (conn, _validator, rng) => {
+      // P0 coverage: readFileChunked, readFileFirstLines, readFileLastLines, readFileTail.
+      // Contract: chunked read concatenates to full content; firstN/lastN are subsets;
+      // tail(offset) returns bytes from offset onward.
+      const violations: string[] = [];
+      // Build a multi-line file that's large enough to exercise multiple chunks.
+      const lines: string[] = [];
+      for (let i = 0; i < 50; i++) {
+        lines.push(`line-${i.toString().padStart(3, '0')}-${rng.string(40)}`);
+      }
+      const content = lines.join('\n') + '\n';
+      const filePath = `${ctx.testDir}/chunked-${rng.string(6)}.txt`;
+
+      await conn.writeFile(filePath, Buffer.from(content));
+
+      // Chunked read: small chunkSize forces multiple SFTP reads
+      let progressCalls = 0;
+      const chunked = await conn.readFileChunked(filePath, () => { progressCalls++; }, undefined, 256);
+      const full = await conn.readFile(filePath);
+      if (!chunked.equals(full)) {
+        violations.push(`readFileChunked invariant: result differs from readFile (${chunked.length} vs ${full.length} bytes)`);
+      }
+      if (progressCalls === 0) {
+        violations.push('readFileChunked invariant: progress callback never invoked');
+      }
+
+      // First/last N lines
+      const firstFive = await conn.readFileFirstLines(filePath, 5);
+      const expectedFirst = lines.slice(0, 5).join('\n');
+      if (!firstFive.startsWith(expectedFirst)) {
+        violations.push(`readFileFirstLines invariant: head mismatch — got ${JSON.stringify(firstFive.slice(0, 60))}, expected prefix ${JSON.stringify(expectedFirst.slice(0, 60))}`);
+      }
+
+      const lastFive = await conn.readFileLastLines(filePath, 5);
+      const expectedLastSet = lines.slice(-5);
+      // Some implementations include trailing newline normalization differences; check membership rather than exact equality.
+      const missingLast = expectedLastSet.filter(l => !lastFive.includes(l));
+      if (missingLast.length > 0) {
+        violations.push(`readFileLastLines invariant: missing lines ${JSON.stringify(missingLast)}`);
+      }
+
+      // Tail from offset: bytes from byte N onward must match content.slice(N)
+      const offset = Math.floor(content.length / 2);
+      const tailBuf = await conn.readFileTail(filePath, offset);
+      const expectedTail = Buffer.from(content).slice(offset);
+      if (!tailBuf.equals(expectedTail)) {
+        violations.push(`readFileTail invariant: bytes from offset ${offset} differ (${tailBuf.length} vs ${expectedTail.length})`);
+      }
+
+      return violations;
+    }),
+  },
 ];

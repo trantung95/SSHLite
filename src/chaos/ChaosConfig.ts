@@ -113,6 +113,12 @@ export interface ScenarioDefinition {
   name: string;
   category: string;
   fn: ScenarioFn;
+  /**
+   * 'heavy' scenarios are sampled at ceil(variations / 3) instead of `variations`.
+   * Tag scenarios whose p95 duration consistently exceeds the deep-mode budget
+   * (~2.8s) so they don't starve the global budget. Default: 'normal'.
+   */
+  weight?: 'normal' | 'heavy';
 }
 
 // ---- Coverage Manifest Types ----
@@ -162,5 +168,7 @@ export interface ChaosRunResult {
     reason: 'global_timeout' | 'all_servers_dead';
     message: string;
   };
+  /** Top-N slowest scenarios by p95 duration_ms — surfaces budget regressions. */
+  slowest_scenarios: Array<{ name: string; p95_ms: number; runs: number }>;
   post_run_analysis: string[];
 }

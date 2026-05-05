@@ -1,6 +1,6 @@
 # SSH Lite (SSH Tools) — Lightweight SSH Suite for VS Code
 
-![Version](https://img.shields.io/badge/version-0.7.6-blue)
+![Version](https://img.shields.io/badge/version-0.7.7-blue)
 ![Status](https://img.shields.io/badge/status-beta-yellow)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-1.85.0+-purple)
@@ -271,6 +271,18 @@ Contributions welcome! Please submit Pull Requests on GitHub.
 Apache-2.0 License
 
 ## Release Notes
+
+### 0.7.7 — Chaos suite re-anchored to its basis
+
+The chaos suite is a **dynamic bug-discovery system** (real Docker, real ssh2, invariants), not a unit-test substitute. The most recent deep run revealed two basis-violations: 49 uncovered methods (24 actions never exercised) and a budget collapse hitting `early_termination: global_timeout` after 182 of ~1,120 scenarios. Worse, a prior 1152-scenario run logged 351 failures — root cause was a single sshd dying mid-run, after which every subsequent scenario on that server hit ECONNREFUSED while `ContainerHealthMonitor`'s 5s polling caught up.
+
+This release tightens the basis, fixes the cascade, and surfaces the real budget offenders.
+
+- **Plan doc** ([.adn/testing/chaos-testing.md](.adn/testing/chaos-testing.md)) — added Basis & Non-Goals, Budget Policy (~695ms/scenario ceiling), Coverage Triage (P0/P1/P2), Scenario Authoring Policy (strategy mapping + invariant + cost budget), Scenario Heat Map. Weekly checklist reordered: budget guard before adding scenarios.
+- **Dead-server cascade fix** ([src/chaos/ChaosEngine.ts](src/chaos/ChaosEngine.ts)) — engine now marks a server dead after 3 consecutive `ECONNREFUSED` / `Connection lost before handshake` failures and skips remaining scenarios on it. Verified: deep re-run logged **0 failures** across 187+ scenarios on 8 healthy containers (was 351 failures pre-fix).
+- **Heat map telemetry** — `ScenarioDefinition` gains `weight?: 'normal' | 'heavy'` (heavy sampled at `ceil(variations/3)`); `ChaosRunResult.slowest_scenarios` exposes top-10 by p95 `duration_ms`. Console + JSONL both show the offenders. Heavy applied to channel-semaphore (×6), ssh-tools-keys (×1), server-monitor (×5), connection-lifecycle:rapid-reconnect (×1).
+- **P0 coverage** — new scenarios for `SSHConnection.dispose`, `fileExists`, `readFileChunked` / `readFileFirstLines` / `readFileLastLines` / `readFileTail`, `forwardPort` / `stopForward` / `getActiveForwards` (new file [src/chaos/scenarios/port-forward.ts](src/chaos/scenarios/port-forward.ts)), `CommandGuard.startConnect` / `completeConnect` / `failConnect` / `trackDisconnect` / `startMonitoring` / `updateMonitoring` / `stopMonitoring` / `startRefresh` / `completeRefresh` / `failRefresh`. Coverage manifest updated for 18 previously-empty entries.
+- **Verification** — `npm run compile` clean; `npx jest --no-coverage` 1431/1431 pass; `npm run test:chaos` 75/75 pass; `npm run test:chaos:deep` 231/231 pass with `slowest_scenarios` flagging the next budget offenders for a future iteration.
 
 ### 0.7.6 — Windows-client → Linux-server cross-coverage tests
 

@@ -65,6 +65,10 @@ export const connectionLifecycleScenarios: ScenarioDefinition[] = [
   {
     name: 'rapid-reconnect',
     category: CATEGORY,
+    // 2-4 connect/disconnect cycles per run consistently push p95 ~6s. Tagged heavy
+    // so the engine samples at ceil(variations / 3); deep run heat-map confirmed it
+    // ate ~60% of the 780s global budget at full multiplicity.
+    weight: 'heavy',
     fn: async (ctx) => makeResult('rapid-reconnect', ctx, async () => {
       const validator = new ChaosValidator();
       const rng = new SeededRandom(ctx.seed);
@@ -136,6 +140,40 @@ export const connectionLifecycleScenarios: ScenarioDefinition[] = [
       );
 
       return { violations: validator.getViolations() };
+    }),
+  },
+  {
+    name: 'dispose-after-use',
+    category: CATEGORY,
+    fn: async (ctx) => makeResult('dispose-after-use', ctx, async () => {
+      // P0 coverage: SSHConnection.dispose. Contract: dispose() releases the
+      // state-change emitter and triggers disconnect; subsequent ops must throw.
+      const validator = new ChaosValidator();
+      const conn = await createChaosConnection(ctx.server);
+
+      // Sanity: connection works pre-dispose
+      await conn.listFiles('/home');
+
+      conn.dispose();
+      // dispose triggers async disconnect; give it a moment to settle
+      await new Promise(r => setTimeout(r, 500));
+
+      // Post-dispose ops must throw — same contract as state-after-disconnect
+      await validator.verifyDisconnectedThrows(
+        () => conn.listFiles('/home'),
+        'listFiles-after-dispose'
+      );
+      await validator.verifyDisconnectedThrows(
+        () => conn.readFile('/etc/hostname'),
+        'readFile-after-dispose'
+      );
+
+      const violations = validator.getViolations();
+      // The connection should reach Disconnected after dispose
+      if (conn.state !== ConnectionState.Disconnected) {
+        violations.push(`dispose invariant: state is ${conn.state}, expected Disconnected`);
+      }
+      return { violations };
     }),
   },
 ];
