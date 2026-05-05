@@ -2,7 +2,7 @@
   "name": "ssh-lite",
   "displayName": "SSH Lite (SSH Tools)",
   "description": "Lightweight SSH client for VS Code. Browse and edit remote files, run terminals, forward ports, manage processes and services, push SSH keys, run snippets and batch commands - all without installing anything on remote servers. Perfect for VPS, cloud servers (AWS/Azure/GCP), and Linux administration.",
-  "version": "0.7.5",
+  "version": "0.7.6",
   "publisher": "hybr8",
   "engines": {
     "vscode": "^1.85.0"
@@ -1564,6 +1564,7 @@
     "test:coverage": "jest --coverage",
     "test:docker": "jest --config jest.docker.config.js --no-coverage",
     "test:multios": "jest --config jest.multios.config.js --no-coverage",
+    "test:windows-client": "jest --config jest.windows-client.config.js --no-coverage",
     "test:all": "jest --no-coverage && npm run test:docker",
     "test:all:os": "jest --no-coverage && npm run test:docker && npm run test:multios",
     "test:chaos": "node scripts/run-chaos.js quick",

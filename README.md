@@ -1,6 +1,6 @@
 # SSH Lite (SSH Tools) — Lightweight SSH Suite for VS Code
 
-![Version](https://img.shields.io/badge/version-0.7.5-blue)
+![Version](https://img.shields.io/badge/version-0.7.6-blue)
 ![Status](https://img.shields.io/badge/status-beta-yellow)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-1.85.0+-purple)
@@ -271,6 +271,23 @@ Contributions welcome! Please submit Pull Requests on GitHub.
 Apache-2.0 License
 
 ## Release Notes
+
+### 0.7.6 — Windows-client → Linux-server cross-coverage tests
+
+CI runs Linux→Linux. Real users hit Windows-specific issues we never exercised: drive-letter casing, mixed slashes, CRLF buffer round-trips, the local `ssh-keygen.exe` shell-out, ssh2 behavior on the Windows TCP stack. This release adds a dedicated test target that runs on a real Windows host against the existing multi-OS Docker stack (Alpine/Ubuntu/Debian/Fedora/Rocky on ports 2210–2214).
+
+- **New npm script**: `npm run test:windows-client` (gated to `process.platform === 'win32'`; tests are marked skipped on non-Windows hosts)
+- **New test file**: [src/integration/windows-client.test.ts](src/integration/windows-client.test.ts) — **13 tests, all passing on Windows 11**:
+  - Path normalization round-trip (drive-letter casing, idempotency, real `os.tmpdir()` paths, `Map<localPath>` lookups)
+  - CRLF/LF byte-for-byte fidelity over SFTP (no implicit normalization in either direction)
+  - `ssh-keygen.exe` PATH resolution (Git for Windows, Windows OpenSSH, Cygwin, MSYS2 all OK)
+  - `SshKeyService.generateKey` actually generates a valid ed25519 keypair locally
+  - Windows temp-dir round-trip via `CommandGuard.writeFile`/`readFile`
+  - ssh2 connect → exec → disconnect → reconnect on the Windows TCP stack
+  - 5 concurrent connections (one per OS) with parallel `exec` and `searchFiles` — verifies channel semaphores stay isolated per connection
+- **New jest config**: [jest.windows-client.config.js](jest.windows-client.config.js) with its own globalSetup/teardown that brings up the multi-OS docker stack
+- **Excluded from default `npx jest` run** so CI Linux runs are unaffected (still 1431/1431)
+- Test infra files use `spawnSync` over `execSync` (no shell-injection surface)
 
 ### 0.7.5 — Deep-check fixes (search hang, log drift, Windows-portable chaos)
 
