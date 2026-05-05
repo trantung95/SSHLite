@@ -873,7 +873,7 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
-      console.log(`[SSH Lite] editHost - hosts: ${item.hosts.map(h => `${h.name}(${h.source})`).join(', ')}`);
+      infoLog('host-edit', 'editHost/begin', { hosts: item.hosts.map(h => `${h.name}(${h.source})`).join(',') });
 
       // Find the first saved host for this server to edit
       const savedHost = item.hosts.find(h => h.source === 'saved');
@@ -882,7 +882,7 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
-      console.log(`[SSH Lite] editHost - editing: ${savedHost.name} (${savedHost.id})`);
+      infoLog('host-edit', 'editHost/editing', { hostName: savedHost.name, hostId: savedHost.id });
       const host = await hostService.promptEditHost(savedHost);
       if (host) {
         hostTreeProvider.refresh();
@@ -897,7 +897,7 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
-      console.log(`[SSH Lite] removeHost - hosts: ${item.hosts.map(h => `${h.name}(${h.source})`).join(', ')}`);
+      infoLog('host-edit', 'removeHost/begin', { hosts: item.hosts.map(h => `${h.name}(${h.source})`).join(',') });
 
       // Find saved hosts for this server
       const savedHosts = item.hosts.filter(h => h.source === 'saved');
@@ -906,7 +906,7 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
-      console.log(`[SSH Lite] removeHost - removing: ${savedHosts.map(h => h.name).join(', ')}`);
+      infoLog('host-edit', 'removeHost/removing', { hosts: savedHosts.map(h => h.name).join(',') });
       const confirm = await vscode.window.showWarningMessage(
         `Remove all saved users for "${item.primaryHost.name}"?`,
         { modal: true },

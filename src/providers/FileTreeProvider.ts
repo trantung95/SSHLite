@@ -2035,6 +2035,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       activityService.failActivity(activityId, (error as Error).message);
       vscode.window.showErrorMessage(`Failed to search: ${(error as Error).message}`);
       this.hideLoading();
+      return undefined;
     }
   }
 

@@ -5,6 +5,7 @@ import { IHostConfig } from '../types';
 import { SavedCredential } from '../services/CredentialService';
 import { formatFileSize, formatRelativeTime } from '../utils/helpers';
 import { ActivityService } from '../services/ActivityService';
+import { infoLog, diagLog } from '../utils/diagnosticLog';
 
 /** Default exclude patterns matching VS Code's files.exclude + search.exclude defaults */
 const DEFAULT_SEARCH_EXCLUDES = '.git,.svn,.hg,CVS,.DS_Store,node_modules,bower_components,*.code-search';
@@ -813,7 +814,7 @@ export class SearchPanel {
     try {
       if (useServerList) {
         // === New serverList-based search ===
-        console.log(`[SSH Lite Search] Starting ${findFiles ? 'findFiles' : 'content'} search for "${query}" across ${checkedServers.length} server(s)`);
+        infoLog('search', 'begin', { mode: findFiles ? 'findFiles' : 'content', query: query.slice(0, 80), servers: checkedServers.length });
 
         const failedScopes: string[] = [];
 
@@ -934,13 +935,13 @@ export class SearchPanel {
                 connectionName: connection.host.name,
               }));
 
-              console.log(`[SSH Lite Search] "${displayName}" returned ${mapped.length} results`);
+              diagLog('search', 'server-result', { server: displayName, count: mapped.length });
               activityService.completeActivity(activityId, `${mapped.length} results`);
 
               serverResults.set(server.id, (serverResults.get(server.id) || 0) + mapped.length);
               return mapped;
             } catch (error) {
-              console.log(`[SSH Lite Search] "${displayName}" FAILED: ${(error as Error).message}`);
+              infoLog('search', 'server-failed', { server: displayName, errorMessage: (error as Error).message });
               activityService.failActivity(activityId, (error as Error).message);
               failedScopes.push(`${displayName}: ${(error as Error).message}`);
               return [];
@@ -982,7 +983,7 @@ export class SearchPanel {
                 workQueue.push({ type: 'dir', path: sp.path });
 
                 totalCount += workQueue.length;
-                console.log(`[SSH Lite Search] Worker pool for ${sp.path}: ${workQueue.length} initial items, ${parallelProcesses} workers`);
+                diagLog('search', 'worker-pool-start', { path: sp.path, initialItems: workQueue.length, workers: parallelProcesses });
 
                 // Dynamic worker tracking — always target the full configured count;
                 // workers auto-exit when queue is empty and ramp up as work is discovered
@@ -1253,7 +1254,7 @@ export class SearchPanel {
 
         await Promise.all([...wrappedPromises, ...workerPoolPromises]);
 
-        console.log(`[SSH Lite Search] All servers complete. Total results: ${globalSeen.size}, Failed: ${failedScopes.length}`);
+        infoLog('search', 'complete', { totalResults: globalSeen.size, failedScopes: failedScopes.length });
 
         if (failedScopes.length > 0) {
           vscode.window.showWarningMessage(
@@ -1262,7 +1263,7 @@ export class SearchPanel {
         }
       } else {
         // === Legacy searchScopes-based search ===
-        console.log(`[SSH Lite Search] Starting legacy search for "${query}" across ${this.searchScopes.length} scope(s)`);
+        infoLog('search', 'legacy/begin', { query: query.slice(0, 80), scopes: this.searchScopes.length });
 
         const uniqueScopes = new Map<string, SearchScope>();
         for (const scope of this.searchScopes) {
@@ -1316,11 +1317,11 @@ export class SearchPanel {
               connectionName: connection.host.name,
             }));
 
-            console.log(`[SSH Lite Search] Scope "${scope.displayName}" returned ${mappedResults.length} results`);
+            diagLog('search', 'legacy/scope-result', { scope: scope.displayName, count: mappedResults.length });
             activityService.completeActivity(activityId, `${mappedResults.length} results`);
             return mappedResults;
           } catch (error) {
-            console.log(`[SSH Lite Search] Scope "${scope.displayName}" FAILED: ${(error as Error).message}`);
+            infoLog('search', 'legacy/scope-failed', { scope: scope.displayName, errorMessage: (error as Error).message });
             activityService.failActivity(activityId, (error as Error).message);
             failedScopes.push(`${scope.displayName}: ${(error as Error).message}`);
             return [];
@@ -1328,7 +1329,7 @@ export class SearchPanel {
         });
 
         const allResults = (await Promise.all(searchPromises)).flat();
-        console.log(`[SSH Lite Search] All scopes complete. Total results: ${allResults.length}, Failed: ${failedScopes.length}`);
+        infoLog('search', 'legacy/complete', { totalResults: allResults.length, failedScopes: failedScopes.length });
 
         if (signal.aborted) return;
 
@@ -1369,7 +1370,7 @@ export class SearchPanel {
         const hadResults = (serverResults.get(connId) || 0) > 0;
         if (!hadResults) {
           try {
-            console.log(`[SSH Lite Search] Auto-disconnect (no results): ${connId}`);
+            diagLog('search', 'auto-disconnect', { connectionId: connId, reason: 'no-results' });
             await this.autoDisconnectCallback?.(connId);
             // Update server state
             const server = this.serverList.find((s) => s.id === connId);
@@ -1378,7 +1379,7 @@ export class SearchPanel {
               server.status = undefined;
             }
           } catch (e) {
-            console.log(`[SSH Lite Search] Failed to auto-disconnect ${connId}: ${e}`);
+            infoLog('search', 'auto-disconnect/failed', { connectionId: connId, error: String(e) });
           }
         }
       }

@@ -1,6 +1,6 @@
 # SSH Lite (SSH Tools) — Lightweight SSH Suite for VS Code
 
-![Version](https://img.shields.io/badge/version-0.7.4-blue)
+![Version](https://img.shields.io/badge/version-0.7.5-blue)
 ![Status](https://img.shields.io/badge/status-beta-yellow)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-1.85.0+-purple)
@@ -271,6 +271,16 @@ Contributions welcome! Please submit Pull Requests on GitHub.
 Apache-2.0 License
 
 ## Release Notes
+
+### 0.7.5 — Deep-check fixes (search hang, log drift, Windows-portable chaos)
+
+Bug-fix release surfaced by a multi-round deep audit (chaos:deep + tsc-strict + console-log scan + jest leak detection):
+
+- **`SSHConnection.searchFiles` could hang on stream errors** — the inner Promise had `reject` declared but never called, and the SSH stream had no `error` handler. If the channel errored before emitting `'close'` (server reset, killed remote process, MaxSessions exhaustion), the search promise hung forever. Now wires `stream.on('error')` and `stream.stderr.on('error')` through a settle-once guard that rejects with `SFTPError` and logs `searchFiles/stream-error`. Real risk for restrictive corporate-lab SSH servers
+- **`npm run test:chaos:deep` was broken on Windows** — the `package.json` script used POSIX env-prefix syntax (`CHAOS_TIMEOUT=900000 CHAOS_MODE=deep ...`) that fails in cmd.exe. Replaced all three chaos scripts with a cross-platform Node wrapper at [scripts/run-chaos.js](scripts/run-chaos.js); chaos now runs from Windows hosts. First successful chaos:deep run from Windows: **182/182 scenarios pass, 0 anomalies, 8/8 containers healthy** across Alpine/Ubuntu/Debian/Fedora/Rocky
+- **13 residual `console.log` calls in production code** (`extension.ts` editHost/removeHost + `webviews/SearchPanel.ts` × 11) bypassed the v0.7.3 logging system entirely — invisible to users in the **SSH Lite** Output channel. All 13 migrated to `infoLog`/`diagLog` per the v0.7.3 pattern
+- **`FileTreeProvider.setFilenameFilter` missing explicit return** — TS7030 with `--noImplicitReturns` strict flag; cleanup, not a runtime bug
+- **Documented findings**: jest worker-not-exiting warning is a Jest worker-pool teardown quirk (clean with `--runInBand`), not actual handle leaks in our code
 
 ### 0.7.4 — Log unit-test coverage + reusable test helpers
 

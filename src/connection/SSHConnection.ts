@@ -1849,6 +1849,28 @@ export class SSHConnection implements ISSHConnection {
         signal.addEventListener('abort', onAbort, { once: true });
       }
 
+      // Stream error handler — without this the Promise can hang forever if the
+      // SSH channel errors out before emitting 'close' (e.g. server resets the
+      // connection mid-search). Routing the error to reject() unblocks callers.
+      let settled = false;
+      const settleResolve = (val: Array<{ path: string; line?: number; match?: string; size?: number; modified?: Date; permissions?: string }>) => {
+        if (settled) return;
+        settled = true;
+        resolve(val);
+      };
+      const settleReject = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        if (signal) signal.removeEventListener('abort', onAbort);
+        infoLog('ssh-connect', 'searchFiles/stream-error', {
+          connectionId: this.id,
+          errorMessage: err.message,
+        });
+        reject(new SFTPError(`Search stream error: ${err.message}`, err));
+      };
+      stream.on('error', (err: Error) => settleReject(err));
+      stream.stderr.on('error', (err: Error) => settleReject(err));
+
       const outputChunks: Buffer[] = [];
       const errorChunks: Buffer[] = [];
 
@@ -1868,7 +1890,7 @@ export class SSHConnection implements ISSHConnection {
 
         // If aborted, return empty results
         if (aborted) {
-          resolve([]);
+          settleResolve([]);
           return;
         }
           const output = Buffer.concat(outputChunks).toString('utf8');
@@ -1968,7 +1990,7 @@ export class SSHConnection implements ISSHConnection {
             return 0;
           });
 
-          resolve(results);
+          settleResolve(results);
         });
       });
   }

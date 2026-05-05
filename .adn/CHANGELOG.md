@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.7.5 — Deep-check fixes (search hang, log drift, Windows-portable chaos)
+
+Multi-round deep audit (chaos:deep + tsc-strict + console-log scan + jest leak detection) surfaced four issues; this release fixes all four. No new features.
+
+### Real bugs
+
+- **`SSHConnection.searchFiles` could hang forever on SSH stream errors** ([src/connection/SSHConnection.ts:1837](../src/connection/SSHConnection.ts#L1837))
+  - The inner `new Promise((resolve, reject) => {...})` declared `reject` but never called it; `stream.on('error')` was missing entirely
+  - If the SSH exec channel errored before emitting `'close'` — server reset, killed remote process, MaxSessions limit hit, network blip — the promise neither resolved nor rejected, hanging the caller forever
+  - Fix: added `stream.on('error')` + `stream.stderr.on('error')` handlers, both routing to `reject` via a `settled` guard so error-then-close (or vice versa) settles exactly once. New diagnostic log `ssh-connect/searchFiles/stream-error` captures the underlying error message
+  - Real risk for hardened corporate-lab SSH servers (the kind issue #4's reporter is on)
+- **`npm run test:chaos:deep` (and quick / tools) broken on Windows** ([package.json](../package.json), new [scripts/run-chaos.js](../scripts/run-chaos.js))
+  - Script used POSIX env-prefix syntax `CHAOS_TIMEOUT=900000 CHAOS_MODE=deep jest ...` which cmd.exe parses as "look for an executable named CHAOS_TIMEOUT=900000"
+  - Replaced all three chaos scripts (`test:chaos`, `test:chaos:deep`, `test:chaos:tools`) with `node scripts/run-chaos.js {quick|deep|tools}` — sets env vars in Node and spawns jest portably (Windows: `shell: true` for `npx.cmd` resolution)
+  - Validated: first ever chaos:deep run from Windows host = **182/182 scenarios pass, 0 anomalies, 8/8 containers healthy** across Alpine/Ubuntu/Debian/Fedora/Rocky
+- **13 production-code `console.log` calls bypassed the v0.7.3 logging system** ([src/extension.ts](../src/extension.ts) editHost/removeHost + [src/webviews/SearchPanel.ts](../src/webviews/SearchPanel.ts) × 11)
+  - These printed to the Extension Host log, invisible to end users in the **SSH Lite** Output channel
+  - All 13 migrated to `infoLog`/`diagLog` per the v0.7.3 pattern, with appropriate gating (verbose per-result and per-worker-pool logs as `diagLog`; lifecycle and failures as always-on `infoLog`)
+- **`FileTreeProvider.setFilenameFilter` missing explicit return** ([src/providers/FileTreeProvider.ts:2038](../src/providers/FileTreeProvider.ts#L2038))
+  - TS7030 surfaced with `tsc --noImplicitReturns`; the `catch` block was missing `return undefined`
+  - Function declared `Promise<{...} | undefined>` so legal at runtime, but cleanup avoids the warning under stricter type configs
+
+### Investigated, not bugs
+
+- **Jest worker-not-exiting warning** — runs clean with `--runInBand`, so it's a Jest worker-pool teardown quirk (worker holds an HTTPS agent or similar after teardown), not actual handle leaks in our code. Safe to ignore
+- **~30 `--noUnusedLocals` warnings** — mostly dead imports in test files. Not worth a churn pass
+
+### Coverage gaps documented (not fixed)
+
+Chaos exercises ~51% of tracked methods. **49 methods + 24 high-level actions** are uncovered — most notably `SSHConnection.shell` (terminal opens never tested in chaos), `forwardPort`/`stopForward`, the entire `watchFile`/`unwatchFile` path, all `readFileChunked`/`readFileLastLines`/`readFileFirstLines`/`readFileTail` variants, and the `ServerMonitorService` API. Adding scenarios for these is straightforward (framework already exists) but out of scope for this release
+
+### Tests
+
+- Suite: 1431/1431 passing (no new tests added in this patch — the four fixes are bug fixes, the searchFiles fix's coverage will come from chaos scenarios in 0.7.6 when we add Windows-client tests)
+- Chaos:deep: 182/182, 0 anomalies, 0 failures, 8/8 containers healthy
+
 ## v0.7.4 — Log unit-test coverage + reusable test helpers
 
 - New test helper `setupLogCapture()` in [src/__mocks__/testHelpers.ts](../src/__mocks__/testHelpers.ts): installs a mock `OutputChannel`, sets `sshLite.diagnosticLogging` config, returns `{ lines, rawLines, find(level, category, msgSubstring), reset() }`. Includes a greedy parser that handles k=v values containing spaces (cmd previews, error messages)
