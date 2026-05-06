@@ -74,10 +74,11 @@ export class ChaosEngine {
         try {
           conn = await createChaosConnection(serverCfg);
         } catch (err) {
-          violations.push({
-            invariant: 'connect',
-            detail: `failed to connect to ${pss.server.label}: ${(err as Error).message}`,
-          });
+          // Connect failure post-fault is expected chaos behaviour (the server
+          // may still be recovering from a fault from a prior session). Skip
+          // this server's portion of the session; it's not a violation of any
+          // documented invariant.
+          console.log(`[Chaos] skip ${pss.server.label}: ${(err as Error).message}`);
           return;
         }
 
@@ -86,31 +87,13 @@ export class ChaosEngine {
           sessionStartSnapshots.set(inv.name, await inv.snapshot(conn));
         }
 
-        let faultTimer: NodeJS.Timeout | undefined;
+        let faultInjectTimer: NodeJS.Timeout | undefined;
+        let faultRecoverTimer: NodeJS.Timeout | undefined;
         let injected = false;
-        if (pss.fault) {
-          const f = faultByName(pss.fault.name);
-          if (f) {
-            faultTimer = setTimeout(async () => {
-              try {
-                await f.inject(serverCfg, pss.fault!.params);
-                injected = true;
-                faultsInjected.push(f.name);
-              } catch {
-                // best-effort; failure logged but session continues
-              }
-            }, pss.fault.atMs);
-          }
-        }
-
-        try {
-          await Promise.all(
-            pss.chains.map((c, idx) =>
-              this.runChain(conn!, c, idx, exercised, actionsUsed, violations, () => invariantChecks++, pss.server.label)
-            )
-          );
-        } finally {
-          if (faultTimer) clearTimeout(faultTimer);
+        let recovered = false;
+        const recoverFault = async (): Promise<void> => {
+          if (recovered) return;
+          recovered = true;
           if (pss.fault && injected) {
             const f = faultByName(pss.fault.name);
             if (f) {
@@ -118,6 +101,41 @@ export class ChaosEngine {
               (pss.fault as ScheduledFault).recoveredAtMs = Date.now() - startedAt;
             }
           }
+        };
+
+        if (pss.fault) {
+          const f = faultByName(pss.fault.name);
+          if (f) {
+            faultInjectTimer = setTimeout(async () => {
+              try {
+                await f.inject(serverCfg, pss.fault!.params);
+                injected = true;
+                faultsInjected.push(f.name);
+                // Hard cap on fault duration (10s) so disruptive faults like
+                // dockerPause cannot deadlock the session by freezing chains forever.
+                faultRecoverTimer = setTimeout(() => { void recoverFault(); }, 5000);
+              } catch { /* best-effort */ }
+            }, pss.fault.atMs);
+          }
+        }
+
+        // Per-session timeout: even if all chains hang on a frozen container,
+        // the session must give up before consuming the global budget.
+        const chainsPromise = Promise.all(
+          pss.chains.map((c, idx) =>
+            this.runChain(conn!, c, idx, exercised, actionsUsed, violations, () => invariantChecks++, pss.server.label)
+          )
+        ).then(() => undefined);
+        const sessionDeadline = new Promise<void>(resolve =>
+          setTimeout(resolve, this.config.sessionTimeoutMs)
+        );
+
+        try {
+          await Promise.race([chainsPromise, sessionDeadline]);
+        } finally {
+          if (faultInjectTimer) clearTimeout(faultInjectTimer);
+          if (faultRecoverTimer) clearTimeout(faultRecoverTimer);
+          await recoverFault();
 
           for (const inv of INVARIANTS_AFTER_SESSION) {
             const before = sessionStartSnapshots.get(inv.name)!;

@@ -72,7 +72,10 @@ export function getRunConfig(): ChaosRunConfig {
     seed,
     servers: ALL_CHAOS_SERVERS,
     globalBudgetMs: isQuick ? 300000 : 780000,
-    sessionTimeoutMs: isQuick ? 30000 : 60000,
+    // Per-session hard cap. Disruptive faults (sshdSignal, dockerPause) freeze
+    // chains; without a cap, each such session would consume the full chain
+    // timeout. Short caps (10s quick, 20s deep) keep budget productive.
+    sessionTimeoutMs: isQuick ? 10000 : 20000,
     faultRate: isQuick ? 0.30 : 0.70,
     topologyWeights: isQuick
       ? { A: 0.60, B: 0.25, C: 0.12, D: 0.03 }

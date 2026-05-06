@@ -17,13 +17,12 @@ export class ChainGenerator {
 
     const totalWeight = usable.reduce((s, e) => s + e.weight, 0);
     const length = this.rng.int(persona.chainLengthRange[0], persona.chainLengthRange[1]);
-    const ctx: GenContext = { knownPaths: [], connected: false };
+    // The engine owns the shared connection lifecycle; chains start with the
+    // connection already live and do not auto-disconnect. Disconnect/dispose
+    // primitives may still be drawn from action.primitives intentionally.
+    const ctx: GenContext = { knownPaths: [], connected: true };
     const chosenActions: string[] = [];
     const ops: ChainOp[] = [];
-
-    // Begin with connect to ground the chain.
-    ops.push({ primitive: 'connect', params: {} });
-    ctx.connected = true;
 
     for (let i = 0; i < length; i++) {
       const action = this.drawAction(usable, totalWeight);
@@ -39,10 +38,6 @@ export class ChainGenerator {
         if (primName === 'mkdir' && typeof params.path === 'string') ctx.knownPaths.push(params.path);
         if (primName === 'disconnect' || primName === 'dispose') ctx.connected = false;
       }
-    }
-
-    if (ctx.connected) {
-      ops.push({ primitive: 'disconnect', params: {} });
     }
 
     return {

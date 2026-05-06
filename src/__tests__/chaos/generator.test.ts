@@ -58,8 +58,11 @@ describe('ChainGenerator', () => {
     const chain = g.generate(EDITOR);
     expect(chain.persona).toBe('editor');
     expect(chain.ops.length).toBeGreaterThan(0);
-    expect(chain.ops[0].primitive).toBe('connect');
-    expect(chain.ops[chain.ops.length - 1].primitive).toBe('disconnect');
+    // Engine owns the shared connection lifecycle; chains do not auto-prepend
+    // connect or auto-append disconnect.
+    for (const op of chain.ops) {
+      expect(['readFile', 'writeFile', 'listFiles', 'stat']).toContain(op.primitive);
+    }
   });
   it('drops weights for unknown actions', () => {
     const personaWithStrayAction: Persona = {
@@ -90,10 +93,10 @@ describe('FaultScheduler', () => {
   });
   it('returns a fault with name + atMs + params when picked', () => {
     const s = new FaultScheduler(new SeededRandom(7), 1.0);
-    const f = s.maybePickFault(5000)!;
+    const f = s.maybePickFault()!;
     expect(typeof f.name).toBe('string');
-    expect(f.atMs).toBeGreaterThanOrEqual(1000);
-    expect(f.atMs).toBeLessThan(4000);
+    expect(f.atMs).toBeGreaterThanOrEqual(50);
+    expect(f.atMs).toBeLessThanOrEqual(500);
   });
 });
 

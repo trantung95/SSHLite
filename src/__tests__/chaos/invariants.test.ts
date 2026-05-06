@@ -63,15 +63,27 @@ describe('semaphoreFloor invariant', () => {
 });
 
 describe('sessionTeardown invariant', () => {
-  it('passes when state is Disconnected', () => {
+  it('passes when state is Disconnected (chains chose to disconnect)', () => {
     const before = { timestamp: 0, data: { state: ConnectionState.Connected } };
     const after = { timestamp: 0, data: { state: ConnectionState.Disconnected } };
     expect(sessionTeardownInvariant.check(before, after)).toEqual([]);
   });
 
-  it('flags non-Disconnected state at session end', () => {
-    const before = { timestamp: 0, data: { state: ConnectionState.Disconnected } };
+  it('passes when state is Connected (engine still owns the shared connection)', () => {
+    const before = { timestamp: 0, data: { state: ConnectionState.Connected } };
     const after = { timestamp: 0, data: { state: ConnectionState.Connected } };
+    expect(sessionTeardownInvariant.check(before, after)).toEqual([]);
+  });
+
+  it('flags transient state (Reconnecting) at session end', () => {
+    const before = { timestamp: 0, data: { state: ConnectionState.Connected } };
+    const after = { timestamp: 0, data: { state: ConnectionState.Reconnecting } };
+    expect(sessionTeardownInvariant.check(before, after).length).toBe(1);
+  });
+
+  it('flags Error state at session end', () => {
+    const before = { timestamp: 0, data: { state: ConnectionState.Connected } };
+    const after = { timestamp: 0, data: { state: ConnectionState.Error } };
     expect(sessionTeardownInvariant.check(before, after).length).toBe(1);
   });
 });
