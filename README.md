@@ -1,6 +1,6 @@
 # SSH Lite (SSH Tools) — Lightweight SSH Suite for VS Code
 
-![Version](https://img.shields.io/badge/version-0.7.7-blue)
+![Version](https://img.shields.io/badge/version-0.8.0-blue)
 ![Status](https://img.shields.io/badge/status-beta-yellow)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-1.85.0+-purple)
@@ -271,6 +271,10 @@ Contributions welcome! Please submit Pull Requests on GitHub.
 Apache-2.0 License
 
 ## Release Notes
+
+### 0.8.0 — Chaos engine rebuild
+
+The chaos suite has been rewritten as a real chaos-testing system. Old engine (scripted scenarios with parameter randomization on happy-state Docker) replaced with a session-based generator that composes random user-like chains, runs them concurrently across multiple topologies (1->1, 1->many, many->1, many->many), and injects real environment-level faults (Docker pause, `tc netem`, sshd signals, disk fill). Universal invariants are checked before/after every primitive op; failures are reproducible from the seed via `npm run chaos:replay -- <run-id>`. Action catalog auto-derives from `.adn/features/*.md` so adding a feature automatically extends chaos coverage. UI primitive surfaces, the rich invariant set, and remaining faults ship in v0.8.1; shrinker and the real VS Code extension-host suite ship in v0.8.2.
 
 ### 0.7.7 — Chaos suite re-anchored to its basis
 

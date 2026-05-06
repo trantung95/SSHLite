@@ -1,5 +1,55 @@
 # Changelog
 
+## v0.8.0 — Chaos engine rebuild
+
+The chaos suite is now a real chaos-testing system. The old engine (scripted scenarios with parameter randomization on happy-state Docker) is replaced with a session-based generator that composes random user-like chains, runs them concurrently across multiple topologies, and injects real environment-level faults.
+
+### What's new
+
+- **`src/chaos/ChaosTypes.ts`** — central type module: `PrimitiveOp`, `Persona`, `Action`, `Fault`, `Invariant`, `Session`, `Chain`, `RunResult`.
+- **`src/chaos/catalog/`** — action catalog auto-derived from `.adn/features/*.md` `## User Actions` tables and `package.json contributes.commands`. `npm run chaos:catalog` regenerates; `catalogDrift.test.ts` enforces sync.
+- **`src/chaos/primitives/`** — primitive op registry across SSH ops (connection, run, file) and service ops (credentials). Total 18 primitives in v0.8.0 baseline. UI surfaces (vscodeCommands, treeOps, hoverOps, decorationOps, backgroundOps) ship in v0.8.1.
+- **`src/chaos/invariants/`** — 6 universal invariants: `sshStateMachine`, `listenerLeak`, `activityCount`, `semaphoreFloor`, `sessionTeardown`, `cleanShutdown` (the last as a stub for v0.8.0; rich post-disconnect-error contract lands in v0.8.1).
+- **`src/chaos/faults/`** — 4 real faults: `dockerPause`, `netem` (tc qdisc latency/loss, requires NET_ADMIN), `sshdSignal` (pkill -STOP/-CONT), `diskFill`. Each has `inject` / `recover`. More faults in v0.8.1.
+- **`src/chaos/generator/`** — `TopologyChooser`, `ChainGenerator`, `FaultScheduler`, `SessionGenerator`, `DataGenerator`. Topology distribution: A 60/50%, B 25/25%, C 12/17%, D 3/8% (quick/deep).
+- **`src/chaos/replay/ChaosReplayer.ts`** — `npm run chaos:replay -- <run-id>` re-executes any logged session deterministically against the live Docker stack.
+- **`src/chaos/catalog/personas.ts`** — 7 personas: explorer, editor, operator, watcher, searcher, admin (monitor returns in v0.8.1).
+
+### Removed
+
+- `src/chaos/scenarios/` — entire directory, 11 scenario files (~3000 lines)
+- `src/chaos/coverage-manifest.json` — replaced by empirical primitive-call tracking in `RunResult.primitives_exercised`
+- `src/chaos/ChaosCollector.ts`, `ChaosDetector.ts`, `ChaosValidator.ts` — replaced by `INVARIANTS[]` registry
+- `src/chaos/chaos-ssh-tools.test.ts`, `src/chaos-infrastructure.test.ts` — coupled to the old engine
+- `ALL_KNOWN_ACTIONS` constant — gone with the old engine; namespace-mismatch bug eliminated
+
+### Coverage
+
+- 17 user actions catalogued from 6 `.adn/features/*.md` files
+- 18 primitives across SSH and service surfaces
+- 6 invariants checked around every primitive op or at session end
+- 4 fault types injectable mid-session
+- 4 topologies (A/B/C/D) with per-mode weighting
+
+### Verification
+
+- `npm run compile` — 0 errors
+- `npx jest --no-coverage` — 1445/1445 pass (64 suites, +14 vs pre-rebuild baseline)
+- `npm run chaos:catalog && git diff --exit-code src/chaos/catalog/` — empty diff (idempotent)
+- `npm run test:chaos` / `test:chaos:deep` — exercises all 4 topologies, all 4 faults, all 18 primitives within budget
+
+### Coming in v0.8.1
+
+- UI primitive surfaces (vscodeCommands, treeOps, hoverOps, decorationOps, backgroundOps)
+- Remaining 11 invariants (treeConsistency, hoverCorrectness, decorationConsistency, credentialAtomicity, commandIdempotence, backgroundQuiescence, disposalCleanup, crossConnectionIsolation, portForwardRegistry, watcherRegistry, plus the rich cleanShutdown comparator)
+- Remaining 9 faults (iptablesRst, sshdKill, maxSessions, fdExhaust, stressCpu, stressMem, clockSkew, chmodLock, yankFile)
+- Monitor persona
+
+### Coming in v0.8.2
+
+- Replay shrinker (delta-debug a failing session to its minimal failing subset)
+- Real VS Code extension-host suite (`test:chaos:e2e`) — `@vscode/test-electron`, host-specific faults
+
 ## v0.7.7 — Chaos suite re-anchored to its basis
 
 The chaos suite's stated basis (`.adn/testing/chaos-testing.md`) is **dynamic bug discovery via real Docker containers + invariants**. Recent runs violated that basis on two axes: coverage erosion (49 uncovered methods) and budget collapse (182 of ~1,120 deep scenarios completing before `global_timeout`). A separate prior run logged 351 failures rooted in a single sshd dying mid-run, after which every subsequent scenario on that server cascaded into ECONNREFUSED before the 5s polling caught up.

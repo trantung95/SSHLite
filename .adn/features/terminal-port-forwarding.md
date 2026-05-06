@@ -150,3 +150,10 @@ sshLite.portForwards
 ```
 
 **Wire-up**: `portForwardService.setTreeProvider(portForwardTreeProvider)` and `portForwardService.initialize(context)` in extension.ts connect the service to the UI and persistence.
+
+## User Actions
+
+| Action | Primitives | Notes |
+|---|---|---|
+| Run terminal | shell, runShort | |
+| Run command | runShort, runFailing | |

@@ -104,3 +104,9 @@ Throttle listener created on first search, disposed when all searches complete.
 ## Sort Order
 
 Toggle checked-first vs alphabetical. Persisted in `globalState` (`sshLite.searchSortOrder`).
+
+## User Actions
+
+| Action | Primitives | Notes |
+|---|---|---|
+| Cross-file search | listFiles, readFile, runShort | |

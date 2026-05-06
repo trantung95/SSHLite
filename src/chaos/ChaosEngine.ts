@@ -1,593 +1,206 @@
 /**
- * Chaos Bug Discovery Module - Engine (Orchestrator)
+ * Chaos Engine - session orchestrator
  *
- * Ties together collector, detector, validator, logger, and scenarios.
- * Iterates: for each scenario x for each server -> run with random params.
+ * Generates random user-like sessions across multiple topologies, runs
+ * concurrent chains against real Docker SSH containers, injects real
+ * environment-level faults at random offsets, checks universal invariants
+ * around every primitive op, and writes replay-grade JSONL.
  */
 
-import * as fs from 'fs';
 import * as path from 'path';
-import { SSHConnection } from '../connection/SSHConnection';
-import { CommandGuard } from '../services/CommandGuard';
-import { ActivityService } from '../services/ActivityService';
-import { ServerMonitorService } from '../services/ServerMonitorService';
+import { randomUUID } from 'crypto';
+import { ChaosRunConfig, ChaosServerConfig } from './ChaosConfig';
 import {
-  ChaosRunConfig,
-  ChaosRunResult,
-  ChaosServerConfig,
-  ScenarioDefinition,
-  ScenarioResult,
-  ScenarioContext,
-  CoverageManifest,
-  PerOSSummary,
-  getRunConfig,
-} from './ChaosConfig';
-import { ChaosCollector, CollectedData } from './ChaosCollector';
-import { ChaosDetector } from './ChaosDetector';
-import { ChaosValidator } from './ChaosValidator';
+  Session, RunResult, Snapshot, Violation, Chain,
+  ScheduledFault,
+} from './ChaosTypes';
 import { ChaosLogger } from './ChaosLogger';
-import {
-  createChaosConnection,
-  safeChaosDisconnect,
-  setupCredentialServiceMock,
-  setupVscodeMocks,
-  SeededRandom,
-  withTimeout,
-} from './chaos-helpers';
-import { ContainerHealthMonitor, ContainerDeathEvent, ContainerHealthReport } from './ContainerHealthMonitor';
-
-/** All known actions that scenarios can exercise */
-const ALL_KNOWN_ACTIONS = [
-  'exec', 'listFiles', 'readFile', 'writeFile', 'deleteFile',
-  'mkdir', 'rename', 'stat', 'searchFiles', 'readFileChunked',
-  'readFileLastLines', 'readFileFirstLines', 'connect', 'disconnect',
-  'guard.exec', 'guard.readFile', 'guard.writeFile', 'guard.listFiles',
-  'guard.searchFiles', 'monitor.quickStatus', 'monitor.diagnoseSlowness',
-  'monitor.listServices', 'monitor.recentLogs', 'monitor.networkDiagnostics',
-];
+import { SessionGenerator } from './generator/SessionGenerator';
+import { loadCatalog } from './catalog/loader';
+import { primitiveByName } from './primitives';
+import { faultByName } from './faults';
+import { INVARIANTS_AFTER_OP, INVARIANTS_AFTER_SESSION } from './invariants';
+import { createChaosConnection, safeChaosDisconnect, SeededRandom } from './chaos-helpers';
+import { SSHConnection } from '../connection/SSHConnection';
 
 export class ChaosEngine {
-  private config: ChaosRunConfig;
-  private collector: ChaosCollector;
-  private detector: ChaosDetector;
-  private validator: ChaosValidator;
   private logger: ChaosLogger;
-  private random: SeededRandom;
-  private allCollectedData: CollectedData[] = [];
-  private healthMonitor: ContainerHealthMonitor;
-  private deadServers: Set<string> = new Set();
-  /** Per-scenario container log snapshots: [scenarioName, serverLabel, logs] */
-  private scenarioLogs: Array<{ scenario: string; server: string; logs: string }> = [];
-  /** Per-scenario duration samples for p95 / heat-map analysis. Keyed by scenario name. */
-  private scenarioDurations: Map<string, number[]> = new Map();
-  /** Consecutive scenario failures per server, used to detect dead-server cascades */
-  private consecutiveServerFailures: Map<string, number> = new Map();
+  private sessionGen: SessionGenerator;
 
-  constructor(config?: ChaosRunConfig) {
-    this.config = config || getRunConfig();
-    this.collector = new ChaosCollector();
-    this.detector = new ChaosDetector();
-    this.validator = new ChaosValidator();
-    this.logger = new ChaosLogger();
-    this.random = new SeededRandom(this.config.seed);
-    this.healthMonitor = new ContainerHealthMonitor(this.config.servers);
-  }
-
-  /**
-   * Run all scenarios across all servers.
-   * Returns the number of failures.
-   */
-  async run(scenarios: ScenarioDefinition[]): Promise<number> {
-    const startTime = Date.now();
-
-    // Setup mocks
-    setupCredentialServiceMock();
-    setupVscodeMocks();
-
-    // Reset singletons
-    (CommandGuard as any)._instance = undefined;
-    (ActivityService as any)._instance = undefined;
-    (ServerMonitorService as any)._instance = undefined;
-
-    // Check coverage manifest
-    this.checkCoverageManifest(scenarios);
-
-    console.log(`\n[Chaos] Starting ${this.config.mode} mode (seed: ${this.config.seed})`);
-    console.log(`[Chaos] Servers: ${this.config.servers.map(s => s.label).join(', ')}`);
-    console.log(`[Chaos] Scenarios: ${scenarios.length} x ${this.config.servers.length} servers x ${this.config.variationsPerScenario} variations`);
-
-    // Pre-flight: verify all containers are running
-    const preFlightFailed = await this.healthMonitor.preFlightCheck();
-    if (preFlightFailed.length > 0) {
-      console.error(`\n[Chaos] PRE-FLIGHT FAILED: ${preFlightFailed.length} container(s) not running:`);
-      for (const c of preFlightFailed) {
-        console.error(`  - ${c.name} (${c.serverLabel}): ${c.status}${c.exitCode !== undefined ? ` (exit ${c.exitCode})` : ''}`);
-        this.deadServers.add(c.serverLabel);
-      }
-      console.error('[Chaos] These servers will be skipped.\n');
-    }
-
-    // Start real-time container health monitoring
-    this.healthMonitor.onDeath((event: ContainerDeathEvent) => {
-      console.error(`[Chaos] ALERT: Container ${event.container} died during scenario execution!`);
-      this.deadServers.add(event.serverLabel);
+  constructor(private config: ChaosRunConfig) {
+    this.logger = new ChaosLogger(path.resolve(__dirname, '../../logs/chaos-results.jsonl'));
+    const repoRoot = path.resolve(__dirname, '../..');
+    const catalog = loadCatalog(repoRoot);
+    this.sessionGen = new SessionGenerator({
+      servers: config.servers,
+      actions: catalog.actions,
+      faultRate: config.faultRate,
+      topologyWeights: config.topologyWeights,
+      chainsPerServerRange: config.chainsPerServerRange,
+      fanoutServerRange: config.fanoutServerRange,
+      fanInUserRange: config.fanInUserRange,
     });
-    this.healthMonitor.start();
-
-    // Global time budget: stop before Jest's outer timeout kills us ungracefully
-    const maxTotalRunTime = this.config.mode === 'quick' ? 300000 : 780000;
-    let globalTimeoutHit = false;
-    let scenariosSkipped = 0;
-
-    let containerHealth: ContainerHealthReport | undefined;
-
-    try {
-      // Run each scenario on each server with variations
-      for (const scenario of scenarios) {
-        if (globalTimeoutHit) break;
-        for (const server of this.config.servers) {
-          if (globalTimeoutHit) break;
-
-          // Skip dead servers
-          if (this.deadServers.has(server.label)) {
-            scenariosSkipped += this.config.variationsPerScenario;
-            console.log(`  SKIP: ${scenario.name} on ${server.label} (container dead)`);
-            continue;
-          }
-
-          // Heavy scenarios are sampled at ceil(variations / 3) — they consume disproportionate
-          // budget (channel-semaphore, key push, monitor diagnostics) and starve coverage of
-          // the rest of the suite if run at full multiplicity.
-          const variationsForScenario = scenario.weight === 'heavy'
-            ? Math.max(1, Math.ceil(this.config.variationsPerScenario / 3))
-            : this.config.variationsPerScenario;
-
-          for (let variation = 0; variation < variationsForScenario; variation++) {
-            // Check global time budget
-            if (Date.now() - startTime > maxTotalRunTime) {
-              console.error(`[Chaos] GLOBAL TIMEOUT: ${maxTotalRunTime}ms exceeded, stopping remaining scenarios`);
-              globalTimeoutHit = true;
-              break;
-            }
-
-            const result = await this.runScenario(scenario, server, variation);
-            this.logger.addResult(result);
-
-            // Track duration for heat-map / p95 analysis
-            const samples = this.scenarioDurations.get(result.name) ?? [];
-            samples.push(result.duration_ms);
-            this.scenarioDurations.set(result.name, samples);
-
-            // Record the actions exercised by this scenario category
-            this.logger.recordAction(scenario.category);
-
-            if (!result.passed) {
-              console.log(`  FAIL: ${scenario.name} on ${server.label} (v${variation}): ${result.error || result.invariantViolations.join('; ')}`);
-            }
-
-            // Detect dead-server cascades: ContainerHealthMonitor polls every 5s, so
-            // when sshd dies (MaxSessions, OOM) but `docker inspect` still says "running",
-            // every subsequent scenario on this server fails with ECONNREFUSED or
-            // "Connection lost before handshake". Without this guard, prior runs logged
-            // 351 failures on a single sick server before the polling cycle caught up.
-            // Mark the server dead after 3 consecutive connection failures and skip the rest.
-            const isConnFailure = !!result.error && /ECONNREFUSED|Connection lost before handshake|Timed out while waiting for handshake|getaddrinfo/i.test(result.error);
-            if (isConnFailure) {
-              const count = (this.consecutiveServerFailures.get(server.label) ?? 0) + 1;
-              this.consecutiveServerFailures.set(server.label, count);
-              if (count >= 3 && !this.deadServers.has(server.label)) {
-                console.error(`[Chaos] DEAD SERVER DETECTED: ${server.label} — ${count} consecutive connection failures. Skipping remaining scenarios.`);
-                this.deadServers.add(server.label);
-                break; // exit variation loop; outer skip handles remaining scenarios
-              }
-            } else {
-              // Reset counter on any successful or non-connection error
-              this.consecutiveServerFailures.set(server.label, 0);
-            }
-          }
-        }
-      }
-
-      // Add invariant stats
-      this.logger.addInvariantStats(
-        this.validator.getStats().checked,
-        this.validator.getStats().violated
-      );
-
-      // Stop container monitoring and collect health report
-      containerHealth = this.healthMonitor.stop();
-    } finally {
-      // Ensure monitor is always stopped, even on crash
-      if (!containerHealth) {
-        containerHealth = this.healthMonitor.stop();
-      }
-    }
-
-    // Build and write results
-    const durationMs = Date.now() - startTime;
-    const servers = this.config.servers.map(s => ({ label: s.label, os: s.os, port: s.port }));
-    const result = this.logger.buildRunResult(
-      this.config.mode,
-      this.config.seed,
-      durationMs,
-      servers,
-      this.allCollectedData,
-      ALL_KNOWN_ACTIONS,
-      containerHealth
-    );
-
-    // Record skipped scenarios and early termination reason
-    result.scenarios_skipped = scenariosSkipped;
-    if (globalTimeoutHit) {
-      result.early_termination = {
-        reason: 'global_timeout',
-        message: `Global time budget of ${maxTotalRunTime}ms exceeded after ${result.scenarios_run} scenarios. ${scenariosSkipped} scenarios were skipped.`,
-      };
-    } else if (this.deadServers.size === this.config.servers.length) {
-      result.early_termination = {
-        reason: 'all_servers_dead',
-        message: `All ${this.config.servers.length} servers are dead. ${scenariosSkipped} scenarios were skipped.`,
-      };
-    }
-
-    // Compute slowest scenarios (heat map) — top 10 by p95 duration_ms
-    result.slowest_scenarios = this.computeSlowestScenarios(10);
-
-    // Generate post-run analysis
-    result.post_run_analysis = this.generatePostRunAnalysis(result);
-
-    this.logger.writeToFile(result);
-    this.logger.printSummary(result);
-
-    // Write all per-scenario container logs to file
-    this.writeContainerLogs();
-
-    return result.failed;
   }
 
-  /**
-   * Write all collected per-scenario container logs to logs/chaos-container-logs.txt.
-   * Each scenario's log snapshot shows the full container output at that point in time.
-   */
-  private writeContainerLogs(): void {
-    if (this.scenarioLogs.length === 0) return;
-
-    const logsDir = path.resolve(__dirname, '../../logs');
-    if (!fs.existsSync(logsDir)) {
-      fs.mkdirSync(logsDir, { recursive: true });
+  async run(): Promise<RunResult[]> {
+    const results: RunResult[] = [];
+    const startedAt = Date.now();
+    let i = 0;
+    while (Date.now() - startedAt < this.config.globalBudgetMs) {
+      const seed = this.config.seed + i++;
+      const session = this.sessionGen.generate(new SeededRandom(seed), seed);
+      const result = await this.executeSession(seed, session);
+      this.logger.write(result);
+      results.push(result);
     }
-
-    const logFile = path.join(logsDir, 'chaos-container-logs.txt');
-    const sections: string[] = [];
-    const timestamp = new Date().toISOString();
-
-    sections.push('='.repeat(80));
-    sections.push(`CHAOS CONTAINER LOGS — ${timestamp}`);
-    sections.push(`Mode: ${this.config.mode} | Seed: ${this.config.seed}`);
-    sections.push(`Scenarios with logs: ${this.scenarioLogs.length}`);
-    sections.push('='.repeat(80));
-    sections.push('');
-
-    for (const { scenario, server, logs } of this.scenarioLogs) {
-      sections.push('─'.repeat(60));
-      sections.push(`Scenario: ${scenario} | Server: ${server}`);
-      sections.push('─'.repeat(60));
-      sections.push(logs || '(empty)');
-      sections.push('');
-    }
-
-    fs.writeFileSync(logFile, sections.join('\n'), 'utf-8');
-    console.log(`[Chaos] Container logs saved to ${logFile} (${this.scenarioLogs.length} snapshots)`);
+    return results;
   }
 
-  /**
-   * Run a single scenario on a single server.
-   */
-  private async runScenario(
-    scenario: ScenarioDefinition,
-    server: ChaosServerConfig,
-    variation: number
-  ): Promise<ScenarioResult> {
-    const scenarioSeed = this.random.int(0, 2147483647);
-    const testDir = `/home/${server.username}/chaos-${server.label}-${Date.now()}`;
-
-    const ctx: ScenarioContext = {
-      server,
-      testDir,
-      seed: scenarioSeed,
-      variation,
-    };
-
-    // Reset per-scenario state
-    this.validator.reset();
-    (ActivityService as any)._instance = undefined;
-
-    // Start collecting
-    this.collector.start();
-
-    let conn: SSHConnection | null = null;
+  private async executeSession(seed: number, session: Session): Promise<RunResult> {
+    const startedAt = Date.now();
+    const exercised = new Set<string>();
+    const actionsUsed = new Set<string>();
+    const faultsInjected: string[] = [];
+    let invariantChecks = 0;
+    const violations: Violation[] = [];
+    let outcome: RunResult['outcome'] = 'passed';
 
     try {
-      // Create connection and hook it
-      conn = await createChaosConnection(server);
-      this.collector.hookConnection(conn);
+      await Promise.all(session.perServerSessions.map(async (pss) => {
+        const serverCfg = this.config.servers.find(s => s.label === pss.server.label);
+        if (!serverCfg) return;
 
-      // Create test directory
-      await conn.mkdir(testDir);
-
-      // Run the scenario with timeout
-      const result = await Promise.race([
-        scenario.fn(ctx),
-        new Promise<ScenarioResult>((_, reject) =>
-          setTimeout(() => reject(new Error('Scenario timeout')), this.config.scenarioTimeout)
-        ),
-      ]);
-
-      // Post-scenario invariant checks
-      this.validator.verifyConnected(conn);
-
-      // Wait a moment for async activity completions
-      await new Promise(r => setTimeout(r, 500));
-      this.validator.verifyNoRunningActivities();
-
-      // Collect output and detect anomalies
-      const collectedData = this.collector.stop();
-      this.allCollectedData.push(collectedData);
-
-      const anomalies = this.detector.detect(collectedData, {
-        scenario: scenario.name,
-        server_os: server.os,
-        server_label: server.label,
-      });
-
-      const violations = [
-        ...result.invariantViolations,
-        ...this.validator.getViolations(),
-      ];
-
-      const allAnomalies = [...result.anomalies, ...anomalies];
-
-      return {
-        ...result,
-        server: server.label,
-        server_os: server.os,
-        invariantViolations: violations,
-        anomalies: allAnomalies,
-        stateTimeline: collectedData.stateTimeline,
-        passed: result.passed && violations.length === 0,
-      };
-    } catch (err) {
-      // Collect whatever we have
-      const collectedData = this.collector.stop();
-      this.allCollectedData.push(collectedData);
-
-      return {
-        name: scenario.name,
-        server: server.label,
-        server_os: server.os,
-        passed: false,
-        invariantViolations: this.validator.getViolations(),
-        anomalies: [],
-        stateTimeline: collectedData.stateTimeline,
-        duration_ms: 0,
-        error: (err as Error).message,
-      };
-    } finally {
-      // Cleanup: remove test dir and disconnect (with timeouts to prevent hangs)
-      if (conn) {
+        let conn: SSHConnection | null = null;
         try {
-          await withTimeout(conn.exec(`rm -rf ${testDir}`), 10000, 'cleanup rm -rf');
-        } catch { /* ignore */ }
-        await safeChaosDisconnect(conn);
-      }
+          conn = await createChaosConnection(serverCfg);
+        } catch (err) {
+          violations.push({
+            invariant: 'connect',
+            detail: `failed to connect to ${pss.server.label}: ${(err as Error).message}`,
+          });
+          return;
+        }
 
-      // Collect container logs after each scenario
-      try {
-        const logs = await withTimeout(
-          this.healthMonitor.collectLogsForServer(server.label),
-          5000,
-          `collect logs for ${server.label}`
-        );
-        this.scenarioLogs.push({ scenario: scenario.name, server: server.label, logs });
-      } catch { /* ignore timeout */ }
-    }
-  }
+        const sessionStartSnapshots = new Map<string, Snapshot>();
+        for (const inv of INVARIANTS_AFTER_SESSION) {
+          sessionStartSnapshots.set(inv.name, await inv.snapshot(conn));
+        }
 
-  /**
-   * Generate post-run analysis: summarize findings, correlate failures with
-   * container health, and produce actionable insights.
-   */
-  private generatePostRunAnalysis(result: ChaosRunResult): string[] {
-    const analysis: string[] = [];
-
-    // Overall health
-    const passRate = result.scenarios_run > 0
-      ? ((result.passed / result.scenarios_run) * 100).toFixed(1)
-      : '0';
-    analysis.push(`Pass rate: ${passRate}% (${result.passed}/${result.scenarios_run})`);
-
-    // Early termination
-    if (result.early_termination) {
-      analysis.push(`EARLY TERMINATION [${result.early_termination.reason}]: ${result.early_termination.message}`);
-    }
-
-    // Skipped scenarios
-    if (result.scenarios_skipped > 0) {
-      analysis.push(`Skipped: ${result.scenarios_skipped} scenario(s) due to dead/unavailable servers (${Array.from(this.deadServers).join(', ')})`);
-    }
-
-    // Container health correlation
-    if (result.container_health.dead > 0) {
-      analysis.push(`CRITICAL: ${result.container_health.dead} container(s) died during the run`);
-      for (const death of result.container_health.deaths) {
-        analysis.push(`  Container ${death.container} (${death.serverLabel}) exited with code ${death.exitCode}`);
-        analysis.push(`  Root cause: ${death.analysis}`);
-
-        // Correlate with scenario failures on this server
-        const relatedFailures = result.failures.filter(f => f.server_label === death.serverLabel);
-        if (relatedFailures.length > 0) {
-          analysis.push(`  ${relatedFailures.length} scenario failure(s) likely caused by this container death:`);
-          for (const f of relatedFailures) {
-            analysis.push(`    - ${f.scenario}: ${f.error || f.invariantViolations.join('; ')}`);
+        let faultTimer: NodeJS.Timeout | undefined;
+        let injected = false;
+        if (pss.fault) {
+          const f = faultByName(pss.fault.name);
+          if (f) {
+            faultTimer = setTimeout(async () => {
+              try {
+                await f.inject(serverCfg, pss.fault!.params);
+                injected = true;
+                faultsInjected.push(f.name);
+              } catch {
+                // best-effort; failure logged but session continues
+              }
+            }, pss.fault.atMs);
           }
         }
-      }
-    } else {
-      analysis.push('All containers remained healthy throughout the run');
-    }
 
-    // Per-OS analysis
-    for (const [os, summary] of Object.entries(result.per_os_summary) as [string, PerOSSummary][]) {
-      if (summary.failed > 0) {
-        const osFailRate = ((summary.failed / summary.run) * 100).toFixed(1);
-        analysis.push(`${os}: ${osFailRate}% failure rate (${summary.failed}/${summary.run}) — investigate OS-specific issues`);
-      }
-    }
-
-    // Anomaly patterns
-    if (result.anomalies_detected.length > 0) {
-      const byType: Record<string, number> = {};
-      for (const a of result.anomalies_detected) {
-        byType[a.type] = (byType[a.type] || 0) + 1;
-      }
-      analysis.push(`Anomaly breakdown: ${Object.entries(byType).map(([t, c]) => `${t}=${c}`).join(', ')}`);
-    }
-
-    // Coverage gaps
-    if (result.coverage.actions_missed.length > 0) {
-      analysis.push(`Coverage gaps: ${result.coverage.actions_missed.length} actions not exercised — add scenarios for: ${result.coverage.actions_missed.join(', ')}`);
-    }
-    if (result.coverage.methods_uncovered.length > 0) {
-      analysis.push(`Uncovered methods: ${result.coverage.methods_uncovered.length} — add scenarios to improve coverage`);
-    }
-
-    // Invariant health
-    if (result.coverage.invariants_violated > 0) {
-      const violationRate = ((result.coverage.invariants_violated / result.coverage.invariants_checked) * 100).toFixed(2);
-      analysis.push(`Invariant violation rate: ${violationRate}% (${result.coverage.invariants_violated}/${result.coverage.invariants_checked})`);
-    }
-
-    // Output channel errors
-    const outputEntries = Object.entries(result.output_summary) as [string, { lines: number; errors: number }][];
-    const channelsWithErrors = outputEntries.filter(([, stats]) => stats.errors > 0);
-    if (channelsWithErrors.length > 0) {
-      analysis.push(`Output channels with errors: ${channelsWithErrors.map(([ch, s]) => `${ch}(${s.errors})`).join(', ')}`);
-    }
-
-    // Duration insight
-    const durationSec = (result.duration_ms / 1000).toFixed(1);
-    const avgPerScenario = result.scenarios_run > 0
-      ? (result.duration_ms / result.scenarios_run / 1000).toFixed(2)
-      : '0';
-    analysis.push(`Total duration: ${durationSec}s, avg ${avgPerScenario}s per scenario`);
-
-    // Slowest scenarios — surfaced when budget is tight or early termination fires
-    if (result.slowest_scenarios.length > 0) {
-      const top3 = result.slowest_scenarios.slice(0, 3)
-        .map(s => `${s.name}=${s.p95_ms}ms`)
-        .join(', ');
-      analysis.push(`Slowest p95: ${top3}`);
-      if (result.early_termination?.reason === 'global_timeout') {
-        analysis.push(`Budget action: tag the slowest scenarios with weight: 'heavy' or split them — see post_run_analysis.slowest_scenarios for the full top-${result.slowest_scenarios.length} list.`);
-      }
-    }
-
-    return analysis;
-  }
-
-  /**
-   * Compute top-N slowest scenarios by p95 duration_ms.
-   * p95 makes outliers visible while still being driven by typical (not single) cost.
-   */
-  private computeSlowestScenarios(topN: number): Array<{ name: string; p95_ms: number; runs: number }> {
-    const entries: Array<{ name: string; p95_ms: number; runs: number }> = [];
-    for (const [name, samples] of this.scenarioDurations) {
-      if (samples.length === 0) continue;
-      const sorted = [...samples].sort((a, b) => a - b);
-      // p95 with linear interpolation: for small N, idx clamps to last element
-      const idx = Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1);
-      const p95 = sorted[Math.max(0, idx)];
-      entries.push({ name, p95_ms: p95, runs: samples.length });
-    }
-    entries.sort((a, b) => b.p95_ms - a.p95_ms);
-    return entries.slice(0, topN);
-  }
-
-  /**
-   * Strategy 7: Check coverage manifest for uncovered methods.
-   */
-  private checkCoverageManifest(scenarios: ScenarioDefinition[]): void {
-    const manifestPath = path.resolve(__dirname, 'coverage-manifest.json');
-    if (!fs.existsSync(manifestPath)) {
-      console.log('[Chaos] No coverage manifest found, skipping coverage check');
-      return;
-    }
-
-    try {
-      const manifest: CoverageManifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
-      const scenarioCategories = new Set(scenarios.map(s => s.category));
-      const uncovered: string[] = [];
-
-      for (const [method, coveredBy] of Object.entries(manifest)) {
-        if (coveredBy.length === 0) {
-          uncovered.push(method);
-        } else {
-          // Check if any covering scenario is actually registered
-          const hasCoverage = coveredBy.some(cat => scenarioCategories.has(cat));
-          if (!hasCoverage) {
-            uncovered.push(method);
+        try {
+          await Promise.all(
+            pss.chains.map((c, idx) =>
+              this.runChain(conn!, c, idx, exercised, actionsUsed, violations, () => invariantChecks++, pss.server.label)
+            )
+          );
+        } finally {
+          if (faultTimer) clearTimeout(faultTimer);
+          if (pss.fault && injected) {
+            const f = faultByName(pss.fault.name);
+            if (f) {
+              try { await f.recover(serverCfg, pss.fault.params); } catch { /* best-effort */ }
+              (pss.fault as ScheduledFault).recoveredAtMs = Date.now() - startedAt;
+            }
           }
-        }
-      }
 
-      if (uncovered.length > 0) {
-        console.log(`[Chaos] WARNING: ${uncovered.length} methods without scenario coverage:`);
-        for (const m of uncovered) {
-          console.log(`  - ${m}`);
-        }
-      }
+          for (const inv of INVARIANTS_AFTER_SESSION) {
+            const before = sessionStartSnapshots.get(inv.name)!;
+            try {
+              const after = await inv.snapshot(conn);
+              invariantChecks++;
+              for (const v of inv.check(before, after)) violations.push(v);
+            } catch { /* invariant snapshot failure is non-fatal */ }
+          }
 
-      this.logger.setUncoveredMethods(uncovered);
+          await safeChaosDisconnect(conn);
+        }
+      }));
     } catch (err) {
-      console.error('[Chaos] Failed to read coverage manifest:', (err as Error).message);
+      outcome = { exception: (err as Error).message };
     }
+
+    if (outcome === 'passed' && violations.length > 0) {
+      const v = violations[0];
+      outcome = { violation: v.invariant, chain: 0, opIndex: 0, detail: v.detail };
+    }
+
+    return {
+      run_id: randomUUID(),
+      timestamp: new Date().toISOString(),
+      seed,
+      mode: this.config.mode,
+      topology: session.topology,
+      perServerSessions: session.perServerSessions,
+      outcome,
+      duration_ms: Date.now() - startedAt,
+      primitives_exercised: Array.from(exercised),
+      actions_used: Array.from(actionsUsed),
+      faults_injected: faultsInjected,
+      invariant_checks: invariantChecks,
+      invariant_violations: violations,
+    };
   }
 
-  /**
-   * Scan source files for public methods (for coverage manifest updates).
-   */
-  static scanPublicMethods(): Record<string, string[]> {
-    const sourceFiles: Record<string, string> = {
-      'SSHConnection': path.resolve(__dirname, '../connection/SSHConnection.ts'),
-      'CommandGuard': path.resolve(__dirname, '../services/CommandGuard.ts'),
-      'ServerMonitorService': path.resolve(__dirname, '../services/ServerMonitorService.ts'),
-      'ActivityService': path.resolve(__dirname, '../services/ActivityService.ts'),
-    };
+  private async runChain(
+    conn: SSHConnection,
+    chain: Chain,
+    chainIdx: number,
+    exercised: Set<string>,
+    actionsUsed: Set<string>,
+    violations: Violation[],
+    bumpChecks: () => void,
+    serverLabel: string,
+  ): Promise<void> {
+    if (chain.startDelayMs > 0) await new Promise(r => setTimeout(r, chain.startDelayMs));
+    for (const a of chain.actions) actionsUsed.add(a);
 
-    const methods: Record<string, string[]> = {};
+    for (let opIdx = 0; opIdx < chain.ops.length; opIdx++) {
+      const op = chain.ops[opIdx];
+      const prim = primitiveByName(op.primitive);
+      if (!prim) continue;
 
-    for (const [className, filePath] of Object.entries(sourceFiles)) {
+      const before = new Map<string, Snapshot>();
+      for (const inv of INVARIANTS_AFTER_OP) {
+        try { before.set(inv.name, await inv.snapshot(conn)); } catch { /* skip */ }
+      }
+
       try {
-        const content = fs.readFileSync(filePath, 'utf-8');
-        const classMethods: string[] = [];
-        // Fresh regex per file — global-flag regexes retain lastIndex across calls,
-        // so reusing one across loop iterations causes silent method skipping after errors
-        const methodPattern = /^\s+(?:async\s+)?(\w+)\s*\(/gm;
-        let match;
-
-        while ((match = methodPattern.exec(content)) !== null) {
-          const name = match[1];
-          // Skip constructor, private methods (prefixed with _), and common utility methods
-          if (name === 'constructor' || name.startsWith('_') || name === 'dispose') continue;
-          classMethods.push(name);
+        if (prim.longRunning) {
+          prim.execute(conn, op.params).catch(() => { /* fire-and-forget */ });
+        } else {
+          await prim.execute(conn, op.params);
         }
+      } catch { /* per-op error: chain continues */ }
 
-        methods[className] = [...new Set(classMethods)];
-      } catch {
-        // File not found
+      exercised.add(op.primitive);
+
+      for (const inv of INVARIANTS_AFTER_OP) {
+        const beforeSnap = before.get(inv.name);
+        if (!beforeSnap) continue;
+        try {
+          const after = await inv.snapshot(conn);
+          bumpChecks();
+          for (const v of inv.check(beforeSnap, after)) {
+            violations.push({ ...v, detail: `${v.detail} [chain=${chainIdx} op=${opIdx} server=${serverLabel}]` });
+          }
+        } catch { /* skip */ }
       }
     }
-
-    return methods;
   }
 }

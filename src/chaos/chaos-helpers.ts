@@ -166,6 +166,13 @@ export class SeededRandom {
   constructor(seed: number) {
     // xorshift32 requires non-zero state; seed 0 explicitly maps to 1
     this.state = seed === 0 ? 1 : (seed || 1);
+    // Warm up the state so consecutive seeds produce decorrelated initial outputs.
+    // xorshift32 has strong autocorrelation between adjacent seeds without warmup.
+    for (let i = 0; i < 16; i++) {
+      let x = this.state;
+      x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+      this.state = x;
+    }
   }
 
   /** Returns a float in [0, 1) */

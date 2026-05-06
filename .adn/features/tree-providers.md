@@ -124,3 +124,10 @@ Three additive Sets: `filteredFolderUris` (blue F), `filterHighlightedUris` (not
 **Critical**: Uses `normalizeLocalPath(uri.fsPath)` for Windows drive letter normalization.
 
 Subscribes to: `fileService.onFileMappingsChanged`, `onUploadStateChanged`, `connectionManager.onDidChangeConnections`, `onConnectionStateChange`.
+
+## User Actions
+
+| Action | Primitives | Notes |
+|---|---|---|
+| Load file tree | listFiles, stat | |
+| Reveal in tree | stat, fileExists, listFiles | |

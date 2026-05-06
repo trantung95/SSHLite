@@ -160,3 +160,10 @@ Custom: `sshLite.auditLogPath` setting
 | `sshLite.showAuditLog` | Open audit log in editor |
 | `sshLite.exportAuditLog` | Export audit log to file |
 | `sshLite.clearAuditLog` | Clear all audit entries |
+
+## User Actions
+
+| Action | Primitives | Notes |
+|---|---|---|
+| Tail logs | readFile, runLong | |
+| Watch file | readFile, readFile, readFile | Poll pattern; native watcher primitives in v0.8.1 |

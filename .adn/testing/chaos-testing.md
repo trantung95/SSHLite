@@ -1,148 +1,192 @@
-# Chaos Bug Discovery Module
+# Chaos Engine
 
-Dynamic bug-discovery system: exercises extension code against real Docker SSH containers with randomized scenarios, captures output, uses detection strategies to find issues.
+A real chaos-testing system: dynamic sessions of concurrent user-like chains, multi-topology, real fault injection, universal invariants, replayable.
 
 ```bash
-npm run test:chaos                    # Quick (3-5 min, 8 servers)
-npm run test:chaos:deep               # Deep (10+ min, 8 servers)
+npm run test:chaos                    # Quick mode (~5 min, 8 servers)
+npm run test:chaos:deep               # Deep mode (~13 min, 8 servers)
 CHAOS_SEED=42 npm run test:chaos      # Reproducible run
+npm run chaos:catalog                 # Regenerate catalog from .adn/ + package.json
+npm run chaos:replay -- <run-id>      # Re-run a logged session deterministically
 ```
 
-**Requires**: Docker Desktop running. Containers managed automatically.
+**Requires:** Docker Desktop running. Containers managed automatically via `globalSetup.chaos.ts` / `globalTeardown.chaos.ts`.
 
 ---
 
-## Basis & Non-Goals
+## Basis
 
-**Basis**: every scenario must advance one or more of the 8 bug-discovery strategies (see "Bug Discovery Strategies" below). Chaos exists to find bugs no static check or unit test can — race conditions, leaked listeners, broken contracts under real network/filesystem behavior.
+Chaos exists to find bugs no static check or unit test can: race conditions, leaked listeners, broken contracts under hostile environment conditions. Three pillars:
 
-**Is**:
-- Real Docker SSH containers (5 OS variants), real `ssh2` traffic, real timing.
-- Invariant verification (every write/delete/mkdir/rename holds its contract).
-- Output channel scanning, state-timeline anomaly detection, resource-leak counting.
-- Coverage-driven — `coverage-manifest.json` maps methods → scenarios; gaps are surfaced.
+1. **Dynamic sessions, dynamic data** — every run composes a random sequence of user-like chains with random parameters. No scripted scenarios.
+2. **Real fault injection** — `docker pause`, `tc netem`, sshd signals, disk fill. The world misbehaves while the chains run.
+3. **Universal invariants** — checked around every primitive op and at session end; violations are reproducible from `{seed, session}`.
 
-**Is NOT**:
-- A unit-test substitute (those live in `src/__tests__/` and are mocked).
-- A performance benchmark (`duration_ms` is a budget signal, not a perf metric).
-- A smoke test (a "passes once" scenario without an invariant adds no value).
-- A place to dump integration tests that fit elsewhere.
+A run that doesn't exercise dynamic data, fault injection, or invariant checking fails this basis.
 
-A new scenario without an invariant or output/state assertion fails this basis and should be rejected.
+---
+
+## Concepts
+
+| Term | Meaning |
+|---|---|
+| Action | A user-level task (e.g. "Edit a file") declared in `.adn/features/*.md` `## User Actions` tables; expands to a list of primitive ops |
+| Primitive | An atomic op on `SSHConnection` or a service (e.g. `writeFile`, `runShort`, `saveCredential`); registered in `src/chaos/primitives/` |
+| Persona | A weighted distribution over actions defining "what kind of user is this chain pretending to be" — explorer, editor, operator, watcher, searcher, admin |
+| Chain | A sequence of primitive ops drawn from a persona's action distribution; runs concurrently with sibling chains via `Promise.all` |
+| Per-server session | One shared `SSHConnection` exercised by k chains, with optional fault injection |
+| Session | The unit of one chaos run — picks a topology, builds per-server sessions, runs them, logs result |
+| Topology | A/B/C/D — single, fan-out, fan-in, mesh — controls multi-server / multi-user fan |
+| Fault | A hostile environment condition with `inject` / `recover` (e.g. `dockerPause`, `netem`, `sshdSignal`, `diskFill`) |
+| Invariant | A universal check before/after every primitive op or at session end |
+
+---
+
+## Action catalog auto-derived from .adn/
+
+Each `.adn/features/*.md` declares its user actions in a `## User Actions` markdown table.
+
+Pipeline:
+
+```
+.adn/features/*.md  -> npm run chaos:catalog -> src/chaos/catalog/actions.json
+.adn/flow/*.md      ->                       -> src/chaos/catalog/flows.json
+package.json        ->                       -> src/chaos/catalog/commands.json
+```
+
+The on-disk JSON is checked in. The drift test (`src/__tests__/chaos/catalogDrift.test.ts`) re-runs the parser and fails if `.adn` and the JSON have drifted. New `.adn` features automatically extend chaos coverage.
+
+---
+
+## Topologies
+
+| Code | Quick | Deep | What runs | Stresses |
+|---|---|---|---|---|
+| A. Single | 60% | 50% | 1 connection -> 1 server, k chains concurrent | ChannelSemaphore, single-connection registries, listener leaks |
+| B. Fan-out | 25% | 25% | 1 user -> 2-4 servers, each with its own per-server session | ConnectionManager isolation, parallel handshakes |
+| C. Fan-in | 12% | 17% | M users -> 1 server (fresh ConnectionManagers) | sshd MaxSessions, server-side load |
+| D. Mesh | 3% | 8% | M users x N servers | Full system invariants under everything simultaneous |
+
+---
+
+## Fault catalog (v0.8.0)
+
+| Layer | Fault | Mechanism | Recovery |
+|---|---|---|---|
+| Network | `dockerPause` | `docker pause <container>` | `docker unpause` |
+| Network | `netem` (NET_ADMIN) | `tc qdisc add dev eth0 root netem delay <ms> loss <pct>` | `tc qdisc del dev eth0 root` |
+| Server | `sshdSignal` | `pkill -STOP sshd` | `pkill -CONT sshd` |
+| Resource | `diskFill` | `dd if=/dev/zero of=/var/log/chaos-fill bs=1M count=N` | `rm -f` |
+
+0 or 1 fault per session, weighted by mode (quick ~30%, deep ~70%). Injection at uniform-random offset in [0.2 x estimated session, 0.8 x estimated session]. Faults requiring `NET_ADMIN` skip cleanly when caps are absent.
+
+More faults (`iptablesRst`, `sshdKill`, `maxSessions`, `fdExhaust`, `stressCpu`, `stressMem`, `clockSkew`, `chmodLock`, `yankFile`) ship in v0.8.1.
+
+---
+
+## Invariants (v0.8.0)
+
+| Invariant | When | What it checks |
+|---|---|---|
+| `sshStateMachine` | after-each-op | Connection state is in the valid set |
+| `semaphoreFloor` | after-each-op | ChannelSemaphore counters never go negative |
+| `cleanShutdown` | after-each-op | Stub for v0.8.0; rich post-disconnect-error contract lands in v0.8.1 |
+| `listenerLeak` | after-session | Emitter listener counts return to baseline (threshold 10) |
+| `activityCount` | after-session | `ActivityService.getRunningActivities().length` does not grow across the session |
+| `sessionTeardown` | after-session | Connection is `Disconnected` at session end |
+
+More invariants (`treeConsistency`, `hoverCorrectness`, `decorationConsistency`, `credentialAtomicity`, `commandIdempotence`, `backgroundQuiescence`, `disposalCleanup`, `crossConnectionIsolation`, plus the rich `cleanShutdown`) ship in v0.8.1.
+
+---
+
+## Replay format
+
+One JSONL line per session in `logs/chaos-results.jsonl`. Each line has `{run_id, seed, mode, topology, perServerSessions, outcome, duration_ms, primitives_exercised, actions_used, faults_injected, invariant_checks, invariant_violations}`.
+
+The full op trace is preserved per chain, including primitive names, params, fault timing, and start delays — sufficient for byte-for-byte deterministic replay.
+
+`outcome` is `"passed"` or `{"violation": "<invariant>", ...}` or `{"exception": "..."}`.
+
+---
+
+## Replayer
+
+Re-execute any logged session deterministically:
+
+```bash
+npm run chaos:replay -- <run_id>
+```
+
+Loads the JSONL entry, walks the recorded ops directly with the same primitives, honours `startDelayMs` and `fault.atMs`. Useful for debugging — set breakpoints, step through, attach to your editor.
+
+Shrinker (delta-debug to minimal failing subset) ships in v0.8.2.
 
 ---
 
 ## Container Lifecycle
 
 | Phase | Action |
-|-------|--------|
+|---|---|
 | Log cleanup | `globalSetup.chaos.ts` deletes previous logs |
-| Setup | Starts both compose stacks (ports 2201-2203 + 2210-2214), waits for SSH readiness on 8 servers |
+| Setup | Brings up both compose stacks (ports 2201-2203 + 2210-2214); waits for SSH readiness on 8 servers |
 | Log collection | `globalTeardown.chaos.ts` collects last 200 lines from all containers to `logs/chaos-container-logs.txt` |
-| Teardown | Cleans artifacts (`rm -rf chaos-*`), stops containers by **exact name** (never `docker compose down`) |
-| Abnormal exit | Signal handlers stop containers if Jest killed mid-run |
+| Teardown | Cleans artifacts, stops containers by **exact name** (never `docker compose down`) |
+| Abnormal exit | Signal handlers stop containers if Jest is killed mid-run |
 
-**Design**: Exact container names protect other projects. Teardown order: logs → artifacts → stop (data lost after docker rm). sshd logs volume-mounted to `test-docker/logs/<container>/sshd.log`.
+**Design:** Exact container names protect other projects. Teardown order: logs -> artifacts -> stop. sshd logs volume-mounted to `test-docker/logs/<container>/sshd.log`.
+
+`ContainerHealthMonitor` polls every 5s; when sshd dies but `docker inspect` still says "running", consecutive connection failures trigger dead-server skip after 3 in a row.
 
 ### Container Log Analysis
 
-Three levels: per-scenario snapshots, final teardown (all 8), volume-mounted live sshd logs. Check for: `MaxSessions`, `out of memory`, `no space left`, `too many open files`, `segfault`, `fatal`, `connection reset`, `authentication failure`.
+Per-session snapshots, final teardown, volume-mounted live sshd logs. Watch for: `MaxSessions`, `out of memory`, `no space left`, `too many open files`, `segfault`, `fatal`, `connection reset`, `authentication failure`.
 
 ---
 
 ## Architecture
 
-See `src/chaos/` — `ChaosEngine` (orchestrator), `ChaosConfig`, `ChaosCollector` (output capture), `ChaosDetector` (anomaly detection), `ChaosValidator` (invariants), `ChaosLogger` (JSON logging), `ContainerHealthMonitor`, `chaos-helpers`, `coverage-manifest.json`, `chaos.test.ts`, `scenarios/` (11 files + index: connection-lifecycle, file-operations, command-guard, server-monitor, concurrent-operations, error-paths, mixed-workflows, ssh-tools, ssh-tools-keys, channel-semaphore, port-forward).
+```
+src/chaos/
+  ChaosEngine.ts              session orchestrator
+  ChaosConfig.ts              modes, budgets, fault rate, topology distribution
+  ChaosLogger.ts              JSONL emitter
+  ChaosTypes.ts               PrimitiveOp, Persona, Action, Fault, Invariant, Session, Chain, RunResult
+  ContainerHealthMonitor.ts   dead-server detection
+  chaos-helpers.ts            createChaosConnection, safeChaosDisconnect, SeededRandom, mocks
+  chaos.test.ts               jest entry
+  catalog/
+    actions.json   commands.json   flows.json     (generated, checked in)
+    builder.ts     loader.ts       personas.ts
+  primitives/
+    sshOps/{connection,run,file}.ts
+    serviceOps/credentialOps.ts
+    index.ts
+  invariants/...                + index.ts
+  faults/...                    + index.ts
+  generator/...
+  replay/ChaosReplayer.ts
+```
 
-## Bug Discovery Strategies
-
-1. **Invariant checking**: writeFile/readFile match, mkdir visible, delete throws, connection state correct, CommandGuard tracks activity, zero running activities at scenario end
-2. **Output capture**: Intercepts 5 output channels, scans for errors/SFTP codes/state issues
-3. **State timeline**: Hooks `onStateChange`, `onFileChange`, `onDidChangeActivities` — detects double events, leaks, phantoms
-4. **Resource leak detection**: Before/after activity counts, listener counts, connections
-5. **Behavioral contracts**: Post-disconnect ops throw, concurrent writes don't corrupt
-6. **Edge case fuzzing**: Special chars, empty files, binary content, rapid create/delete
-7. **Code change tracking**: `coverage-manifest.json` maps methods → scenarios, warns about gaps
-8. **Container health monitoring**: Pre-flight container check, 5s polling via `docker inspect`, immediate death alerts with exit code analysis (137=OOM, 139=segfault, 143=SIGTERM), post-run health report
-
-Container names: `sshlite-test-server-{1,2,3}` (prod/staging/dev), `sshlite-os-{alpine,ubuntu,debian,fedora,rocky}`.
-
-## Post-Run Analysis
-
-`ChaosEngine.generatePostRunAnalysis()`: pass rate, container health correlation, per-OS patterns, anomaly breakdown, coverage gaps, invariant violation rate, output errors, duration insights. Printed + saved in JSONL log.
-
-## Timeout Safeguards (6 layers)
-
-1. **Per-operation**: `withTimeout()` — connect 45s, disconnect 10s, cleanup exec 10s
-2. **Per-scenario**: `Promise.race()` — quick 30s, deep 60s
-3. **Global budget**: quick 300s (80% of Jest), deep 780s (~87% of Jest)
-4. **Dead server skip**: `ContainerHealthMonitor` death → skip remaining scenarios for that server
-5. **Jest outer**: quick 360s, deep 900s
-6. **Monitor cleanup**: `healthMonitor.stop()` in `try/finally`
-
-## Budget Policy
-
-Deep mode budget is **780 s of wall time across ~1,120 runs** (112 scenarios × 10 variations) on 8 servers serially per scenario.
-
-- **Average ceiling**: ~695 ms/scenario. Exceeding this in aggregate produces `early_termination: global_timeout` and silently skips remaining scenarios — strategies #1–#6 only fire on scenarios that run, so a timeout collapses signal far beyond the slow scenario itself.
-- **Per-scenario p95**: ≤ 4× average (≤ 2.8 s) before flagging.
-- **Heavy scenarios** (channel-semaphore, ssh-key push, server-monitor): wrap long ops in `withTimeout(..., 5000)` and tag `weight: 'heavy'` in the `ScenarioDefinition`. The engine samples heavy scenarios at `ceil(variations / 3)` instead of `variations`, freeing budget without losing coverage.
-- **When `early_termination=global_timeout` happens**: read `post_run_analysis.slowest_scenarios` (top 10 by p95). Mark slowest scenarios `heavy` or split them. Do not raise the budget — that hides real regressions.
-
-## Coverage Triage
-
-`coverage.methods_uncovered` is not a flat list. Triage by call-site reachability:
-
-- **P0 — must cover**: methods reachable from any user-facing command. Examples currently uncovered: `SSHConnection.dispose`, `forwardPort`/`stopForward`/`getActiveForwards`, `watchFile`/`unwatchFile`/`isWatching`/`unwatchAll`, `fileExists`, `readFileChunked`/`readFileFirstLines`/`readFileLastLines`/`readFileTail`, `CommandGuard.startConnect`/`completeConnect`/`failConnect`/`trackDisconnect`. **Action**: add a scenario with a real invariant.
-- **P1 — should cover**: stateful lifecycle methods (`CommandGuard.startMonitoring`/`updateMonitoring`/`stopMonitoring`/`startRefresh`/`completeRefresh`/`failRefresh`, `ServerMonitorService.watchStatus`/`checkService`/`watchLiveTerminal`, `PortForwardService.restoreForwardsForConnection`/`deactivateAllForwardsForConnection`, `ActivityService.cancelAllForConnection`/`cancelAll`/`clearAll`). **Action**: cover via lifecycle scenarios that thread several methods through one run.
-- **P2 — defer**: pure parsers and synchronous getters fully exercised by unit tests (`parseProcessOutput`, `parseServiceOutput`, `getRunningActivities`, `hasClipboard`, `getUserSnippets`). **Action**: leave to unit tests; do not waste chaos budget here. Optionally move to a `unit-tested` bucket in the manifest so the warning surface points only at real gaps.
-
-## Servers
-
-| Mode | Basic (2201-2203) | Multi-OS (2210-2214) |
-|------|-------------------|----------------------|
-| quick/deep | 3 Alpine | Alpine, Ubuntu, Debian, Fedora, Rocky |
-
-## Output
-
-**Console**: per-OS pass/fail, failures with invariants, anomalies, coverage, container health, analysis.
-**JSONL** (`logs/chaos-results.jsonl`): `per_os_summary`, `anomalies_detected`, `coverage`, `output_summary`, `container_health`, `post_run_analysis`.
-
-### Scenario Heat Map
-
-`post_run_analysis.slowest_scenarios` lists the top 10 scenarios by p95 `duration_ms`, with `{name, p95_ms, runs}`. This makes budget regressions visible without grepping JSONL — when a deep run nears the global budget, this list names the offenders. Also surfaced when `early_termination` fires.
+---
 
 ## Weekly AI Review Checklist
 
-1. Run `test:chaos:deep`. **First check**: did it `early_termination`? If yes, fix budget BEFORE adding scenarios — read `post_run_analysis.slowest_scenarios`, tag offenders `weight: 'heavy'` or split them. A timed-out run produces no signal for 80%+ of scenarios; stacking more on top is wasted work.
-2. Read JSONL, compare with previous runs (anomalies, failure clusters, slowest_scenarios drift).
-3. Triage `coverage.methods_uncovered` per the **Coverage Triage** section: P0 → new scenario this cycle; P1 → lifecycle scenario; P2 → defer/move to `unit-tested` bucket.
-4. Check `actions_missed` → these are scenarios skipped due to budget; if persistent across runs, the budget needs Step 1, not more scenarios.
-5. Check `anomalies_detected` → real bugs? Cluster by `name + server_os` to spot OS-specific issues.
-6. Check `output_summary` → new error patterns? Add detection rules to `ChaosDetector`.
-7. Add invariants to `ChaosValidator` for any new contract uncovered.
-8. Review scenario weights — anything still slow despite `heavy`? Split it.
-9. Update `coverage-manifest.json` to reflect new scenarios.
-10. Commit enhancements with a measurable claim ("uncovered: 49 → N", "p95: X ms → Y ms").
+1. Run `test:chaos:deep`. Read JSONL summary: how many sessions ran? Topologies covered? Faults fired?
+2. Triage `invariant_violations` by `invariant` field. Each violation should reproduce via `npm run chaos:replay -- <run-id>`.
+3. Check `actions_used` coverage — actions that never appear are likely dropped by all personas; either add a referencing persona weight or delete the action.
+4. Inspect `primitives_exercised` rate — primitives that never fire indicate registry gaps or generator skip-bugs.
+5. If a session times out or hangs, look at `duration_ms` percentile. Adjust `globalBudgetMs` only as a last resort; prefer fixing the underlying primitive cost.
 
-## Adding New Scenarios
+---
 
-1. Create function matching `ScenarioFn` in appropriate scenario file
-2. Add to exported array
-3. Register in `scenarios/index.ts` if new file
-4. Update `coverage-manifest.json`
-5. Run `npm run test:chaos` to verify
+## Adding new coverage
 
-## Scenario Authoring Policy
+| Adding... | Where |
+|---|---|
+| A new user action | `## User Actions` table in the relevant `.adn/features/*.md`, then `npm run chaos:catalog` |
+| A new primitive | New file in `src/chaos/primitives/<surface>/` + register in `src/chaos/primitives/index.ts` + reference from at least one action |
+| A new fault | New file in `src/chaos/faults/` + register in `src/chaos/faults/index.ts` |
+| A new invariant | New file in `src/chaos/invariants/` + register in `src/chaos/invariants/index.ts` |
+| A new persona | Entry in `src/chaos/catalog/personas.ts` referencing existing actions |
 
-Every new scenario must declare three things at review time:
-
-- **Strategy mapping**: which of the 8 bug-discovery strategies it advances (1+). A scenario that maps to none has no place here — write a unit test instead.
-- **Invariant**: at least one verifiable contract checked via `ChaosValidator` (write/read match, mkdir visible, delete throws, listener count balanced) or a behavioral assertion in the scenario body. "It didn't throw" is not an invariant.
-- **Cost budget**: expected p95 duration. The deep-mode average ceiling is ~695 ms/scenario. Scenarios consistently exceeding this MUST set `weight: 'heavy'` in the `ScenarioDefinition` so the engine samples them at `ceil(variations / 3)`.
-
-Reuse helpers — do not re-implement:
-- `createChaosConnection(server)` — connect with chaos defaults
-- `safeChaosDisconnect(conn)` — guarded disconnect
-- `withTimeout(promise, ms, label)` — per-operation timeout
-- `SeededRandom(ctx.seed + ctx.variation)` — reproducible randomness; never `Math.random()`
+The test suite enforces drift — if you change `.adn/features/*.md` without running `npm run chaos:catalog`, `catalogDrift.test.ts` fails.

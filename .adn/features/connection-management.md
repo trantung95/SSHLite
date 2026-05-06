@@ -183,3 +183,13 @@ User connects
 ```
 
 After successful connect with credential, `DisconnectedConnectionInfo` stores the credential for auto-reconnect.
+
+## User Actions
+
+| Action | Primitives | Notes |
+|---|---|---|
+| Connect to host | connect | |
+| Disconnect | disconnect | |
+| Save credential | saveCredential | |
+| Delete credential | deleteCredential | |
+| Look up credential | retrieveCredential | |

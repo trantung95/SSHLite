@@ -1,0 +1,394 @@
+[
+  {
+    "id": "sshLite.connect",
+    "title": "Connect to Host"
+  },
+  {
+    "id": "sshLite.disconnect",
+    "title": "Disconnect"
+  },
+  {
+    "id": "sshLite.enableSudoMode",
+    "title": "Enable Sudo Mode"
+  },
+  {
+    "id": "sshLite.disableSudoMode",
+    "title": "Disable Sudo Mode"
+  },
+  {
+    "id": "sshLite.addHost",
+    "title": "Add SSH Host"
+  },
+  {
+    "id": "sshLite.editHost",
+    "title": "Edit Host"
+  },
+  {
+    "id": "sshLite.removeHost",
+    "title": "Remove Host"
+  },
+  {
+    "id": "sshLite.renameHost",
+    "title": "Rename Host"
+  },
+  {
+    "id": "sshLite.setTabLabel",
+    "title": "Set Tab Label"
+  },
+  {
+    "id": "sshLite.refreshHosts",
+    "title": "Refresh Hosts"
+  },
+  {
+    "id": "sshLite.goToPath",
+    "title": "Go to Path..."
+  },
+  {
+    "id": "sshLite.goToParent",
+    "title": "Go to Parent Folder"
+  },
+  {
+    "id": "sshLite.goToHome",
+    "title": "Go to Home (~)"
+  },
+  {
+    "id": "sshLite.goToRoot",
+    "title": "Go to Root (/)"
+  },
+  {
+    "id": "sshLite.openFile",
+    "title": "Open File"
+  },
+  {
+    "id": "sshLite.downloadFile",
+    "title": "Download File"
+  },
+  {
+    "id": "sshLite.uploadFile",
+    "title": "Upload File"
+  },
+  {
+    "id": "sshLite.deleteRemote",
+    "title": "Delete"
+  },
+  {
+    "id": "sshLite.renameRemote",
+    "title": "Rename"
+  },
+  {
+    "id": "sshLite.moveRemote",
+    "title": "Move To..."
+  },
+  {
+    "id": "sshLite.createFolder",
+    "title": "New Folder"
+  },
+  {
+    "id": "sshLite.refreshFiles",
+    "title": "Refresh Files"
+  },
+  {
+    "id": "sshLite.openTerminal",
+    "title": "Open Terminal"
+  },
+  {
+    "id": "sshLite.forwardPort",
+    "title": "Forward Port"
+  },
+  {
+    "id": "sshLite.stopForward",
+    "title": "Stop Forward"
+  },
+  {
+    "id": "sshLite.activateSavedForward",
+    "title": "Start Saved Forward"
+  },
+  {
+    "id": "sshLite.deleteSavedForward",
+    "title": "Delete Saved Forward"
+  },
+  {
+    "id": "sshLite.showAuditLog",
+    "title": "Show Audit Log"
+  },
+  {
+    "id": "sshLite.exportAuditLog",
+    "title": "Export Audit Log"
+  },
+  {
+    "id": "sshLite.clearAuditLog",
+    "title": "Clear Audit Log"
+  },
+  {
+    "id": "sshLite.monitor",
+    "title": "Monitor Server"
+  },
+  {
+    "id": "sshLite.reconnectOrphanedFile",
+    "title": "Reconnect to Server"
+  },
+  {
+    "id": "sshLite.quickStatus",
+    "title": "Quick Status (runs 10+ server commands)"
+  },
+  {
+    "id": "sshLite.diagnoseSlowness",
+    "title": "Diagnose Slowness"
+  },
+  {
+    "id": "sshLite.clearCredentials",
+    "title": "Clear Saved Credentials"
+  },
+  {
+    "id": "sshLite.addCredential",
+    "title": "Add Credential"
+  },
+  {
+    "id": "sshLite.connectWithCredential",
+    "title": "Connect with Credential"
+  },
+  {
+    "id": "sshLite.deleteCredential",
+    "title": "Remove User"
+  },
+  {
+    "id": "sshLite.savePassword",
+    "title": "Save Password"
+  },
+  {
+    "id": "sshLite.clearAllTempFiles",
+    "title": "Clear All Temp Files"
+  },
+  {
+    "id": "sshLite.clearTempFilesForConnection",
+    "title": "Clear Temp Files for Server"
+  },
+  {
+    "id": "sshLite.openTempFolder",
+    "title": "Open Temp Files Folder"
+  },
+  {
+    "id": "sshLite.pinFolder",
+    "title": "Pin Folder to Credential"
+  },
+  {
+    "id": "sshLite.connectToPinnedFolder",
+    "title": "Connect to Pinned Folder"
+  },
+  {
+    "id": "sshLite.deletePinnedFolder",
+    "title": "Remove Pinned Folder"
+  },
+  {
+    "id": "sshLite.renamePinnedFolder",
+    "title": "Rename Pinned Folder"
+  },
+  {
+    "id": "sshLite.revertFile",
+    "title": "Revert File to Previous Version"
+  },
+  {
+    "id": "sshLite.showFileBackups",
+    "title": "Show File Backup History"
+  },
+  {
+    "id": "sshLite.showServerBackups",
+    "title": "Show Server Backups"
+  },
+  {
+    "id": "sshLite.showChanges",
+    "title": "Show Changes"
+  },
+  {
+    "id": "sshLite.clearServerBackups",
+    "title": "Clear Server Backups"
+  },
+  {
+    "id": "sshLite.showBackupLogs",
+    "title": "Show Backup Logs"
+  },
+  {
+    "id": "sshLite.openServerBackupFolder",
+    "title": "Open Server Backup Folder"
+  },
+  {
+    "id": "sshLite.openTerminalHere",
+    "title": "Open Terminal Here"
+  },
+  {
+    "id": "sshLite.refreshItem",
+    "title": "Refresh"
+  },
+  {
+    "id": "sshLite.clearCache",
+    "title": "Clear Cache (Factory Reset)"
+  },
+  {
+    "id": "sshLite.filterHosts",
+    "title": "Filter Hosts"
+  },
+  {
+    "id": "sshLite.clearHostFilter",
+    "title": "Clear Host Filter"
+  },
+  {
+    "id": "sshLite.filterFiles",
+    "title": "Filter Files"
+  },
+  {
+    "id": "sshLite.clearFilter",
+    "title": "Clear Filter"
+  },
+  {
+    "id": "sshLite.searchServerForFilter",
+    "title": "Search Server for Filter"
+  },
+  {
+    "id": "sshLite.showSearch",
+    "title": "Show Search"
+  },
+  {
+    "id": "sshLite.searchInScope",
+    "title": "Search Here"
+  },
+  {
+    "id": "sshLite.filterFileNames",
+    "title": "Filter by Name"
+  },
+  {
+    "id": "sshLite.clearFilenameFilter",
+    "title": "Clear Filename Filter"
+  },
+  {
+    "id": "sshLite.cancelSearch",
+    "title": "Cancel Search"
+  },
+  {
+    "id": "sshLite.cancelPreloading",
+    "title": "Cancel Preloading"
+  },
+  {
+    "id": "sshLite.revealInTree",
+    "title": "Reveal in File Tree"
+  },
+  {
+    "id": "sshLite.revealSearchResultInTree",
+    "title": "Reveal Search Result in File Tree"
+  },
+  {
+    "id": "sshLite.copyPath",
+    "title": "Copy Path"
+  },
+  {
+    "id": "sshLite.copyHost",
+    "title": "Copy Host"
+  },
+  {
+    "id": "sshLite.showAllBackups",
+    "title": "View All Backups"
+  },
+  {
+    "id": "sshLite.cancelActivity",
+    "title": "Cancel Activity"
+  },
+  {
+    "id": "sshLite.cancelAllActivities",
+    "title": "Cancel All Activities"
+  },
+  {
+    "id": "sshLite.cancelServerActivities",
+    "title": "Cancel Server Activities"
+  },
+  {
+    "id": "sshLite.clearActivities",
+    "title": "Clear Activities"
+  },
+  {
+    "id": "sshLite.toggleActivityGrouping",
+    "title": "Toggle Grouping (Server/Type)"
+  },
+  {
+    "id": "sshLite.expandAll",
+    "title": "Expand All"
+  },
+  {
+    "id": "sshLite.expandFirstLevel",
+    "title": "Expand to First Level"
+  },
+  {
+    "id": "sshLite.collapseAll",
+    "title": "Collapse All"
+  },
+  {
+    "id": "sshLite.showTreeFromRoot",
+    "title": "Show Tree From Root"
+  },
+  {
+    "id": "sshLite.copyRemoteItem",
+    "title": "Copy"
+  },
+  {
+    "id": "sshLite.cutRemoteItem",
+    "title": "Cut"
+  },
+  {
+    "id": "sshLite.pasteRemoteItem",
+    "title": "Paste"
+  },
+  {
+    "id": "sshLite.clearRemoteClipboard",
+    "title": "Clear SSH Clipboard"
+  },
+  {
+    "id": "sshLite.showRemoteProcesses",
+    "title": "Show Remote Processes"
+  },
+  {
+    "id": "sshLite.manageRemoteService",
+    "title": "Manage Remote Service"
+  },
+  {
+    "id": "sshLite.showRemoteEnv",
+    "title": "Show Remote Environment"
+  },
+  {
+    "id": "sshLite.editRemoteCron",
+    "title": "Edit Remote Crontab"
+  },
+  {
+    "id": "sshLite.saveRemoteCron",
+    "title": "Save Remote Crontab"
+  },
+  {
+    "id": "sshLite.runSnippet",
+    "title": "Run Snippet"
+  },
+  {
+    "id": "sshLite.addSnippet",
+    "title": "Add Snippet"
+  },
+  {
+    "id": "sshLite.manageSnippets",
+    "title": "Manage Snippets"
+  },
+  {
+    "id": "sshLite.batchRun",
+    "title": "Batch Command on Hosts"
+  },
+  {
+    "id": "sshLite.runLocalScriptRemote",
+    "title": "Run Local Script on Remote"
+  },
+  {
+    "id": "sshLite.generateSshKey",
+    "title": "Generate SSH Key"
+  },
+  {
+    "id": "sshLite.pushPubKeyToHost",
+    "title": "Push Public Key to Host"
+  },
+  {
+    "id": "sshLite.diffWithLocal",
+    "title": "Diff with Local File"
+  }
+]

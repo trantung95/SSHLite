@@ -1,0 +1,11 @@
+[
+  {
+    "name": "flow/file-save-flow.md",
+    "steps": [
+      "Remove from uploadingFiles",
+      "Add to failedUploadFiles",
+      "Fire _onUploadStateChanged → ✗ badge (red)",
+      "Show error: vscode.window.showErrorMessage(...)"
+    ]
+  }
+]

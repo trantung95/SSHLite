@@ -9,6 +9,12 @@
             "if": "Write(*package.json)|Edit(*package.json)",
             "command": "node scripts/generate-commands-doc.js 2>/dev/null || true",
             "statusMessage": "Regenerating docs/COMMANDS.md..."
+          },
+          {
+            "type": "command",
+            "if": "Write(*.adn/features/*.md)|Edit(*.adn/features/*.md)|Write(*.adn/flow/*.md)|Edit(*.adn/flow/*.md)",
+            "command": "node scripts/build-chaos-catalog.js 2>/dev/null || true",
+            "statusMessage": "Regenerating chaos catalog..."
           }
         ]
       }

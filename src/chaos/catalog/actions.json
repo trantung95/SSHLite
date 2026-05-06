@@ -1,0 +1,141 @@
+[
+  {
+    "name": "Tail logs",
+    "primitives": [
+      "readFile",
+      "runLong"
+    ],
+    "source": "features/activity-audit.md"
+  },
+  {
+    "name": "Watch file",
+    "primitives": [
+      "readFile",
+      "readFile",
+      "readFile"
+    ],
+    "source": "features/activity-audit.md"
+  },
+  {
+    "name": "Connect to host",
+    "primitives": [
+      "connect"
+    ],
+    "source": "features/connection-management.md"
+  },
+  {
+    "name": "Disconnect",
+    "primitives": [
+      "disconnect"
+    ],
+    "source": "features/connection-management.md"
+  },
+  {
+    "name": "Save credential",
+    "primitives": [
+      "saveCredential"
+    ],
+    "source": "features/connection-management.md"
+  },
+  {
+    "name": "Delete credential",
+    "primitives": [
+      "deleteCredential"
+    ],
+    "source": "features/connection-management.md"
+  },
+  {
+    "name": "Look up credential",
+    "primitives": [
+      "retrieveCredential"
+    ],
+    "source": "features/connection-management.md"
+  },
+  {
+    "name": "Browse files",
+    "primitives": [
+      "listFiles",
+      "stat",
+      "fileExists"
+    ],
+    "source": "features/file-operations.md"
+  },
+  {
+    "name": "Edit a file",
+    "primitives": [
+      "readFile",
+      "writeFile"
+    ],
+    "source": "features/file-operations.md"
+  },
+  {
+    "name": "Rename a file",
+    "primitives": [
+      "rename",
+      "listFiles"
+    ],
+    "source": "features/file-operations.md"
+  },
+  {
+    "name": "Delete a file",
+    "primitives": [
+      "deleteFile",
+      "listFiles"
+    ],
+    "source": "features/file-operations.md"
+  },
+  {
+    "name": "Bulk upload",
+    "primitives": [
+      "mkdir",
+      "writeFile",
+      "writeFile",
+      "writeFile",
+      "listFiles"
+    ],
+    "source": "features/file-operations.md",
+    "unordered": true
+  },
+  {
+    "name": "Cross-file search",
+    "primitives": [
+      "listFiles",
+      "readFile",
+      "runShort"
+    ],
+    "source": "features/search-system.md"
+  },
+  {
+    "name": "Run terminal",
+    "primitives": [
+      "shell",
+      "runShort"
+    ],
+    "source": "features/terminal-port-forwarding.md"
+  },
+  {
+    "name": "Run command",
+    "primitives": [
+      "runShort",
+      "runFailing"
+    ],
+    "source": "features/terminal-port-forwarding.md"
+  },
+  {
+    "name": "Load file tree",
+    "primitives": [
+      "listFiles",
+      "stat"
+    ],
+    "source": "features/tree-providers.md"
+  },
+  {
+    "name": "Reveal in tree",
+    "primitives": [
+      "stat",
+      "fileExists",
+      "listFiles"
+    ],
+    "source": "features/tree-providers.md"
+  }
+]

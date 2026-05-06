@@ -213,3 +213,13 @@ Modified file detection with "M" badge and diff icon:
 ```
 
 Setting: `sshLite.enableChangeTracking` (not in package.json — may be internal)
+
+## User Actions
+
+| Action | Primitives | Notes |
+|---|---|---|
+| Browse files | listFiles, stat, fileExists | |
+| Edit a file | readFile, writeFile | Write usually follows read |
+| Rename a file | rename, listFiles | |
+| Delete a file | deleteFile, listFiles | |
+| Bulk upload | mkdir, writeFile, writeFile, writeFile, listFiles | unordered |
