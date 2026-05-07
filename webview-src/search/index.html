@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- CSP and asset URIs are injected by SearchPanel.getWebviewContent() at runtime.
+       The placeholders below are replaced via simple string substitution. -->
+  <meta http-equiv="Content-Security-Policy" content="__CSP__">
+  <title>Search</title>
+  <link rel="stylesheet" href="__STYLES_URI__">
+</head>
+<body>
+  <div class="main-container">
+    <div class="controls-section">
+      <div class="search-container">
+        <div class="search-row">
+          <div class="search-input-wrapper">
+            <input type="text" id="searchInput" class="search-input" placeholder="Search" autofocus>
+            <button id="caseSensitiveBtn" class="toggle-btn" title="Match Case">Aa</button>
+            <button id="wholeWordBtn" class="toggle-btn" title="Match Whole Word">Ab|</button>
+            <button id="regexBtn" class="toggle-btn" title="Use Regular Expression">.*</button>
+            <button id="findFilesBtn" class="toggle-btn" title="Find Files by Name — search for filenames instead of file content">&#128196;</button>
+          </div>
+          <button id="searchBtn" class="search-btn" title="Search (Enter)">&#128269;</button>
+          <button id="cancelBtn" class="search-btn cancel-btn" title="Cancel Search" style="display: none;">&#x2715;</button>
+        </div>
+        <div class="pattern-section">
+          <div class="pattern-toggle" id="patternToggle">
+            <span class="chevron collapsed" id="patternChevron">▼</span>
+            <span>files to include/exclude</span>
+          </div>
+          <div class="pattern-fields" id="patternFields">
+            <div class="pattern-row">
+              <span class="pattern-label">to include</span>
+              <input type="text" id="includeInput" class="pattern-input" placeholder="e.g. *.ts, src/**">
+            </div>
+            <div class="pattern-row">
+              <span class="pattern-label">to exclude</span>
+              <input type="text" id="excludeInput" class="pattern-input" placeholder="e.g. node_modules, *.test.ts">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="servers-section">
+        <div class="servers-header">
+          <span class="servers-title">Servers</span>
+          <div class="servers-actions">
+            <button id="sortToggleBtn" class="sort-toggle" title="Sort: servers with search paths first">&#8593;checked</button>
+            <button id="selectAllBtn" class="action-link" title="Select all available servers">All</button>
+            <button id="selectNoneBtn" class="action-link" title="Deselect all servers">None</button>
+          </div>
+        </div>
+        <div id="serverList" class="server-list">
+          <div class="no-servers">No servers configured.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="resizer" id="resizer"></div>
+
+    <div class="results-section">
+      <div id="resultTabBar" class="result-tab-bar" style="display:none"></div>
+      <div id="resultsHeader" class="results-header" style="display: none;"></div>
+      <div id="resultsContainer"></div>
+    </div>
+  </div>
+
+  <script nonce="__NONCE__" src="__SCRIPT_URI__"></script>
+</body>
+</html>
