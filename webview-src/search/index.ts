@@ -15,16 +15,12 @@
 // rather than a lift-and-shift. Phase 2 will dismantle this monolith anyway.
 // @ts-nocheck
 
-import { info, diag } from './log';
+import { info, diag, getVsCodeApi } from './log';
 
-declare const acquireVsCodeApi: () => {
-  postMessage: (msg: unknown) => void;
-  setState: (state: unknown) => void;
-  getState: () => unknown;
-};
-
-    const vscode = acquireVsCodeApi();
-    info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
+// Use the singleton in log.ts. Calling acquireVsCodeApi() a second time would
+// throw "An instance of the VS Code API has already been acquired".
+const vscode = getVsCodeApi();
+info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
 
     // State
     let scopes = [];
