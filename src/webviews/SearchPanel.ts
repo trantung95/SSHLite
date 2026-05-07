@@ -84,7 +84,9 @@ type WebviewMessage =
   | { type: 'removeServerPath'; serverId: string; pathIndex: number }
   | { type: 'addServerPath'; serverId: string; path: string }
   | { type: 'toggleSort' }
-  | { type: 'setServerMaxProcesses'; serverId: string; value: number | null };
+  | { type: 'setServerMaxProcesses'; serverId: string; value: number | null }
+  | { type: 'log'; level: 'info' | 'diag'; scope: string; event: string; payload?: Record<string, unknown> }
+  | { type: 'webviewError'; message: string; stack?: string };
 
 /**
  * SearchPanel - VS Code native-style search webview
@@ -272,6 +274,11 @@ export class SearchPanel {
    * Show the search panel
    */
   public show(): void {
+    infoLog('search-panel', 'show', {
+      hasPanel: !!this.panel,
+      scopeCount: this.searchScopes.length,
+      serverCount: this.serverList.length,
+    });
     if (this.panel) {
       this.panel.reveal(vscode.ViewColumn.One);
       return;
@@ -603,7 +610,29 @@ export class SearchPanel {
    * Handle messages from webview
    */
   private async handleMessage(message: WebviewMessage): Promise<void> {
+    diagLog('search-panel', 'recv', { type: typeof message?.type === 'string' ? message.type : 'unknown' });
     switch (message.type) {
+      case 'log': {
+        const level = message.level === 'diag' ? 'diag' : 'info';
+        const scope = typeof message.scope === 'string' ? message.scope : 'search-webview';
+        const event = typeof message.event === 'string' ? message.event : 'unknown';
+        const payload = (message.payload && typeof message.payload === 'object') ? message.payload : undefined;
+        if (level === 'info') {
+          infoLog(scope, event, payload);
+        } else {
+          diagLog(scope, event, payload);
+        }
+        break;
+      }
+
+      case 'webviewError': {
+        infoLog('search-panel', 'webview-error', {
+          message: typeof message.message === 'string' ? message.message : '(no message)',
+          stack: typeof message.stack === 'string' ? message.stack.slice(0, 1000) : undefined,
+        });
+        break;
+      }
+
       case 'search':
         await this.performSearch(message.query, message.include, message.exclude, message.caseSensitive, message.regex, message.findFiles, message.wholeWord);
         break;
@@ -1482,9 +1511,16 @@ export class SearchPanel {
   /**
    * Post message to webview
    */
-  private postMessage(message: unknown): void {
+  private postMessage(msg: unknown): void {
+    try {
+      const m = msg as { type?: string };
+      diagLog('search-panel', 'post', {
+        type: m && typeof m.type === 'string' ? m.type : 'unknown',
+        size: typeof msg === 'object' && msg !== null ? JSON.stringify(msg).length : 0,
+      });
+    } catch { /* never let logging break postMessage */ }
     if (this.panel) {
-      this.panel.webview.postMessage(message);
+      this.panel.webview.postMessage(msg);
     }
   }
 
@@ -1545,6 +1581,7 @@ export class SearchPanel {
    * Dispose resources
    */
   public dispose(): void {
+    infoLog('search-panel', 'dispose', {});
     if (this.panel) {
       this.panel.dispose();
     }
