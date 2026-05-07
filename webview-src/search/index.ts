@@ -1442,6 +1442,9 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
             if (batchTab) {
               if (message.results && message.results.length > 0) batchTab.results = batchTab.results.concat(message.results);
               batchTab.hitLimit = message.hitLimit || batchTab.hitLimit;
+              // Track the live limit so the "Limit N reached" warning shows the
+              // actual configured cap, not the createTabState() default of 2000.
+              if (typeof message.limit === 'number' && message.limit > 0) batchTab.limit = message.limit;
               if (message.done) {
                 batchTab.searching = false;
                 delete tabSearchIdMap[msgSearchId];
@@ -1462,6 +1465,9 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
           // 3. Normal current-tab handling — append to currentTab.results
           if (message.results && message.results.length > 0) currentTab.results = currentTab.results.concat(message.results);
           currentTab.hitLimit = message.hitLimit || currentTab.hitLimit;
+          // Track the live limit so the "Limit N reached" warning shows the
+          // actual configured cap, not the createTabState() default of 2000.
+          if (typeof message.limit === 'number' && message.limit > 0) currentTab.limit = message.limit;
           if (message.done) {
             currentTab.searching = false;
           }

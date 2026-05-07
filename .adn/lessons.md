@@ -5,6 +5,17 @@ Add new entries as bugs are found, mistakes are made, or better approaches are d
 
 ---
 
+## 2026-05-07 — Tab state defaults must be overwritten by every payload that carries the value
+
+**What happened**: User configured `sshLite.searchMaxResults: 10000`. The search correctly returned 10000 results (extension-side cap was honored), but the UI banner read "⚠️ Limit 2000 reached" instead of 10000. The displayed value did not match the configured setting.
+
+**Root cause**: `createTabState()` initializes `tab.limit: 2000` as a hardcoded default. The `'searchBatch'` message handler (and its kept-tab branch) updated `results`, `hitLimit`, and `searching` on each batch but never assigned `tab.limit = message.limit`, even though every batch payload carries the extension's `maxResults` value. So `tab.limit` stayed at 2000 forever, and `renderResults()` read `tab.limit || limit` and rendered "2000" in the warning text. Behavior was correct (10000 results stopped the search at the right point); only the displayed cap value was stale. The `'results'` handler (a different message path) did update `tab.limit`, which is why the bug was inconsistent and easy to miss.
+
+**Lesson**:
+- When a tab/state object has fields with hardcoded defaults (`limit: 2000`, `viewMode: 'list'`, etc.), audit every message handler that produces or refreshes that state. Each handler must overwrite every default-bearing field whose canonical value is in the payload — not just `results`/`hitLimit`/`searching`. A field that's only set in *one* of several handlers will display the default everywhere else.
+- For settings that surface in user-visible text (limit warnings, banner counts), the source of truth should be the live payload, not a tab-state default. Default fields should be invariant skeletons, not values used as fallbacks.
+- When a config value flows extension→webview, run a focused check: search for everywhere `tab.<field>` is read in the renderer, and confirm every message handler that affects that tab updates `<field>` from the payload.
+
 ## 2026-05-07 — `vsce package --no-dependencies` strips ssh2 and breaks activation
 
 **What happened**: The Phase 1 `scripts/verify-package.js` ran `vsce package --no-dependencies`. The flag tells vsce to omit `node_modules/` from the .vsix. The 4-entry `REQUIRED_ENTRIES` check verified `media/search/*` and `out/extension.js` were present and reported success. But the shipped .vsix was missing the entire `node_modules/` tree — including `ssh2` and `ssh-config`, both runtime dependencies. On install, `require('ssh2')` failed at module load, `activate()` never ran, and every tree view showed "no data provider registered for this view." The user had to surface the error from the DevTools console; the verify-package smoke test gave a green light.
