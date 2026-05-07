@@ -214,3 +214,18 @@ Centralizes activity tracking so the Activity panel shows a consistent, unified 
 
 ### Why event-driven instead of direct calls?
 Decouples services from UI. FileService doesn't know about FileTreeProvider — it just fires events. This allows multiple consumers to react (decoration provider, tree provider, status bar) without the service knowing about them.
+
+### Webview build pipeline (since v0.8.1)
+
+The search panel webview (`src/webviews/SearchPanel.ts`) loads its HTML/CSS/JS from `media/search/`, bundled by esbuild from `webview-src/search/`. The pipeline:
+
+```
+webview-src/search/
+  index.ts ──┐
+  index.html ─┼─▶ build/build-webview.js (esbuild) ─▶ media/search/{main.js, main.css, index.html}
+  styles.css ─┘
+```
+
+`npm run compile` chains `compile:webview` → `tsc`. `npm run watch:webview` for dev iteration. `npm run verify:package` is the smoke test that the bundle ships in the .vsix.
+
+The webview loads bundled assets via `webview.asWebviewUri()` with a per-load CSP nonce; no inline scripts.

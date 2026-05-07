@@ -5,11 +5,24 @@ Cross-server search via `SearchPanel` webview: server checkboxes, auto-connect/d
 ## Architecture
 
 ```
-SearchPanel (TS, extension) ←postMessage/onMessage→ Webview (HTML/JS, browser)
+SearchPanel (TS, extension) ←postMessage/onMessage→ Webview (bundled from webview-src/search/)
+                                                     │
+                                                     ├─ index.ts    (bootstrap + runtime; phase-2 split coming)
+                                                     ├─ log.ts      (postMessage-based logger)
+                                                     ├─ styles.css  (lifted from old inline <style>)
+                                                     └─ index.html  (HTML skeleton; URIs + nonce injected at load)
 ```
 
 **Extension → Webview**: `updateState`, `searching`, `searchBatch` (progressive results), `updateServerConnection`
 **Webview → Extension**: `search`, `toggleServer`, `openResult`, `cancelSearch`, `keepSearch`, `removeServerPath`, `setServerMaxProcesses`
+
+### Logging
+
+All search webview events land in the single **SSH Lite** Output channel:
+
+- Extension side: `infoLog('search-panel', ...)` for show/dispose/webview-error; `diagLog('search-panel', ...)` for every `post`/`recv`.
+- Webview side: posts `{type:'log', level, scope, event, payload}` back to the extension via the `log.ts` helper. The extension forwards via `infoLog`/`diagLog`.
+- Triage: enable `sshLite.diagnosticLogging` → reproduce → View → Output → select **SSH Lite** → Select All → Copy.
 
 ## Server List Management
 

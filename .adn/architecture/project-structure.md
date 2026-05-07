@@ -111,6 +111,10 @@ SSHLite/
   test-docker/                            # Docker compose for integration tests
   images/                                 # Extension icon
   out/                                    # Compiled JavaScript output
+  webview-src/search/                     # Source for the search webview (since v0.8.1)
+  build/                                  # Build orchestration scripts (esbuild webview)
+  scripts/                                # One-off scripts (verify-package, generate-commands-doc, run-chaos)
+  media/search/                           # Built webview bundle (gitignored, packaged in .vsix)
 ```
 
 ---
