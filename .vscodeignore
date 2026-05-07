@@ -1,6 +1,9 @@
 .vscode/**
 .vscode-test/**
 src/**
+webview-src/**
+build/**
+scripts/**
 .gitignore
 .yarnrc
 vsc-extension-quickstart.md
@@ -17,3 +20,5 @@ test-docker/**
 jest.*.config.js
 jest.config.js
 nul
+docs/**
+.adn/**
