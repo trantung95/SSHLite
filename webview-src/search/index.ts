@@ -656,7 +656,8 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
       }
       const showPinBtn = !activeTabId && displayResults.length > 0;
       resultsHeader.innerHTML = `
-        <span class="results-count">${matchCount} result${matchCount !== 1 ? 's' : ''} in ${fileCount} file${fileCount !== 1 ? 's' : ''}${serverSummary}${limitWarning}</span>
+        <span class="results-count">${matchCount} result${matchCount !== 1 ? 's' : ''} in ${fileCount} file${fileCount !== 1 ? 's' : ''}${serverSummary}</span>
+        ${limitWarning}
         ${showPinBtn ? '<button id="keepResultsBtn" class="view-toggle-btn" title="Keep Results (Pin)"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" style="vertical-align:middle"><path d="M10.97 2.29a.75.75 0 0 1 .073.976l-.073.084L9.06 5.26l1.57 1.57 1.73-1.72a.75.75 0 0 1 1.133.976l-.073.084-1.73 1.72.97.97a.75.75 0 0 1-.976 1.133l-.084-.073L9.87 8.19 7.81 10.25l.97.97a.75.75 0 0 1-.976 1.133l-.084-.073-4.5-4.5a.75.75 0 0 1 .976-1.133l.084.073.97.97 2.06-2.06-1.73-1.72a.75.75 0 0 1 .976-1.133l.084.073 1.73 1.72L9.91 2.29a.75.75 0 0 1 1.06 0z"/></svg></button>' : ''}
         <button id="expandToggleBtn" class="view-toggle-btn" title="${getExpandToggleTitle()}">${getExpandToggleIcon()}</button>
         <button id="listViewBtn" class="view-toggle-btn ${viewMode === 'list' ? 'active' : ''}" title="List View">☰</button>
