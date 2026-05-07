@@ -1589,6 +1589,7 @@
     "@types/vscode": "^1.85.0",
     "@typescript-eslint/eslint-plugin": "^6.0.0",
     "@typescript-eslint/parser": "^6.0.0",
+    "esbuild": "^0.28.0",
     "eslint": "^8.56.0",
     "jest": "^30.2.0",
     "puppeteer": "^24.36.0",
