@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.8.1 — Search webview lifted to bundled assets
+
+Phase 1 of the search render overhaul (spec: `docs/superpowers/specs/2026-05-07-search-render-overhaul-design.md`). Pure refactor — zero observable behavior change.
+
+### What changed
+
+- **New `webview-src/search/`** — `index.html`, `styles.css`, `index.ts`, `log.ts`. Source of truth for the search webview.
+- **New `build/build-webview.js`** — esbuild orchestration. Bundles to `media/search/{main.js, main.css, index.html}`.
+- **New `scripts/verify-package.js`** — packaging smoke test, run via `npm run verify:package`.
+- **`SearchPanel.getWebviewContent()`** shrinks from 2535 lines to ~30. CSP tightens from `'unsafe-inline'` script to a per-load nonce.
+- **Logging:** every `postMessage` in/out is logged via `diagLog`. `show`/`dispose` are logged via `infoLog`. New `'log'` and `'webviewError'` message types route webview-side logs into the **SSH Lite** Output channel.
+
+### Build pipeline
+
+- New devDep: `esbuild`.
+- `npm run compile` now runs `compile:webview` (esbuild) before `tsc`.
+- `npm run watch:webview` for webview-only dev iteration.
+- `npm run verify:package` builds + packages + asserts `media/search/*` is in the .vsix.
+
+### Verification
+
+- `npm run compile` — 0 errors
+- `npx jest --no-coverage` — 1447/1447 pass (no regression vs v0.8.0)
+- `npm run verify:package` — passes
+- Manual smoke test was skipped per user request
+
+### Coming in v0.8.2
+
+- `ResultStore` with parallel list+tree state
+- View toggle becomes O(visible-rows), not O(total-results)
+- Append-not-rebuild on each `searchBatch`
+
 ## v0.8.0 — Chaos engine rebuild
 
 The chaos suite is now a real chaos-testing system. The old engine (scripted scenarios with parameter randomization on happy-state Docker) is replaced with a session-based generator that composes random user-like chains, runs them concurrently across multiple topologies, and injects real environment-level faults.

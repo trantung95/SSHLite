@@ -1,6 +1,6 @@
 # SSH Lite (SSH Tools) — Lightweight SSH Suite for VS Code
 
-![Version](https://img.shields.io/badge/version-0.8.0-blue)
+![Version](https://img.shields.io/badge/version-0.8.1-blue)
 ![Status](https://img.shields.io/badge/status-beta-yellow)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-1.85.0+-purple)
@@ -271,6 +271,12 @@ Contributions welcome! Please submit Pull Requests on GitHub.
 Apache-2.0 License
 
 ## Release Notes
+
+### 0.8.1 — Search webview lifted to bundled assets
+
+Internal refactor. The search panel webview is now built from `webview-src/search/` (esbuild) and shipped under `media/search/` in the .vsix. No user-visible behavior change.
+
+**Why:** unblocks parallel list+tree state (v0.8.2) and list virtualization (v0.8.3) — see `.adn/CHANGELOG.md` for the full series. `SearchPanel.ts` shrinks from 4032 to ~1500 lines; the rendering layer is now testable in isolation. Adds postMessage in/out diag logs and a webview→extension log forwarder so all webview events land in the **SSH Lite** Output channel for triage.
 
 ### 0.8.0 — Chaos engine rebuild
 
