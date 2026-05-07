@@ -22,11 +22,15 @@ const NPX = 'npx';
 const TAR = IS_WIN ? 'C:/Windows/System32/tar.exe' : 'tar';
 
 // Inside a .vsix, files live under "extension/" (vsce convention).
+// ssh2 and ssh-config are runtime deps that MUST ship in node_modules/, otherwise
+// extension activation throws "Cannot find module 'ssh2'" and no views register.
 const REQUIRED_ENTRIES = [
   'extension/media/search/main.js',
   'extension/media/search/main.css',
   'extension/media/search/index.html',
   'extension/out/extension.js',
+  'extension/node_modules/ssh2/package.json',
+  'extension/node_modules/ssh-config/package.json',
 ];
 
 function run(bin, args) {
@@ -52,7 +56,9 @@ function listVsixEntries(vsixPath) {
   }
 
   run(NPM, ['run', 'compile']);
-  run(NPX, ['--yes', '@vscode/vsce', 'package', '--no-dependencies']);
+  // DO NOT pass --no-dependencies — that strips node_modules/, which means ssh2
+  // is missing at runtime and the extension fails to activate.
+  run(NPX, ['--yes', '@vscode/vsce', 'package']);
 
   const vsix = fs.readdirSync(ROOT).find((f) => f.endsWith('.vsix'));
   if (!vsix) {

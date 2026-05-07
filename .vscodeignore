@@ -22,3 +22,5 @@ jest.config.js
 nul
 docs/**
 .adn/**
+logs/**
+test-marketplace/**

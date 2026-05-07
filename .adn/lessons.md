@@ -5,6 +5,21 @@ Add new entries as bugs are found, mistakes are made, or better approaches are d
 
 ---
 
+## 2026-05-07 — `vsce package --no-dependencies` strips ssh2 and breaks activation
+
+**What happened**: The Phase 1 `scripts/verify-package.js` ran `vsce package --no-dependencies`. The flag tells vsce to omit `node_modules/` from the .vsix. The 4-entry `REQUIRED_ENTRIES` check verified `media/search/*` and `out/extension.js` were present and reported success. But the shipped .vsix was missing the entire `node_modules/` tree — including `ssh2` and `ssh-config`, both runtime dependencies. On install, `require('ssh2')` failed at module load, `activate()` never ran, and every tree view showed "no data provider registered for this view." The user had to surface the error from the DevTools console; the verify-package smoke test gave a green light.
+
+**Root cause**:
+- `--no-dependencies` is appropriate ONLY when an extension uses a bundler (esbuild/webpack) to inline all runtime deps into a single output file. SSH Lite does not bundle the extension itself — only the search webview is bundled. The extension's `out/extension.js` still does `require('ssh2')` at runtime.
+- The verify script's required-entries list checked the webview bundle but not runtime deps. A green check on the webview said nothing about activation viability.
+- The shipped .vsix was 1 MB instead of the expected ~5 MB. A size sanity check would have caught this immediately.
+
+**Lesson**:
+- `vsce package` (no flags) is the correct release command for SSH Lite. The standard behavior bundles `dependencies` from `package.json` (not `devDependencies`) and that is exactly what we want.
+- Any packaging-smoke script must verify production deps ship: include `extension/node_modules/<runtime-dep>/package.json` in REQUIRED_ENTRIES for every entry in `package.json`'s `dependencies`. Currently: `ssh2`, `ssh-config`.
+- A .vsix sanity-size check is cheap and effective: SSH Lite's expected size is ≥ 4 MB. Anything substantially smaller indicates missing deps.
+- Reviewers cannot catch packaging bugs by reading code — they manifest only at install/runtime. The packaging-smoke script IS the test; its assertions must be specific enough to fail on broken artifacts.
+
 ## 2026-05-07 — Lifting JS out of a template literal needs a THREE-step unescape, not two
 
 **What happened**: Phase 1 of the search-render-overhaul (v0.8.1) lifted the inline `<script>` body from `SearchPanel.getWebviewContent()` (a template literal) into `webview-src/search/index.ts`. The unescape pass handled `` \` → ` `` and `\${ → ${` but missed `\\u → \u` (and `\\u{` → `\u{`). After the lift, every emoji and special character (server status icons 🔄 ❌ 🟢 ⚡ ⚫, path icons 📄 📁, warning ⚠️, remove/close ×, sort ↑, tooltip em-dashes —) rendered as literal escape text like `\u{1F504}` in the UI. Three reviewers (Task 6 spec + quality, then a holistic Phase 1 review) examined the lift; only the holistic final review caught this. Manual smoke test (Task 11) was skipped per user request — that gate would have caught it in 30 seconds.
