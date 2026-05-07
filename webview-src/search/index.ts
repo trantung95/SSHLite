@@ -663,79 +663,89 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
         <button id="treeViewBtn" class="view-toggle-btn ${viewMode === 'tree' ? 'active' : ''}" title="Tree View"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="vertical-align: middle;"><path d="M1 2h6v1.5H1zm4 4h6v1.5H5zm0 4h6v1.5H5zM3 3.5h1.5v3H3zm0 4h1.5v3H3z"/></svg></button>
       `;
 
-      // Add view toggle handlers
-      setTimeout(() => {
-        const listBtn = document.getElementById('listViewBtn');
-        const treeBtn = document.getElementById('treeViewBtn');
-        const expandToggle = document.getElementById('expandToggleBtn');
-        const limitLink = document.getElementById('increaseLimitLink');
-        const keepBtn = document.getElementById('keepResultsBtn');
+      // Add view toggle handlers — attached SYNCHRONOUSLY right after innerHTML so
+      // there is no race window where the buttons exist without a click handler.
+      // Previously this was wrapped in setTimeout(() => ..., 0) which left a 1-tick
+      // gap during which clicks were lost — visible during active searches and after
+      // hitting the result limit, where renderResults runs frequently.
+      info('search-webview', 'attach-toggle-handlers', {
+        viewMode, hitLimit: displayHitLimit, fileCount, matchCount,
+      });
+      const listBtn = document.getElementById('listViewBtn');
+      const treeBtn = document.getElementById('treeViewBtn');
+      const expandToggle = document.getElementById('expandToggleBtn');
+      const limitLink = document.getElementById('increaseLimitLink');
+      const keepBtn = document.getElementById('keepResultsBtn');
 
-        if (keepBtn) {
-          keepBtn.addEventListener('click', () => {
-            const activeTab = getActiveTabState();
-            if (!activeTab || activeTab.results.length === 0) return;
+      if (keepBtn) {
+        keepBtn.addEventListener('click', () => {
+          info('search-webview', 'click-keep', { activeTabId });
+          const activeTab = getActiveTabState();
+          if (!activeTab || activeTab.results.length === 0) return;
 
-            // Save current input state into the tab being kept
-            saveCurrentInputState();
+          // Save current input state into the tab being kept
+          saveCurrentInputState();
 
-            // Move currentTab to resultTabs (it becomes a kept tab)
-            if (!activeTabId) {
-              resultTabs.push(currentTab);
-              if (resultTabs.length > 10) {
-                const evicted = resultTabs.shift();
-                if (evicted && evicted.searchId) delete tabSearchIdMap[evicted.searchId];
-                if (evicted) cleanupTab(evicted);
-              }
-              // Route future searchBatch for this searchId to the kept tab
-              if (currentTab.searching && currentTab.searchId) {
-                tabSearchIdMap[currentTab.searchId] = currentTab.id;
-                // Notify extension to preserve this search (don't abort on new search)
-                vscode.postMessage({ type: 'keepSearch', searchId: currentTab.searchId });
-              }
-              // Create a fresh Current tab
-              currentTab = createTabState();
-              activeTabId = null;
+          // Move currentTab to resultTabs (it becomes a kept tab)
+          if (!activeTabId) {
+            resultTabs.push(currentTab);
+            if (resultTabs.length > 10) {
+              const evicted = resultTabs.shift();
+              if (evicted && evicted.searchId) delete tabSearchIdMap[evicted.searchId];
+              if (evicted) cleanupTab(evicted);
             }
-
-            restoreTabState(currentTab);
-            renderTabBar();
-            renderResults();
-          });
-        }
-        if (expandToggle) {
-          expandToggle.addEventListener('click', () => {
-            // Cycle: 0 → 1 (expand all) → 2 (file level) → 0 (collapse all)
-            const nextState = (searchExpandState + 1) % 3;
-            applySearchExpandState(nextState, fileGroups);
-            renderResults(displayHitLimit, displayLimit);
-          });
-        }
-        if (listBtn) {
-          listBtn.addEventListener('click', () => {
-            viewMode = 'list';
-            renderResults(displayHitLimit, displayLimit);
-          });
-        }
-        if (treeBtn) {
-          treeBtn.addEventListener('click', () => {
-            const wasListMode = viewMode === 'list';
-            viewMode = 'tree';
-            // If switching from list to tree for the first time, expand all nodes
-            if (wasListMode && treeViewFirstExpand) {
-              treeViewFirstExpand = false;
-              expandAllTreeNodes(fileGroups);
+            // Route future searchBatch for this searchId to the kept tab
+            if (currentTab.searching && currentTab.searchId) {
+              tabSearchIdMap[currentTab.searchId] = currentTab.id;
+              // Notify extension to preserve this search (don't abort on new search)
+              vscode.postMessage({ type: 'keepSearch', searchId: currentTab.searchId });
             }
-            renderResults(displayHitLimit, displayLimit);
-          });
-        }
-        if (limitLink) {
-          limitLink.addEventListener('click', (e) => {
-            e.preventDefault();
-            vscode.postMessage({ type: 'increaseLimit' });
-          });
-        }
-      }, 0);
+            // Create a fresh Current tab
+            currentTab = createTabState();
+            activeTabId = null;
+          }
+
+          restoreTabState(currentTab);
+          renderTabBar();
+          renderResults();
+        });
+      }
+      if (expandToggle) {
+        expandToggle.addEventListener('click', () => {
+          // Cycle: 0 → 1 (expand all) → 2 (file level) → 0 (collapse all)
+          const nextState = (searchExpandState + 1) % 3;
+          info('search-webview', 'click-expand-toggle', { from: searchExpandState, to: nextState });
+          applySearchExpandState(nextState, fileGroups);
+          renderResults(displayHitLimit, displayLimit);
+        });
+      }
+      if (listBtn) {
+        listBtn.addEventListener('click', () => {
+          info('search-webview', 'click-list-view', { from: viewMode });
+          viewMode = 'list';
+          renderResults(displayHitLimit, displayLimit);
+        });
+      }
+      if (treeBtn) {
+        treeBtn.addEventListener('click', () => {
+          const wasListMode = viewMode === 'list';
+          info('search-webview', 'click-tree-view', { from: viewMode, firstExpand: treeViewFirstExpand });
+          viewMode = 'tree';
+          // If switching from list to tree for the first time, expand all nodes
+          if (wasListMode && treeViewFirstExpand) {
+            treeViewFirstExpand = false;
+            expandAllTreeNodes(fileGroups);
+          }
+          renderResults(displayHitLimit, displayLimit);
+        });
+      }
+      if (limitLink) {
+        limitLink.addEventListener('click', (e) => {
+          e.preventDefault();
+          info('search-webview', 'click-increase-limit', {});
+          vscode.postMessage({ type: 'increaseLimit' });
+        });
+      }
 
       // Render based on view mode
       if (viewMode === 'tree') {
