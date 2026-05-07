@@ -277,6 +277,9 @@ export class SearchPanel {
       return;
     }
 
+    if (!this.extensionContext) {
+      throw new Error('SearchPanel.show() called before extensionContext was set — call loadSortOrder(context) first');
+    }
     this.panel = vscode.window.createWebviewPanel(
       'sshLiteSearch',
       'Search',
@@ -284,7 +287,9 @@ export class SearchPanel {
       {
         enableScripts: true,
         retainContextWhenHidden: true,
-        localResourceRoots: [],
+        localResourceRoots: [
+          vscode.Uri.joinPath(this.extensionContext.extensionUri, 'media', 'search'),
+        ],
       }
     );
 
@@ -1500,11 +1505,14 @@ export class SearchPanel {
     if (!this.panel) {
       throw new Error('SearchPanel.getWebviewContent called before panel was created');
     }
+    if (!this.extensionContext) {
+      throw new Error('SearchPanel.getWebviewContent called before extensionContext was set');
+    }
     const webview = this.panel.webview;
     const nonce = SearchPanel.makeNonce();
     const cspSource = webview.cspSource;
 
-    const mediaRoot = vscode.Uri.joinPath(this.extensionContext!.extensionUri, 'media', 'search');
+    const mediaRoot = vscode.Uri.joinPath(this.extensionContext.extensionUri, 'media', 'search');
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'main.js'));
     const stylesUri = webview.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'main.css'));
 
@@ -1516,7 +1524,7 @@ export class SearchPanel {
       `font-src ${cspSource}`,
     ].join('; ');
 
-    const htmlPath = path.join(this.extensionContext!.extensionPath, 'media', 'search', 'index.html');
+    const htmlPath = path.join(this.extensionContext.extensionPath, 'media', 'search', 'index.html');
     let html = fs.readFileSync(htmlPath, 'utf8');
     html = html
       .replace('__CSP__', csp)
