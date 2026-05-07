@@ -222,8 +222,8 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
         findFilesBtn.classList.toggle('active', findFilesMode);
         searchInput.placeholder = findFilesMode ? 'Find Files by Name' : 'Search';
         findFilesBtn.title = findFilesMode
-          ? 'Search File Content \\u2014 search for text inside files'
-          : 'Find Files by Name \\u2014 search for filenames instead of file content';
+          ? 'Search File Content \u2014 search for text inside files'
+          : 'Find Files by Name \u2014 search for filenames instead of file content';
       });
 
       // Server list actions
@@ -309,23 +309,23 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
 
       let html = '';
       serverList.forEach((server, idx) => {
-        const statusIcon = server.status === 'connecting' ? '\\u{1F504}'
-          : server.status === 'failed' ? '\\u{274C}'
-          : server.connected ? '\\u{1F7E2}'
-          : server.hasCredential ? '\\u{26A1}'
-          : '\\u{26AA}';
+        const statusIcon = server.status === 'connecting' ? '\u{1F504}'
+          : server.status === 'failed' ? '\u{274C}'
+          : server.connected ? '\u{1F7E2}'
+          : server.hasCredential ? '\u{26A1}'
+          : '\u{26AA}';
 
         const statusTitle = server.status === 'connecting' ? 'Connecting to server...'
           : server.status === 'failed' ? ('Connection failed: ' + escapeHtml(server.error || 'Unknown error'))
           : server.connected ? 'Include this server in search'
-          : server.hasCredential ? 'Include this server \\u2014 will auto-connect using saved credentials'
+          : server.hasCredential ? 'Include this server \u2014 will auto-connect using saved credentials'
           : 'Save credentials first to search this server';
 
         const disabledAttr = server.disabled ? ' disabled' : '';
         const disabledClass = server.disabled ? ' disabled' : '';
         const checkedAttr = server.checked ? ' checked' : '';
         const displayName = escapeHtml(server.name) + ' (' + escapeHtml(server.username) + ')';
-        const fullTitle = escapeHtml(server.name) + ' (' + escapeHtml(server.username) + ') \\u2014 ' + escapeHtml(server.host) + ':' + server.port;
+        const fullTitle = escapeHtml(server.name) + ' (' + escapeHtml(server.username) + ') \u2014 ' + escapeHtml(server.host) + ':' + server.port;
 
         html += '<div class="server-group">';
         html += '<div class="server-row' + disabledClass + '" tabindex="0" data-server-id="' + escapeHtml(server.id) + '" data-server-idx="' + idx + '" title="' + fullTitle + '">';
@@ -338,24 +338,24 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
         html += '<div class="server-paths' + (server.searchPaths.length === 0 ? ' empty' : '') + '">';
         if (server.searchPaths.length > 0) {
           server.searchPaths.forEach((sp, pathIdx) => {
-            const pathIcon = sp.isFile ? '\\u{1F4C4}' : '\\u{1F4C1}';
+            const pathIcon = sp.isFile ? '\u{1F4C4}' : '\u{1F4C1}';
             let pathClass = 'path-item';
             let pathTitle = escapeHtml(sp.path);
             let warnIcon = '';
 
             if (sp.redundantOf) {
               pathClass += ' redundant';
-              pathTitle = 'Already included by ' + escapeHtml(sp.redundantOf) + ' \\u2014 this path will be skipped';
+              pathTitle = 'Already included by ' + escapeHtml(sp.redundantOf) + ' \u2014 this path will be skipped';
             } else if (sp.overlapWarning) {
               pathClass += ' overlap';
-              pathTitle = escapeHtml(sp.overlapWarning) + ' \\u2014 results may be duplicated (different permissions)';
-              warnIcon = ' \\u{26A0}\\u{FE0F}';
+              pathTitle = escapeHtml(sp.overlapWarning) + ' \u2014 results may be duplicated (different permissions)';
+              warnIcon = ' \u{26A0}\u{FE0F}';
             }
 
             html += '<div class="' + pathClass + '">';
             html += '<span class="path-icon">' + pathIcon + '</span>';
             html += '<span class="path-text" title="' + pathTitle + '">' + escapeHtml(sp.path) + warnIcon + '</span>';
-            html += '<button class="path-remove" data-server-id="' + escapeHtml(server.id) + '" data-path-idx="' + pathIdx + '" title="Remove this search path">\\u00D7</button>';
+            html += '<button class="path-remove" data-server-id="' + escapeHtml(server.id) + '" data-path-idx="' + pathIdx + '" title="Remove this search path">\u00D7</button>';
             html += '</div>';
           });
 
@@ -380,7 +380,7 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
           html += '<span class="' + valueClass + '">' + displayValue + '</span>';
           if (hasOverride) {
             html += '<span class="processes-default"> (custom)</span>';
-            html += '<button class="processes-reset" title="Reset to default (' + (globalMaxSearchProcesses || 20) + ')">\\u00D7</button>';
+            html += '<button class="processes-reset" title="Reset to default (' + (globalMaxSearchProcesses || 20) + ')">\u00D7</button>';
           } else {
             html += '<span class="processes-default"> (default)</span>';
           }
@@ -1232,7 +1232,7 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
         const label = '"' + escapeHtml(tab.query.substring(0, 20)) + (tab.query.length > 20 ? '...' : '') + '" (' + tab.results.length + ')' + indicator;
         html += '<div class="result-tab' + (isActive ? ' active' : '') + (tab.searching ? ' searching' : '') + '" data-tab-id="' + escapeHtml(tab.id) + '" title="Search: ' + escapeHtml(tab.query) + '">';
         html += '<span class="tab-label">' + label + '</span>';
-        html += '<button class="tab-close" data-tab-id="' + escapeHtml(tab.id) + '" title="Close">\\u00D7</button>';
+        html += '<button class="tab-close" data-tab-id="' + escapeHtml(tab.id) + '" title="Close">\u00D7</button>';
         html += '</div>';
       }
       // Current/live tab (always last)
@@ -1364,7 +1364,7 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
           }
           if (message.sortOrder) {
             sortOrder = message.sortOrder;
-            sortToggleBtn.innerHTML = sortOrder === 'checked' ? '\\u2191checked' : '\\u2191name';
+            sortToggleBtn.innerHTML = sortOrder === 'checked' ? '\u2191checked' : '\u2191name';
             sortToggleBtn.title = sortOrder === 'checked'
               ? 'Sort: servers with search paths first'
               : 'Sort: alphabetical by name';
