@@ -6,7 +6,7 @@ import { IHostConfig } from '../types';
 import { SavedCredential } from '../services/CredentialService';
 import { formatFileSize, formatRelativeTime } from '../utils/helpers';
 import { ActivityService } from '../services/ActivityService';
-import { infoLog, diagLog } from '../utils/diagnosticLog';
+import { infoLog, diagLog, isDiagEnabled } from '../utils/diagnosticLog';
 
 /** Default exclude patterns matching VS Code's files.exclude + search.exclude defaults */
 const DEFAULT_SEARCH_EXCLUDES = '.git,.svn,.hg,CVS,.DS_Store,node_modules,bower_components,*.code-search';
@@ -1512,13 +1512,17 @@ export class SearchPanel {
    * Post message to webview
    */
   private postMessage(msg: unknown): void {
-    try {
-      const m = msg as { type?: string };
-      diagLog('search-panel', 'post', {
-        type: m && typeof m.type === 'string' ? m.type : 'unknown',
-        size: typeof msg === 'object' && msg !== null ? JSON.stringify(msg).length : 0,
-      });
-    } catch { /* never let logging break postMessage */ }
+    // Gate the diag data construction behind isDiagEnabled() — JSON.stringify on
+    // a 10k-result searchBatch payload allocates megabytes of string per batch,
+    // and that work would happen unconditionally even when logging is off.
+    if (isDiagEnabled()) {
+      try {
+        const m = msg as { type?: string };
+        diagLog('search-panel', 'post', {
+          type: m && typeof m.type === 'string' ? m.type : 'unknown',
+        });
+      } catch { /* never let logging break postMessage */ }
+    }
     if (this.panel) {
       this.panel.webview.postMessage(msg);
     }
