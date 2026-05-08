@@ -1958,53 +1958,15 @@ export class SSHConnection implements ISSHConnection {
             }
           }
 
-          // Fetch file stats for unique paths (limit to avoid slowdown)
-          const pathsToStat = Array.from(uniquePaths).slice(0, 100);
-          const statsMap = new Map<string, { size: number; modified: Date; permissions: string }>();
-
-          try {
-            const sftp = await this.getSFTP();
-            await Promise.all(
-              pathsToStat.map(async (filePath) => {
-                try {
-                  const stats = await new Promise<{ size: number; mtime: number; mode: number }>((res, rej) => {
-                    sftp.stat(filePath, (err: Error | undefined, s: { size: number; mtime: number; mode: number }) => {
-                      if (err) rej(err);
-                      else res(s);
-                    });
-                  });
-                  const permissions = ((stats.mode & 0o400) ? 'r' : '-') +
-                    ((stats.mode & 0o200) ? 'w' : '-') +
-                    ((stats.mode & 0o100) ? 'x' : '-') +
-                    ((stats.mode & 0o040) ? 'r' : '-') +
-                    ((stats.mode & 0o020) ? 'w' : '-') +
-                    ((stats.mode & 0o010) ? 'x' : '-') +
-                    ((stats.mode & 0o004) ? 'r' : '-') +
-                    ((stats.mode & 0o002) ? 'w' : '-') +
-                    ((stats.mode & 0o001) ? 'x' : '-');
-                  statsMap.set(filePath, {
-                    size: stats.size,
-                    modified: new Date(stats.mtime * 1000),
-                    permissions,
-                  });
-                } catch {
-                  // Ignore stat errors for individual files
-                }
-              })
-            );
-          } catch {
-            // Ignore if SFTP fails - stats are optional
-          }
-
-          // Enrich results with stats
-          for (const result of results) {
-            const stats = statsMap.get(result.path);
-            if (stats) {
-              result.size = stats.size;
-              result.modified = stats.modified;
-              result.permissions = stats.permissions;
-            }
-          }
+          // Stat-enrichment removed: with concurrent search workers, the tail-end
+          // burst of Promise.all(100 sftp.stat) per worker saturated SSH channels
+          // and the event loop in the seconds AFTER search completed, tripping
+          // VS Code's extension-host watchdog (>10s unresponsive → host killed).
+          // Search results are returned without size/modified/permissions; the
+          // user-facing search panel does not require them. If stats are needed
+          // later, they can be fetched lazily on demand (e.g. on row hover).
+          // Reference uniquePaths so the linter does not flag it as unused.
+          void uniquePaths;
 
           // Sort results: by path alphabetically, then by line number
           results.sort((a, b) => {

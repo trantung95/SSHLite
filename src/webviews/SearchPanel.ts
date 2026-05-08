@@ -113,6 +113,25 @@ export class SearchPanel {
     kept: boolean; // true after "Keep Results" — don't abort when new search starts
   }> = new Map();
 
+  // Hard global cap on simultaneously-active search workers across ALL servers and
+  // ALL active searches. With per-server worker pools, a user with 5 servers and
+  // searchParallelProcesses=5 would otherwise spin up 25 SSH grep operations in
+  // parallel, saturating the event loop and tripping VS Code's extension-host
+  // watchdog (which kills the host after ~10s of unresponsiveness — no JS
+  // exception surfaces, the process is just gone). 10 is a deliberate ceiling
+  // chosen so behavior is robust without being so restrictive that single-server
+  // searches feel slow.
+  private static readonly MAX_GLOBAL_SEARCH_WORKERS = 10;
+
+  /** Sum active workers across all per-pool entries — used by the global cap. */
+  private totalActiveSearchWorkers(): number {
+    let total = 0;
+    for (const pool of this.activeWorkerPools.values()) {
+      total += pool.activeWorkerCount;
+    }
+    return total;
+  }
+
   private lastSearchConnectionMap: Map<string, SSHConnection> = new Map();
 
   // Dynamic worker pool tracking (allows mid-search worker count adjustment)
@@ -456,7 +475,12 @@ export class SearchPanel {
         if (pool.desiredWorkerCount !== effectiveCount) {
           pool.desiredWorkerCount = effectiveCount;
           if (effectiveCount > pool.activeWorkerCount) {
-            while (pool.activeWorkerCount < effectiveCount) {
+            // Respect the global cap: stop spawning if we already hit the
+            // total-active-workers ceiling across all pools.
+            while (
+              pool.activeWorkerCount < effectiveCount &&
+              this.totalActiveSearchWorkers() < SearchPanel.MAX_GLOBAL_SEARCH_WORKERS
+            ) {
               pool.addWorker();
             }
           }
@@ -1078,8 +1102,14 @@ export class SearchPanel {
                         const newItems = batches.length + entries.dirs.length;
                         totalCount += newItems;
 
-                        // Ramp up workers as queue grows (initial queue may be small)
-                        while (activeWorkerCount < desiredWorkerCount && workQueue.length > workIndex) {
+                        // Ramp up workers as queue grows (initial queue may be small).
+                        // Respect the global cap across all pools to avoid event-loop
+                        // saturation.
+                        while (
+                          activeWorkerCount < desiredWorkerCount &&
+                          this.totalActiveSearchWorkers() < SearchPanel.MAX_GLOBAL_SEARCH_WORKERS &&
+                          workQueue.length > workIndex
+                        ) {
                           addWorker();
                         }
 

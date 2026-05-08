@@ -1462,10 +1462,10 @@
         },
         "sshLite.searchParallelProcesses": {
           "type": "number",
-          "default": 5,
+          "default": 2,
           "minimum": 1,
-          "maximum": 50,
-          "description": "Default parallel search workers per server. Each server can override this in the search panel. Reduced automatically when other operations are active."
+          "maximum": 10,
+          "description": "Default parallel search workers per server. Each server can override this in the search panel. Reduced automatically when other operations are active. Total active workers across all servers is also globally capped (see code) to keep the extension host responsive."
         },
         "sshLite.searchUseDefaultExcludes": {
           "type": "boolean",
