@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.8.3 — Search stability + stat-enrichment restored
+
+Targeted fixes for the post-search extension-host crash reported on v0.8.2. Cause was VS Code's extension-host watchdog killing the host for being unresponsive (>10s blocked event loop), not OOM. Diagnosis confirmed by the user: at `searchParallelProcesses=1` the host never crashed; at default 5 across multiple connected servers it always did. Crash signature: clean process termination after search completion, no JS exception, nothing in the SSH Lite Output channel.
+
+### What landed in this release
+
+#### Search hot path
+
+- **Grep-output parsing yields** every 500 lines while parsing the close-handler buffer (`SSHConnection.searchFiles`). Bounds the per-worker close-time burst.
+- **Per-task `searchBatch` posts to the webview chunk into 500-result slices** with `setImmediate` between each via a new `postSearchBatchChunked()` helper. A single grep against a noisy file (e.g. System.map with 9997 matches) used to fire one IPC message of multi-MB JSON; now it's spread across 20 small messages with yields. The webview side is unaffected — it appends results without dedup so multi-chunk posts stitch back together cleanly.
+- **postMessage diag-data construction gated** behind `isDiagEnabled()`. The previous wrapper computed `JSON.stringify(msg).length` for the diag `size` field on every postMessage even when logging was off — multi-MB string allocations per batch under sustained search load. Now the JSON.stringify only runs when there's a consumer for it.
+
+#### Concurrency limits
+
+- **Hard global cap of 10 simultaneously-active search workers** across all server pools and all concurrent searches. New private `totalActiveSearchWorkers()` sums across `activeWorkerPools`; both worker dispatch points (`addWorker()` ramp-up + dynamic resize from priority throttling) now check the global ceiling before spawning. With 10 servers × old default 5 workers, 50 workers was attainable; now total active workers is bounded regardless of server count or per-server setting.
+- **Default `searchParallelProcesses` lowered** from 5 to 2. Maximum lowered from 50 to 10. Old defaults were a single-server assumption.
+
+#### Stat-enrichment
+
+- **Restored** with yields. Search results carry `size`/`modified`/`permissions` again. Internally:
+  - Cap reduced from 100 paths per task to 30.
+  - Processed in batches of 5 with `await setImmediate` between batches.
+  - Abort-aware: bails between batches if the search is cancelled.
+
+  The original implementation wasn't wrong in intent — it just delivered the work in one synchronous burst per worker. Spread over time with yields, the same ssh2 native crypto load doesn't compound across workers.
+
+#### Tree-provider preload (related fix)
+
+- **Idempotence guard on `preloadSubdirectories`** in `FileTreeProvider`. State-driven, latency-independent: keyed on the cached files array reference per `connectionId:parentPath`. VS Code calls `getChildren()` on every tree refresh — focus, selection, filter, expand-state — and each call previously re-ran preload setup work even when the cache was unchanged. The guard short-circuits when the cache reference matches the previously-triggered run; when the cache is replaced, `getCached()` returns a different array and preload runs normally. No timer, no hardcoded throttle window.
+
+### Verification
+
+- `npm run compile` — 0 errors
+- `npx jest --no-coverage` — 1447/1447 pass
+- `npm run verify:package` — passes; bundled .vsix is ~5.13 MB with `ssh2` and `ssh-config` runtime deps
+- User confirmed crash stopped after the global-cap + stats-removed combination; this release re-adds stats with the safe yielding pattern and ships the consolidated fix set.
+
+### Migration note
+
+If you previously raised `sshLite.searchParallelProcesses` above 10 (the old max was 50), the value is now out of range. Settings → search the key → reset to the new default 2 or any value ≤ 10. The global cap kicks in regardless, so the per-server setting now serves as a soft ceiling within the global ceiling.
+
 ## v0.8.2 — Stability fixes for v0.8.1
 
 Fixes that landed on top of v0.8.1 to address bugs surfaced during real use.

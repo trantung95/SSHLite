@@ -1,6 +1,6 @@
 # SSH Lite (SSH Tools) — Lightweight SSH Suite for VS Code
 
-![Version](https://img.shields.io/badge/version-0.8.2-blue)
+![Version](https://img.shields.io/badge/version-0.8.3-blue)
 ![Status](https://img.shields.io/badge/status-beta-yellow)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-1.85.0+-purple)
@@ -271,6 +271,20 @@ Contributions welcome! Please submit Pull Requests on GitHub.
 Apache-2.0 License
 
 ## Release Notes
+
+### 0.8.3 — Search stability + stats restored
+
+Fixes the extension-host crash that struck a few seconds after large multi-server searches. Cause was event-loop saturation, not memory: the post-grep stat-enrichment burst, multi-server worker pools without a global cap, and the resulting cumulative blocking past VS Code's ~10s extension-host watchdog (clean process kill, no JS error, no Output channel line — that's why it was so hard to spot).
+
+Changes in this release:
+
+- **Stat-enrichment restored** with yields: file size, modified time, and permissions appear in search result rows again. Internally, stats are fetched in batches of 5 with `setImmediate` between batches, capped at 30 paths per task. Same UX as before, just delivered gradually.
+- **Hard global cap of 10** simultaneously-active search workers across all server pools and all concurrent searches. Both the worker ramp-up and the dynamic-resize paths now consult the cap before spawning.
+- **Default `searchParallelProcesses` lowered** from 5 to 2; max lowered from 50 to 10. The old defaults were a single-server assumption that multiplied uncomfortably under realistic multi-server use.
+- **Yields throughout the search hot paths**: grep-output parsing yields every 500 lines; per-task `searchBatch` posts to the webview chunk into 500-result slices with yields between; postMessage diag-data construction is now gated behind `isDiagEnabled()` so its `JSON.stringify` doesn't run when logging is off.
+- **Preload throttle** in `FileTreeProvider`: state-driven idempotence guard (no time window) prevents `getChildren()`'s per-refresh storms from re-driving preload.
+
+If you upgraded from 0.8.0 / 0.8.1 with `searchParallelProcesses` set higher than 10, reset it (Settings → search the key → revert to default 2 or pick something ≤ 10 — the new max).
 
 ### 0.8.2 — Stability fixes for v0.8.1
 
