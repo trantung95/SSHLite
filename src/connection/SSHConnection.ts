@@ -1958,15 +1958,70 @@ export class SSHConnection implements ISSHConnection {
             }
           }
 
-          // Stat-enrichment removed: with concurrent search workers, the tail-end
-          // burst of Promise.all(100 sftp.stat) per worker saturated SSH channels
-          // and the event loop in the seconds AFTER search completed, tripping
-          // VS Code's extension-host watchdog (>10s unresponsive → host killed).
-          // Search results are returned without size/modified/permissions; the
-          // user-facing search panel does not require them. If stats are needed
-          // later, they can be fetched lazily on demand (e.g. on row hover).
-          // Reference uniquePaths so the linter does not flag it as unused.
-          void uniquePaths;
+          // Stat-enrichment with yields. The original eager Promise.all over
+          // 100 sftp.stat calls saturated ssh2's native crypto and tripped
+          // VS Code's extension-host watchdog. Same outcome (size/modified/
+          // permissions on result rows), but processed in small batches with
+          // setImmediate yields between them so the event loop stays responsive
+          // even when many search workers complete near each other.
+          //
+          // Cap reduced from 100 to 30 paths per task: combined with the global
+          // 10-worker cap, that's at most ~300 stat ops in flight per search,
+          // spread over many event-loop turns rather than bursting at once.
+          const pathsToStat = Array.from(uniquePaths).slice(0, 30);
+          const statsMap = new Map<string, { size: number; modified: Date; permissions: string }>();
+          const STAT_BATCH_SIZE = 5;
+
+          try {
+            const sftp = await this.getSFTP();
+            for (let i = 0; i < pathsToStat.length; i += STAT_BATCH_SIZE) {
+              if (aborted) break;
+              const batch = pathsToStat.slice(i, i + STAT_BATCH_SIZE);
+              await Promise.all(
+                batch.map(async (filePath) => {
+                  try {
+                    const stats = await new Promise<{ size: number; mtime: number; mode: number }>((res, rej) => {
+                      sftp.stat(filePath, (err: Error | undefined, s: { size: number; mtime: number; mode: number }) => {
+                        if (err) rej(err);
+                        else res(s);
+                      });
+                    });
+                    const permissions = ((stats.mode & 0o400) ? 'r' : '-') +
+                      ((stats.mode & 0o200) ? 'w' : '-') +
+                      ((stats.mode & 0o100) ? 'x' : '-') +
+                      ((stats.mode & 0o040) ? 'r' : '-') +
+                      ((stats.mode & 0o020) ? 'w' : '-') +
+                      ((stats.mode & 0o010) ? 'x' : '-') +
+                      ((stats.mode & 0o004) ? 'r' : '-') +
+                      ((stats.mode & 0o002) ? 'w' : '-') +
+                      ((stats.mode & 0o001) ? 'x' : '-');
+                    statsMap.set(filePath, {
+                      size: stats.size,
+                      modified: new Date(stats.mtime * 1000),
+                      permissions,
+                    });
+                  } catch {
+                    // Ignore stat errors for individual files
+                  }
+                })
+              );
+              // Yield to event loop between batches so concurrent workers do
+              // not collectively block the host.
+              await new Promise<void>((r) => setImmediate(r));
+            }
+          } catch {
+            // Ignore if SFTP fails - stats are optional
+          }
+
+          // Enrich results with stats
+          for (const result of results) {
+            const stats = statsMap.get(result.path);
+            if (stats) {
+              result.size = stats.size;
+              result.modified = stats.modified;
+              result.permissions = stats.permissions;
+            }
+          }
 
           // Sort results: by path alphabetically, then by line number
           results.sort((a, b) => {
