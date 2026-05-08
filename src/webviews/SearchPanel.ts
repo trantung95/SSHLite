@@ -1124,9 +1124,9 @@ export class SearchPanel {
                           });
                           completedCount++;
                           if (!this.activeSearches.has(searchId)) return;
-                          this.postMessage({
-                            type: 'searchBatch', searchId, results: unique,
-                            totalResults: globalSeen.size, completedCount: completedCount, totalCount: totalCount,
+                          await this.postSearchBatchChunked({
+                            searchId, results: unique,
+                            totalResults: globalSeen.size, completedCount, totalCount,
                             hitLimit: globalSeen.size >= maxResults, limit: maxResults,
                             done: isDone(),
                           });
@@ -1174,9 +1174,9 @@ export class SearchPanel {
                         });
                         completedCount++;
                         if (!this.activeSearches.has(searchId)) return;
-                        this.postMessage({
-                          type: 'searchBatch', searchId, results: unique,
-                          totalResults: globalSeen.size, completedCount: completedCount, totalCount: totalCount,
+                        await this.postSearchBatchChunked({
+                          searchId, results: unique,
+                          totalResults: globalSeen.size, completedCount, totalCount,
                           hitLimit: globalSeen.size >= maxResults, limit: maxResults,
                           done: isDone(),
                         });
@@ -1525,6 +1525,67 @@ export class SearchPanel {
     }
     if (this.panel) {
       this.panel.webview.postMessage(msg);
+    }
+  }
+
+  /**
+   * Post a search batch in size-bounded chunks, yielding to the event loop
+   * between each chunk. A single grep task can produce thousands of matching
+   * lines (one greppable file with many hits); shipping that to the webview
+   * as one IPC message serializes megabytes of JSON in a single tick. With
+   * many parallel workers, the cumulative serialization work blocks the
+   * event loop past VS Code's extension-host watchdog (~10s) and the host
+   * is force-killed without a JS error. The chunk size is small enough that
+   * each post is bounded; the yield gives VS Code's IPC and watchdog a
+   * chance to make forward progress.
+   */
+  private async postSearchBatchChunked(args: {
+    searchId: number;
+    results: WebviewSearchResult[];
+    totalResults: number;
+    completedCount: number;
+    totalCount: number;
+    hitLimit: boolean;
+    limit: number;
+    done: boolean;
+  }): Promise<void> {
+    const POST_CHUNK = 500;
+    const total = args.results.length;
+    if (total <= POST_CHUNK) {
+      this.postMessage({
+        type: 'searchBatch',
+        searchId: args.searchId,
+        results: args.results,
+        totalResults: args.totalResults,
+        completedCount: args.completedCount,
+        totalCount: args.totalCount,
+        hitLimit: args.hitLimit,
+        limit: args.limit,
+        done: args.done,
+      });
+      await new Promise<void>((r) => setImmediate(r));
+      return;
+    }
+    const chunkCount = Math.ceil(total / POST_CHUNK);
+    for (let ci = 0; ci < chunkCount; ci++) {
+      const start = ci * POST_CHUNK;
+      const slice = args.results.slice(start, start + POST_CHUNK);
+      const isLast = ci === chunkCount - 1;
+      this.postMessage({
+        type: 'searchBatch',
+        searchId: args.searchId,
+        results: slice,
+        totalResults: args.totalResults,
+        // Only the last chunk advances the visible completedCount and signals
+        // done — earlier chunks keep the same count so the UI does not show
+        // false "task complete" mid-task.
+        completedCount: isLast ? args.completedCount : Math.max(0, args.completedCount - 1),
+        totalCount: args.totalCount,
+        hitLimit: isLast ? args.hitLimit : false,
+        limit: args.limit,
+        done: isLast ? args.done : false,
+      });
+      await new Promise<void>((r) => setImmediate(r));
     }
   }
 
