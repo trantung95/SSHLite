@@ -1897,10 +1897,28 @@ export class SSHConnection implements ISSHConnection {
           const results: Array<{ path: string; line?: number; match?: string; size?: number; modified?: Date; permissions?: string }> = [];
           const uniquePaths = new Set<string>();
 
+          // Yield to the event loop every PARSE_CHUNK lines. Without this, parsing
+          // a single grep response of tens of thousands of lines holds the event
+          // loop for hundreds of ms; if many parallel workers close around the
+          // same time the cumulative block exceeds VS Code's extension-host
+          // unresponsive watchdog (~10s), and the host is force-restarted.
+          // Confirmed cause: with searchParallelProcesses=1 the host doesn't
+          // crash; at default 5 across multiple servers it does.
+          const PARSE_CHUNK = 500;
+          const lines = output.split('\n');
+
           if (searchContent) {
             // Parse grep output: filename:line:match
-            const lines = output.trim().split('\n').filter(Boolean);
-            for (const line of lines) {
+            for (let i = 0; i < lines.length; i++) {
+              if (i > 0 && i % PARSE_CHUNK === 0) {
+                await new Promise<void>((resolveYield) => setImmediate(resolveYield));
+                if (aborted) {
+                  settleResolve([]);
+                  return;
+                }
+              }
+              const line = lines[i];
+              if (!line) continue;
               const colonIndex = line.indexOf(':');
               if (colonIndex === -1) continue;
 
@@ -1923,9 +1941,18 @@ export class SSHConnection implements ISSHConnection {
             }
           } else {
             // Parse find output: just file paths
-            const lines = output.trim().split('\n').filter(Boolean);
-            for (const filePath of lines) {
+            for (let i = 0; i < lines.length; i++) {
+              if (i > 0 && i % PARSE_CHUNK === 0) {
+                await new Promise<void>((resolveYield) => setImmediate(resolveYield));
+                if (aborted) {
+                  settleResolve([]);
+                  return;
+                }
+              }
+              const filePath = lines[i];
+              if (!filePath) continue;
               const trimmedPath = filePath.trim();
+              if (!trimmedPath) continue;
               uniquePaths.add(trimmedPath);
               results.push({ path: trimmedPath });
             }
