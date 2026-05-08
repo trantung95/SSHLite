@@ -22,7 +22,7 @@ When adding or removing a command, update the count in **all 5 places** (current
 
 | File | Location |
 |------|----------|
-| `README.md` | line ~175: `all 98 commands` and line ~217: `All 98 commands` |
+| `README.md` | line ~42: `**98 commands**` (Quick Start section) |
 | `.adn/configuration/commands-reference.md` | line 3: `All 98 commands` |
 | `.adn/flow/extension-activation.md` | line ~55: `All 98 commands` |
 | `.adn/README.md` | line ~43: `All 98 commands` |

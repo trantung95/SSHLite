@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.8.4 — Marketplace README rewrite
+
+Documentation-only release. The VS Code Marketplace listing was ~500 lines, mostly because:
+
+- The "Features" section repeated everything as both rich blurbs (with screenshots) and a flat bullet list
+- A separate "Usage" section overlapped Quick Start
+- Two large tables (right-click context menus, Command Palette items) duplicated `docs/COMMANDS.md`
+- Release Notes carried every entry back to v0.1.0 even though the Marketplace exposes a separate Changelog tab and `.adn/CHANGELOG.md` is the source of truth
+- A keyword text block duplicated `package.json` `keywords` (the actual Marketplace SEO field)
+
+### What landed
+
+- README.md condensed to ~66 lines: title + badges, Why-vs-Remote-SSH comparison table, six-bullet feature list, three-step Quick Start, latest release note + changelog link, license, Bánh Mì footer
+- Removed five inline per-feature screenshots — Marketplace renders them in its own gallery from `package.json`
+- Fixed broken `/blob/main/...` links to `/blob/master/...` (the repo's default branch is `master`)
+- Updated `CLAUDE.md` "Commands Count" table to point at the new line where `98 commands` is referenced
+
+No source code changes. Test suite and chaos suite unaffected.
+
 ## v0.8.3 — Search stability + stat-enrichment restored
 
 Targeted fixes for the post-search extension-host crash reported on v0.8.2. Cause was VS Code's extension-host watchdog killing the host for being unresponsive (>10s blocked event loop), not OOM. Diagnosis confirmed by the user: at `searchParallelProcesses=1` the host never crashed; at default 5 across multiple connected servers it always did. Crash signature: clean process termination after search completion, no JS exception, nothing in the SSH Lite Output channel.

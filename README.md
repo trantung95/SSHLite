@@ -1,485 +1,57 @@
 # SSH Lite (SSH Tools) — Lightweight SSH Suite for VS Code
 
-![Version](https://img.shields.io/badge/version-0.8.3-blue)
+![Version](https://img.shields.io/badge/version-0.8.4-blue)
 ![Status](https://img.shields.io/badge/status-beta-yellow)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-1.85.0+-purple)
 
-> This extension is in active development. Please report any issues on [GitHub](https://github.com/trantung95/SSHLite/issues).
+> Active development. Please report issues on [GitHub](https://github.com/trantung95/SSHLite/issues).
 
-**The ultimate lightweight SSH extension for Visual Studio Code!** Connect to remote servers, browse files, open terminals, forward ports, manage processes and services, push SSH keys, run snippets and batch commands — all **without installing anything on the remote server**. Perfect for small VMs, shared hosting, and resource-constrained environments.
+**Lightweight SSH for VS Code.** Connect, browse files, open terminals, forward ports, manage processes & services, push SSH keys, run snippets and batch commands — all **without installing anything on the remote server**. Perfect for small VMs, shared hosting, and resource-constrained environments.
 
 ![SSH Lite Overview](docs/images/feature-overview.png)
 
 ## Why SSH Lite?
 
-Unlike VS Code's official Remote-SSH extension that installs a heavy VS Code Server on your remote machine (consuming RAM, CPU, and disk space), **SSH Lite works entirely from your local VS Code**. No remote installation required!
+Unlike Remote-SSH, which installs a ~200MB VS Code Server on every host, SSH Lite runs entirely from your local VS Code.
 
-| Feature | SSH Lite | Remote-SSH |
-|---------|----------|------------|
-| Remote server installation | **None** | ~200MB+ |
-| Works on shared hosting | **Yes** | No |
-| Works on tiny VMs (512MB RAM) | **Yes** | Often fails |
-| Multiple simultaneous connections | **Yes** | Limited |
+| | SSH Lite | Remote-SSH |
+|---|---|---|
+| Remote install | **None** | ~200MB+ |
+| Tiny VMs (512MB RAM) | ✓ | Often fails |
+| Multiple connections | ✓ | Limited |
 | Server resource usage | **Zero** | High |
 
 ## Features
 
-### Connect & Manage Hosts
-Manage multiple SSH servers from the sidebar. Auto-detect SSH keys, save passwords, pin folders, and connect with one click. Reads `~/.ssh/config` automatically.
-
-![Connect & Manage Hosts](docs/images/feature-connect.png)
-
-### Remote File Browser
-Browse, edit, upload, and download files via SFTP. Upload state badges on editor tabs show sync status (✓ synced, ↑ uploading, ✗ failed). Filter files, right-click for full context menu.
-
-![Remote File Browser](docs/images/feature-file-browser.png)
-
-### Search Across Servers
-Search files across multiple remote servers simultaneously with regex, whole word, and case-sensitive matching. Include/exclude patterns (comma-separated), default exclusions matching VS Code, scoped search, and results grouped by server.
-
-![Search Across Servers](docs/images/feature-search.png)
-
-### Integrated SSH Terminals
-Open multiple SSH terminals per connection — no re-authentication needed. Full terminal emulation with VS Code integration.
-
-![Integrated SSH Terminals](docs/images/feature-terminal.png)
-
-### Port Forwarding & Server Monitor
-Forward remote ports to localhost. Monitor server health with CPU, memory, disk, top processes, and diagnostics — all from the Output panel.
-
-![Port Forwarding & Server Monitor](docs/images/feature-port-forward.png)
-
-### SSH Tools Utilities (v0.7.0+)
-
-A growing suite of remote admin tools — all user-triggered, no background polling:
-
-- **Remote Copy / Paste** — Copy or cut files/folders within a server or across servers. `Ctrl+C` / `Ctrl+X` / `Ctrl+V` in the file explorer. Auto-renames on conflict (`file (copy).txt`)
-- **Process Viewer** — List processes by CPU, pick one, kill it (with optional sudo)
-- **Service Manager** — List systemd services, start / stop / restart with one click
-- **Environment Inspector** — View `env | sort` output as a read-only document
-- **Cron Editor** — Read and write crontabs on the remote server
-- **Snippet Library** — Save frequently used SSH commands, run with one click. Ships with 6 built-ins (disk usage, top CPU, top memory, listening ports, kernel, uptime)
-- **Batch Runner** — Run the same command on multiple connected hosts simultaneously
-- **Remote Script Runner** — Upload a local `.sh` / `.py` file and execute it on the remote
-- **SSH Key Manager** — Generate ed25519 / RSA keypairs locally and push the public key to a remote `authorized_keys` in one step
-- **Remote Diff** — Compare any remote file against a local file using VS Code's built-in diff editor
-
-### All Features
-
-**Core**
-- Remote File Browser — Browse, edit, upload, download files via SFTP
-- Integrated Terminal — Multiple SSH terminals per connection
-- Port Forwarding — Forward local ports to remote services
-- File Transfer — Upload/download files and folders
-- Remote Copy / Paste — Copy or move files same-host or cross-host
-
-**Smart**
-- Auto-Save Credentials — Enter password once, auto-saved for next time
-- SSH Config Support — Reads from `~/.ssh/config` automatically
-- Multiple Connections — Connect to multiple servers simultaneously
-- Auto-Reconnect — Automatic reconnection on unexpected disconnect
-- Live File Refresh — Auto-refresh opened files from remote server
-- Upload State Badges — Tab badge shows upload progress (↑) and failures (✗)
-- File Search — Search across remote files with webview panel
-- Filename Filter — Filter file tree with highlighting
-- Activity Panel — Track all file operations in real-time
-- Server Monitoring — Quick status, diagnose slowness, check services
-- Large File Handling — Smart handling for files >100MB
-
-**SSH Tools (Admin Utilities)**
-- Process Viewer + Kill — `ps` list with one-click kill
-- Service Manager — systemd start / stop / restart
-- Env Inspector — read-only `env | sort` virtual document
-- Cron Editor — read and write remote crontabs
-- Snippet Library — saved commands, 6 built-ins + your own
-- Batch Runner — run a command on all connected hosts at once
-- SSH Key Manager — generate + push public keys
-- Remote Script Runner — upload and exec local scripts
-- Remote Diff — VS Code diff editor against any remote file
-
-**Simple & Fast**
-- One-click connect — Just click a host to connect
-- No configuration needed — Works out of the box
-- Minimal prompts — Credentials auto-saved, no extra questions
+- **File browser** — SFTP browse / edit / upload / download with tab badges (✓ ↑ ✗) for sync state
+- **Multi-server search** — regex, whole word, include/exclude patterns, results grouped by server
+- **Integrated terminals** — many per connection, no re-auth
+- **Port forwarding** + **server monitor** (CPU / memory / disk / top processes)
+- **Remote copy / paste** — `Ctrl+C` / `Ctrl+X` / `Ctrl+V` across hosts, auto-renames on conflict
+- **SSH Tools suite** — process viewer, service manager, env inspector, cron editor, snippet library, batch runner, script runner, key manager (generate + push), remote diff
 
 ## Quick Start
 
-### 1. Install Extension
-Search "SSH Lite" in VS Code Extensions or install from command line:
-```bash
-code --install-extension hybr8.ssh-lite
-```
+1. Install — search "SSH Lite" in Extensions, or `code --install-extension hybr8.ssh-lite`
+2. Click **+** in the SSH Lite sidebar, add a host
+3. Click the host to connect — credentials are saved automatically
 
-### 2. Add a Host
-- Click the **+** icon in SSH Lite sidebar
-- Enter hostname, username, port
-- Done!
+Reads `~/.ssh/config`. Supports SSH keys (RSA / Ed25519 / ECDSA, encrypted), agent, and password.
 
-### 3. Connect
-- Click any host to connect
-- Enter password (saved automatically for next time)
-- Browse files, open terminals, forward ports
-
-## Usage
-
-### Connect to Server
-1. Open SSH Lite in the Activity Bar (sidebar)
-2. Click on any host to connect
-3. First time: enter password → auto-saved for next time
-4. Next time: instant connection!
-
-### Browse & Edit Files
-- Click on "Remote Files" panel after connecting
-- Double-click files to open and edit
-- Changes auto-upload on save
-- Right-click for download, upload, delete options
-
-### Open Terminal
-- Right-click connected host → "Open Terminal"
-- Or click the terminal icon on connected hosts
-- Open multiple terminals on same connection (no re-auth!)
-
-### Port Forwarding
-- Open "Port Forwards" panel
-- Click **+** to add new forward
-- Enter local port, remote host, remote port
-- Access remote services on localhost!
-
-### Monitor Server
-- Right-click connected host → Monitor icon
-- **Quick Status** - CPU, memory, disk, top processes
-- **Diagnose Slowness** - Find why server is slow
-- **Watch** - Real-time monitoring
-- **Check Services** - View service status
-- **Recent Logs** - View system logs
-
-## Configuration
-
-All settings are in VS Code Settings under "SSH Lite":
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `sshLite.hosts` | `[]` | Saved SSH hosts |
-| `sshLite.sshConfigPath` | `""` | Custom SSH config path |
-| `sshLite.defaultRemotePath` | `~` | Default path when connecting |
-| `sshLite.autoUploadOnSave` | `true` | Auto-upload files on save |
-| `sshLite.connectionTimeout` | `10000` | Connection timeout (ms) |
-| `sshLite.keepaliveInterval` | `30000` | Keepalive interval (ms) |
-| `sshLite.treeRefreshIntervalSeconds` | `0` | Auto-refresh file tree (0=disabled) |
-| `sshLite.fileRefreshIntervalSeconds` | `0` | Auto-refresh opened files (0=disabled) |
-| `sshLite.largeFileSizeThreshold` | `104857600` | Large file threshold (100MB) |
-
-## Commands
-
-> **Full reference:** [docs/COMMANDS.md](https://github.com/trantung95/SSHLite/blob/main/docs/COMMANDS.md) — all 98 commands with keybindings and menu locations.
-
-### Keyboard Shortcuts
-
-| Key | Action |
-|-----|--------|
-| `Ctrl+Shift+C` | Connect to host |
-| `Ctrl+Shift+T` | Open terminal |
-| `Ctrl+Shift+R` | Refresh files |
-| `Ctrl+Shift+G` | Go to path |
-| `Ctrl+Shift+F` | Filter files |
-| `Ctrl+Shift+S` | Open search |
-| `F2` | Rename file/folder |
-| `Ctrl+C` | Copy remote item (file explorer focused) |
-| `Ctrl+X` | Cut remote item |
-| `Ctrl+V` | Paste remote item |
-
-### Right-click Context Menu — File Explorer
-
-| Action | When |
-|--------|------|
-| Open / Download / Upload | File or folder |
-| Copy · Cut · Paste | File or folder (Paste shown only when clipboard has content) |
-| Diff with Local File | File only |
-| Delete · Rename · Move | File or folder |
-
-### Right-click Context Menu — SSH Hosts panel
-
-| Action | When |
-|--------|------|
-| Connect / Disconnect | Any host |
-| Open Terminal · Monitor Server | Connected host |
-| Show Remote Processes | Connected host |
-| Manage Remote Service | Connected host |
-| Show Remote Environment | Connected host |
-| Edit Remote Crontab | Connected host |
-| Run Snippet | Connected host |
-| Run Local Script on Remote | Connected host |
-| Push Public Key to Host | Connected host |
-
-### Command Palette (`Ctrl+Shift+P`)
-
-All 98 commands are available. Key ones to know:
-
-| Command | Description |
-|---------|-------------|
-| `SSH Lite: Add SSH Host` | Add a new host |
-| `SSH Lite: Add Snippet` | Save a new SSH command snippet |
-| `SSH Lite: Manage Snippets` | Rename, edit, or delete your snippets |
-| `SSH Lite: Batch Command on Hosts` | Run one command on multiple servers |
-| `SSH Lite: Generate SSH Key` | Create an ed25519 / RSA keypair locally |
-| `SSH Lite: Save Remote Crontab` | Write edited crontab back to the server |
-| `SSH Lite: Clear SSH Clipboard` | Empty the remote copy/paste clipboard |
-| `SSH Lite: Show Audit Log` | View file operation history |
-| `SSH Lite: Quick Status` | CPU · memory · disk snapshot |
-| `SSH Lite: Diagnose Slowness` | Find what's making the server slow |
-
-## Requirements
-
-- **VS Code** 1.85.0 or higher
-- **SSH access** to your remote server (password or SSH key)
-- No remote server requirements!
-
-## Supported Authentication
-
-- SSH Keys (RSA, Ed25519, ECDSA)
-- Encrypted SSH keys (with passphrase)
-- SSH Agent
-- Password authentication
-- SSH config file (`~/.ssh/config`)
-
-## Troubleshooting
-
-### Connection Timeout
-- Increase `sshLite.connectionTimeout` in settings
-- Check firewall allows SSH (port 22)
-
-### Authentication Failed
-- Verify username and password/key
-- Clear saved credentials: Right-click host → "Clear Saved Credentials"
-- Check SSH key permissions (should be 600)
-
-### File Operations Slow
-- Normal for large files over slow networks
-- Use "Download to disk" option for very large files
-
-## Known Issues
-
-None at this time. Please report issues on GitHub.
-
-## Contributing
-
-Contributions welcome! Please submit Pull Requests on GitHub.
-
-## License
-
-Apache-2.0 License
+**98 commands** — full reference at [docs/COMMANDS.md](https://github.com/trantung95/SSHLite/blob/master/docs/COMMANDS.md).
 
 ## Release Notes
 
-### 0.8.3 — Search stability + stats restored
+**0.8.4** — Marketplace README rewrite. Listing trimmed from ~500 to ~66 lines (removed duplicate features list, usage section, command tables, keyword block, and old release notes). Fixed broken `/blob/main/` links to `/blob/master/`. Docs-only release — no code changes.
 
-Fixes the extension-host crash that struck a few seconds after large multi-server searches. Cause was event-loop saturation, not memory: the post-grep stat-enrichment burst, multi-server worker pools without a global cap, and the resulting cumulative blocking past VS Code's ~10s extension-host watchdog (clean process kill, no JS error, no Output channel line — that's why it was so hard to spot).
+**0.8.3** — Search stability + stat-enrichment restored: event-loop yields throughout the search hot paths, global cap of 10 simultaneously-active workers, lower defaults for `searchParallelProcesses` (5 → 2, max 50 → 10).
 
-Changes in this release:
+[Full changelog](https://github.com/trantung95/SSHLite/blob/master/.adn/CHANGELOG.md)
 
-- **Stat-enrichment restored** with yields: file size, modified time, and permissions appear in search result rows again. Internally, stats are fetched in batches of 5 with `setImmediate` between batches, capped at 30 paths per task. Same UX as before, just delivered gradually.
-- **Hard global cap of 10** simultaneously-active search workers across all server pools and all concurrent searches. Both the worker ramp-up and the dynamic-resize paths now consult the cap before spawning.
-- **Default `searchParallelProcesses` lowered** from 5 to 2; max lowered from 50 to 10. The old defaults were a single-server assumption that multiplied uncomfortably under realistic multi-server use.
-- **Yields throughout the search hot paths**: grep-output parsing yields every 500 lines; per-task `searchBatch` posts to the webview chunk into 500-result slices with yields between; postMessage diag-data construction is now gated behind `isDiagEnabled()` so its `JSON.stringify` doesn't run when logging is off.
-- **Preload throttle** in `FileTreeProvider`: state-driven idempotence guard (no time window) prevents `getChildren()`'s per-refresh storms from re-driving preload.
+## License
 
-If you upgraded from 0.8.0 / 0.8.1 with `searchParallelProcesses` set higher than 10, reset it (Settings → search the key → revert to default 2 or pick something ≤ 10 — the new max).
-
-### 0.8.2 — Stability fixes for v0.8.1
-
-Fixes for issues surfaced during v0.8.1 use:
-
-- **Extension host no longer OOM-crashes after a few minutes.** `FileTreeProvider.preloadSubdirectories` ran on every `getChildren()` call, which VS Code invokes on every tree refresh (focus, selection, filter, expand-state). Across many connections this accumulated SSH channels and memory until V8 killed the host process. Now skips re-triggering when the cached files array is unchanged — preserves the eager-preload design intent without the storm.
-- **Search panel toggle works during/after limited searches.** View-toggle handlers attached synchronously after `innerHTML` reset (was via `setTimeout(0)`, leaving a 1-tick gap where clicks were lost during search batches).
-- **"Limit N reached" warning shows the configured cap.** Tab state now tracks `message.limit` from each search batch (was stuck at the `createTabState` default of 2000 regardless of the user's `searchMaxResults` setting).
-- **Limit warning stays visible during active search.** Moved out of the `.results-count` span (which gets rewritten with progress text on each batch) into its own sibling element.
-
-### 0.8.1 — Search webview lifted to bundled assets
-
-Internal refactor. The search panel webview is now built from `webview-src/search/` (esbuild) and shipped under `media/search/` in the .vsix. No user-visible behavior change.
-
-**Why:** unblocks parallel list+tree state (v0.8.2) and list virtualization (v0.8.3) — see `.adn/CHANGELOG.md` for the full series. `SearchPanel.ts` shrinks from 4032 to ~1500 lines; the rendering layer is now testable in isolation. Adds postMessage in/out diag logs and a webview→extension log forwarder so all webview events land in the **SSH Lite** Output channel for triage.
-
-### 0.8.0 — Chaos engine rebuild
-
-The chaos suite has been rewritten as a real chaos-testing system. Old engine (scripted scenarios with parameter randomization on happy-state Docker) replaced with a session-based generator that composes random user-like chains, runs them concurrently across multiple topologies (1->1, 1->many, many->1, many->many), and injects real environment-level faults (Docker pause, `tc netem`, sshd signals, disk fill). Universal invariants are checked before/after every primitive op; failures are reproducible from the seed via `npm run chaos:replay -- <run-id>`. Action catalog auto-derives from `.adn/features/*.md` so adding a feature automatically extends chaos coverage. UI primitive surfaces, the rich invariant set, and remaining faults ship in v0.8.1; shrinker and the real VS Code extension-host suite ship in v0.8.2.
-
-### 0.7.7 — Chaos suite re-anchored to its basis
-
-The chaos suite is a **dynamic bug-discovery system** (real Docker, real ssh2, invariants), not a unit-test substitute. The most recent deep run revealed two basis-violations: 49 uncovered methods (24 actions never exercised) and a budget collapse hitting `early_termination: global_timeout` after 182 of ~1,120 scenarios. Worse, a prior 1152-scenario run logged 351 failures — root cause was a single sshd dying mid-run, after which every subsequent scenario on that server hit ECONNREFUSED while `ContainerHealthMonitor`'s 5s polling caught up.
-
-This release tightens the basis, fixes the cascade, and surfaces the real budget offenders.
-
-- **Plan doc** ([.adn/testing/chaos-testing.md](.adn/testing/chaos-testing.md)) — added Basis & Non-Goals, Budget Policy (~695ms/scenario ceiling), Coverage Triage (P0/P1/P2), Scenario Authoring Policy (strategy mapping + invariant + cost budget), Scenario Heat Map. Weekly checklist reordered: budget guard before adding scenarios.
-- **Dead-server cascade fix** ([src/chaos/ChaosEngine.ts](src/chaos/ChaosEngine.ts)) — engine now marks a server dead after 3 consecutive `ECONNREFUSED` / `Connection lost before handshake` failures and skips remaining scenarios on it. Verified: deep re-run logged **0 failures** across 187+ scenarios on 8 healthy containers (was 351 failures pre-fix).
-- **Heat map telemetry** — `ScenarioDefinition` gains `weight?: 'normal' | 'heavy'` (heavy sampled at `ceil(variations/3)`); `ChaosRunResult.slowest_scenarios` exposes top-10 by p95 `duration_ms`. Console + JSONL both show the offenders. Heavy applied to channel-semaphore (×6), ssh-tools-keys (×1), server-monitor (×5), connection-lifecycle:rapid-reconnect (×1).
-- **P0 coverage** — new scenarios for `SSHConnection.dispose`, `fileExists`, `readFileChunked` / `readFileFirstLines` / `readFileLastLines` / `readFileTail`, `forwardPort` / `stopForward` / `getActiveForwards` (new file [src/chaos/scenarios/port-forward.ts](src/chaos/scenarios/port-forward.ts)), `CommandGuard.startConnect` / `completeConnect` / `failConnect` / `trackDisconnect` / `startMonitoring` / `updateMonitoring` / `stopMonitoring` / `startRefresh` / `completeRefresh` / `failRefresh`. Coverage manifest updated for 18 previously-empty entries.
-- **Verification** — `npm run compile` clean; `npx jest --no-coverage` 1431/1431 pass; `npm run test:chaos` 75/75 pass; `npm run test:chaos:deep` 231/231 pass with `slowest_scenarios` flagging the next budget offenders for a future iteration.
-
-### 0.7.6 — Windows-client → Linux-server cross-coverage tests
-
-CI runs Linux→Linux. Real users hit Windows-specific issues we never exercised: drive-letter casing, mixed slashes, CRLF buffer round-trips, the local `ssh-keygen.exe` shell-out, ssh2 behavior on the Windows TCP stack. This release adds a dedicated test target that runs on a real Windows host against the existing multi-OS Docker stack (Alpine/Ubuntu/Debian/Fedora/Rocky on ports 2210–2214).
-
-- **New npm script**: `npm run test:windows-client` (gated to `process.platform === 'win32'`; tests are marked skipped on non-Windows hosts)
-- **New test file**: [src/integration/windows-client.test.ts](src/integration/windows-client.test.ts) — **13 tests, all passing on Windows 11**:
-  - Path normalization round-trip (drive-letter casing, idempotency, real `os.tmpdir()` paths, `Map<localPath>` lookups)
-  - CRLF/LF byte-for-byte fidelity over SFTP (no implicit normalization in either direction)
-  - `ssh-keygen.exe` PATH resolution (Git for Windows, Windows OpenSSH, Cygwin, MSYS2 all OK)
-  - `SshKeyService.generateKey` actually generates a valid ed25519 keypair locally
-  - Windows temp-dir round-trip via `CommandGuard.writeFile`/`readFile`
-  - ssh2 connect → exec → disconnect → reconnect on the Windows TCP stack
-  - 5 concurrent connections (one per OS) with parallel `exec` and `searchFiles` — verifies channel semaphores stay isolated per connection
-- **New jest config**: [jest.windows-client.config.js](jest.windows-client.config.js) with its own globalSetup/teardown that brings up the multi-OS docker stack
-- **Excluded from default `npx jest` run** so CI Linux runs are unaffected (still 1431/1431)
-- Test infra files use `spawnSync` over `execSync` (no shell-injection surface)
-
-### 0.7.5 — Deep-check fixes (search hang, log drift, Windows-portable chaos)
-
-Bug-fix release surfaced by a multi-round deep audit (chaos:deep + tsc-strict + console-log scan + jest leak detection):
-
-- **`SSHConnection.searchFiles` could hang on stream errors** — the inner Promise had `reject` declared but never called, and the SSH stream had no `error` handler. If the channel errored before emitting `'close'` (server reset, killed remote process, MaxSessions exhaustion), the search promise hung forever. Now wires `stream.on('error')` and `stream.stderr.on('error')` through a settle-once guard that rejects with `SFTPError` and logs `searchFiles/stream-error`. Real risk for restrictive corporate-lab SSH servers
-- **`npm run test:chaos:deep` was broken on Windows** — the `package.json` script used POSIX env-prefix syntax (`CHAOS_TIMEOUT=900000 CHAOS_MODE=deep ...`) that fails in cmd.exe. Replaced all three chaos scripts with a cross-platform Node wrapper at [scripts/run-chaos.js](scripts/run-chaos.js); chaos now runs from Windows hosts. First successful chaos:deep run from Windows: **182/182 scenarios pass, 0 anomalies, 8/8 containers healthy** across Alpine/Ubuntu/Debian/Fedora/Rocky
-- **13 residual `console.log` calls in production code** (`extension.ts` editHost/removeHost + `webviews/SearchPanel.ts` × 11) bypassed the v0.7.3 logging system entirely — invisible to users in the **SSH Lite** Output channel. All 13 migrated to `infoLog`/`diagLog` per the v0.7.3 pattern
-- **`FileTreeProvider.setFilenameFilter` missing explicit return** — TS7030 with `--noImplicitReturns` strict flag; cleanup, not a runtime bug
-- **Documented findings**: jest worker-not-exiting warning is a Jest worker-pool teardown quirk (clean with `--runInBand`), not actual handle leaks in our code
-
-### 0.7.4 — Log unit-test coverage + reusable test helpers
-
-- **+59 unit tests** verifying every diagnostic log added in 0.7.3 (ChannelSemaphore, CommandGuard, ConnectionManager, SSHConnection, TerminalService, PortForwardService, plus the `diagnosticLog` helper itself). Total suite is now **1431 tests across 58 suites** (was 1372 / 52)
-- New `setupLogCapture()` test helper in [src/__mocks__/testHelpers.ts](src/__mocks__/testHelpers.ts) — installs a fresh mock `OutputChannel`, sets the `diagnosticLogging` config flag, returns a structured `find(level, category, msgSubstring)` matcher with greedy parsing for multi-word values like `errorMessage=No such file` or 80-char `cmd=` previews
-- Added missing `vscode.window.createTerminal` mock (let TerminalService run end-to-end in unit tests)
-- No production code changes vs 0.7.3 — pure test-coverage release
-
-### 0.7.3 — Diagnostic logging (full coverage)
-
-- New `sshLite.diagnosticLogging` setting (default **off**) — when enabled, the **SSH Lite** Output channel emits a verbose trace covering every SSH operation:
-  - **Connect lifecycle**: begin, advertised auth methods (password / privateKey / agent / keyboard), handshake (kex, server host key, ciphers), server banner, ready, error (with `level` + `code`), close, host-key verify decision, keyboard-interactive prompts, post-connect capability detection (OS, inotifywait/fswatch)
-  - **Channel semaphore**: every acquire (immediate vs queued), wait time, release, adaptive max changes, destroy, post-destroy release-after-disconnect
-  - **CommandGuard wrappers** (every file op flows through these): `exec`, `openShell`, `readFile`, `writeFile`, `listFiles`, `searchFiles`, plus all `sudo*` one-offs — each logged with begin/success/failed, bytes, duration, sudo flag
-  - **ConnectionManager**: connect/begin (with full host details), reconnect lifecycle (start/attempt/success/failed with classification), disconnect, dispose
-  - **TerminalService**: terminal create begin/success/failed (with shell-channel timing), shell-close, shell-error
-  - **PortForwardService** + **SSHConnection.forwardPort**: create/listen/incoming-connection/forwardOut-error/server-error/stop
-  - **SFTP**: getSFTP create timing, race-condition serialization, not-connected guard
-  - **Teardown**: disconnect (state snapshot), handleDisconnect, dispose
-  - **Extension lifecycle**: activate (version, vscode, platform), deactivate
-- Existing `console.log` lines in `ConnectionManager` now route to the user-visible Output channel via `infoLog`
-- Always-on **info** events emit even with diagnostic logging off, so a baseline lifecycle trail is always available
-- Use this when filing issues — see [issue #4](https://github.com/trantung95/SSHLite/issues/4)
-
-### 0.7.2 — SSH channel semaphore
-
-- Per-connection channel semaphore prevents terminal opens from failing when parallel content search is running
-- Terminal open shows "Waiting for a free channel..." progress notification and opens automatically when a slot frees up
-- Terminal times out after 30s with a clear error if all channels remain busy
-- Search automatically reduces concurrency on channel-limit failures and retries transparently (up to 3 times)
-- New setting: `sshLite.maxChannelsPerServer` (default 8) — adjustable for servers with non-standard `MaxSessions`
-
-### 0.7.1 — Filter UX improvements
-
-- Filter results always show the configured limit in the success message
-- Long messages (e.g. filter results) now appear as a popup notification instead of truncating in the status bar
-- When a filter hits its limit, a warning popup offers an **Increase Limit** option to update `sshLite.filterMaxResults` directly
-- Hover tooltips on filtered folders and the deep-filter header now show the configured limit and flag when it was reached
-
-### 0.7.0 — SSH Tools suite
-
-- **9 new utilities**: process viewer + kill, service manager (start/stop/restart), environment inspector, cron editor, snippet library (6 built-ins + custom), batch command runner, remote script runner, SSH key manager (generate + push), remote diff editor
-- **Snippet library**: ships with disk usage, top CPU, top memory, listening ports, kernel, and uptime built-ins. Add your own from the Command Palette
-- **SSH Key Manager**: generates ed25519 / RSA keypairs locally via `ssh-keygen` and installs the public key to remote `~/.ssh/authorized_keys` in one step
-- **Remote Diff**: compare any remote file against a local file using VS Code's built-in diff editor
-- **Busybox compatibility**: Process viewer works on Alpine/busybox servers (no systemd required)
-
-### 0.6.0 — SSH Tools rebrand + remote copy/paste
-
-- **Renamed** to "SSH Lite (SSH Tools)" — positioning the extension as a growing SSH utility suite
-- **Remote copy/paste**: right-click Copy/Cut on any file or folder, right-click Paste on a destination. Works same-host (`cp -r`) and cross-host (SFTP stream). `Ctrl+C` / `Ctrl+X` / `Ctrl+V` keybindings in the file explorer
-- **Auto-rename on conflict**: pasting into a folder that already has the same filename produces `name (copy).ext`, `name (copy) 2.ext`, etc.
-- Cancellable progress notification for large transfers
-
-### 0.5.6 — PEM private key authentication via UI
-
-- **Add User** now asks whether to authenticate with a password or a private key (PEM). The key path is validated and a passphrase is optional — leave it empty for keys with no passphrase. Fixes [#3](https://github.com/trantung95/SSHLite/issues/3)
-- **First-time connect** no longer forces a password prompt when the host already has an Identity File (e.g. from `~/.ssh/config`) — it creates or reuses an SSH-key credential instead
-- **"Re-enter Passphrase"** retry action on authentication failure for key-based credentials, mirroring the existing password-retry flow
-- Internal: `CredentialService.addCredential` skips `SecretStorage` writes when the passphrase is empty so passwordless keys don't leave blank entries
-
-### 0.5.4 — VS Code-style search enhancements
-
-- **Whole word search**: New `Ab|` toggle button matches whole words only (grep `-w` flag). Works with both literal and regex modes
-- **Comma-separated include patterns**: Enter `*.ts, *.js` in "files to include" to search multiple file types simultaneously
-- **Default exclusions**: Auto-excludes `.git`, `node_modules`, `.svn`, `.hg`, `CVS`, `.DS_Store`, `bower_components`, `*.code-search` — matching VS Code's default search behavior. Controlled by `sshLite.searchUseDefaultExcludes` setting (default: on)
-
-### 0.2.1 (Beta)
-- **Comprehensive regression test suite** - 727 tests (30 suites) covering all features
-- **Extracted extension helpers** - `parseHostInfoFromPath`, `isInSshTempDir`, `hasSshPrefix` as testable exports
-- **Real API upload state tests** - Tests actual FileService `isFileUploading`/`isFileUploadFailed` public methods
-- **Progressive download tests** - Full coverage for ProgressiveDownloadManager (threshold, state, cancel, cleanup)
-- **Binary file detection tests** - `isLikelyBinary`, `parsePreviewUri`, `createPreviewUri` coverage
-- **WriteFile timeout pattern tests** - Settled guard, double-settle prevention, callback race conditions
-- **Drag-and-drop connection reorder** - Tests for sidebar connection drag/drop reorder algorithm
-- **Orphaned file detection tests** - Tests real helper functions for startup SSH file detection
-
-### 0.2.0 (Beta)
-- **Upload state tracking** - Tab badges show upload progress (↑ yellow) and failures (✗ red) via FileDecorationProvider
-- **Reliable file save** - Replaced SFTP stream with writeFile API for confirmed server-side writes (no more false failures)
-- **Cross-platform path normalization** - Fixed Windows drive letter case mismatch between VS Code and OS APIs
-- **Save notification fix** - Status bar correctly shows upload result instead of spinner
-- **Activity panel** - Real-time tracking of all SSH operations
-- **Multi-server grouping** - Hosts grouped by host:port in sidebar
-- **Search auto-cancel** - Previous search cancelled when starting new one
-- **Comprehensive test suite** - 674 tests (587 mock + 87 Docker e2e)
-
-### 0.1.9 (Beta)
-- Fix disconnect auto-reconnect behavior
-- Fix sidebar icon issues
-- Security hardening and LITE principles compliance
-
-### 0.1.8 (Beta)
-- Add Banh Mi Easter egg
-
-### 0.1.7 (Beta)
-- Auto-reconnect on unexpected connection drop
-- Live file tracking and auto-refresh
-- UX improvements
-
-### 0.1.6 (Beta)
-- Fix marketplace packaging issues
-
-### 0.1.5 (Beta)
-- Fix extension activation issue (commands not found)
-- Fix view registration mismatch
-- Include node_modules dependencies in VSIX
-- Proper terminal icon for marketplace
-- Allow password retry on authentication failure
-
-### 0.1.2 (Beta)
-- Search feature redesign with webview panel
-- Filename filter with tree highlighting
-- Smart refresh and real-time file watching
-- Progressive download for large files
-- UX enhancements: auto-dismiss notifications, keyboard shortcuts
-- Improved preloading and caching
-
-### 0.1.0
-- Initial release
-- Remote file browser with SFTP
-- Integrated SSH terminals
-- Port forwarding
-- Auto-save credentials
-- Server monitoring tools
-- Audit trail logging
-- Large file handling
-
----
-
-## Keywords
-
-ssh, sftp, remote, terminal, ssh client, remote file, file browser, ssh terminal, port forwarding, ssh tunnel, remote development, remote server, linux server, vps, virtual server, cloud server, aws ssh, azure ssh, gcp ssh, digitalocean, linode, vultr, ssh connection, ssh key, ssh password, ssh config, putty alternative, remote access, server management, devops, sysadmin, system administration, remote file editing, remote file browser, ssh file transfer, secure shell, openssh, remote terminal, ssh extension, vscode ssh, vs code ssh, visual studio code ssh, lightweight ssh, simple ssh, easy ssh, fast ssh, no install ssh, serverless ssh, agentless ssh, remote coding, remote editing, server monitoring, linux monitoring, server status, server diagnostics
-
----
-
-**Enjoy simple, fast SSH access!**
+Apache-2.0
 
 ---
 
