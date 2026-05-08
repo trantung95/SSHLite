@@ -1,6 +1,6 @@
 # SSH Lite (SSH Tools) — Lightweight SSH Suite for VS Code
 
-![Version](https://img.shields.io/badge/version-0.8.1-blue)
+![Version](https://img.shields.io/badge/version-0.8.2-blue)
 ![Status](https://img.shields.io/badge/status-beta-yellow)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-1.85.0+-purple)
@@ -271,6 +271,15 @@ Contributions welcome! Please submit Pull Requests on GitHub.
 Apache-2.0 License
 
 ## Release Notes
+
+### 0.8.2 — Stability fixes for v0.8.1
+
+Fixes for issues surfaced during v0.8.1 use:
+
+- **Extension host no longer OOM-crashes after a few minutes.** `FileTreeProvider.preloadSubdirectories` ran on every `getChildren()` call, which VS Code invokes on every tree refresh (focus, selection, filter, expand-state). Across many connections this accumulated SSH channels and memory until V8 killed the host process. Now skips re-triggering when the cached files array is unchanged — preserves the eager-preload design intent without the storm.
+- **Search panel toggle works during/after limited searches.** View-toggle handlers attached synchronously after `innerHTML` reset (was via `setTimeout(0)`, leaving a 1-tick gap where clicks were lost during search batches).
+- **"Limit N reached" warning shows the configured cap.** Tab state now tracks `message.limit` from each search batch (was stuck at the `createTabState` default of 2000 regardless of the user's `searchMaxResults` setting).
+- **Limit warning stays visible during active search.** Moved out of the `.results-count` span (which gets rewritten with progress text on each batch) into its own sibling element.
 
 ### 0.8.1 — Search webview lifted to bundled assets
 

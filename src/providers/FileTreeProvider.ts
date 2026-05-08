@@ -371,13 +371,15 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
   // Track pending preload operations (for deduplication - keys only)
   private preloadQueue: Set<string> = new Set();
-  // Throttle: most-recent preloadSubdirectories call timestamp per (connectionId:path).
-  // VS Code calls getChildren() on every refresh (focus/selection/filter), and each
-  // hit-cached branch was triggering preload. Without throttling, this re-queues
-  // preload tasks dozens of times per second across all connections, leaks SSH
-  // channels and memory, and OOM-kills the extension host after a few minutes.
-  private preloadLastTriggered: Map<string, number> = new Map();
-  private static readonly PRELOAD_THROTTLE_MS = 5000;
+  // Idempotence guard: which cached-files array reference we last triggered preload
+  // for, keyed by connectionId:parentPath. VS Code calls getChildren() on every
+  // tree refresh (focus, selection, filter, expand-state update); without this
+  // guard, every refresh re-runs preloadSubdirectories on the same unchanged data,
+  // leaks SSH channels, and OOM-kills the extension host after a few minutes.
+  // Reference equality on the files array correctly detects "cache replaced" —
+  // when cache is invalidated and refilled, getCached returns a new array.
+  // No timer, no hardcoded window — purely state-driven.
+  private preloadLastTrigger: Map<string, IRemoteFile[]> = new Map();
 
   // Filter pattern for file tree (glob-like pattern)
   private filterPattern: string = '';
@@ -667,18 +669,18 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     const allDirectories = files.filter((f) => f.isDirectory);
     if (allDirectories.length === 0) return;
 
-    // Throttle: skip if we triggered preload for this same (connection, path) recently.
-    // Computes a key from the input directories' parent — using the first directory's
-    // parent path. files come from a single directory listing, so they share a parent.
-    // This prevents getChildren()'s per-refresh thrashing from re-driving preload.
+    // Idempotence guard: skip if we already triggered preload for THIS exact cached
+    // files array. The files array's reference identity is stable as long as the
+    // cache entry is unchanged; when cache is invalidated and refilled, getCached
+    // returns a fresh array and we re-run. The parent path is derived from the
+    // first directory's path (all directories in `files` share the same parent
+    // since they come from a single directory listing).
     const parentPath = allDirectories[0].path.replace(/\/[^/]+$/, '') || '/';
-    const throttleKey = connection.id + ':' + parentPath;
-    const now = Date.now();
-    const last = this.preloadLastTriggered.get(throttleKey) || 0;
-    if (now - last < FileTreeProvider.PRELOAD_THROTTLE_MS) {
+    const triggerKey = connection.id + ':' + parentPath;
+    if (this.preloadLastTrigger.get(triggerKey) === files) {
       return;
     }
-    this.preloadLastTriggered.set(throttleKey, now);
+    this.preloadLastTrigger.set(triggerKey, files);
 
     // User expanded a folder - reset this connection's queue if it was cancelled
     if (this.priorityQueue.isConnectionCancelled(connection.id) && !this.priorityQueue.isPreloadingInProgress()) {

@@ -1,5 +1,48 @@
 # Changelog
 
+## v0.8.2 — Stability fixes for v0.8.1
+
+Fixes that landed on top of v0.8.1 to address bugs surfaced during real use.
+
+### Critical: extension-host OOM crash (pre-existing in v0.8.0, surfaced under v0.8.1 testing)
+
+`FileTreeProvider.preloadSubdirectories` was invoked from the cache-hit branches of `getChildren()` (lines 1156 and 1229). VS Code calls `getChildren()` on every tree refresh — focus changes, selection, filter changes, expand-state updates — so every refresh re-ran preload setup work even when the cached data was unchanged. Across many connections this accumulated SSH channel allocations and Map/Set memory faster than GC could keep up; V8 killed the extension host after a few minutes of normal use, dropping all connections and clearing the Output channel.
+
+The DevTools console showed the signature:
+
+```
+[SSH Lite Preload] Queuing 5 subdirs for <server>     (×4-5 in seconds)
+[SSH Lite Preload] Loaded /path (N items)
+ERR Extension host (LocalProcess pid: ...) terminated unexpectedly.
+```
+
+**Fix:** state-based idempotence guard in `preloadSubdirectories`. Each call records the `files` array reference it triggered for, keyed by `connectionId:parentPath`. A subsequent call with the same array reference (i.e., the cache wasn't invalidated between calls) short-circuits before doing any work. When the cache IS replaced (refresh, fresh fetch), `getCached()` returns a different array and preload runs normally. No timer, no hardcoded throttle window — purely state-driven, latency-independent.
+
+### Search panel fixes (regressed in v0.8.1's lift, fixed in 0.8.2)
+
+- **Toggle list↔tree was unresponsive during/after limited searches.** Handlers were attached via `setTimeout(() => bind, 0)` after `innerHTML` reset, leaving a 1-tick gap where clicks landed on a button with no listener. Now bound synchronously after the innerHTML rebuild — race window collapses to zero.
+- **"⚠️ Limit N reached" displayed `2000` regardless of the configured cap.** The `'searchBatch'` handler updated `results`/`hitLimit`/`searching` on every batch but never wrote `tab.limit`, so the tab kept its `createTabState()` default of 2000. Now `tab.limit` is set from `message.limit` on every batch (with both `'searchBatch'` and the kept-tab routing branch).
+- **Limit warning disappeared during active search.** It lived inside `.results-count`, which `debouncedRenderResults` overwrites on each batch with progress text. Moved to a sibling element so the progress override doesn't touch it.
+- **`acquireVsCodeApi()` was called twice on webview load.** `index.ts` called it directly, then `info()` triggered `log.ts`'s lazy acquire — VS Code throws on the second call. Now `index.ts` uses `getVsCodeApi()` from `log.ts` (single source).
+- **`localResourceRoots: []` blocked the bundled webview assets.** Added `media/search` to the allowlist so `webview.asWebviewUri()` for `main.js`/`main.css` works.
+- **Unicode escape sequences (`\u{1F504}`, `×`, etc.) rendered as literal text.** The Phase 1 lift unwound `` \` `` and `\${` from the outer template literal but missed `\\u` and `\\u{`. Now all 20 occurrences in `webview-src/search/index.ts` use single-backslash form so TypeScript evaluates the unicode escape at compile time.
+
+### Packaging fix
+
+- `scripts/verify-package.js` no longer passes `--no-dependencies` to `vsce package`. The flag stripped `node_modules/` from the .vsix, so the shipped extension was missing `ssh2` and `ssh-config` and failed to activate with `Cannot find module 'ssh2'`. The required-entries check now also asserts both runtime deps land in the package.
+
+### Other
+
+- Added click-event diagnostic logs (`click-match`, `click-reveal`, `click-list-view`, `click-tree-view`, `click-expand-toggle`, `click-increase-limit`) so future click-loss reports are diagnosable from the **SSH Lite** Output channel.
+- `.vscodeignore` excludes `logs/**` and `test-marketplace/**` so chaos test logs and marketplace test harness no longer ship in the .vsix.
+- New lessons recorded in `.adn/lessons.md`.
+
+### Verification
+
+- `npm run compile` — 0 errors
+- `npx jest --no-coverage` — 1447/1447 pass (incl. 134 FileTreeProvider tests with the new idempotence guard)
+- `npm run verify:package` — passes; .vsix is 5.13 MB with `ssh2` + `ssh-config` bundled
+
 ## v0.8.1 — Search webview lifted to bundled assets
 
 Phase 1 of the search render overhaul (spec: `docs/superpowers/specs/2026-05-07-search-render-overhaul-design.md`). Pure refactor — zero observable behavior change.
