@@ -371,6 +371,13 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
   // Track pending preload operations (for deduplication - keys only)
   private preloadQueue: Set<string> = new Set();
+  // Throttle: most-recent preloadSubdirectories call timestamp per (connectionId:path).
+  // VS Code calls getChildren() on every refresh (focus/selection/filter), and each
+  // hit-cached branch was triggering preload. Without throttling, this re-queues
+  // preload tasks dozens of times per second across all connections, leaks SSH
+  // channels and memory, and OOM-kills the extension host after a few minutes.
+  private preloadLastTriggered: Map<string, number> = new Map();
+  private static readonly PRELOAD_THROTTLE_MS = 5000;
 
   // Filter pattern for file tree (glob-like pattern)
   private filterPattern: string = '';
@@ -656,14 +663,27 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       return;
     }
 
+    // Get all directories
+    const allDirectories = files.filter((f) => f.isDirectory);
+    if (allDirectories.length === 0) return;
+
+    // Throttle: skip if we triggered preload for this same (connection, path) recently.
+    // Computes a key from the input directories' parent — using the first directory's
+    // parent path. files come from a single directory listing, so they share a parent.
+    // This prevents getChildren()'s per-refresh thrashing from re-driving preload.
+    const parentPath = allDirectories[0].path.replace(/\/[^/]+$/, '') || '/';
+    const throttleKey = connection.id + ':' + parentPath;
+    const now = Date.now();
+    const last = this.preloadLastTriggered.get(throttleKey) || 0;
+    if (now - last < FileTreeProvider.PRELOAD_THROTTLE_MS) {
+      return;
+    }
+    this.preloadLastTriggered.set(throttleKey, now);
+
     // User expanded a folder - reset this connection's queue if it was cancelled
     if (this.priorityQueue.isConnectionCancelled(connection.id) && !this.priorityQueue.isPreloadingInProgress()) {
       this.priorityQueue.resetConnection(connection.id);
     }
-
-    // Get all directories
-    const allDirectories = files.filter((f) => f.isDirectory);
-    if (allDirectories.length === 0) return;
 
     // Get frequently visited folders for this connection
     const frequentFolders = new Set(this.folderHistoryService.getFrequentFolders(connection.id, 20));
@@ -1152,7 +1172,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
         // Clear pending auto-expand paths after they've been consumed by buildDirectoryItems
         // (child getChildren calls will also read them before this clears)
         setTimeout(() => this.pendingAutoExpandPaths.delete(element.connection.id), 500);
-        // Preload subdirectories in background
+        // Preload subdirectories in background (throttled per connection+path)
         this.preloadSubdirectories(element.connection, cached);
         return items;
       }
@@ -1225,7 +1245,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
             activeFilter?.maxResults || 0
           );
         });
-        // Preload subdirectories in background
+        // Preload subdirectories in background (throttled per connection+path)
         this.preloadSubdirectories(element.connection, cached);
         return items;
       }
