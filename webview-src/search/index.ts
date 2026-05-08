@@ -1198,12 +1198,18 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
 
     // Add click handlers for match items (shared by both views)
     function addMatchClickHandlers() {
-      resultsContainer.querySelectorAll('.match-item, .tree-match-item').forEach(item => {
+      const items = resultsContainer.querySelectorAll('.match-item, .tree-match-item');
+      const reveals = resultsContainer.querySelectorAll('.reveal-btn');
+      info('search-webview', 'attach-result-handlers', {
+        matchCount: items.length, revealCount: reveals.length, viewMode,
+      });
+      items.forEach(item => {
         item.addEventListener('click', (e) => {
           e.stopPropagation();
           const path = item.dataset.path;
           const connectionId = item.dataset.connection;
           const line = item.dataset.line ? parseInt(item.dataset.line) : undefined;
+          info('search-webview', 'click-match', { path, connectionId, line });
 
           vscode.postMessage({
             type: 'openResult',
@@ -1214,11 +1220,12 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
       });
 
       // Add click handlers for reveal buttons (shared by both views)
-      resultsContainer.querySelectorAll('.reveal-btn').forEach(btn => {
+      reveals.forEach(btn => {
         btn.addEventListener('click', (e) => {
           e.stopPropagation();
           const path = btn.dataset.path;
           const connectionId = btn.dataset.connection;
+          info('search-webview', 'click-reveal', { path, connectionId });
           vscode.postMessage({
             type: 'revealInTree',
             result: { path, connectionId }
