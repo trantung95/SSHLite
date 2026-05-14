@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.8.5 — Filter by Name at the server-row level
+
+Three related bugs prevented the "Filter by Name" action invoked from the connection row from working correctly when the user was at the server root (`/`).
+
+### What landed
+
+- **Stale `currentPath` snapshot** — `ConnectionTreeItem.currentPath` is captured in the constructor but the same instance is reused across targeted refreshes (`refreshConnection` updates the description but not the readonly field). The filter command read that stale value and applied the filter at the home directory instead of the live current path. Fix: read the path from `FileTreeProvider.getCurrentPath(connection.id)` instead of `item.currentPath` in `sshLite.filterFileNames`.
+- **Decoration prefix double-slash** — `SSHFileDecorationProvider.filterBasePrefixes` was built as `ssh://<conn><basePath>/`. For `basePath = '/'` this produced `ssh://<conn>//`, never matching item URIs like `ssh://<conn>/etc`, so `provideFileDecoration` skipped the gray-out branch. Fix: skip the extra slash when `basePath` already ends with `/` in `setFilenameFilterPaths`, `rebuildFilterState`, and `clearFilteredFolder`.
+- **Connection-row description** — while a filter is active on the connection, the gray `user@host - path` description now shows `[filter: <pattern>] (<matchCount>)` (joined with two spaces for multiple filters), mirroring the format used on filtered folders. Cleared filters restore the original description via the full refresh.
+
+### Files
+
+- `src/extension.ts` — `sshLite.filterFileNames` reads live path from provider.
+- `src/providers/FileTreeProvider.ts` — new `buildConnectionFilterDescription`; `getChildren` and `refreshConnection` use it.
+- `src/providers/FileDecorationProvider.ts` — prefix builders normalize trailing slash.
+
+All 186 `FileTreeProvider*` / `FileDecoration*` tests pass. No new tests added (logic exercised end-to-end via existing decoration tests).
+
 ## v0.8.4 — Marketplace README rewrite
 
 Documentation-only release. The VS Code Marketplace listing was ~500 lines, mostly because:

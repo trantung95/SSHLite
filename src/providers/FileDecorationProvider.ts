@@ -77,7 +77,9 @@ export class SSHFileDecorationProvider implements vscode.FileDecorationProvider 
     if (connectionId && folderPath) {
       const uri = `ssh://${connectionId}${folderPath}`;
       this.filteredFolderUris.delete(uri);
-      const prefix = `ssh://${connectionId}${folderPath}/`;
+      // basePath '/' would produce 'ssh://conn//' (double slash) — strip the duplicate
+      const sep = folderPath.endsWith('/') ? '' : '/';
+      const prefix = `ssh://${connectionId}${folderPath}${sep}`;
       this.filterBasePrefixes.delete(prefix);
       // Rebuild highlighted URIs from remaining filters (simplified: just fire refresh)
       this._onDidChangeFileDecorations.fire(undefined);
@@ -98,7 +100,9 @@ export class SSHFileDecorationProvider implements vscode.FileDecorationProvider 
       return;
     }
 
-    this.filterBasePrefixes.add(`ssh://${connectionId}${basePath}/`);
+    // basePath '/' would produce 'ssh://conn//' (double slash) and never match item URIs
+    const sep = basePath.endsWith('/') ? '' : '/';
+    this.filterBasePrefixes.add(`ssh://${connectionId}${basePath}${sep}`);
 
     for (const p of highlightedPaths) {
       this.filterHighlightedUris.add(`ssh://${connectionId}${p}`);
@@ -117,7 +121,9 @@ export class SSHFileDecorationProvider implements vscode.FileDecorationProvider 
 
     for (const state of filterStates) {
       this.filteredFolderUris.add(`ssh://${state.connectionId}${state.basePath}`);
-      this.filterBasePrefixes.add(`ssh://${state.connectionId}${state.basePath}/`);
+      // basePath '/' would produce 'ssh://conn//' (double slash) and never match item URIs
+      const sep = state.basePath.endsWith('/') ? '' : '/';
+      this.filterBasePrefixes.add(`ssh://${state.connectionId}${state.basePath}${sep}`);
       for (const p of state.highlightedPaths) {
         this.filterHighlightedUris.add(`ssh://${state.connectionId}${p}`);
       }

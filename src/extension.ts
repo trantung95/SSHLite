@@ -1883,14 +1883,18 @@ export function activate(context: vscode.ExtensionContext): void {
 
       if (item instanceof ConnectionTreeItem) {
         connection = item.connection;
+        // Read fresh path from the provider — ConnectionTreeItem instances are reused across
+        // targeted refreshes, so item.currentPath captured at construction goes stale after
+        // the user navigates from the connection row (e.g., goToRoot from '~' to '/').
+        const livePath = fileTreeProvider.getCurrentPath(connection.id);
         // Resolve ~ to absolute path (tilde doesn't expand in single-quoted find/grep)
-        basePath = item.currentPath;
+        basePath = livePath;
         if (basePath === '~' || basePath.startsWith('~/')) {
           try {
             const homePath = (await connection.exec('echo ~')).trim();
             basePath = basePath === '~' ? homePath : homePath + basePath.substring(1);
           } catch {
-            basePath = item.currentPath; // fallback
+            basePath = livePath; // fallback
           }
         }
         displayName = item.connection.host.name;

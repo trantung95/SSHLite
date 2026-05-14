@@ -809,6 +809,23 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   }
 
   /**
+   * Build the description shown on a ConnectionTreeItem when filename filter(s) are active.
+   * Returns undefined when there are no filters on the connection, in which case the caller
+   * should fall back to the default `user@host - path` server info.
+   * Format mirrors filtered folders: `[filter: pattern] (matchCount)` joined by two spaces.
+   */
+  private buildConnectionFilterDescription(connectionId: string): string | undefined {
+    const filters = Array.from(this.activeFilters.values()).filter(f => f.connectionId === connectionId);
+    if (filters.length === 0) return undefined;
+    return filters
+      .map(f => {
+        const count = f.matchCounts.get(f.basePath) || 0;
+        return count > 0 ? `[filter: ${f.pattern}] (${count})` : `[filter: ${f.pattern}]`;
+      })
+      .join('  ');
+  }
+
+  /**
    * Set current path for a connection and refresh
    * Uses targeted refresh for just the affected connection to preserve other connections' tree state
    */
@@ -840,7 +857,10 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       // Update the description to show new path
       const currentPath = this.getCurrentPath(connectionId);
       if (connItem instanceof ConnectionTreeItem) {
-        connItem.description = `${connItem.connection.host.username}@${connItem.connection.host.host} - ${currentPath}`;
+        const filterDesc = this.buildConnectionFilterDescription(connectionId);
+        // While a filter is active, replace server info with the filter summary.
+        connItem.description = filterDesc
+          ?? `${connItem.connection.host.username}@${connItem.connection.host.host} - ${currentPath}`;
       }
       // Targeted refresh - only this connection's children are re-fetched
       this._onDidChangeTreeData.fire(connItem);
@@ -1128,9 +1148,11 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
         const currentPath = this.getCurrentPath(conn.id);
         const item = new ConnectionTreeItem(conn, currentPath);
         // Show connection.filtered contextValue when any filename filter is active on this connection
-        const hasFilterOnConnection = Array.from(this.activeFilters.values()).some(f => f.connectionId === conn.id);
-        if (hasFilterOnConnection) {
+        const filterDesc = this.buildConnectionFilterDescription(conn.id);
+        if (filterDesc !== undefined) {
           item.contextValue = 'connection.filtered';
+          // Replace the gray server info with the filter summary, mirroring folder.filtered.
+          item.description = filterDesc;
         }
         items.push(item);
         this.connectionTreeItemRefs.set(conn.id, item);

@@ -1,6 +1,6 @@
 # SSH Lite (SSH Tools) — Lightweight SSH Suite for VS Code
 
-![Version](https://img.shields.io/badge/version-0.8.4-blue)
+![Version](https://img.shields.io/badge/version-0.8.5-blue)
 ![Status](https://img.shields.io/badge/status-beta-yellow)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-1.85.0+-purple)
@@ -42,6 +42,8 @@ Reads `~/.ssh/config`. Supports SSH keys (RSA / Ed25519 / ECDSA, encrypted), age
 **98 commands** — full reference at [docs/COMMANDS.md](https://github.com/trantung95/SSHLite/blob/master/docs/COMMANDS.md).
 
 ## Release Notes
+
+**0.8.5** — Fixed "Filter by Name" at the server-row level: filter is now applied at the live current path (was using a stale `currentPath` snapshot from construction), gray-out and color now work when basePath is `/` (decoration prefix was double-slashed), and the connection row description shows `[filter: pattern] (count)` while a filter is active, restoring the `user@host - path` server info when cleared.
 
 **0.8.4** — Marketplace README rewrite. Listing trimmed from ~500 to ~66 lines (removed duplicate features list, usage section, command tables, keyword block, and old release notes). Fixed broken `/blob/main/` links to `/blob/master/`. Docs-only release — no code changes.
 
