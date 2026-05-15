@@ -2,7 +2,7 @@
   "name": "ssh-lite",
   "displayName": "SSH Lite (SSH Tools)",
   "description": "Lightweight SSH client for VS Code. Browse and edit remote files, run terminals, forward ports, manage processes and services, push SSH keys, run snippets and batch commands - all without installing anything on remote servers. Perfect for VPS, cloud servers (AWS/Azure/GCP), and Linux administration.",
-  "version": "0.8.6",
+  "version": "0.8.7",
   "publisher": "hybr8",
   "engines": {
     "vscode": "^1.85.0"
@@ -1064,12 +1064,12 @@
         {
           "command": "sshLite.filterFileNames",
           "when": "view == sshLite.fileExplorer && viewItem == connection",
-          "group": "inline@4"
+          "group": "inline@5"
         },
         {
           "command": "sshLite.clearFilenameFilter",
           "when": "view == sshLite.fileExplorer && viewItem == connection.filtered",
-          "group": "inline@4"
+          "group": "inline@5"
         },
         {
           "command": "sshLite.clearTempFilesForConnection",
@@ -1139,22 +1139,22 @@
         {
           "command": "sshLite.uploadFile",
           "when": "view == sshLite.fileExplorer && viewItem =~ /^folder/",
-          "group": "1_actions@2"
+          "group": "1_actions@3"
         },
         {
           "command": "sshLite.createFolder",
           "when": "view == sshLite.fileExplorer && viewItem =~ /^folder/",
-          "group": "1_actions@3"
+          "group": "1_actions@4"
         },
         {
           "command": "sshLite.pinFolder",
           "when": "view == sshLite.fileExplorer && viewItem =~ /^folder/",
-          "group": "1_actions@4"
+          "group": "1_actions@5"
         },
         {
           "command": "sshLite.searchInScope",
           "when": "view == sshLite.fileExplorer && viewItem =~ /^folder/",
-          "group": "1_actions@5"
+          "group": "1_actions@2"
         },
         {
           "command": "sshLite.filterFileNames",
@@ -1254,12 +1254,12 @@
         {
           "command": "sshLite.searchInScope",
           "when": "view == sshLite.fileExplorer && viewItem =~ /^file/",
-          "group": "1_actions@6"
+          "group": "1_actions@2"
         },
         {
           "command": "sshLite.searchInScope",
           "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
-          "group": "inline@5"
+          "group": "inline@4"
         },
         {
           "command": "sshLite.showTreeFromRoot",
