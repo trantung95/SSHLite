@@ -105,6 +105,22 @@ src/
 - `CommandGuard` for significant SSH operations
 - Stable tree item `id` (never include dynamic state)
 
+## Tree Inline Icon Order (CRITICAL)
+
+**Rule**: An icon that appears on multiple `viewItem` rows MUST occupy the same `inline@N` slot on every row it appears on. "Same relative slot" is not enough — visual position must match across rows. When a row lacks one of the canonical icons, leave that slot empty rather than re-numbering downstream icons.
+
+**Canonical inline slots for `sshLite.fileExplorer` rows** (search/filter first, then row-specific actions):
+
+| Slot | Connection | Folder | File |
+|------|------------|--------|------|
+| `inline@1` | `searchInScope` | `searchInScope` | `searchInScope` |
+| `inline@2` | `filterFileNames` / `clearFilenameFilter` | `filterFileNames` / `clearFilenameFilter` | `openFile` |
+| `inline@3` | `disconnect` | `openTerminalHere` | `openTerminalHere` |
+| `inline@4` | `openTerminal` | `refreshItem` | `refreshItem` |
+| `inline@5` | `monitor` | — | — |
+
+**Audit**: when adding/moving a `view/item/context` entry in `package.json`, grep for every `when` clause that targets the same command and confirm `group: inline@N` matches the canonical table above. Two entries with the same `inline@N` on the same viewItem is a collision — pick a new slot, don't double-stack.
+
 ## Testing
 
 - Run `npx jest --no-coverage` before committing; add tests for new functionality

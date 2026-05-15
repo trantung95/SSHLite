@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.8.8 — complete the inline-icon-slot fix (search/filter at absolute @1/@2, not just relative)
+
+Follow-up to v0.8.7. User pointed at a screenshot showing the search and filter icons still in visibly different absolute positions across rows — the v0.8.7 fix made search-before-filter consistent **within** each row but did not normalize the **absolute** `inline@N` slot the icons occupy across viewItem contexts. Re-audit:
+
+| Row | searchInScope @ | filterFileNames @ | Observation |
+|---|---|---|---|
+| Connection | `inline@4` | `inline@5` | search/filter at the **end** of the inline group |
+| Folder | `inline@1` | `inline@2` | search/filter at the **start** of the inline group |
+| File | `inline@2` | (n/a) | search after `openFile` |
+
+So search sat at slot 4 on a connection row but slot 1 on a folder row two rows below it in the same tree — exactly the drift the screenshot showed.
+
+### Fix
+
+User chose folder-style as canonical (search/filter first, row-specific actions second). Edits in [package.json](../package.json) `contributes.menus`:
+
+1. **Connection inline**: `searchInScope` @4→@1, `filterFileNames`/`clearFilenameFilter` @5→@2, `disconnect` @1→@3, `openTerminal` @2→@4, `monitor` @3→@5.
+2. **File inline**: `searchInScope` @2→@1, `openFile` @1→@2.
+3. **Folder inline**: no change — already canonical.
+
+### New invariant added to project docs
+
+[CLAUDE.md](../CLAUDE.md) now has a **Tree Inline Icon Order (CRITICAL)** section with the canonical slot table for connection / folder / file rows and an audit rule: "an icon that appears on multiple `viewItem` rows MUST occupy the same `inline@N` slot on every row it appears on." This closes the v0.8.7 open question ("add such a rule to CLAUDE.md so a future audit catches drift automatically"). Future menu edits that violate the table should be caught at review time.
+
+### Verification
+
+- Menu-slot collision scan: 0 collisions.
+- `package.json contributes.commands.length`: 98 (unchanged).
+- TypeScript compile clean; jest suite unaffected (menu position is metadata, not runtime code).
+
 ## v0.8.7 — search-icon position consistency across file/folder/connection menus
 
 User reported: the `$(search)` icon appeared in different relative positions across the file-explorer tree, breaking visual consistency. Audit of `package.json` `contributes.menus` confirmed three concrete inconsistencies plus one latent slot collision.

@@ -1,6 +1,6 @@
 # SSH Lite (SSH Tools) — Lightweight SSH Suite for VS Code
 
-![Version](https://img.shields.io/badge/version-0.8.7-blue)
+![Version](https://img.shields.io/badge/version-0.8.8-blue)
 ![Status](https://img.shields.io/badge/status-beta-yellow)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-1.85.0+-purple)
@@ -42,6 +42,8 @@ Reads `~/.ssh/config`. Supports SSH keys (RSA / Ed25519 / ECDSA, encrypted), age
 **98 commands** — full reference at [docs/COMMANDS.md](https://github.com/trantung95/SSHLite/blob/master/docs/COMMANDS.md).
 
 ## Release Notes
+
+**0.8.8** — Inline icon order is now visually consistent across every row in the file-explorer tree. `searchInScope` always sits at `inline@1`; `filterFileNames` / `clearFilenameFilter` at `inline@2` (where filter is applicable: folder + connection rows). Row-specific actions follow at `inline@3+` (file rows: `openFile`; folder rows: terminal + refresh; connection rows: disconnect + terminal + monitor). v0.8.7 made search-before-filter consistent within each row but left the absolute slot inconsistent — search was at slot 4 on connection rows but slot 1/2 on folder/file rows. v0.8.8 fixes the slot drift. Adds an "Tree Inline Icon Order" rule to `CLAUDE.md` so future menu edits don't reintroduce the same drift.
 
 **0.8.7** — UI consistency fix for the search icon. Across the file-explorer tree, the inline `$(search)` icon now sits in the same relative slot for every item type (file, folder, connection) — right after the primary open/quick actions and before the filter icon. In the right-click context menu, "Search Here" is now consistently the second item under both files and folders (was buried mid-list for folders and silently overlapping with "Show Server Backups" for files, which masked the entry on some VS Code builds). No new commands.
 
