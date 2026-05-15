@@ -6,8 +6,8 @@ import { sessionTeardownInvariant } from '../../chaos/invariants/sessionTeardown
 import { ConnectionState } from '../../types';
 
 describe('invariants registry', () => {
-  it('has 6 invariants in v0.8.0 baseline', () => {
-    expect(INVARIANTS.length).toBe(6);
+  it('has 7 invariants (v0.8.0 baseline of 6 + backgroundIdle added with the click-during-search fix)', () => {
+    expect(INVARIANTS.length).toBe(7);
   });
 
   it('every invariant has a unique name', () => {

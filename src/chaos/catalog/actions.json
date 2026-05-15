@@ -69,6 +69,13 @@
     "source": "features/file-operations.md"
   },
   {
+    "name": "Open remote file",
+    "primitives": [
+      "openRemoteFile"
+    ],
+    "source": "features/file-operations.md"
+  },
+  {
     "name": "Rename a file",
     "primitives": [
       "rename",

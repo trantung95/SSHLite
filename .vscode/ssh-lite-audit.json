@@ -533,5 +533,27 @@
     "fileSize": 0,
     "success": true,
     "timestamp": "2026-03-09T11:48:54.193Z"
+  },
+  {
+    "action": "download",
+    "connectionId": "web-dev-ems2.cartrack.com:22:root",
+    "hostName": "web-dev-ems2.cartrack.com",
+    "username": "root",
+    "remotePath": "/opt/deployments/social-media/.env",
+    "localPath": "c:\\Users\\TUNG~1.TRA\\AppData\\Local\\Temp\\ssh-lite\\296dc8c4\\[root@web-dev-ems2.cartrack.com] .env",
+    "fileSize": 2972,
+    "success": true,
+    "timestamp": "2026-05-15T07:39:24.700Z"
+  },
+  {
+    "action": "download",
+    "connectionId": "web-dev-ems2.cartrack.com:22:root",
+    "hostName": "web-dev-ems2.cartrack.com",
+    "username": "root",
+    "remotePath": "/opt/deployments/social-media/backups/.env.bk.20260416_143900",
+    "localPath": "c:\\Users\\TUNG~1.TRA\\AppData\\Local\\Temp\\ssh-lite\\296dc8c4\\[root@web-dev-ems2.cartrack.com] .env.bk.20260416_143900",
+    "fileSize": 1915,
+    "success": true,
+    "timestamp": "2026-05-15T07:40:43.083Z"
   }
 ]

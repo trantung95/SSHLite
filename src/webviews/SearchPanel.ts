@@ -935,6 +935,25 @@ export class SearchPanel {
         let totalCount = 0;
         this.lastSearchConnectionMap = connectionMap;
 
+        // Abort all workers the first time the result limit is reached. Without
+        // this, workers keep dispatching new dir listings for every remaining
+        // path and the extension keeps posting empty `searchBatch` messages —
+        // each of which triggers a full DOM rebuild on the webview, which is
+        // what historically caused the "open file + wait ~1 minute = crash"
+        // symptom on wide queries against large servers. SIGTERM is wired to
+        // the abortController in each worker's grep stream so remote grep
+        // processes exit cleanly.
+        let limitAbortFired = false;
+        const maybeAbortOnLimit = () => {
+          if (limitAbortFired) return;
+          if (globalSeen.size < maxResults) return;
+          limitAbortFired = true;
+          infoLog('search', 'limit-reached-abort', {
+            searchId, totalResults: globalSeen.size, limit: maxResults,
+          });
+          try { abortController.abort(); } catch { /* ignore */ }
+        };
+
         const globalParallelProcesses = config.get<number>('searchParallelProcesses', 5);
 
         // Build search tasks with metadata
@@ -1152,6 +1171,7 @@ export class SearchPanel {
                             globalSeen.add(key);
                             return true;
                           });
+                          maybeAbortOnLimit();
                           completedCount++;
                           if (!this.activeSearches.has(searchId)) return;
                           await this.postSearchBatchChunked({
@@ -1202,6 +1222,7 @@ export class SearchPanel {
                           globalSeen.add(key);
                           return true;
                         });
+                        maybeAbortOnLimit();
                         completedCount++;
                         if (!this.activeSearches.has(searchId)) return;
                         await this.postSearchBatchChunked({
@@ -1286,6 +1307,7 @@ export class SearchPanel {
               globalSeen.add(key);
               return true;
             });
+            maybeAbortOnLimit();
             completedCount++;
             this.postMessage({
               type: 'searchBatch',

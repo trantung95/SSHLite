@@ -698,6 +698,7 @@
 
     .tree-matches.expanded {
       display: block;
+      overflow-x: auto;
     }
 
     .tree-match-item {
@@ -705,6 +706,8 @@
       padding: 1px 4px;
       cursor: pointer;
       font-size: 12px;
+      width: max-content;
+      min-width: 100%;
     }
 
     .tree-match-item:hover {
@@ -854,6 +857,7 @@
 
     .match-list.expanded {
       display: block;
+      overflow-x: auto;
     }
 
     .match-item {
@@ -862,6 +866,8 @@
       padding: 2px 8px 2px 28px;
       cursor: pointer;
       font-size: 12px;
+      width: max-content;
+      min-width: 100%;
     }
 
     .match-item:hover {
@@ -872,12 +878,11 @@
       color: var(--vscode-descriptionForeground);
       margin-right: 8px;
       min-width: 40px;
+      flex-shrink: 0;
     }
 
     .match-text {
       flex: 1;
-      overflow: hidden;
-      text-overflow: ellipsis;
       white-space: nowrap;
     }
 

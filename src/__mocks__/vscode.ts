@@ -285,8 +285,9 @@ export const window = {
   }),
   showTextDocument: jest.fn().mockResolvedValue(undefined),
   activeTextEditor: undefined,
-  visibleTextEditors: [],
+  visibleTextEditors: [] as Array<{ document: { uri: { fsPath: string } } }>,
   onDidChangeActiveTextEditor: new EventEmitter<unknown>().event,
+  onDidChangeVisibleTextEditors: (_listener: (e: unknown) => void) => ({ dispose: jest.fn() }),
   setStatusBarMessage: jest.fn().mockReturnValue({ dispose: jest.fn() }),
   withProgress: jest.fn().mockImplementation(async (options, task) => {
     const progress = { report: jest.fn() };

@@ -1,5 +1,121 @@
 # Changelog
 
+## v0.8.6 — search-render thrash fix + file-watcher poll fix (click-during-search crash)
+
+User reported: with a server selected and a wide query (`"a"`) running, clicking a result row and waiting ~1 minute caused the extension to crash. Two distinct mechanisms were uncovered and fixed in this release; either alone is sufficient to stop the crash, both together also remove a separate bandwidth waste.
+
+### Real root cause — webview render thrash
+
+`debouncedRenderResults` in [webview-src/search/index.ts](../webview-src/search/index.ts) was called on **every** `searchBatch` IPC message, and unconditionally invoked `renderResults`, which wrote the entire match-item HTML back into the result container DOM via the bulk-replace API. On a wide query like `"a"` against a large server, the extension sent ~10 batches/sec for ~60s (each completing dir listing → one batch with `results: []` once the limit was hit), and the webview rebuilt ~12 000 DOM nodes per render = roughly 7 M element-write-and-listener operations on the webview's V8 heap in a minute. The Chromium renderer exhausted, VS Code surfaced "extension crashed".
+
+### Fix R1 (webview): cheap-render fast path
+
+[webview-src/search/index.ts](../webview-src/search/index.ts) — `debouncedRenderResults`:
+
+- New module-scope state: `lastRenderedResultCount`, `lastRenderedScopeFingerprint`, `lastRenderedHitLimit`, `lastRenderedViewMode`.
+- New helper `updateProgressHeader(tabResults, completedCount, totalCount, done)` — uses `createElement` / `textContent` / `appendChild` to update only the `.results-count` element with the live counts. No bulk DOM rewrite of the result list.
+- New helper `resetRenderCache()` — invalidates the baseline so the next batch produces a full render. Called when a new search starts (`'searching'` message) and on tab switch.
+- `doRender`: after the empty-results early returns, compute a `(count, scopeFingerprint, hitLimit, viewMode)` key. If equal to the last-rendered key → call `updateProgressHeader` only and return (logged via `diag('search-webview', 'render-skip')`). Otherwise → run `renderResults`, update the cached key, also update the header (logged via `info('search-webview', 'render-full')`).
+
+Effect: while the result set is stable (typical state after limit is reached), the per-batch cost drops from "rebuild every match item" to "update one DOM text node and one opacity span". 600 fast-path skips/min instead of 600 full DOM rebuilds.
+
+### Fix R2 (extension): abort workers on first limit hit
+
+[src/webviews/SearchPanel.ts](../src/webviews/SearchPanel.ts) — `performSearch`:
+
+- New local `limitAbortFired` flag and `maybeAbortOnLimit()` helper inside the search closure. Calls `abortController.abort()` exactly once when `globalSeen.size >= maxResults`. Logged via `infoLog('search', 'limit-reached-abort', …)`.
+- Called at all three `globalSeen.add(...)` sites (listEntries-fallback path, file-batch path, and the wrapped-single-search path).
+- The existing per-stream abort handler in `SSHConnection.searchFiles` translates `signal.abort()` into `stream.signal('TERM')` + `stream.close()`, so remote grep processes exit and channels free up immediately.
+
+Effect: stops the wasted SSH bandwidth and server CPU after the limit is hit. Workers exit cleanly; the existing per-scope catch handlers swallow the resulting stream-error throws as "scope failed", which is the same handling we already have for genuine remote failures.
+
+### What R1 + R2 catches between them
+
+- R1 makes the 60s post-limit period cheap regardless of how many empty batches arrive.
+- R2 stops the empty batches at the source, plus saves SSH bandwidth and remote process load.
+- Either alone would have fixed the crash. Both together kill the bug class and the wasted work.
+
+### Tests
+
+- Full jest suite: 1458/1458 still pass — the unit tests don't exercise webview render paths or worker dispatch, so the refactor is invisible to them. Manual `.vsix` install + the user's reproduction remains the truthful end-to-end check.
+
+### Diagnostic logging added
+
+The webview now emits `search-webview render-skip` (gated, `diag`) and `search-webview render-full` (always-on, `info`) into the SSH Lite output channel. If the crash happens again, the trace shows the ratio of skips to full renders. Healthy: many skips, few full renders. Bug regression: many full renders.
+
+### Bandwidth bug also fixed — file-watcher poll re-download
+
+Found while investigating the crash. Kept in this release because the mechanism is a real production waste even though it wasn't the user's crash trigger.
+
+#### Symptom (bandwidth-only path)
+
+On a server **without** `inotifywait`/`fswatch`, when a remote file is open in the editor, the poll-based file watcher fired every 1 s and re-downloaded the entire file regardless of whether it had changed.
+
+#### Mechanism
+
+`FileService.refreshSingleFile` ([src/services/FileService.ts](../src/services/FileService.ts)). When `startFileWatch` falls back to 1 Hz polling (no native watcher on the server), the poll's decision tree only takes the tail-optimisation path when **the file grew**. For any other case — and "unchanged static file" is the common case — it pulled the entire file via `connection.readFile`, decoded the buffer to UTF-8, and string-compared to `mapping.originalContent` to find out nothing had changed.
+
+`scripts/repro-watcher-poll.js` against the docker container (alpine, no `inotify-tools`) measured the cost:
+
+```text
+60 polls in 60 s,  3,021 MB total downloaded,  ~2.5 s per poll (polls overlap),
+~100 MB heap allocated per poll (Buffer + UTF-8 string)
+```
+
+#### Fix (approach A+C, approved before implementation)
+
+**A. Size+mtime fast-path in `refreshSingleFile`** ([src/services/FileService.ts](../src/services/FileService.ts)):
+
+- Read `currentMTime = stats.modifiedTime` alongside `currentSize`. Read `previousMTime = mapping.lastRemoteModTime`.
+- Top of body: `if (previousSize > 0 && previousMTime > 0 && currentSize === previousSize && currentMTime === previousMTime) return;`. Skips the full download entirely when the file is unchanged. One stat call per poll, no readFile, no UTF-8 decode, no string compare.
+- Write `mapping.lastRemoteModTime = currentMTime` at every mapping-update call site inside the function (three sites). Without this, the fast-path never kicks in on subsequent polls — the mapping carried a stale mtime forever.
+- Smart-refresh tail path (file grew past threshold) is unchanged.
+
+**C. Visibility-gated polling** ([src/services/FileService.ts](../src/services/FileService.ts)):
+
+- New `watchVisibilitySubscription` (disposable) and `pollPaused` (boolean) state on `FileService`.
+- `subscribeWatchVisibility()` subscribes to `vscode.window.onDidChangeVisibleTextEditors` once per watch.
+- `handleWatchVisibilityChange()`: when the watched file leaves `visibleTextEditors`, stop the poll timer and set `pollPaused = true`. When it returns to visible, fire one immediate `refreshSingleFile` (catching anything that landed during the pause) and restart the timer.
+- `stopCurrentFileWatch` disposes the visibility subscription and clears `pollPaused`.
+- Only the poll path is gated. Native watch (event-driven on the remote side) keeps running when not visible — pausing the local listener would risk dropped events.
+
+Trade-off documented in the code: an in-place same-size edit landing inside the same 1 s mtime tick as the previous sync is missed until the next poll catches the mtime advance. Acceptable for a near-real-time remote watcher.
+
+#### Adjacent changes (kept from the earlier investigation)
+
+- **`sshLite.showSearch` / `sshLite.searchInScope` callbacks** (`src/extension.ts`) — stat the remote file before calling `fileService.openRemoteFile` so the real size routes the open through `LARGE_FILE_THRESHOLD` (>=100 MB) or `progressiveDownloadThreshold` (>=1 MB) instead of bypassing both with `size: 0`. Big files now take the chunked progressive-download path instead of a single 49 MB `Buffer.concat` + Monaco `applyEdit`-on-49 MB-string. Stat failures fall back to the legacy `size: 0` IRemoteFile.
+- **Defensive try/catch around both callback bodies** — `SearchPanel.handleMessage` dispatches `openResult` via an arrow that does not await, so any throw in the callback became an unhandled promise rejection (which some VS Code versions surface as an "extension crashed" notification). Now logged via `infoLog('search-open', 'callback-error', …)` and surfaced via `showErrorMessage`.
+- **`infoLog('search-open', …)` instrumentation** — `callback-begin`, `stat-ok` / `stat-failed-fallback`, `existing-doc-show`, `openRemoteFile-begin`, `openRemoteFile-done`, `callback-error`. Always-on. Future reproductions emit a complete trace in the SSH Lite output channel without needing diag-level logging.
+
+### Chaos coverage extended (so the next regression of this class is caught)
+
+The chaos engine ran the entire pre-fix codebase for months without flagging this bug. Two reasons: no primitive ever called `FileService.openRemoteFile` (chaos primitives were all `SSHConnection`-level), and no invariant watched for **background pressure between actions** — the 1Hz poll runs passively in the idle gap between chain ops, and none of `listenerLeak` / `activityCount` / `semaphoreFloor` / `cleanShutdown` observe that.
+
+- **New primitive** `openRemoteFile` ([src/chaos/primitives/serviceOps/fileServiceOps.ts](../src/chaos/primitives/serviceOps/fileServiceOps.ts)) — surface `serviceOps`, calls `FileService.getInstance().openRemoteFile(conn, …)`. Catches errors so the chain continues. Registered in `src/chaos/primitives/index.ts`.
+- **New `Open remote file` action** in [.adn/features/file-operations.md](../.adn/features/file-operations.md) `## User Actions` table. The auto-builder picks it up; chaos catalog regenerated (`src/chaos/catalog/actions.json` now has 18 actions, up from 16).
+- **New invariant** `backgroundIdle` ([src/chaos/invariants/backgroundIdle.ts](../src/chaos/invariants/backgroundIdle.ts)) — `whenToCheck: 'after-session'`. Snapshots `SSHConnection.chaosReadFileCount`, sleeps a 1 s settle window, snapshots again. Violation if more than 1 `readFile`-class op fired during settle (allowance covers in-flight teardown reads and the immediate refresh on visibility regain). Registered in `src/chaos/invariants/index.ts`.
+- **`SSHConnection.chaosReadFileCount`** — new static counter, incremented at the start of `readFile`, `readFileChunked`, `readFileTail`. Cost is one integer add per SSH read; safe in production. Only `readFile`-class ops are counted so the post-fix stat-only watcher polls don't trip the invariant.
+- **Updated `src/__tests__/chaos/invariants.test.ts`** baseline count from 6 to 7.
+
+What this catches: any future regression where a passive timer or background subscription causes `readFile` traffic between chain ops. The pre-fix runaway poll did 1 readFile/sec — within the 1 s settle window after a session, the invariant would have seen 1–2 background readFile calls and failed.
+
+What this does NOT catch: stat-only polling churn, or expensive `exec`-only background work. Those would need their own counters / invariants when they become a concern.
+
+### Tests added in this release
+
+- `src/services/FileService.watcher.test.ts` — 7 new tests:
+  - A1: `refreshSingleFile` returns early when `(size, mtime)` match — no `readFile` / `readFileTail` call.
+  - A2: `lastRemoteModTime` is updated after a real refresh so the fast-path can kick in next time.
+  - A3: tail-optimisation path still triggers when size grew past the threshold.
+  - C1: visibility change with watched file hidden stops the poll timer and sets `pollPaused`.
+  - C2: visibility change with watched file becoming visible fires an immediate refresh and restarts the timer.
+  - C3: `stopCurrentFileWatch` disposes the visibility subscription.
+  - C (native): `handleWatchVisibilityChange` is a no-op when native watch is in use.
+- `src/integration/click-during-search.test.ts` — 4 docker-backed scenarios proving the CPU-saturation hypothesis was wrong (kept as a regression guard against ssh2-side saturation regressions).
+- `scripts/repro-click-during-search.js` / `-v2.js` / `repro-watcher-poll.js` — standalone Node repros for the docker-repro workflow.
+
+Full suite: 1458/1458 pass.
+
 ## v0.8.5 — Filter by Name at the server-row level
 
 Three related bugs prevented the "Filter by Name" action invoked from the connection row from working correctly when the user was at the server root (`/`).

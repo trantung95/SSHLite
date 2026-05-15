@@ -1,6 +1,6 @@
 # SSH Lite (SSH Tools) — Lightweight SSH Suite for VS Code
 
-![Version](https://img.shields.io/badge/version-0.8.5-blue)
+![Version](https://img.shields.io/badge/version-0.8.6-blue)
 ![Status](https://img.shields.io/badge/status-beta-yellow)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-1.85.0+-purple)
@@ -42,6 +42,8 @@ Reads `~/.ssh/config`. Supports SSH keys (RSA / Ed25519 / ECDSA, encrypted), age
 **98 commands** — full reference at [docs/COMMANDS.md](https://github.com/trantung95/SSHLite/blob/master/docs/COMMANDS.md).
 
 ## Release Notes
+
+**0.8.6** — Fixed "search + click result + wait ~1 minute = crash" on wide queries against large servers. Two root causes: (1) every `searchBatch` message rebuilt every match-item in the webview DOM, even when the result set hadn't changed — at ~10 batches/s for 60s on a 12 000-result query, the webview's V8 heap exhausted; new cheap-render fast path skips the rebuild when count/scope/viewMode are unchanged and updates only the live progress counter. (2) Search workers kept dispatching dir listings after the result limit was hit, generating the empty batches that triggered the rebuilds; now `abortController.abort()` fires once when `globalSeen.size >= maxResults`, which `SSHConnection.searchFiles` translates into `SIGTERM` + channel close on remote grep processes. Also: file-watcher poll no longer re-downloads unchanged files (size+mtime fast path in `refreshSingleFile`), and polling pauses when the watched file isn't in any visible editor.
 
 **0.8.5** — Fixed "Filter by Name" at the server-row level: filter is now applied at the live current path (was using a stale `currentPath` snapshot from construction), gray-out and color now work when basePath is `/` (decoration prefix was double-slashed), and the connection row description shows `[filter: pattern] (count)` while a filter is active, restoring the `user@host - path` server info when cleared.
 

@@ -5,6 +5,7 @@ import { activityCountInvariant } from './activityCount';
 import { semaphoreFloorInvariant } from './semaphoreFloor';
 import { sessionTeardownInvariant } from './sessionTeardown';
 import { cleanShutdownInvariant } from './cleanShutdown';
+import { backgroundIdleInvariant } from './backgroundIdle';
 
 export const INVARIANTS: Invariant[] = [
   sshStateMachineInvariant,
@@ -13,6 +14,7 @@ export const INVARIANTS: Invariant[] = [
   semaphoreFloorInvariant,
   sessionTeardownInvariant,
   cleanShutdownInvariant,
+  backgroundIdleInvariant,
 ];
 
 export const INVARIANTS_AFTER_OP = INVARIANTS.filter(i => i.whenToCheck === 'after-each-op' || i.whenToCheck === 'both');

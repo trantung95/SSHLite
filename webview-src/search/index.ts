@@ -539,8 +539,65 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
       });
     }
 
-    // Debounced progressive render — 100ms debounce for intermediate batches, immediate on done
+    // Debounced progressive render — 100ms debounce for intermediate batches, immediate on done.
+    //
+    // CHEAP-RENDER FAST PATH:
+    //   After the result-limit is hit the extension keeps sending searchBatch
+    //   messages (one per completing dir listing) with results: [] and a
+    //   bumped completedCount. Each used to trigger a full DOM rebuild of
+    //   every match item. On a wide query like "a" with 10k+ matches on a
+    //   large server, that's ~10 full rebuilds/sec for ~60s — exhausts the
+    //   webview's V8 heap and looks like an "extension crash" to the user.
+    //
+    //   Fix: track the last-rendered result count + scope-server fingerprint
+    //   + view mode + hitLimit. If none of those changed since the last full
+    //   render, skip renderResults and just update the small progress text
+    //   in place via DOM nodes (no innerHTML rewrite of the result list).
     let renderDebounceTimer = null;
+    let lastRenderedResultCount = -1;
+    let lastRenderedScopeFingerprint = '';
+    let lastRenderedHitLimit = false;
+    let lastRenderedViewMode = '';
+
+    // Reset the cheap-render baseline whenever a new search starts, the
+    // active tab switches, or scopes change — otherwise the next render
+    // would skip even though the result set just changed.
+    function resetRenderCache() {
+      lastRenderedResultCount = -1;
+      lastRenderedScopeFingerprint = '';
+      lastRenderedHitLimit = false;
+      lastRenderedViewMode = '';
+    }
+
+    // Update just the header progress text without rebuilding the result list.
+    // Builds child nodes via createElement/textContent — no innerHTML rewrite.
+    function updateProgressHeader(tabResults, completedCount, totalCount, done) {
+      const countEl = resultsHeader.querySelector('.results-count');
+      if (!countEl) return;
+      while (countEl.firstChild) countEl.removeChild(countEl.firstChild);
+      if (tabResults.length === 0 && !done) {
+        countEl.appendChild(document.createTextNode(
+          'Searching... (' + completedCount + '/' + totalCount + ' done)'
+        ));
+        return;
+      }
+      const fileCount = new Set(tabResults.map(function (r) {
+        return r.connectionId + ':' + r.path;
+      })).size;
+      countEl.appendChild(document.createTextNode(
+        tabResults.length + ' result' + (tabResults.length !== 1 ? 's' : '') + ' in ' +
+        fileCount + ' file' + (fileCount !== 1 ? 's' : '')
+      ));
+      if (!done) {
+        const sp = document.createElement('span');
+        sp.style.opacity = '0.7';
+        sp.appendChild(document.createTextNode(
+          ' (' + completedCount + '/' + totalCount + ' done...)'
+        ));
+        countEl.appendChild(sp);
+      }
+    }
+
     function debouncedRenderResults(hitLimit, limit, done, completedCount, totalCount) {
       if (renderDebounceTimer) {
         clearTimeout(renderDebounceTimer);
@@ -550,29 +607,50 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
         const tab = getActiveTabState();
         const tabResults = tab ? tab.results : [];
         if (tabResults.length === 0 && !done) {
-          // Still searching, no results yet — show progress in searching indicator
+          // Still searching, no results yet — show progress indicator.
           resultsHeader.style.display = 'flex';
-          resultsHeader.innerHTML = '<span class="results-count">Searching... (' + completedCount + '/' + totalCount + ' done)</span>';
+          // Build a minimal header with a single .results-count child so the
+          // cheap path below can find it by selector on the next batch.
+          while (resultsHeader.firstChild) resultsHeader.removeChild(resultsHeader.firstChild);
+          const span = document.createElement('span');
+          span.className = 'results-count';
+          span.appendChild(document.createTextNode(
+            'Searching... (' + completedCount + '/' + totalCount + ' done)'
+          ));
+          resultsHeader.appendChild(span);
           return;
         }
         if (tabResults.length === 0 && done) {
           showNoResults();
           return;
         }
-        // Save scroll position before re-render
-        const scrollTop = resultsContainer.scrollTop;
-        renderResults(hitLimit, limit);
-        // Override header with progress info while search is in progress
-        if (!done) {
-          const countEl = resultsHeader.querySelector('.results-count');
-          if (countEl) {
-            const fileCount = new Set(tabResults.map(r => r.connectionId + ':' + r.path)).size;
-            countEl.innerHTML = tabResults.length + ' result' + (tabResults.length !== 1 ? 's' : '') + ' in ' +
-              fileCount + ' file' + (fileCount !== 1 ? 's' : '') +
-              ' <span style="opacity: 0.7">(' + completedCount + '/' + totalCount + ' done...)</span>';
-          }
+
+        // Cheap-render fast path: nothing meaningful changed → header only.
+        const scopeFingerprint = (tab.scopeServers || []).map(function (s) { return s.id; }).join(',');
+        const effectiveHitLimit = tab.hitLimit || hitLimit || false;
+        const sameCount = tabResults.length === lastRenderedResultCount;
+        const sameScope = scopeFingerprint === lastRenderedScopeFingerprint;
+        const sameHitLimit = effectiveHitLimit === lastRenderedHitLimit;
+        const sameViewMode = viewMode === lastRenderedViewMode;
+        if (sameCount && sameScope && sameHitLimit && sameViewMode) {
+          diag('search-webview', 'render-skip', {
+            results: tabResults.length, completedCount: completedCount, totalCount: totalCount,
+          });
+          updateProgressHeader(tabResults, completedCount, totalCount, done);
+          return;
         }
-        // Restore scroll position
+
+        const scrollTop = resultsContainer.scrollTop;
+        info('search-webview', 'render-full', {
+          results: tabResults.length, completedCount: completedCount, totalCount: totalCount,
+          hitLimit: effectiveHitLimit, viewMode: viewMode,
+        });
+        renderResults(hitLimit, limit);
+        lastRenderedResultCount = tabResults.length;
+        lastRenderedScopeFingerprint = scopeFingerprint;
+        lastRenderedHitLimit = effectiveHitLimit;
+        lastRenderedViewMode = viewMode;
+        if (!done) updateProgressHeader(tabResults, completedCount, totalCount, false);
         resultsContainer.scrollTop = scrollTop;
       };
 
@@ -1299,6 +1377,9 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
             if (targetTab) restoreTabState(targetTab);
           }
           renderTabBar();
+          // Switching tabs swaps the underlying result set — must force a
+          // full render on the next batch, not the header-only fast path.
+          resetRenderCache();
           renderResults();
         });
       });
@@ -1418,6 +1499,9 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
           currentTab.expandedFiles = new Set();
           currentTab.expandedTreeNodes = new Set();
           currentTab.treeViewFirstExpand = true;
+          // New search: invalidate the cheap-render baseline so the first
+          // batch produces a full render, not a header-only update.
+          resetRenderCache();
           // Save include/exclude from input fields into currentTab
           currentTab.include = includeInput.value;
           currentTab.exclude = excludeInput.value;

@@ -1652,35 +1652,65 @@ export function activate(context: vscode.ExtensionContext): void {
 
       // Set callback for opening files from search results
       searchPanel.setOpenFileCallback(async (connectionId: string, remotePath: string, line?: number) => {
-        const connection = connectionManager.getConnection(connectionId);
-        if (!connection) {
-          vscode.window.showErrorMessage('Connection not found');
-          return;
-        }
+        const cbT0 = Date.now();
+        infoLog('search-open', 'callback-begin', { connectionId, remotePath, line });
+        try {
+          const connection = connectionManager.getConnection(connectionId);
+          if (!connection) {
+            infoLog('search-open', 'connection-missing', { connectionId });
+            vscode.window.showErrorMessage('Connection not found');
+            return;
+          }
 
-        // Create a remote file object
-        const remoteFile = {
-          name: remotePath.split('/').pop() || remotePath,
-          path: remotePath,
-          isDirectory: false,
-          size: 0,
-          modifiedTime: Date.now(),
-          connectionId,
-        };
+          // Stat the file first so openRemoteFile can route via the progressive-
+          // download path for big files. Without this, size=0 bypasses both the
+          // large-file (>=100MB) and progressive (>=1MB) thresholds, forcing a
+          // synchronous-equivalent full-file readFile + Monaco applyEdit on the
+          // entire content — heavy work that can freeze the renderer mid-search.
+          let remoteFile;
+          try {
+            const tStat = Date.now();
+            remoteFile = await connection.stat(remotePath);
+            infoLog('search-open', 'stat-ok', { remotePath, size: remoteFile.size, durationMs: Date.now() - tStat });
+          } catch (statErr) {
+            // Fall back to size=0 if stat fails — at worst, behaviour matches pre-fix.
+            infoLog('search-open', 'stat-failed-fallback', { remotePath, errorMessage: (statErr as Error).message });
+            remoteFile = {
+              name: remotePath.split('/').pop() || remotePath,
+              path: remotePath,
+              isDirectory: false,
+              size: 0,
+              modifiedTime: Date.now(),
+              connectionId,
+            };
+          }
 
-        // Open the file
-        await fileService.openRemoteFile(connection, remoteFile);
+          infoLog('search-open', 'openRemoteFile-begin', { remotePath, size: remoteFile.size });
+          await fileService.openRemoteFile(connection, remoteFile);
+          infoLog('search-open', 'openRemoteFile-done', { remotePath, totalMs: Date.now() - cbT0 });
 
-        // If we have a line number, go to that line
-        if (line) {
-          setTimeout(async () => {
-            const editor = vscode.window.activeTextEditor;
-            if (editor) {
-              const position = new vscode.Position(line - 1, 0);
-              editor.selection = new vscode.Selection(position, position);
-              editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
-            }
-          }, 300);
+          // If we have a line number, go to that line
+          if (line) {
+            setTimeout(async () => {
+              const editor = vscode.window.activeTextEditor;
+              if (editor) {
+                const position = new vscode.Position(line - 1, 0);
+                editor.selection = new vscode.Selection(position, position);
+                editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+              }
+            }, 300);
+          }
+        } catch (err) {
+          // Defensive: turn any throw into a logged + surfaced error rather than an
+          // unhandled promise rejection, which some VS Code versions surface as an
+          // "extension crashed" notification.
+          infoLog('search-open', 'callback-error', {
+            connectionId, remotePath,
+            errorMessage: (err as Error).message,
+            stack: (err as Error).stack?.slice(0, 1000),
+            totalMs: Date.now() - cbT0,
+          });
+          vscode.window.showErrorMessage(`SSH Lite: failed to open ${remotePath} — ${(err as Error).message}`);
         }
       });
 
@@ -1723,60 +1753,95 @@ export function activate(context: vscode.ExtensionContext): void {
 
       // Set callback for opening files
       searchPanel.setOpenFileCallback(async (connectionId: string, remotePath: string, line?: number, searchQuery?: string) => {
-        const connection = connectionManager.getConnection(connectionId);
-        if (!connection) {
-          vscode.window.showErrorMessage('Connection not found');
-          return;
-        }
+        const cbT0 = Date.now();
+        infoLog('search-open', 'callback-begin', { connectionId, remotePath, line, hasQuery: !!searchQuery });
+        try {
+          const connection = connectionManager.getConnection(connectionId);
+          if (!connection) {
+            infoLog('search-open', 'connection-missing', { connectionId });
+            vscode.window.showErrorMessage('Connection not found');
+            return;
+          }
 
-        // Register tab label so getLocalFilePath uses the right prefix
-        if (connection.host.tabLabel) {
-          fileService.registerConnectionTabLabel(connectionId, connection.host.tabLabel);
-        }
+          // Register tab label so getLocalFilePath uses the right prefix
+          if (connection.host.tabLabel) {
+            fileService.registerConnectionTabLabel(connectionId, connection.host.tabLabel);
+          }
 
-        // Check if file is already open in VS Code (includes hidden tabs, not just visible)
-        const localPath = fileService.getLocalFilePath(connectionId, remotePath);
-        const existingDocument = vscode.workspace.textDocuments.find(
-          (d) => d.uri.fsPath === localPath
-        );
+          // Check if file is already open in VS Code (includes hidden tabs, not just visible)
+          const localPath = fileService.getLocalFilePath(connectionId, remotePath);
+          const existingDocument = vscode.workspace.textDocuments.find(
+            (d) => d.uri.fsPath === localPath
+          );
 
-        if (existingDocument) {
-          // File already open - just focus and jump to line (no reload needed)
-          await vscode.window.showTextDocument(existingDocument, { preview: false });
-        } else {
-          // File not open - download and open
-          const remoteFile = {
-            name: remotePath.split('/').pop() || remotePath,
-            path: remotePath,
-            isDirectory: false,
-            size: 0,
-            modifiedTime: Date.now(),
-            connectionId,
-          };
-          await fileService.openRemoteFile(connection, remoteFile);
-        }
+          if (existingDocument) {
+            // File already open - just focus and jump to line (no reload needed)
+            infoLog('search-open', 'existing-doc-show', { remotePath });
+            await vscode.window.showTextDocument(existingDocument, { preview: false });
+          } else {
+            // Stat first so openRemoteFile can pick large-file / progressive paths
+            // based on real size. Without this, size=0 forces a full-file readFile
+            // + Monaco applyEdit on the entire content, which freezes the renderer
+            // for multi-MB files (worst-case in active-search scenarios with broad
+            // queries like 'a' where users may click anything in the result tree).
+            let remoteFile;
+            try {
+              const tStat = Date.now();
+              remoteFile = await connection.stat(remotePath);
+              infoLog('search-open', 'stat-ok', { remotePath, size: remoteFile.size, durationMs: Date.now() - tStat });
+            } catch (statErr) {
+              infoLog('search-open', 'stat-failed-fallback', { remotePath, errorMessage: (statErr as Error).message });
+              remoteFile = {
+                name: remotePath.split('/').pop() || remotePath,
+                path: remotePath,
+                isDirectory: false,
+                size: 0,
+                modifiedTime: Date.now(),
+                connectionId,
+              };
+            }
 
-        // Jump to line and highlight search match
-        if (line) {
-          setTimeout(async () => {
-            const editor = vscode.window.activeTextEditor;
-            if (editor) {
-              const position = new vscode.Position(line - 1, 0);
-              editor.selection = new vscode.Selection(position, position);
-              editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+            infoLog('search-open', 'openRemoteFile-begin', { remotePath, size: remoteFile.size });
+            await fileService.openRemoteFile(connection, remoteFile);
+            infoLog('search-open', 'openRemoteFile-done', { remotePath, totalMs: Date.now() - cbT0 });
+          }
 
-              // Highlight the search query if provided
-              if (searchQuery) {
-                const lineText = editor.document.lineAt(line - 1).text;
-                const matchIndex = lineText.toLowerCase().indexOf(searchQuery.toLowerCase());
-                if (matchIndex >= 0) {
-                  const startPos = new vscode.Position(line - 1, matchIndex);
-                  const endPos = new vscode.Position(line - 1, matchIndex + searchQuery.length);
-                  editor.selection = new vscode.Selection(startPos, endPos);
+          // Jump to line and highlight search match
+          if (line) {
+            setTimeout(async () => {
+              const editor = vscode.window.activeTextEditor;
+              if (editor) {
+                const position = new vscode.Position(line - 1, 0);
+                editor.selection = new vscode.Selection(position, position);
+                editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+
+                // Highlight the search query if provided
+                if (searchQuery) {
+                  const lineText = editor.document.lineAt(line - 1).text;
+                  const matchIndex = lineText.toLowerCase().indexOf(searchQuery.toLowerCase());
+                  if (matchIndex >= 0) {
+                    const startPos = new vscode.Position(line - 1, matchIndex);
+                    const endPos = new vscode.Position(line - 1, matchIndex + searchQuery.length);
+                    editor.selection = new vscode.Selection(startPos, endPos);
+                  }
                 }
               }
-            }
-          }, 300);
+            }, 300);
+          }
+        } catch (err) {
+          // Defensive: turn any throw into a logged + surfaced error rather than an
+          // unhandled promise rejection. The webview message handler does not catch
+          // these, so without this wrapper a thrown readFile/applyEdit error becomes
+          // an unhandled rejection that some VS Code versions surface as "extension
+          // crashed" — matching the symptom users report when clicking heavy result
+          // rows while a wide search ('a') is still streaming.
+          infoLog('search-open', 'callback-error', {
+            connectionId, remotePath,
+            errorMessage: (err as Error).message,
+            stack: (err as Error).stack?.slice(0, 1000),
+            totalMs: Date.now() - cbT0,
+          });
+          vscode.window.showErrorMessage(`SSH Lite: failed to open ${remotePath} — ${(err as Error).message}`);
         }
       });
 

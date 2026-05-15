@@ -146,6 +146,16 @@ export interface ServerCapabilities {
  * SSH Connection implementation using ssh2 library
  */
 export class SSHConnection implements ISSHConnection {
+  /**
+   * Global counter of `readFile`-class operations across all SSHConnection
+   * instances. Bumped at the start of `readFile`, `readFileChunked`, and
+   * `readFileTail`. Used by the `backgroundIdle` chaos invariant to detect
+   * runaway background reads (e.g. a poll-based file watcher re-downloading
+   * an unchanged file every 1 s — the click-during-search regression).
+   * Reading is cheap and the bump is a single integer add — production-safe.
+   */
+  public static chaosReadFileCount = 0;
+
   public readonly id: string;
   public state: ConnectionState = ConnectionState.Disconnected;
   private _client: Client | null = null;
@@ -928,6 +938,7 @@ export class SSHConnection implements ISSHConnection {
    * Read a remote file
    */
   async readFile(remotePath: string): Promise<Buffer> {
+    SSHConnection.chaosReadFileCount++;
     logSFTPOperation(this.host.name, 'READ', remotePath);
     const sftp = await this.getSFTP();
 
@@ -965,6 +976,7 @@ export class SSHConnection implements ISSHConnection {
     abortSignal?: { aborted: boolean },
     chunkSize: number = 64 * 1024
   ): Promise<Buffer> {
+    SSHConnection.chaosReadFileCount++;
     const sftp = await this.getSFTP();
 
     // Get file size first for progress calculation
@@ -1361,6 +1373,7 @@ export class SSHConnection implements ISSHConnection {
    * @returns Buffer containing data from offset to end of file
    */
   async readFileTail(remotePath: string, offset: number): Promise<Buffer> {
+    SSHConnection.chaosReadFileCount++;
     if (!this._client || this.state !== ConnectionState.Connected) {
       throw new ConnectionError('Not connected');
     }

@@ -108,6 +108,8 @@ export class FileService {
   private lastWatchActivity: number = 0; // Timestamp of last watch activity
   private readonly WATCH_HEARTBEAT_INTERVAL_MS = 15000; // Check every 15 seconds (LITE compliant)
   private readonly WATCH_TIMEOUT_MS = 10000; // Clear highlight after 10 seconds of no activity
+  private watchVisibilitySubscription: vscode.Disposable | null = null; // onDidChangeVisibleTextEditors subscription used to gate poll-based watch
+  private pollPaused: boolean = false; // True when poll-based watch is paused because the watched file isn't visible
 
   // Remember the last local folder used for upload dialogs
   private lastUploadUri: vscode.Uri | undefined;
@@ -339,10 +341,76 @@ export class FileService {
 
       vscode.window.setStatusBarMessage(`$(eye) Watching ${path.basename(mapping.remotePath)} (native)`, 2000);
     } else {
-      // No native watch - use fast polling for focused file (1 second interval)
+      // No native watch - use fast polling for focused file (1 second interval).
+      // Polling is visibility-gated: when the watched file isn't in any visible
+      // editor, the timer is suspended. Without this, the poller keeps issuing
+      // 1Hz `connection.stat` calls — and historically full readFile calls,
+      // before the size+mtime fast-path — on a file the user isn't even looking
+      // at, which is wasteful on its own and contributed to the click-during-
+      // search crash described in the changelog.
       this.usingNativeWatch = false;
+      this.subscribeWatchVisibility();
+      if (this.isWatchedFileVisible()) {
+        this.pollPaused = false;
+        this.startFocusedFilePollTimer();
+        vscode.window.setStatusBarMessage(`$(eye) Watching ${path.basename(mapping.remotePath)} (polling)`, 2000);
+      } else {
+        // File got watched while not visible (rare — usually startFileWatch
+        // runs right after showTextDocument). Start paused; the visibility
+        // listener will boot the poller when the editor becomes visible.
+        this.pollPaused = true;
+        vscode.window.setStatusBarMessage(`$(eye) Watching ${path.basename(mapping.remotePath)} (polling, paused)`, 2000);
+      }
+    }
+  }
+
+  /**
+   * True when the currently watched file's local path appears in any visible
+   * editor (active or split-view). False when the user has tabbed away.
+   */
+  private isWatchedFileVisible(): boolean {
+    if (!this.currentWatchedFile) return false;
+    const watched = this.currentWatchedFile.localPath;
+    return vscode.window.visibleTextEditors.some(
+      (e) => e.document.uri.fsPath === watched
+    );
+  }
+
+  /**
+   * Subscribe to visibility changes so poll-based watch pauses/resumes with
+   * the editor's visibility. Idempotent — only one subscription at a time.
+   */
+  private subscribeWatchVisibility(): void {
+    if (this.watchVisibilitySubscription) return;
+    this.watchVisibilitySubscription = vscode.window.onDidChangeVisibleTextEditors(() => {
+      this.handleWatchVisibilityChange();
+    });
+  }
+
+  /**
+   * Apply the visibility -> poll-timer transition. Called on every visibility
+   * change. When the watched file becomes hidden, stop the timer. When it
+   * becomes visible again after being hidden, fire one immediate refresh
+   * (to catch anything that landed during the pause) and resume the timer.
+   */
+  private handleWatchVisibilityChange(): void {
+    if (!this.currentWatchedFile || this.usingNativeWatch) return; // Only gates the poll path
+    const visible = this.isWatchedFileVisible();
+    if (!visible && !this.pollPaused) {
+      // Just became hidden — pause.
+      this.stopFocusedFilePollTimer();
+      this.pollPaused = true;
+    } else if (visible && this.pollPaused) {
+      // Just became visible — refresh once, then resume.
+      this.pollPaused = false;
+      const mapping = this.fileMappings.get(this.currentWatchedFile.localPath);
+      if (mapping) {
+        // Fire-and-forget — refreshSingleFile catches its own errors.
+        this.refreshSingleFile(this.currentWatchedFile.localPath, mapping, true)
+          .then(() => this.updateWatchActivity())
+          .catch(() => { /* heartbeat handles fatal connection loss */ });
+      }
       this.startFocusedFilePollTimer();
-      vscode.window.setStatusBarMessage(`$(eye) Watching ${path.basename(mapping.remotePath)} (polling)`, 2000);
     }
   }
 
@@ -471,6 +539,13 @@ export class FileService {
     // Stop poll timer and heartbeat
     this.stopFocusedFilePollTimer();
     this.stopWatchHeartbeat();
+    // Drop the visibility subscription so we don't keep firing handlers after
+    // we've torn the rest of the watch state down.
+    if (this.watchVisibilitySubscription) {
+      this.watchVisibilitySubscription.dispose();
+      this.watchVisibilitySubscription = null;
+    }
+    this.pollPaused = false;
 
     if (!this.currentWatchedFile) {
       return;
@@ -2380,7 +2455,23 @@ export class FileService {
       // Step 1: Get current remote file stats
       const stats = await connection.stat(mapping.remotePath);
       const currentSize = stats.size;
+      const currentMTime = stats.modifiedTime;
       const previousSize = mapping.lastRemoteSize ?? 0;
+      const previousMTime = mapping.lastRemoteModTime ?? 0;
+
+      // FAST PATH: if size AND mtime are unchanged since the last sync, the
+      // file is identical — skip the full re-download. Without this, the
+      // poll-based watcher (used when the server lacks inotifywait/fswatch)
+      // re-downloads the entire file every 1s because the size-grew check
+      // below misses unchanged files. For a 50 MB file polled at 1 Hz this
+      // pulls ~3 GB through ssh2 in 60 s and churns ~100 MB of heap per
+      // poll on the extension host — when combined with an active wide
+      // search, it crashes the host within a minute.
+      if (previousSize > 0 && previousMTime > 0 &&
+          currentSize === previousSize && currentMTime === previousMTime) {
+        return;
+      }
+
       const smartThreshold = this.getSmartRefreshThreshold();
 
       let content: Buffer;
@@ -2432,9 +2523,11 @@ export class FileService {
           // Note: revert does NOT trigger onDidSaveTextDocument, so no skipNextSave needed
           await vscode.commands.executeCommand('workbench.action.files.revert', document.uri);
 
-          // Update mapping after successful refresh
+          // Update mapping after successful refresh — must track mtime too,
+          // otherwise the fast-path skip in subsequent polls never kicks in.
           mapping.originalContent = newContent;
           mapping.lastRemoteSize = currentSize;
+          mapping.lastRemoteModTime = currentMTime;
           mapping.lastSyncTime = Date.now();
 
           if (isFocused && !usedSmartRefresh) {
@@ -2457,11 +2550,14 @@ export class FileService {
           fs.writeFileSync(localPath, content);
           mapping.originalContent = newContent;
           mapping.lastRemoteSize = currentSize;
+          mapping.lastRemoteModTime = currentMTime;
           mapping.lastSyncTime = Date.now();
         }
       } else {
-        // Content unchanged but update size tracking
+        // Content unchanged but update size/mtime tracking so the fast-path
+        // skip kicks in on the next poll.
         mapping.lastRemoteSize = currentSize;
+        mapping.lastRemoteModTime = currentMTime;
       }
     } catch {
       // Ignore errors during refresh (connection might be temporarily down)

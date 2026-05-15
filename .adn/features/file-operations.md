@@ -220,6 +220,7 @@ Setting: `sshLite.enableChangeTracking` (not in package.json — may be internal
 |---|---|---|
 | Browse files | listFiles, stat, fileExists | |
 | Edit a file | readFile, writeFile | Write usually follows read |
+| Open remote file | openRemoteFile | Triggers FileService.startFileWatch → 1Hz poll loop on servers without inotifywait. Background pressure from a watcher leak is caught by the backgroundIdle invariant. |
 | Rename a file | rename, listFiles | |
 | Delete a file | deleteFile, listFiles | |
 | Bulk upload | mkdir, writeFile, writeFile, writeFile, listFiles | unordered |

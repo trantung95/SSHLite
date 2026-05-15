@@ -93,7 +93,8 @@ src/
 3. **Self-improvement loop.** Record lessons to `.adn/lessons.md`
 4. **Prove it works.** Run tests, check logs — not done until verified
 5. **Self-fix bugs.** Check logs, find root cause, fix it
-6. **Codex will review your output once you are done** — self-verify rigorously before reporting complete
+6. **Repro on a real local SSH server (docker), not mocks**, whenever a bug touches ssh2 / sftp / event-loop / large-file paths. Start with `docker compose -f test-docker/docker-compose.yml up -d ssh-server-1`. Mocks confirm code shape, not crash behaviour under real crypto load.
+7. **Codex will review your output once you are done** — self-verify rigorously before reporting complete
 
 ## Code Quality & Performance
 
@@ -131,5 +132,42 @@ Keep `.adn/` in sync with code changes. Mapping:
 
 - **Weekly**: run `test:chaos:deep`, read `logs/chaos-results.jsonl`, follow `.adn/testing/chaos-testing.md` checklist
 - **After logic changes**: run `test:chaos`, add scenarios for `coverage.methods_uncovered`
+- **"Run chaos tests" means BOTH suites**: `npm run test:chaos:deep` AND `npm run test:windows-client` (added in v0.7.6 to cover Windows-client → Linux-server gaps that CI's Linux→Linux pass misses: drive-letter casing, CRLF, ssh-keygen.exe shell-out, Windows TCP stack). Treat any failure in either as part of the same report. The two suites share the multi-OS stack on ports 2210–2214
+
+## Git Workflow
+
+- **Solo project** — commit directly to `master`. No feature branches, no PRs, no worktree isolation. The `superpowers:using-git-worktrees` and similar branch-ceremony skills are overridden for this repo. Do NOT skip hooks, signing, or other safety mechanisms — only the branch ceremony.
+
+## Diagnostic Logging Policy (CRITICAL)
+
+Pervasive logging in every new code path — entry, exit, state transitions, error branches, decision points. Use `src/utils/diagnosticLog.ts`:
+
+- `infoLog(scope, event, payload)` — always-on, for state transitions that matter on default installs (mount, unmount, view switch, error, batch boundaries)
+- `diagLog(scope, event, payload)` — gated by `sshLite.diagnosticLogging` setting, for hot/loop paths; costless when off
+- `scope`: stable kebab-case (`'search-renderer'`, `'result-store'`). `event`: verb-noun (`'append'`, `'view-switch'`). `payload`: object, never a formatted string (`fmtData` truncates fields to 200 chars)
+- All logs land in the single **SSH Lite** Output channel (created in `extension.ts`). No second channel, no `console.log`, no DevTools-only logging — one collection point so users reporting issues do: enable diag → reproduce → View → Output → SSH Lite → copy
+- Webview code posts `{type:'log', level, scope, event, payload}` back to the extension, which forwards via `infoLog`/`diagLog`. Webview logs MUST reach the same channel
+- "Don't log in loops" still applies — for hot per-iteration paths, gate behind `diagLog` (not `infoLog`) and consider sampling
+
+## AI Doc Auto-Sync (CRITICAL)
+
+**End state: every AI doc related to this repo lives in this repo's committable tree.** Local-only paths (`~/.claude/CLAUDE.md`, auto-memory under `~/.claude/projects/d--CT-Repos-SSHLite/memory/`, vendor folders) are NOT shareable — teammates, CI, and other Claude installs never see them.
+
+Canonical home rule: the **single source of truth** for any project-related AI doc is the committed file here (this `CLAUDE.md`, `.adn/`, `docs/`, `reference/`, or `lessons.md`). Local copies are at most one-line pointers back to the committed file.
+
+Triggers (apply all):
+
+1. **Session start**: scan `~/.claude/projects/d--CT-Repos-SSHLite/memory/` for any shareable item not yet in this repo. Propose migration before starting other work
+2. **On read/recall**: when a local AI doc is loaded into context, mirror anything shareable into project docs in the same response
+3. **On write**: after updating any local AI doc, mirror the change into the relevant project doc in the same response
+4. **On project-doc edit**: when adding to this `CLAUDE.md` or `.adn/`, shrink the now-duplicate local memory to a one-line pointer to prevent drift
+
+Classification when migrating:
+
+- **Shareable** (conventions, workflows, ticket registry, infrastructure references, reusable lessons) → mirror to this repo, shrink local copy to a pointer
+- **Personal** (per-user keyboard quirks, machine paths, shell aliases) → stay local, annotate `// LOCAL-ONLY: <reason>`
+- **Credential-bearing** → split: usage/pattern → repo (token redacted to `<token>` placeholder + note "stored in `~/.claude/<vendor>/<file>.md`"); the actual token stays local-only
+
+Do NOT keep a memory file local just because it has been local for a while. The local/repo split must be defensible by classification, not habit.
 
 Full changelog: `.adn/CHANGELOG.md`

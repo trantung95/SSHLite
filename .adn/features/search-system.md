@@ -59,7 +59,7 @@ Build grep: `grep -rnHI [-F] [-w] [-i] --include=... --exclude-dir=... -- '<quer
 
 ### Progressive Results (searchBatch)
 
-Incremental delivery per task completion. Cross-batch dedup via `globalSeen` set. Webview debounces re-renders (100ms) with scroll preservation. Progress header: `"42 results in 8 files (3/7 done...)"`.
+Incremental delivery per task completion. Cross-batch dedup via `globalSeen` set. Webview debounces re-renders (100ms) with scroll preservation. Progress header: `"42 results in 8 files (3/7 done...)"`. Expanded file's match list scrolls horizontally per-file when lines exceed the panel width (no ellipsis truncation).
 
 ### Parallel Search (Worker Pool)
 
