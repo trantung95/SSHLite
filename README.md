@@ -1,6 +1,6 @@
 # SSH Lite (SSH Tools) — Lightweight SSH Suite for VS Code
 
-![Version](https://img.shields.io/badge/version-0.8.10-blue)
+![Version](https://img.shields.io/badge/version-0.8.11-blue)
 ![Status](https://img.shields.io/badge/status-beta-yellow)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-1.85.0+-purple)
@@ -42,6 +42,8 @@ Reads `~/.ssh/config`. Supports SSH keys (RSA / Ed25519 / ECDSA, encrypted), age
 **98 commands** — full reference at [docs/COMMANDS.md](https://github.com/trantung95/SSHLite/blob/master/docs/COMMANDS.md).
 
 ## Release Notes
+
+**0.8.11** — **Activation hardening — hotfix for v0.8.10 crash.** Fixes a regression where all 4 SSH Lite tree views ("SSH HOSTS", "REMOTE FILES", "ACTIVITY", "PORT FORWARDS") failed to register with *"There is no data provider registered"*. Root cause: an unguarded throw in one service init step aborted the whole `activate()` function before it could reach `createTreeView()`. Each init step (`credential-svc`, `global-state`, `connection-mgr`, `port-forward-svc`, `folder-history-svc`, `snippet-svc`) and each `createTreeView` call is now wrapped in a `safeStep()` helper — a single failure logs to the SSH Lite output channel via `lifecycle / activate/*-failed` and the OTHER tree views still register. A summary `showErrorMessage` lists which step(s) failed so you know which feature is degraded; the rest of the extension keeps working. New Jest smoke test (`src/extension.activate.test.ts`) is the regression net: it asserts all 4 trees register on the happy path AND still register when one service init throws. **Lost hosts? Don't re-add yet.** Saved hosts are stored in your VS Code User `settings.json` under the key `sshLite.hosts` — they were never deleted, just unreadable because the extension never activated. Open `settings.json` (Cmd/Ctrl+Shift+P → "Preferences: Open User Settings (JSON)") and check the `sshLite.hosts` array — your data should still be there. If activation still has problems, open Output → SSH Lite for the per-step log and please file a bug with that log.
 
 **0.8.10** — Donate section: **money-critical hotfix for v0.8.9 TON address** + simplified to 2 coins. (1) The TON address shipped in v0.8.9 read `UQBb**bI**S1-…` (uppercase `I` at position 6) but the actual wallet QR encodes `UQBb**bl**S1-…` (lowercase `l`) — verified by `jsqr` decoding the source-screenshot QR. Any TON donations made via the v0.8.9 README would have been sent to a different valid TON address (irrecoverable). Fixed in README, generator script, CHANGELOG, and the regenerated `ton-qr.png`. (2) Removed USDT and BNB QRs (kept only SOL + TON per request); table now uses `width="100%"` so the two QRs slide to opposite edges as the window widens (better camera isolation); TON address wrapped in `<nobr>` so it doesn't break at hyphens; added a "💡 no memo / tag required" info note. New `.adn/lessons.md` entry documents the verification-by-tautology mistake that caused the original bug (decoding our own generated QR proves the round-trip, not that the source matches).
 

@@ -34,6 +34,44 @@ import { setDiagOutputChannel, refreshDiagEnabled, infoLog } from './utils/diagn
 
 let outputChannel: vscode.OutputChannel;
 
+// Activation hardening (v0.8.11): tracks which `activate()` init steps failed
+// so we can show one summary notification at the end + a structured log.
+const _activateFailures: string[] = [];
+
+/**
+ * Wrap a single `activate()` init step. On throw: record the step name,
+ * log to the SSH Lite output channel via `infoLog`, and return `undefined`
+ * so other steps still run. Without this wrapper a single service init
+ * throw would abort activate() and leave all 4 tree views unregistered
+ * (the v0.8.10 regression).
+ */
+function safeStep<T>(name: string, fn: () => T): T | undefined {
+  try {
+    const result = fn();
+    infoLog('lifecycle', `activate/${name}-ok`);
+    return result;
+  } catch (error) {
+    const err = error as Error;
+    _activateFailures.push(name);
+    infoLog('lifecycle', `activate/${name}-failed`, {
+      errorName: err.name,
+      errorMessage: err.message,
+      stack: err.stack?.split('\n').slice(0, 3).join(' | '),
+    });
+    log(`[activate] ${name} FAILED: ${err.message}`);
+    return undefined;
+  }
+}
+
+/**
+ * Test-only accessor for the failure list. Production code reads
+ * `_activateFailures` directly; tests use this to avoid touching the module
+ * internal.
+ */
+export function __testGetActivateFailures(): readonly string[] {
+  return [..._activateFailures];
+}
+
 /**
  * Prompt the user for a private-key path and passphrase. Returns `undefined`
  * if the user cancels or if the file cannot be read. The passphrase is left
@@ -141,6 +179,9 @@ function buildServerSearchEntries(
  * Extension activation
  */
 export function activate(context: vscode.ExtensionContext): void {
+  // Reset activation-failure tracking (test isolation + clean state per activation).
+  _activateFailures.length = 0;
+
   outputChannel = vscode.window.createOutputChannel('SSH Lite');
   setDiagOutputChannel(outputChannel);
   context.subscriptions.push(
@@ -172,24 +213,17 @@ export function activate(context: vscode.ExtensionContext): void {
   const monitorService = ServerMonitorService.getInstance();
   const commandGuard = CommandGuard.getInstance();
 
-  // Initialize credential service with extension context
-  credentialService.initialize(context);
+  // Initialize each service via safeStep so one bad init doesn't kill the
+  // others (the v0.8.10 regression). Output channel shows exactly which step
+  // failed so users can file precise bug reports.
+  safeStep('credential-svc',   () => credentialService.initialize(context));
+  safeStep('global-state',     () => setGlobalState(context.globalState));
+  safeStep('connection-mgr',   () => connectionManager.initialize(context));
+  safeStep('port-forward-svc', () => portForwardService.initialize(context));
 
-  // Initialize host key verification storage
-  setGlobalState(context.globalState);
-
-  // Initialize connection manager for failed connection indicator persistence
-  connectionManager.initialize(context);
-
-  // Initialize port forward service for persistence
-  portForwardService.initialize(context);
-
-  // Initialize folder history service for smart preloading
   const folderHistoryService = FolderHistoryService.getInstance();
-  folderHistoryService.initialize(context);
-
-  // Initialize snippet service (SSH Tools)
-  SnippetService.getInstance().initialize(context);
+  safeStep('folder-history-svc', () => folderHistoryService.initialize(context));
+  safeStep('snippet-svc',        () => SnippetService.getInstance().initialize(context));
 
   // Register virtual-doc providers for env + cron viewers (SSH Tools)
   const envProvider = new RemoteEnvDocumentProvider();
@@ -228,28 +262,38 @@ export function activate(context: vscode.ExtensionContext): void {
   // Wire up port forward service with its tree provider
   portForwardService.setTreeProvider(portForwardTreeProvider);
 
-  // Register tree views (showCollapseAll: false - we provide custom toggle buttons)
-  const hostTreeView = vscode.window.createTreeView('sshLite.hosts', {
-    treeDataProvider: hostTreeProvider,
-    showCollapseAll: false,
-  });
+  // Register tree views (showCollapseAll: false - we provide custom toggle buttons).
+  // Each createTreeView is wrapped in safeStep so a single VS Code-level
+  // registration failure doesn't cascade and leave the other 3 views unrendered.
+  const hostTreeView = safeStep('host-tree-view', () =>
+    vscode.window.createTreeView('sshLite.hosts', {
+      treeDataProvider: hostTreeProvider,
+      showCollapseAll: false,
+    })
+  );
 
-  const fileTreeView = vscode.window.createTreeView('sshLite.fileExplorer', {
-    treeDataProvider: fileTreeProvider,
-    showCollapseAll: false,
-    dragAndDropController: fileTreeProvider,
-    canSelectMany: true,
-  });
+  const fileTreeView = safeStep('file-tree-view', () =>
+    vscode.window.createTreeView('sshLite.fileExplorer', {
+      treeDataProvider: fileTreeProvider,
+      showCollapseAll: false,
+      dragAndDropController: fileTreeProvider,
+      canSelectMany: true,
+    })
+  );
 
-  const portForwardTreeView = vscode.window.createTreeView('sshLite.portForwards', {
-    treeDataProvider: portForwardTreeProvider,
-    showCollapseAll: false,
-  });
+  const portForwardTreeView = safeStep('port-forward-tree-view', () =>
+    vscode.window.createTreeView('sshLite.portForwards', {
+      treeDataProvider: portForwardTreeProvider,
+      showCollapseAll: false,
+    })
+  );
 
-  const activityTreeView = vscode.window.createTreeView('sshLite.activity', {
-    treeDataProvider: activityTreeProvider,
-    showCollapseAll: false,
-  });
+  const activityTreeView = safeStep('activity-tree-view', () =>
+    vscode.window.createTreeView('sshLite.activity', {
+      treeDataProvider: activityTreeProvider,
+      showCollapseAll: false,
+    })
+  );
 
   // Register file decoration provider for live-refresh tab indicators
   const fileDecorationProvider = new SSHFileDecorationProvider(fileService, connectionManager);
@@ -272,30 +316,43 @@ export function activate(context: vscode.ExtensionContext): void {
   vscode.commands.executeCommand('setContext', 'sshLite.activity.expandState', 0);
   vscode.commands.executeCommand('setContext', 'sshLite.portForwards.expandState', 0);
 
-  // Track expand/collapse events for file tree to preserve expansion state
-  context.subscriptions.push(
-    fileTreeView.onDidExpandElement((e) => {
-      fileTreeProvider.trackExpand(e.element);
-      // When any item is expanded, set state to 1 (next click → first level)
-      vscode.commands.executeCommand('setContext', 'sshLite.fileExplorer.expandState', 1);
-    }),
-    fileTreeView.onDidCollapseElement((e) => {
-      fileTreeProvider.trackCollapse(e.element);
-    })
-  );
+  // Track expand/collapse events for file tree to preserve expansion state.
+  // Guarded because the tree view may have failed to register (see safeStep above).
+  if (fileTreeView) {
+    context.subscriptions.push(
+      fileTreeView.onDidExpandElement((e) => {
+        fileTreeProvider.trackExpand(e.element);
+        // When any item is expanded, set state to 1 (next click → first level)
+        vscode.commands.executeCommand('setContext', 'sshLite.fileExplorer.expandState', 1);
+      }),
+      fileTreeView.onDidCollapseElement((e) => {
+        fileTreeProvider.trackCollapse(e.element);
+      })
+    );
+  }
 
-  // Track expand events for other tree views to update toggle state
-  context.subscriptions.push(
-    hostTreeView.onDidExpandElement(() => {
-      vscode.commands.executeCommand('setContext', 'sshLite.hosts.expandState', 1);
-    }),
-    activityTreeView.onDidExpandElement(() => {
-      vscode.commands.executeCommand('setContext', 'sshLite.activity.expandState', 1);
-    }),
-    portForwardTreeView.onDidExpandElement(() => {
-      vscode.commands.executeCommand('setContext', 'sshLite.portForwards.expandState', 1);
-    })
-  );
+  // Track expand events for other tree views to update toggle state.
+  if (hostTreeView) {
+    context.subscriptions.push(
+      hostTreeView.onDidExpandElement(() => {
+        vscode.commands.executeCommand('setContext', 'sshLite.hosts.expandState', 1);
+      })
+    );
+  }
+  if (activityTreeView) {
+    context.subscriptions.push(
+      activityTreeView.onDidExpandElement(() => {
+        vscode.commands.executeCommand('setContext', 'sshLite.activity.expandState', 1);
+      })
+    );
+  }
+  if (portForwardTreeView) {
+    context.subscriptions.push(
+      portForwardTreeView.onDidExpandElement(() => {
+        vscode.commands.executeCommand('setContext', 'sshLite.portForwards.expandState', 1);
+      })
+    );
+  }
 
   // Force initial refresh of host tree to ensure clean state on VS Code restart
   // This clears any cached icons from previous session
@@ -830,7 +887,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
         // Reveal in file tree - navigate to parent folder and highlight the file
         const treeItem = await fileTreeProvider.revealFile(connection.id, remotePath);
-        if (treeItem) {
+        if (treeItem && fileTreeView) {
           // Wait a bit for tree to render, then reveal with focus
           setTimeout(async () => {
             try {
@@ -1507,6 +1564,7 @@ export function activate(context: vscode.ExtensionContext): void {
         { view: portForwardTreeView, provider: portForwardTreeProvider },
       ];
       for (const { view, provider } of treeViews) {
+        if (!view) continue; // tree view may have failed to register (see safeStep at activate)
         try {
           const topItems = await Promise.resolve(provider.getChildren());
           if (topItems) {
@@ -2074,7 +2132,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
       // Navigate to parent folder and reveal the file
       const treeItem = await fileTreeProvider.revealFile(result.connectionId, result.path);
-      if (treeItem) {
+      if (treeItem && fileTreeView) {
         // Reveal in tree view with focus
         await fileTreeView.reveal(treeItem, { select: true, focus: true, expand: true });
         vscode.window.setStatusBarMessage(`$(target) Revealed ${treeItem.file.name} in tree`, 3000);
@@ -2165,7 +2223,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
       // Navigate to parent folder and reveal the file
       const treeItem = await fileTreeProvider.revealFile(mapping.connectionId, mapping.remotePath);
-      if (treeItem) {
+      if (treeItem && fileTreeView) {
         // Reveal in tree view with focus
         await fileTreeView.reveal(treeItem, { select: true, focus: true, expand: true });
         vscode.window.setStatusBarMessage(`$(target) Revealed ${treeItem.file.name} in tree`, 3000);
@@ -3271,13 +3329,16 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   ];
 
-  // Register all disposables
+  // Register all disposables. Tree views are filtered out if registration failed
+  // (see safeStep wrappers around createTreeView at activate-start).
+  const treeViewDisposables: vscode.Disposable[] = [];
+  if (hostTreeView)        treeViewDisposables.push(hostTreeView);
+  if (fileTreeView)        treeViewDisposables.push(fileTreeView);
+  if (portForwardTreeView) treeViewDisposables.push(portForwardTreeView);
+  if (activityTreeView)    treeViewDisposables.push(activityTreeView);
   context.subscriptions.push(
     outputChannel,
-    hostTreeView,
-    fileTreeView,
-    portForwardTreeView,
-    activityTreeView,
+    ...treeViewDisposables,
     hostTreeProvider,
     fileTreeProvider,
     portForwardTreeProvider,
@@ -3349,6 +3410,21 @@ export function activate(context: vscode.ExtensionContext): void {
   // Also clear interval when extension deactivates
   context.subscriptions.push({
     dispose: stopAutoReconnect,
+  });
+
+  // Activation hardening (v0.8.11): if any safeStep recorded a failure, surface
+  // it once to the user so they know which feature is degraded + a structured
+  // log of every successful and failed step. The output channel is the single
+  // place to look for activation diagnostics — see SSH Lite Output channel.
+  if (_activateFailures.length > 0) {
+    vscode.window.showErrorMessage(
+      `SSH Lite: ${_activateFailures.length} init step(s) failed: ${_activateFailures.join(', ')}. ` +
+      `Some features may be unavailable. See Output → SSH Lite for details.`
+    );
+  }
+  infoLog('lifecycle', 'activate/complete', {
+    failedSteps: _activateFailures.length,
+    failedNames: [..._activateFailures],
   });
 
   log('SSH Lite extension activated');

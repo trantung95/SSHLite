@@ -1,5 +1,56 @@
 # Changelog
 
+## v0.8.11 — activation hardening hotfix for v0.8.10 crash
+
+### What broke in v0.8.10
+
+A user on v0.8.10 reported all 4 SSH Lite tree views (`sshLite.hosts`, `sshLite.fileExplorer`, `sshLite.activity`, `sshLite.portForwards`) showed *"There is no data provider registered"* and saved hosts appeared lost. Root cause: `activate()` ran ~18 sequential init steps (`credentialService.initialize`, `setGlobalState`, `connectionManager.initialize`, `portForwardService.initialize`, `folderHistoryService.initialize`, `SnippetService.initialize`, virtual-doc providers, tree-provider constructors, then four `vscode.window.createTreeView` calls) **with no try/catch and minimal logging**. A single throw in any of those steps aborted the whole function before reaching the `createTreeView` calls — so no view ever registered, and there was no diagnostic log telling the user which step had failed. Saved hosts were not actually deleted — they remained in VS Code User `settings.json` under `sshLite.hosts`. The UI just had no way to render them once activation crashed.
+
+### What v0.8.11 changes
+
+**New `safeStep(name, fn)` helper at the top of `src/extension.ts`** — wraps a single init step. On throw it pushes the step name onto a module-level `_activateFailures` array, logs `lifecycle / activate/<name>-failed` via `infoLog` with the error name, message, and a 3-line stack snippet, writes a one-liner to the SSH Lite output channel via `log()`, and returns `undefined` so subsequent steps still run. On success it logs `lifecycle / activate/<name>-ok`.
+
+**Wrapped steps** (one safeStep call each): `credential-svc`, `global-state`, `connection-mgr`, `port-forward-svc`, `folder-history-svc`, `snippet-svc`, and each of the four `createTreeView` calls (`host-tree-view`, `file-tree-view`, `port-forward-tree-view`, `activity-tree-view`).
+
+**Tree-view variables are now `TreeView<T> | undefined`.** Downstream usages were guarded: the immediate `onDidExpandElement` / `onDidCollapseElement` subscriptions wrap in `if (view)` blocks; the three `fileTreeView.reveal()` call sites add a `&& fileTreeView` to the existing `if (treeItem)` guards; the bulk-expand helper at the existing `expandAll` command skips tree views whose `view` is undefined; and the `context.subscriptions.push` at the end of `activate()` filters out undefined tree views before spreading.
+
+**End-of-activate summary.** Before the final `log('SSH Lite extension activated')`, the activate function checks `_activateFailures.length`. If non-zero, it fires one `vscode.window.showErrorMessage` listing the failed step names — so the user immediately knows which feature is degraded and can open Output → SSH Lite for the per-step log. `infoLog('lifecycle', 'activate/complete', { failedSteps, failedNames })` is always emitted.
+
+**Tree-provider constructors are NOT wrapped.** Each provider has hundreds of downstream call sites (`fileTreeProvider.refreshFolder(...)` etc.) inside command handlers — making the providers nullable would force `if (provider)` guards across the entire 3300-line `activate()` body. In practice these constructors don't throw, and if they ever do, the outer behaviour is unchanged from current (the throw propagates and VS Code marks the extension as broken). Service inits are where the v0.8.10 bug actually lived, and that's what's now hardened.
+
+### Regression net
+
+`src/extension.activate.test.ts` (new) — 2 tests, both passing:
+
+1. **Happy path**: calls `activate(mockContext)`, asserts `vscode.window.createTreeView` was called exactly 4 times with viewIds `sshLite.hosts`, `sshLite.fileExplorer`, `sshLite.activity`, `sshLite.portForwards`, and `__testGetActivateFailures()` returns an empty array.
+2. **Degraded path**: `jest.spyOn(CredentialService.prototype, 'initialize').mockImplementationOnce(throw)` — calls activate, asserts `createTreeView` was STILL called 4 times (the other 3 init steps + all 4 tree views completed), `__testGetActivateFailures()` contains `'credential-svc'`, and `vscode.window.showErrorMessage` was called with a message containing `credential-svc`. The exported `__testGetActivateFailures()` accessor avoids exposing the module-internal `_activateFailures` directly.
+
+Required `src/__mocks__/vscode.ts` updates: added `workspace.registerTextDocumentContentProvider`, `workspace.registerFileSystemProvider`, and `window.registerFileDecorationProvider` jest-fn mocks. Tests reset every SSH Lite singleton between cases (CredentialService, HostService, FileService, TerminalService, PortForwardService, ConnectionManager, AuditService, ServerMonitorService, CommandGuard, FolderHistoryService, SnippetService, ActivityService) so state from one test doesn't bleed into the next.
+
+### User-facing recovery
+
+The 0.8.11 README entry tells affected users that their saved hosts are still in `settings.json` under the `sshLite.hosts` key — they don't need to re-add them, just upgrade and reopen. If activation still has problems on 0.8.11, the SSH Lite output channel now shows exactly which step failed, so users can file precise bug reports.
+
+### Out of scope (deferred)
+
+- **Storage corruption guard** (try/catch around individual `JSON.parse` calls inside services). Deferred unless the diagnostic logs from real-world v0.8.11 installs identify a specific service that needs it.
+- **Backup-before-write for `sshLite.hosts`.** Deferred — the user's data wasn't actually deleted in the v0.8.10 incident, just unreadable.
+- **Root-cause fix of which init step originally throws.** The diagnostic logging this release adds will surface it from real-world installs. Will be addressed in v0.8.12 or a follow-up patch.
+- **CRUD UX bundle** (createFile + bulk delete + Properties viewer + createFolder on connection rows) — moved to v0.8.12 to keep this hotfix tight.
+
+### Files changed
+
+- `src/extension.ts` — `safeStep` helper, `_activateFailures` tracker, `__testGetActivateFailures` test accessor, 6 service-init wrappers, 4 createTreeView wrappers, 5 downstream `if (view)` guards, end-of-activate summary block.
+- `src/extension.activate.test.ts` — new regression-net test file (2 suites).
+- `src/__mocks__/vscode.ts` — 3 missing mocks added for activation-path coverage.
+- `package.json` — version → `0.8.11`.
+- `README.md` — version badge + Release Notes entry (with the lost-hosts recovery note).
+- `.adn/CHANGELOG.md` — this entry.
+- `.adn/flow/extension-activation.md` — documented the `safeStep` lifecycle.
+- `.adn/lessons.md` — dated entry for the v0.8.10 regression.
+
+---
+
 ## v0.8.10 — donate section: money-critical TON address hotfix + simplified to SOL + TON only
 
 ### Critical fix: v0.8.9 TON address was wrong by one character

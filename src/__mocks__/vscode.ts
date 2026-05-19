@@ -234,6 +234,8 @@ export const workspace = {
   onDidSaveTextDocument: new EventEmitter<unknown>().event,
   onDidCloseTextDocument: new EventEmitter<unknown>().event,
   onDidChangeConfiguration: new EventEmitter<unknown>().event,
+  registerTextDocumentContentProvider: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+  registerFileSystemProvider: jest.fn().mockReturnValue({ dispose: jest.fn() }),
   fs: {
     readFile: jest.fn(),
     writeFile: jest.fn(),
@@ -263,10 +265,12 @@ export const window = {
     text: '',
     tooltip: '',
     command: undefined,
+    name: '',
     show: jest.fn(),
     hide: jest.fn(),
     dispose: jest.fn(),
   }),
+  registerFileDecorationProvider: jest.fn().mockReturnValue({ dispose: jest.fn() }),
   createTerminal: jest.fn().mockReturnValue({
     name: 'mock-terminal',
     show: jest.fn(),
