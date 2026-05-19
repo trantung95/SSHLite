@@ -1,5 +1,52 @@
 # Changelog
 
+## v0.8.10 — donate section: money-critical TON address hotfix + simplified to SOL + TON only
+
+### Critical fix: v0.8.9 TON address was wrong by one character
+
+The TON address shipped in [v0.8.9](#v089--donate-section-overhaul-4-coin-branded-qr-grid-with--divider) read:
+
+```
+UQBbbIS1-F3ufPBPD13EKfp28G_A_j10kXNn-XuuxQUwoIEs    (uppercase I at position 6 — WRONG)
+```
+
+The actual wallet's QR encodes:
+
+```
+UQBbblS1-F3ufPBPD13EKfp28G_A_j10kXNn-XuuxQUwoIEs    (lowercase l at position 6)
+```
+
+Both are valid TON base64url addresses — but they're **different addresses**. Any TON donations sent via the v0.8.9 README would have routed to a stranger's address (irrecoverable). Fix verified by `jsqr` decoding the source wallet-screenshot QR and comparing byte-for-byte to the README string.
+
+**Root cause** (added to [.adn/lessons.md](lessons.md#2026-05-19--never-transcribe-a-crypto-address-from-a-screenshot-by-eye-always-decode-the-source-qr)): I transcribed the address character-by-character from the wallet screenshot. iOS's SF Pro font renders uppercase `I`, lowercase `l`, and digit `1` as essentially the same vertical stroke at the screenshot's pixel density — visual transcription cannot reliably distinguish them. Compounding factor: my v0.8.9 "verification" decoded the QR I *generated from the wrong string* and confirmed it round-tripped — that's a tautology, not a verification.
+
+Fixed in: [README.md](../README.md), [scripts/generate-donate-qr.js](../scripts/generate-donate-qr.js), this file, and the regenerated [docs/images/donate/ton-qr.png](../docs/images/donate/ton-qr.png).
+
+### Donate section simplified to 2 coins
+
+USDT and BNB QRs / addresses / PNGs removed per request. Final donate section contains only:
+
+- **SOL** (Solana native + all SPL tokens including USDT): `GURgJGXeFfbV9S4Kr1xgxCrS367w3gkCuuS8up7xiDEG`
+- **TON** (The Open Network): `UQBbblS1-F3ufPBPD13EKfp28G_A_j10kXNn-XuuxQUwoIEs`
+
+### Layout: QRs slide to window edges as it widens
+
+Table changed from `align="center"` (fixed-width 100 px spacer) to `width="100%"` with a single flexible middle column. Each QR cell is `width="280"`. On wide windows, the middle spacer absorbs all extra horizontal space → QRs slide to opposite edges → less chance of a phone camera framing both finder patterns at once.
+
+### TON address kept on one line
+
+Browsers wrap long strings at hyphens by default. The TON address (`UQBbblS1-…-XuuxQUwoIEs`) has two hyphens, which broke it into 3 lines inside the QR cell. Fix: wrapped the `<code>` in `<nobr>` so the browser never breaks the string. Copy-paste behavior unaffected — the literal ASCII hyphens are preserved.
+
+### Other tweaks
+
+- Added a 💡 info note "No memo / tag required for either chain" — reassures senders coming from exchanges that often demand a memo / destination-tag.
+- [scripts/generate-donate-qr.js](../scripts/generate-donate-qr.js) trimmed to 2 chains in `CHAINS` array; header doc updated.
+- Removed `docs/images/donate/{usdt,bnb}-qr.png`.
+
+### Docs-only release
+
+No extension code, services, commands, settings, or tests changed. `package.json` `contributes.commands` count unchanged at 98.
+
 ## v0.8.9 — donate section overhaul (4-coin branded QR grid with + divider)
 
 Rebuilt the "Send me a Bánh Mì" section in [README.md](../README.md) from a placeholder + single-network table to a **2×2 grid of branded QR codes** accepting four coins:
@@ -7,7 +54,7 @@ Rebuilt the "Send me a Bánh Mì" section in [README.md](../README.md) from a pl
 - **top-left**: USDT (Solana SPL) — `GURgJGXeFfbV9S4Kr1xgxCrS367w3gkCuuS8up7xiDEG`
 - **top-right**: SOL (Solana native) — same Solana address (SPL tokens share the wallet address)
 - **bottom-left**: BNB (BNB Smart Chain) — `0x54B1db8e055F71ba5A6CeB3EFfc88D4cbB315935`
-- **bottom-right**: TON (The Open Network) — `UQBbbIS1-F3ufPBPD13EKfp28G_A_j10kXNn-XuuxQUwoIEs`
+- **bottom-right**: TON (The Open Network) — `UQBbblS1-F3ufPBPD13EKfp28G_A_j10kXNn-XuuxQUwoIEs`
 
 ### QR generation
 

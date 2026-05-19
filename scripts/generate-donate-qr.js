@@ -1,15 +1,13 @@
-// One-shot generator for the donate QR PNGs (4 chains: USDT, SOL, BNB, TON)
+// One-shot generator for the donate QR PNGs (2 chains: SOL, TON)
 // with each chain's logo overlaid at the center.
 //
 // Run: npm i --no-save qrcode sharp && node scripts/generate-donate-qr.js
 //
 // Inputs (must exist before running): docs/images/donate/<id>-logo-temp.png
-//   - usdt-logo-temp.png  -> from spothq/cryptocurrency-icons (BSD-3-Clause)
-//   - sol-logo-temp.png   -> from spothq/cryptocurrency-icons (BSD-3-Clause)
-//   - bnb-logo-temp.png   -> from spothq/cryptocurrency-icons (BSD-3-Clause)
-//   - ton-logo-temp.png   -> from trustwallet/assets (MIT)
+//   - sol-logo-temp.png  -> from trustwallet/assets (MIT, gradient brand)
+//   - ton-logo-temp.png  -> from trustwallet/assets (MIT)
 //
-// Outputs: docs/images/donate/{usdt,sol,bnb,ton}-qr.png
+// Outputs: docs/images/donate/{sol,ton}-qr.png
 
 const QRCode = require('qrcode');
 const sharp = require('sharp');
@@ -19,10 +17,8 @@ const fs = require('fs');
 const OUT_DIR = path.join(__dirname, '..', 'docs', 'images', 'donate');
 
 const CHAINS = [
-  { id: 'usdt', address: 'GURgJGXeFfbV9S4Kr1xgxCrS367w3gkCuuS8up7xiDEG' },
-  { id: 'sol',  address: 'GURgJGXeFfbV9S4Kr1xgxCrS367w3gkCuuS8up7xiDEG' },
-  { id: 'bnb',  address: '0x54B1db8e055F71ba5A6CeB3EFfc88D4cbB315935' },
-  { id: 'ton',  address: 'UQBbbIS1-F3ufPBPD13EKfp28G_A_j10kXNn-XuuxQUwoIEs' },
+  { id: 'sol', address: 'GURgJGXeFfbV9S4Kr1xgxCrS367w3gkCuuS8up7xiDEG' },
+  { id: 'ton', address: 'UQBbblS1-F3ufPBPD13EKfp28G_A_j10kXNn-XuuxQUwoIEs' },
 ];
 
 const QR_SIZE = 400;

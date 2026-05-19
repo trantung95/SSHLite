@@ -5,6 +5,23 @@ Add new entries as bugs are found, mistakes are made, or better approaches are d
 
 ---
 
+## 2026-05-19 — Never transcribe a crypto address from a screenshot by eye; always decode the source QR
+
+**What happened**: While building the donate section in `README.md`, I read the TON address from the wallet-app screenshot (`IMG_5389.png`) character by character — three times, even — and recorded it as `UQBbbIS1-F3ufPBPD13EKfp28G_A_j10kXNn-XuuxQUwoIEs` (uppercase `I` at position 6). v0.8.9 was committed and published with that string and a QR generated from it. User then asked me to verify carefully against the screenshots again, this time by decoding the source QR with `jsqr`. The QR actually encoded `UQBbblS1-…` — lowercase `l`, not uppercase `I`. The published donate page would have routed TON donations to a *different valid TON address* (or nowhere) — irrecoverable funds.
+
+**Root cause**: iOS's sans-serif (SF Pro) renders uppercase `I`, lowercase `l`, and digit `1` as essentially the same vertical stroke at small sizes. Same applies to `0`/`O`/`o`, and `B`/`8` in some fonts. Visual transcription cannot reliably distinguish them. I performed the "triple-check" but all three checks used the same flawed input (my eyes on the same pixels), so they all returned the same wrong answer with growing confidence.
+
+Compounding factor: my generator script then *encoded* my mistranscribed string into a QR, and when I "verified" by decoding that generated QR with `jsqr`, of course it round-tripped correctly — I was checking that the QR matched my string, not that my string matched the source. That's a tautology, not a verification.
+
+**Lesson**:
+
+- **For any address that came from a QR code (crypto wallets, payment links, anything money- or auth-critical):** decode the source QR with `jsqr` (or another decoder) and use the decoded bytes as ground truth. Never transcribe by eye, no matter how many times.
+- **"Verification by re-encoding then decoding" is a tautology.** It only proves the generator round-trips, not that the encoded value matches the source. The verification chain must be: `source screenshot → decode → string A`; `our string → string B`; assert `A === B`.
+- **Watch for these character pairs in any base64/base64url payload** (the alphabet TON, GitHub gist IDs, JWTs, etc. use): `I`/`l`/`1`/`i`, `O`/`0`/`o`, `B`/`8`, `S`/`5`, `Z`/`2`. base58 (used by Solana, Bitcoin) deliberately excludes most of these (`0`, `O`, `I`, `l`) — that's a feature, not an accident. Hex (used by EVM chains) is also unambiguous.
+- **When a verification step succeeds, ask "what input did this verification consume?"** If the answer is "the same input I'm trying to verify", it's not a verification.
+
+---
+
 ## 2026-05-07 — Tab state defaults must be overwritten by every payload that carries the value
 
 **What happened**: User configured `sshLite.searchMaxResults: 10000`. The search correctly returned 10000 results (extension-side cap was honored), but the UI banner read "⚠️ Limit 2000 reached" instead of 10000. The displayed value did not match the configured setting.
