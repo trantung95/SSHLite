@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.8.9 — donate section overhaul (4-coin branded QR grid with + divider)
+
+Rebuilt the "Send me a Bánh Mì" section in [README.md](../README.md) from a placeholder + single-network table to a **2×2 grid of branded QR codes** accepting four coins:
+
+- **top-left**: USDT (Solana SPL) — `GURgJGXeFfbV9S4Kr1xgxCrS367w3gkCuuS8up7xiDEG`
+- **top-right**: SOL (Solana native) — same Solana address (SPL tokens share the wallet address)
+- **bottom-left**: BNB (BNB Smart Chain) — `0x54B1db8e055F71ba5A6CeB3EFfc88D4cbB315935`
+- **bottom-right**: TON (The Open Network) — `UQBbbIS1-F3ufPBPD13EKfp28G_A_j10kXNn-XuuxQUwoIEs`
+
+### QR generation
+
+New [scripts/generate-donate-qr.js](../scripts/generate-donate-qr.js) (run once via `npm i --no-save qrcode sharp && node scripts/generate-donate-qr.js`):
+
+1. Generates each QR at **error-correction level H** (~30 % obstruction tolerance) so the centered logo doesn't break scanning
+2. Composites the coin's logo at the QR center, kept to **≤20 %** of the QR area with a small white pad ring for contrast
+3. Outputs `docs/images/donate/{usdt,sol,bnb,ton}-qr.png`
+
+Every generated QR was machine-decoded with `jsqr` and asserted to round-trip back to the exact source address — money-safety check, not just a visual eyeball pass. Logos sourced from `spothq/cryptocurrency-icons` (BSD-3-Clause) for USDT/BNB and `trustwallet/assets` (MIT) for SOL (gradient brand identity) and TON.
+
+### Grid layout
+
+The 4 QRs sit in a 5-column × 5-row HTML table:
+
+| col index | width | role |
+|---|---|---|
+| 1 | 150 px | QR + caption |
+| 2 | 49 px | gap |
+| 3 | 2 px, `bgcolor="#cccccc"` | **vertical line** |
+| 4 | 49 px | gap |
+| 5 | 150 px | QR + caption |
+
+Rows mirror the same pattern with a 2 px gray horizontal-line row spanning all 5 columns. The two lines meet dead-centre to form a thin `+` divider. This was added on top of the existing ~100 px spacer column / ~80 px spacer row so a phone camera framing one QR can't accidentally pick up the neighbour's finder pattern.
+
+### Caption format
+
+Each cell reads `send <coin> — via <chain> chain` followed by the full address in `<code>` for copy-paste fallback when scanning isn't available. The previous "USDT only" warning was replaced with "Send only the matching coin on its matching chain — wrong coin / wrong chain = lost funds" since the section now accepts four different coins on three different networks.
+
+### Docs-only release
+
+No extension code, services, commands, settings, or tests changed. `package.json` `contributes.commands` count is unchanged at 98.
+
 ## v0.8.8 — complete the inline-icon-slot fix (search/filter at absolute @1/@2, not just relative)
 
 Follow-up to v0.8.7. User pointed at a screenshot showing the search and filter icons still in visibly different absolute positions across rows — the v0.8.7 fix made search-before-filter consistent **within** each row but did not normalize the **absolute** `inline@N` slot the icons occupy across viewItem contexts. Re-audit:
