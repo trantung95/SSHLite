@@ -2,7 +2,7 @@
   "name": "ssh-lite",
   "displayName": "SSH Lite (SSH Tools)",
   "description": "Lightweight SSH client for VS Code. Browse and edit remote files, run terminals, forward ports, manage processes and services, push SSH keys, run snippets and batch commands - all without installing anything on remote servers. Perfect for VPS, cloud servers (AWS/Azure/GCP), and Linux administration.",
-  "version": "0.8.11",
+  "version": "0.8.12",
   "publisher": "hybr8",
   "engines": {
     "vscode": "^1.85.0"
@@ -250,6 +250,18 @@
         "title": "New Folder",
         "category": "SSH Lite",
         "icon": "$(new-folder)"
+      },
+      {
+        "command": "sshLite.createFile",
+        "title": "New File",
+        "category": "SSH Lite",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "sshLite.showProperties",
+        "title": "Properties",
+        "category": "SSH Lite",
+        "icon": "$(info)"
       },
       {
         "command": "sshLite.refreshFiles",
@@ -1147,9 +1159,29 @@
           "group": "1_actions@4"
         },
         {
-          "command": "sshLite.pinFolder",
+          "command": "sshLite.createFile",
           "when": "view == sshLite.fileExplorer && viewItem =~ /^folder/",
           "group": "1_actions@5"
+        },
+        {
+          "command": "sshLite.pinFolder",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^folder/",
+          "group": "1_actions@6"
+        },
+        {
+          "command": "sshLite.createFile",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "group": "1_actions@1"
+        },
+        {
+          "command": "sshLite.createFolder",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "group": "1_actions@2"
+        },
+        {
+          "command": "sshLite.showProperties",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^(file|folder)/",
+          "group": "9_info@1"
         },
         {
           "command": "sshLite.searchInScope",

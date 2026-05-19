@@ -1,6 +1,6 @@
 # Commands Reference
 
-All 98 commands registered by SSH Lite (SSH Tools), organized by category.
+All 100 commands registered by SSH Lite (SSH Tools), organized by category.
 
 ---
 

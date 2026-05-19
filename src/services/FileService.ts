@@ -3687,22 +3687,34 @@ export class FileService {
   /**
    * Delete a remote file or folder
    */
-  async deleteRemote(connection: SSHConnection, remoteFile: IRemoteFile): Promise<boolean> {
+  async deleteRemote(
+    connection: SSHConnection,
+    remoteFile: IRemoteFile,
+    opts: { skipConfirm?: boolean; createBackup?: boolean } = {}
+  ): Promise<boolean> {
     const typeLabel = remoteFile.isDirectory ? 'folder' : 'file';
 
-    // Show warning with backup option
-    const confirm = await vscode.window.showWarningMessage(
-      `Delete "${remoteFile.name}"?\n\nA backup will be created before deletion.`,
-      { modal: true, detail: `This ${typeLabel} will be backed up to ${SERVER_BACKUP_FOLDER} before deletion.` },
-      'Delete with Backup',
-      'Delete Permanently'
-    );
+    let createBackup: boolean;
+    if (opts.skipConfirm) {
+      // Bulk delete path: caller already showed one summary confirm, so we
+      // skip the per-item dialog. Default to "Delete with Backup" unless the
+      // caller explicitly opts out via createBackup: false.
+      createBackup = opts.createBackup !== false;
+    } else {
+      // Show warning with backup option
+      const confirm = await vscode.window.showWarningMessage(
+        `Delete "${remoteFile.name}"?\n\nA backup will be created before deletion.`,
+        { modal: true, detail: `This ${typeLabel} will be backed up to ${SERVER_BACKUP_FOLDER} before deletion.` },
+        'Delete with Backup',
+        'Delete Permanently'
+      );
 
-    if (!confirm) {
-      return false;
+      if (!confirm) {
+        return false;
+      }
+
+      createBackup = confirm === 'Delete with Backup';
     }
-
-    const createBackup = confirm === 'Delete with Backup';
 
     try {
       let backupPath: string | undefined;
@@ -3898,6 +3910,113 @@ export class FileService {
       vscode.window.showErrorMessage(`Failed to create folder: ${err.message}`);
       return undefined;
     }
+  }
+
+  /**
+   * Create a new empty file. Mirrors createFolder but writes an empty buffer
+   * via SFTP and rejects if anything already exists at the target path.
+   */
+  async createFile(connection: SSHConnection, parentPath: string): Promise<string | undefined> {
+    const fileName = await vscode.window.showInputBox({
+      prompt: 'Enter file name',
+      placeHolder: 'new-file.txt',
+      ignoreFocusOut: true,
+      validateInput: (value) => {
+        if (!value || value.trim().length === 0) {
+          return 'File name cannot be empty';
+        }
+        if (value.includes('/') || value.includes('\\')) {
+          return 'File name cannot contain slashes';
+        }
+        return null;
+      },
+    });
+
+    if (!fileName) {
+      return undefined;
+    }
+
+    const remotePath = `${parentPath}/${fileName}`;
+
+    if (await connection.fileExists(remotePath)) {
+      vscode.window.showErrorMessage(`A file or folder already exists at ${remotePath}`);
+      return undefined;
+    }
+
+    try {
+      await connection.writeFile(remotePath, Buffer.alloc(0));
+
+      this.auditService.log({
+        action: 'create',
+        connectionId: connection.id,
+        hostName: connection.host.name,
+        username: connection.host.username,
+        remotePath,
+        success: true,
+      });
+
+      vscode.window.setStatusBarMessage(`$(check) Created file ${fileName}`, 3000);
+      return remotePath;
+    } catch (error) {
+      const err = error as Error;
+
+      if (this.isPermissionDenied(err) && !connection.sudoMode) {
+        let sudoResult: string | undefined;
+        const sudoHandled = await this.handlePermissionDenied(
+          connection,
+          fileName,
+          async (password: string) => {
+            if (connection.sudoMode) {
+              await connection.sudoWriteFile(remotePath, Buffer.alloc(0), password);
+            } else {
+              await this.commandGuard.sudoWriteFile(connection, remotePath, Buffer.alloc(0), password);
+            }
+            this.auditService.log({
+              action: 'create', connectionId: connection.id, hostName: connection.host.name,
+              username: connection.host.username, remotePath, success: true,
+            });
+            vscode.window.setStatusBarMessage(`$(check) Created file ${fileName} (sudo)`, 3000);
+            sudoResult = remotePath;
+          }
+        );
+        if (sudoHandled) { return sudoResult; }
+      }
+
+      vscode.window.showErrorMessage(`Failed to create file: ${err.message}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * Read remote file/folder metadata and format it for the Properties viewer.
+   * Uses GNU stat over the existing SSH connection (NOT Node child_process).
+   * Path is shell-quoted with the codebase's existing single-quote escape
+   * pattern (see FileService backup helpers) so paths with literal quotes
+   * are safe.
+   */
+  async getRemoteProperties(connection: SSHConnection, remoteFile: IRemoteFile): Promise<string> {
+    const escapedPath = remoteFile.path.replace(/'/g, "'\\''");
+    const statFormat = '%F|%s|%A|%a|%U|%u|%G|%g|%y|%x|%N';
+    const cmd = "stat --format='" + statFormat + "' '" + escapedPath + "'";
+    const output = await connection.exec(cmd);
+    const line = output.trim().split('\n').pop() || '';
+    const parts = line.split('|');
+    if (parts.length < 11) {
+      throw new Error(`Unexpected stat output: ${line}`);
+    }
+    const [type, sizeStr, permsStr, permsOctal, ownerName, ownerUid, groupName, groupGid, modified, accessed, quotedName] = parts;
+    const sizeBytes = parseInt(sizeStr, 10);
+    const sizeHuman = !isNaN(sizeBytes) ? formatFileSize(sizeBytes) : sizeStr;
+    return [
+      `Type:        ${type}`,
+      `Size:        ${sizeBytes} bytes${!isNaN(sizeBytes) ? ` (${sizeHuman})` : ''}`,
+      `Permissions: ${permsStr}  (${permsOctal})`,
+      `Owner:       ${ownerName} (${ownerUid})`,
+      `Group:       ${groupName} (${groupGid})`,
+      `Modified:    ${modified}`,
+      `Accessed:    ${accessed}`,
+      `Name:        ${quotedName}`,
+    ].join('\n');
   }
 
   /**

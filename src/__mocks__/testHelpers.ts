@@ -213,6 +213,7 @@ export function createMockConnection(overrides: Partial<{
     deleteFile: jest.fn().mockResolvedValue(undefined),
     mkdir: jest.fn().mockResolvedValue(undefined),
     stat: jest.fn().mockResolvedValue(createMockRemoteFile('test')),
+    fileExists: jest.fn().mockResolvedValue(false),
     forwardPort: jest.fn().mockResolvedValue(undefined),
     stopForward: jest.fn().mockResolvedValue(undefined),
     searchFiles: jest.fn().mockResolvedValue([]),

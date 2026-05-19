@@ -1,6 +1,6 @@
 # SSH Lite (SSH Tools) — Lightweight SSH Suite for VS Code
 
-![Version](https://img.shields.io/badge/version-0.8.11-blue)
+![Version](https://img.shields.io/badge/version-0.8.12-blue)
 ![Status](https://img.shields.io/badge/status-beta-yellow)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-1.85.0+-purple)
@@ -39,9 +39,19 @@ Unlike Remote-SSH, which installs a ~200MB VS Code Server on every host, SSH Lit
 
 Reads `~/.ssh/config`. Supports SSH keys (RSA / Ed25519 / ECDSA, encrypted), agent, and password.
 
-**98 commands** — full reference at [docs/COMMANDS.md](https://github.com/trantung95/SSHLite/blob/master/docs/COMMANDS.md).
+**100 commands** — full reference at [docs/COMMANDS.md](https://github.com/trantung95/SSHLite/blob/master/docs/COMMANDS.md).
 
 ## Release Notes
+
+**0.8.12** — **Remote file/folder CRUD UX**. Two new commands + bulk delete + a long-missing right-click affordance.
+
+- **New File** (`sshLite.createFile`) — right-click a folder or connection row → "New File" → enter name → the file is created empty via SFTP and opens in your editor immediately (VS Code "New File" UX). Rejects the name if anything already exists at that path (collision check via `connection.fileExists()` before the write). Sudo fallback if the parent isn't writable as your user.
+- **Properties** (`sshLite.showProperties`) — right-click any file or folder → "Properties" → modal showing type, size (bytes + human-readable), permissions string + octal, owner name + uid, group name + gid, mtime, atime, and (for symlinks) the target. Read-only. Uses GNU `stat --format=...` over the existing SSH connection (not Node child_process); paths with literal single quotes are safely shell-quoted.
+- **Bulk delete (multi-select)** — `sshLite.deleteRemote` now accepts VS Code's multi-selection (`canSelectMany: true` was already set on the file explorer in v0.7+). Ctrl/Shift-click multiple items → right-click → "Delete" → one summary confirm `"Delete N items? (a, b, c, +M more)"` → each item is deleted with its own backup, distinct parent folders are refreshed once, and a status bar message reports `Deleted X/N items` (with failure count if any items couldn't be deleted). Single-item delete UX is unchanged.
+- **`New Folder` on connection rows** — the handler at [extension.ts:1531](src/extension.ts#L1531) has always supported the connection-row case (resolves `~` to `$HOME` via shell exec), but the package.json menu entry only fired on folder rows. v0.8.12 adds the connection-row entry so right-clicking a connection in the file tree exposes both "New File" and "New File / New Folder" at the top of the action menu.
+- **Audit trail**: createFile logs `action: 'create'`; bulk delete logs `bulk:N` followed by `bulk: X ok, Y failed`.
+- **Tests**: 11 new unit tests in `src/services/FileService.crud.test.ts` covering createFile happy path / cancel / collision / write-rejection / validation, `deleteRemote({skipConfirm: true})`, and getRemoteProperties parsing + shell-quote-safety for paths containing literal single quotes.
+- **chmod / chown** are intentionally NOT in this release — Properties exposes the current values so you can see them, and the natural next step (`sshLite.changePermissions` + `sshLite.changeOwner` with sudo fallback) is recorded as a TODO for a future release.
 
 **0.8.11** — **Activation hardening — hotfix for v0.8.10 crash.** Fixes a regression where all 4 SSH Lite tree views ("SSH HOSTS", "REMOTE FILES", "ACTIVITY", "PORT FORWARDS") failed to register with *"There is no data provider registered"*. Root cause: an unguarded throw in one service init step aborted the whole `activate()` function before it could reach `createTreeView()`. Each init step (`credential-svc`, `global-state`, `connection-mgr`, `port-forward-svc`, `folder-history-svc`, `snippet-svc`) and each `createTreeView` call is now wrapped in a `safeStep()` helper — a single failure logs to the SSH Lite output channel via `lifecycle / activate/*-failed` and the OTHER tree views still register. A summary `showErrorMessage` lists which step(s) failed so you know which feature is degraded; the rest of the extension keeps working. New Jest smoke test (`src/extension.activate.test.ts`) is the regression net: it asserts all 4 trees register on the happy path AND still register when one service init throws. **Lost hosts? Don't re-add yet.** Saved hosts are stored in your VS Code User `settings.json` under the key `sshLite.hosts` — they were never deleted, just unreadable because the extension never activated. Open `settings.json` (Cmd/Ctrl+Shift+P → "Preferences: Open User Settings (JSON)") and check the `sshLite.hosts` array — your data should still be there. If activation still has problems, open Output → SSH Lite for the per-step log and please file a bug with that log.
 

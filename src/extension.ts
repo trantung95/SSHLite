@@ -1445,20 +1445,87 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
 
-    vscode.commands.registerCommand('sshLite.deleteRemote', async (item?: FileTreeItem) => {
-      if (!item) {
+    // Multi-select-aware delete. VS Code passes (clickedItem, allSelectedItems)
+    // to context-menu commands when the tree has canSelectMany: true
+    // (sshLite.fileExplorer does — see createTreeView at activate-start).
+    // copy/cut already use this pattern; v0.8.12 brings delete in line.
+    vscode.commands.registerCommand('sshLite.deleteRemote', async (
+      item?: FileTreeItem,
+      items?: FileTreeItem[]
+    ) => {
+      const targets = (items && items.length > 0) ? items : (item ? [item] : []);
+      if (targets.length === 0) {
         return;
       }
 
-      logCommand('deleteRemote', item.file.path);
-      const deleted = await fileService.deleteRemote(item.connection, item.file);
-      if (deleted) {
-        logResult('deleteRemote', true, item.file.name);
-        const parentDir = path.dirname(item.file.path) || '/';
-        fileTreeProvider.refreshFolder(item.connection.id, parentDir);
-      } else {
-        logResult('deleteRemote', false, 'Cancelled or failed');
+      // Single-item path: existing per-item confirm UX (with backup-option modal).
+      if (targets.length === 1) {
+        const t = targets[0];
+        logCommand('deleteRemote', t.file.path);
+        const deleted = await fileService.deleteRemote(t.connection, t.file);
+        if (deleted) {
+          logResult('deleteRemote', true, t.file.name);
+          const parentDir = path.dirname(t.file.path) || '/';
+          fileTreeProvider.refreshFolder(t.connection.id, parentDir);
+        } else {
+          logResult('deleteRemote', false, 'Cancelled or failed');
+        }
+        return;
       }
+
+      // Bulk path: one summary confirm, then loop with skipConfirm so each
+      // item doesn't show its own dialog. We collect distinct (connId, parent)
+      // pairs and refresh each once at the end.
+      const sample = targets.slice(0, 5).map((t) => t.file.name).join(', ');
+      const more = targets.length > 5 ? `, +${targets.length - 5} more` : '';
+      const choice = await vscode.window.showWarningMessage(
+        `Delete ${targets.length} items? (${sample}${more})`,
+        {
+          modal: true,
+          detail: 'Each item will be backed up before deletion. Use single-item delete if you want to choose "Delete Permanently" per item.',
+        },
+        'Delete with Backup'
+      );
+      if (choice !== 'Delete with Backup') {
+        logResult('deleteRemote', false, `bulk cancelled (${targets.length} items)`);
+        return;
+      }
+
+      logCommand('deleteRemote', `bulk:${targets.length}`);
+      const parentsToRefresh = new Map<string, Set<string>>(); // connId -> set of parent paths
+      let okCount = 0;
+      let failCount = 0;
+
+      for (const t of targets) {
+        try {
+          const ok = await fileService.deleteRemote(t.connection, t.file, { skipConfirm: true });
+          if (ok) {
+            okCount++;
+            const parent = path.dirname(t.file.path) || '/';
+            if (!parentsToRefresh.has(t.connection.id)) {
+              parentsToRefresh.set(t.connection.id, new Set());
+            }
+            parentsToRefresh.get(t.connection.id)!.add(parent);
+          } else {
+            failCount++;
+          }
+        } catch (e) {
+          failCount++;
+          log(`Bulk delete failed for ${t.file.path}: ${(e as Error).message}`);
+        }
+      }
+
+      for (const [connId, parents] of parentsToRefresh) {
+        for (const parent of parents) {
+          fileTreeProvider.refreshFolder(connId, parent);
+        }
+      }
+
+      logResult('deleteRemote', okCount > 0, `bulk: ${okCount} ok, ${failCount} failed`);
+      vscode.window.setStatusBarMessage(
+        `$(check) Deleted ${okCount}/${targets.length} items` + (failCount ? ` ($(error) ${failCount} failed)` : ''),
+        4000
+      );
     }),
 
     vscode.commands.registerCommand('sshLite.createFolder', async (item?: FileTreeItem | ConnectionTreeItem) => {
@@ -1495,6 +1562,76 @@ export function activate(context: vscode.ExtensionContext): void {
         fileTreeProvider.refreshFolder(connection.id, parentPath);
       } else {
         logResult('createFolder', false, 'Cancelled or failed');
+      }
+    }),
+
+    // Create an empty file on the remote and open it in the editor immediately.
+    // Mirrors the createFolder handler's parent-resolution (connection row or
+    // folder row); collision is rejected inside FileService.createFile via fileExists.
+    vscode.commands.registerCommand('sshLite.createFile', async (item?: FileTreeItem | ConnectionTreeItem) => {
+      if (!item) {
+        return;
+      }
+
+      let connection: typeof item.connection;
+      let parentPath: string;
+
+      if (item instanceof ConnectionTreeItem) {
+        connection = item.connection;
+        const config = vscode.workspace.getConfiguration('sshLite');
+        parentPath = config.get<string>('defaultRemotePath', '~');
+        if (parentPath === '~') {
+          try {
+            const homeCmd = 'echo $HOME';
+            const result = await connection.exec(homeCmd);
+            parentPath = result.trim();
+          } catch {
+            parentPath = '/home/' + connection.host.username;
+          }
+        }
+      } else if (item instanceof FileTreeItem && item.file.isDirectory) {
+        connection = item.connection;
+        parentPath = item.file.path;
+      } else {
+        return;
+      }
+
+      logCommand('createFile', parentPath);
+      const created = await fileService.createFile(connection, parentPath);
+      if (created) {
+        logResult('createFile', true, parentPath);
+        fileTreeProvider.refreshFolder(connection.id, parentPath);
+        // Open in editor immediately (VS Code "New File" UX).
+        try {
+          const stat = await connection.stat(created);
+          await fileService.openRemoteFile(connection, stat);
+        } catch (e) {
+          log(`createFile: opened but stat failed: ${(e as Error).message}`);
+        }
+      } else {
+        logResult('createFile', false, 'Cancelled or failed');
+      }
+    }),
+
+    // Read-only Properties viewer: shells out via stat over the existing SSH
+    // connection (NOT Node child_process) and shows the result in a modal
+    // info message. Path is shell-quoted inside FileService.getRemoteProperties.
+    vscode.commands.registerCommand('sshLite.showProperties', async (item?: FileTreeItem) => {
+      if (!item) {
+        return;
+      }
+      logCommand('showProperties', item.file.path);
+      try {
+        const text = await fileService.getRemoteProperties(item.connection, item.file);
+        await vscode.window.showInformationMessage(text, {
+          modal: true,
+          detail: item.file.path,
+        });
+        logResult('showProperties', true, item.file.name);
+      } catch (e) {
+        const msg = (e as Error).message;
+        vscode.window.showErrorMessage(`Failed to read properties: ${msg}`);
+        logResult('showProperties', false, msg);
       }
     }),
 

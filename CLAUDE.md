@@ -18,14 +18,14 @@ npm run docs:commands                    # Regenerate docs/COMMANDS.md from pack
 
 ## Commands Count — All Locations (CRITICAL)
 
-When adding or removing a command, update the count in **all 5 places** (currently **98**):
+When adding or removing a command, update the count in **all 5 places** (currently **100**):
 
 | File | Location |
 |------|----------|
-| `README.md` | line ~42: `**98 commands**` (Quick Start section) |
-| `.adn/configuration/commands-reference.md` | line 3: `All 98 commands` |
-| `.adn/flow/extension-activation.md` | line ~55: `All 98 commands` |
-| `.adn/README.md` | line ~43: `All 98 commands` |
+| `README.md` | line ~42: `**100 commands**` (Quick Start section) |
+| `.adn/configuration/commands-reference.md` | line 3: `All 100 commands` |
+| `.adn/flow/extension-activation.md` | line ~55: `All 100 commands` |
+| `.adn/README.md` | line ~43: `All 100 commands` |
 | `docs/COMMANDS.md` | **AUTO** — run `npm run docs:commands` |
 
 Get current count: `node -e "const p=require('./package.json'); console.log(p.contributes.commands.length)"`

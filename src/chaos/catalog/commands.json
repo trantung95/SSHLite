@@ -84,6 +84,14 @@
     "title": "New Folder"
   },
   {
+    "id": "sshLite.createFile",
+    "title": "New File"
+  },
+  {
+    "id": "sshLite.showProperties",
+    "title": "Properties"
+  },
+  {
     "id": "sshLite.refreshFiles",
     "title": "Refresh Files"
   },

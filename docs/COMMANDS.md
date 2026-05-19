@@ -1,7 +1,7 @@
 # SSH Lite (SSH Tools) — Command Reference
 
 > Auto-generated from `package.json`. Run `npm run docs:commands` to regenerate.
-> Last updated: 2026-05-19 · Version: 0.8.11
+> Last updated: 2026-05-19 · Version: 0.8.12
 
 This document lists every command registered by SSH Lite (SSH Tools), organized by category.
 Open the Command Palette (**Ctrl+Shift+P** / **Cmd+Shift+P**) and type the command title to find it.
@@ -40,6 +40,8 @@ Open the Command Palette (**Ctrl+Shift+P** / **Cmd+Shift+P**) and type the comma
 | Rename | `sshLite.renameRemote` | `f2` | Keybinding: f2, Tree context menu |
 | Move To... | `sshLite.moveRemote` | — | Tree context menu |
 | New Folder | `sshLite.createFolder` | — | Tree context menu |
+| New File | `sshLite.createFile` | — | Tree context menu |
+| Properties | `sshLite.showProperties` | — | Tree context menu |
 | Refresh Files | `sshLite.refreshFiles` | `ctrl+shift+r / cmd+shift+r (Mac)` | Keybinding: ctrl+shift+r / cmd+shift+r (Mac), View toolbar |
 | Open Terminal | `sshLite.openTerminal` | `ctrl+shift+t / cmd+shift+t (Mac)` | Keybinding: ctrl+shift+t / cmd+shift+t (Mac), Tree context menu |
 | Forward Port | `sshLite.forwardPort` | — | View toolbar |

@@ -33,6 +33,8 @@ var mockReadFile = jest.fn().mockResolvedValue(Buffer.from('file-content'));
 var mockListFiles = jest.fn().mockResolvedValue([]);
 var mockStat = jest.fn().mockResolvedValue({ size: 100, isDirectory: false, name: 'test', path: '/test', modifiedTime: Date.now(), connectionId: 'test' });
 
+var mockFileExists = jest.fn().mockResolvedValue(false);
+
 var mockConnection = {
   id: 'test-host:22:testuser',
   host: { name: 'Test Server', host: 'test-host', port: 22, username: 'testuser' },
@@ -45,6 +47,7 @@ var mockConnection = {
   rename: mockRename,
   mkdir: mockMkdir,
   stat: mockStat,
+  fileExists: mockFileExists,
   searchFiles: jest.fn().mockResolvedValue([]),
   watchFile: jest.fn().mockResolvedValue(false),
   onFileChange: jest.fn().mockReturnValue({ dispose: jest.fn() }),
@@ -468,6 +471,158 @@ describe('FileService - CRUD Operations (Actual)', () => {
       expect(validate('/home/user/projects')).toBeTruthy(); // unchanged
       expect(validate('/home/user/projects/subdir')).toBeTruthy(); // folder into itself
       expect(validate('/other/projects')).toBeNull(); // valid
+    });
+  });
+
+  describe('createFile (actual method)', () => {
+    beforeEach(() => {
+      mockFileExists.mockResolvedValue(false);
+      mockWriteFile.mockResolvedValue(undefined);
+    });
+
+    it('returns undefined when user cancels input; writeFile not called', async () => {
+      (vscode.window.showInputBox as jest.Mock).mockResolvedValue(undefined);
+
+      const result = await service.createFile(mockConnection as any, '/home/user');
+
+      expect(result).toBeUndefined();
+      expect(mockWriteFile).not.toHaveBeenCalled();
+    });
+
+    it('creates an empty file at <parent>/<name> via writeFile(path, Buffer.alloc(0))', async () => {
+      (vscode.window.showInputBox as jest.Mock).mockResolvedValue('hello.txt');
+
+      const result = await service.createFile(mockConnection as any, '/home/user');
+
+      expect(result).toBe('/home/user/hello.txt');
+      expect(mockWriteFile).toHaveBeenCalledWith('/home/user/hello.txt', expect.any(Buffer));
+      const buf = mockWriteFile.mock.calls[0][1] as Buffer;
+      expect(buf.length).toBe(0);
+    });
+
+    it("logs audit with action 'create' on success", async () => {
+      (vscode.window.showInputBox as jest.Mock).mockResolvedValue('greeting.md');
+
+      await service.createFile(mockConnection as any, '/home/user');
+
+      expect(mockAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'create',
+          remotePath: '/home/user/greeting.md',
+          success: true,
+        })
+      );
+    });
+
+    it('returns undefined and shows error when fileExists returns true (collision)', async () => {
+      (vscode.window.showInputBox as jest.Mock).mockResolvedValue('dup.txt');
+      mockFileExists.mockResolvedValueOnce(true);
+
+      const result = await service.createFile(mockConnection as any, '/home/user');
+
+      expect(result).toBeUndefined();
+      expect(mockWriteFile).not.toHaveBeenCalled();
+      expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
+        expect.stringContaining('already exists')
+      );
+    });
+
+    it('returns undefined when writeFile rejects with a non-permission error', async () => {
+      (vscode.window.showInputBox as jest.Mock).mockResolvedValue('protected.txt');
+      mockWriteFile.mockRejectedValueOnce(new Error('Disk full'));
+
+      const result = await service.createFile(mockConnection as any, '/var');
+
+      expect(result).toBeUndefined();
+    });
+
+    it('rejects names that are empty or contain slashes via the showInputBox validator', async () => {
+      (vscode.window.showInputBox as jest.Mock).mockResolvedValue('valid-name');
+
+      await service.createFile(mockConnection as any, '/home/user');
+
+      const options = (vscode.window.showInputBox as jest.Mock).mock.calls[0][0];
+      const validate = options.validateInput;
+
+      expect(validate('')).toBeTruthy();
+      expect(validate('   ')).toBeTruthy();
+      expect(validate('a/b.txt')).toBeTruthy();
+      expect(validate('a\\b.txt')).toBeTruthy();
+      expect(validate('hello.txt')).toBeFalsy();
+    });
+  });
+
+  describe('deleteRemote skipConfirm option', () => {
+    beforeEach(() => {
+      mockDeleteFile.mockResolvedValue(undefined);
+      mockExec.mockResolvedValue('');
+    });
+
+    it('shows confirm dialog by default (no opts)', async () => {
+      (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue('Delete Permanently');
+      const file = createMockRemoteFile('a.txt', { path: '/home/user/a.txt', isDirectory: false });
+
+      await service.deleteRemote(mockConnection as any, file);
+
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+        expect.stringContaining('Delete "a.txt"?'),
+        expect.objectContaining({ modal: true }),
+        expect.any(String),
+        expect.any(String)
+      );
+    });
+
+    it('skips the confirm dialog when opts.skipConfirm is true', async () => {
+      const file = createMockRemoteFile('b.txt', { path: '/home/user/b.txt', isDirectory: false });
+
+      const result = await service.deleteRemote(mockConnection as any, file, { skipConfirm: true });
+
+      expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+      expect(mockDeleteFile).toHaveBeenCalledWith('/home/user/b.txt');
+      expect(result).toBe(true);
+    });
+  });
+
+  describe('getRemoteProperties (actual method)', () => {
+    it('formats stat output into a human-readable multi-line string', async () => {
+      mockExec.mockResolvedValueOnce(
+        "regular file|1234|-rw-r--r--|644|user|1000|user|1000|2026-05-19 14:30:21.000000000 +0700|2026-05-19 14:30:21.000000000 +0700|'hello.txt'\n"
+      );
+      const file = createMockRemoteFile('hello.txt', { path: '/home/user/hello.txt', isDirectory: false });
+
+      const text = await service.getRemoteProperties(mockConnection as any, file);
+
+      expect(text).toContain('Type:        regular file');
+      expect(text).toContain('Size:        1234 bytes');
+      expect(text).toContain('Permissions: -rw-r--r--  (644)');
+      expect(text).toContain('Owner:       user (1000)');
+      expect(text).toContain('Group:       user (1000)');
+      expect(text).toContain("Name:        'hello.txt'");
+    });
+
+    it('throws when stat output is malformed', async () => {
+      mockExec.mockResolvedValueOnce('not-the-right-shape\n');
+      const file = createMockRemoteFile('weird', { path: '/tmp/weird', isDirectory: false });
+
+      await expect(service.getRemoteProperties(mockConnection as any, file)).rejects.toThrow(
+        /Unexpected stat output/
+      );
+    });
+
+    it("shell-quotes paths that contain a literal single quote (passes 'it\\''s.txt' to exec)", async () => {
+      mockExec.mockResolvedValueOnce(
+        "regular file|0|-rw-r--r--|644|user|1000|user|1000|2026-05-19 00:00:00 +0000|2026-05-19 00:00:00 +0000|'/tmp/it'\\''s.txt'\n"
+      );
+      const file = createMockRemoteFile("it's.txt", { path: "/tmp/it's.txt", isDirectory: false });
+
+      await service.getRemoteProperties(mockConnection as any, file);
+
+      const execCmd = mockExec.mock.calls[mockExec.mock.calls.length - 1][0] as string;
+      // The single quote in the path must be escaped as '\'' (close, escape, reopen).
+      expect(execCmd).toContain("'/tmp/it'\\''s.txt'");
+      // And the command never has an unbalanced bare-' that would break out of the quoting.
+      // Sanity check: no raw "it's" sequence (where the quote breaks out).
+      expect(execCmd).not.toMatch(/[^\\]it's/);
     });
   });
 });

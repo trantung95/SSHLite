@@ -1,5 +1,85 @@
 # Changelog
 
+## v0.8.12 — remote file/folder CRUD UX bundle
+
+Closes 4 gaps in the file-explorer right-click menu identified by a CRUD audit during v0.8.11 planning. `chmod` / `chown` are intentionally deferred — Properties exposes the current values, and the natural next step is `sshLite.changePermissions` + `sshLite.changeOwner` shelling out via the SSH-side command runner with the same safe-quote pattern + sudo fallback. Will be tackled in a follow-up release.
+
+### New commands (+2 → 100 total)
+
+**`sshLite.createFile` ("New File")** — empty-file creation via SFTP, mirrors `createFolder`:
+
+- Prompts for filename via `vscode.window.showInputBox` with the same validator as `createFolder` (non-empty, no slashes).
+- Calls `connection.fileExists(remotePath)` (existing helper at [SSHConnection.ts:1572](src/connection/SSHConnection.ts#L1572)) BEFORE the write — if anything already exists at the path, shows `"A file or folder already exists at <path>"` and aborts. No accidental overwrites.
+- Calls `connection.writeFile(remotePath, Buffer.alloc(0))` — uses the same SFTP write path as existing file edits.
+- Audit log: `action: 'create'` (existing `AuditAction` enum value at [AuditService.ts:9](src/services/AuditService.ts#L9)).
+- **Sudo fallback** inside `handlePermissionDenied`: calls `commandGuard.sudoWriteFile(connection, remotePath, Buffer.alloc(0), password)` — same shape as `createFolder`'s `sudoMkdir` branch.
+- Status bar: `$(check) Created file <name>` (with `(sudo)` suffix on the sudo path).
+- **Handler at `extension.ts`** accepts both `FileTreeItem` (folder row) and `ConnectionTreeItem` (connection row). Connection row resolves `~` to `$HOME` via shell echo — same block as `createFolder`. On success: refreshes parent + immediately opens the new file in the editor via `connection.stat()` → `fileService.openRemoteFile()` (the VS Code "New File" UX).
+
+**`sshLite.showProperties` ("Properties")** — read-only stat viewer:
+
+- Right-click a file or folder → modal info message with selectable text:
+  ```
+  Type:        regular file
+  Size:        1234 bytes (1.2 KB)
+  Permissions: -rw-r--r--  (644)
+  Owner:       user (1000)
+  Group:       user (1000)
+  Modified:    2026-05-19 14:30:21.000000000 +0700
+  Accessed:    2026-05-19 14:30:21.000000000 +0700
+  Name:        'hello.txt'
+  ```
+- Implementation: `FileService.getRemoteProperties` issues `stat --format='%F|%s|%A|%a|%U|%u|%G|%g|%y|%x|%N' '<quoted-path>'` over the existing SSH-side command runner (NOT Node's `child_process`). Path is shell-quoted with the codebase's existing escape pattern: `path.replace(/'/g, "'\\''")` (close, escape, reopen — see [FileService.ts:1265](src/services/FileService.ts#L1265) for the established pattern). Safe for paths containing literal single quotes.
+- For symlinks, GNU `stat`'s `%N` emits `'link' -> 'target'` so the symlink target appears on the Name line.
+- Throws on malformed output (`Unexpected stat output: ...`); caller (the command handler) shows it via `showErrorMessage`.
+
+### Bulk delete (multi-select)
+
+VS Code's tree multi-select infra (`canSelectMany: true` on `sshLite.fileExplorer`) has been in place since v0.7. `sshLite.copyRemoteItem` and `sshLite.cutRemoteItem` have used the `(item, items)` handler signature for ages; only `sshLite.deleteRemote` was stuck on single-item. v0.8.12 brings it in line.
+
+- Handler signature: `async (item?: FileTreeItem, items?: FileTreeItem[])`. Targets are `items || [item]`.
+- **1 target**: existing single-item UX unchanged — the per-item modal with "Delete with Backup" / "Delete Permanently" buttons fires from `FileService.deleteRemote`.
+- **2+ targets**: one summary modal `"Delete N items? (a, b, c, +M more)"` with a single "Delete with Backup" button → loop calls `fileService.deleteRemote(t.connection, t.file, { skipConfirm: true })` so each item skips its per-item confirm. Distinct `(connectionId, parentDir)` pairs are collected in a `Map<string, Set<string>>` and refreshed once at the end. Per-item exceptions are caught so one bad item doesn't abort the batch. Status bar reports `Deleted X/N items` plus `(Y failed)` if any failed.
+- **New `skipConfirm` option** on `FileService.deleteRemote`: `opts: { skipConfirm?: boolean; createBackup?: boolean } = {}`. When `skipConfirm: true`, defaults to creating a backup unless caller explicitly passes `createBackup: false`. Single-item callers omit `opts` entirely → unchanged behaviour.
+
+### New Folder on connection rows
+
+The `createFolder` handler at [extension.ts:1531](src/extension.ts#L1531) has always supported `ConnectionTreeItem` (resolves `~` to `$HOME` via shell echo, falls back to `/home/<username>`), but `package.json`'s context-menu entry only fired on `viewItem =~ /^folder/`. v0.8.12 adds the connection-row entry. Right-click a connection → "New Folder" / "New File" now appear at `1_actions@1` / `@2`. Existing folder-row entries: createFolder at `1_actions@4`, createFile new at `@5`, pinFolder bumped to `@6` so the File/Folder/Pin order stays intuitive.
+
+### Other menu entry
+
+Properties on file + folder rows lands at `9_info@1` — a new low-priority submenu group keeps "Properties" at the bottom of the right-click menu (Windows convention). No inline icon slots touched — all v0.8.12 entries are submenu items.
+
+### Tests
+
+11 new tests in `src/services/FileService.crud.test.ts`:
+
+- **createFile** (6 tests): cancel returns undefined; happy path writes `Buffer.alloc(0)` at `<parent>/<name>`; audit log records `action: 'create'`; collision rejected when `fileExists` returns true; write-rejection returns undefined cleanly; validator rejects empty / slash names.
+- **deleteRemote skipConfirm** (2 tests): default shows confirm; `{ skipConfirm: true }` bypasses confirm and calls `deleteFile` immediately.
+- **getRemoteProperties** (3 tests): formats pipe-delimited stat output into the multi-line string; throws on malformed output; the issued command for a path containing `'` contains the `'\''` escape sequence.
+
+Mock helpers updated: `src/__mocks__/testHelpers.ts` adds `fileExists` to the shared mock connection; `FileService.crud.test.ts` adds `mockFileExists` alongside the existing `mockWriteFile`.
+
+### Chaos-catalog rebuild
+
+`src/__tests__/chaos/catalogDrift.test.ts` enforces that `src/chaos/catalog/commands.json` matches the live `package.json contributes.commands`. After adding the 2 new commands, ran `npm run chaos:catalog` to regenerate the file — `[catalog] actions=18 flows=1 commands=100`.
+
+### Files changed
+
+- `src/services/FileService.ts` — `createFile` (new), `getRemoteProperties` (new), `deleteRemote` (added `skipConfirm` option).
+- `src/extension.ts` — replaced `sshLite.deleteRemote` handler with multi-select-aware version; added `sshLite.createFile` and `sshLite.showProperties` handlers.
+- `package.json` — 2 command defs (`createFile`, `showProperties`); 5 menu entries (createFile on folder + connection; createFolder on connection; showProperties on file+folder; pinFolder bumped to @6).
+- `src/services/FileService.crud.test.ts` — 11 new tests in 3 new describe suites.
+- `src/__mocks__/testHelpers.ts` — `fileExists` mock added to `createMockConnection`.
+- `src/chaos/catalog/commands.json` — regenerated (100 entries).
+- `docs/COMMANDS.md` — regenerated via `npm run docs:commands`.
+- `package.json` version `0.8.11` → `0.8.12`.
+- `README.md` — version badge, command count `98` → `100`, v0.8.12 release notes entry.
+- `.adn/configuration/commands-reference.md`, `.adn/flow/extension-activation.md`, `.adn/README.md`, `CLAUDE.md` — command count `98` → `100`.
+- `.adn/CHANGELOG.md` — this entry.
+
+---
+
 ## v0.8.11 — activation hardening hotfix for v0.8.10 crash
 
 ### What broke in v0.8.10
