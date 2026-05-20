@@ -53,17 +53,19 @@ services:
     volumes:
       - ./logs/sshlite-test-sudo:/var/log/sshd
 
-  # Server 5: "Manual smoke" - port 2210 — 4 distinct user configurations
+  # Server 5: "Manual smoke" - port 2215 — 4 distinct user configurations
   # (root / default-sudo / NOPASSWD-sudo / no-sudo) for hand-testing the
   # v0.8.15 save-as-root commands from the extension UI. Not used by any
   # automated jest suite — `docker compose up ssh-manual` brings it up by itself.
+  # Port 2215 chosen to avoid colliding with multios.yml (2210-2214) and
+  # ci.yml (2230-2234).
   ssh-manual:
     build:
       context: .
       dockerfile: Dockerfile.sshd-manual
     container_name: sshlite-manual
     ports:
-      - "2210:22"
+      - "2215:22"
     hostname: manual-smoke
     volumes:
       - ./logs/sshlite-manual:/var/log/sshd

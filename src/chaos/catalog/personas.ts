@@ -30,6 +30,9 @@ export const PERSONAS: Persona[] = [
       'Browse files': 2,
       'Rename a file': 1,
       'Delete a file': 1,
+      // v0.8.15: exercise the new sudo-write path under chaos faults.
+      // Lower weight than plain edits so most editor sessions stay non-elevated.
+      'Save as root': 2,
     },
     chainLengthRange: [3, 8],
   },
@@ -38,6 +41,8 @@ export const PERSONAS: Persona[] = [
     weights: {
       'Run terminal': 5,
       'Run command': 3,
+      // v0.8.15: operators frequently shell out with sudo.
+      'Sudo exec': 2,
     },
     chainLengthRange: [3, 6],
   },
@@ -46,6 +51,8 @@ export const PERSONAS: Persona[] = [
     weights: {
       'Watch file': 4,
       'Tail logs': 3,
+      // v0.8.15: watchers occasionally read root-only files (/etc/shadow-style).
+      'Read as root': 1,
     },
     chainLengthRange: [2, 5],
   },
