@@ -55,6 +55,11 @@ Reads `~/.ssh/config`. Supports SSH keys (RSA / Ed25519 / ECDSA, encrypted), age
 
 ## Release Notes
 
+**0.8.16** — **Donate: multi-token support** (docs-only — no extension code changes).
+
+- SOL QR now accepts **SOL · USDT · USDC** — same Solana address receives any SPL token.
+- TON QR now accepts **TON · USDT** — same TON address receives any Jetton.
+
 **0.8.15** — **Save-as-root redesign** (correctness + security bug fix + new commands).
 
 - **Critical bug fixed** — the previous sudo-fallback wrote your sudo password into the saved file's first line when sudo was `NOPASSWD`-configured or had a warm credential cache. Files like `/etc/nginx/nginx.conf` and `/etc/hosts` could silently get corrupted with your password as their first line, and that password ended up on disk on the remote host. The new `_sudoExecRaw` protocol writes the password only when sudo actually prompts (stderr-sync state machine, modelled on `yy0931/save-as-root`).
@@ -62,15 +67,6 @@ Reads `~/.ssh/config`. Supports SSH keys (RSA / Ed25519 / ECDSA, encrypted), age
 - **New: `Save File as User…`** — save as any specific user (e.g. `www-data`, `postgres`) via `sudo -u`.
 - **New: `New File as Root…`** — right-click a folder (or connection) in REMOTE FILES → creates the file with root ownership in one step.
 - **All sudo paths (write/read/delete/mkdir/rename/list/exec)** now share the fixed protocol; existing auto-fallback dialog ("Sudo Once / Sudo All / Cancel") works the same but no longer leaks the password.
-
-**0.8.13** — **Marketplace listing rewrite** (docs-only — no extension code changes).
-
-- **Pitch rewritten** — leads with the visual/GUI value prop ("click, not type `vi`/`systemctl`/`crontab -e`/`ps aux | grep`").
-- **3-way comparison table** — SSH Lite vs Raw SSH (terminal + vi) vs Remote-SSH; new rows for Interaction, Edit files, and Terminal-at-any-folder.
-- **Features list expanded 6 → 11 bullets** — added Filter by Name, Auto-backup on destructive ops, Sudo fallback, Audit log + Activity panel, Folder pin + recent folders (all already shipped; just not previously documented).
-- **Marketplace badges** — version badge switched to live Marketplace data (no manual edit on future bumps); added live Installs / Downloads / Rating badges.
-- **`package.json` description rewritten** to match the new pitch (text shown on the Marketplace card before clicking into the listing).
-- **19 new search keywords** (62 → 81) covering visual/GUI value prop, competitor alternatives (`remote-ssh alternative`, `filezilla alternative`, etc.), and feature-specific terms.
 
 [Full changelog](https://github.com/trantung95/SSHLite/blob/master/.adn/CHANGELOG.md)
 
@@ -91,14 +87,16 @@ Apache-2.0
 <table width="100%">
 <tr>
 <td align="center" valign="top" width="280">
-  <img src="docs/images/donate/sol-qr.png" width="130" alt="SOL (Solana) QR"><br>
-  <sub>send <b>SOL</b> — via Solana chain</sub><br>
+  <img src="docs/images/donate/sol-qr.png" width="130" alt="SOL / USDT / USDC (Solana) QR"><br>
+  <sub>send <b>SOL · USDT · USDC</b> — via Solana chain</sub><br>
+  <sub><small>(any SPL token accepted)</small></sub><br>
   <sub><code>GURgJGXeFfbV9S4Kr1xgxCrS367w3gkCuuS8up7xiDEG</code></sub>
 </td>
 <td>&nbsp;</td>
 <td align="center" valign="top" width="280">
-  <img src="docs/images/donate/ton-qr.png" width="130" alt="TON (The Open Network) QR"><br>
-  <sub>send <b>TON</b> — via The Open Network chain</sub><br>
+  <img src="docs/images/donate/ton-qr.png" width="130" alt="TON / USDT (The Open Network) QR"><br>
+  <sub>send <b>TON · USDT</b> — via The Open Network chain</sub><br>
+  <sub><small>(any Jetton accepted)</small></sub><br>
   <sub><nobr><code>UQBbblS1-F3ufPBPD13EKfp28G_A_j10kXNn-XuuxQUwoIEs</code></nobr></sub>
 </td>
 </tr>

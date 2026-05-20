@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.8.16 — Donate: multi-token support (docs-only)
+
+README donate section updated — no extension code changes.
+
+- SOL QR alt text and caption updated to show **SOL · USDT · USDC** accepted; note added that any SPL token is accepted on the same Solana address.
+- TON QR alt text and caption updated to show **TON · USDT** accepted; note added that any Jetton is accepted on the same TON address.
+
+---
+
 ## v0.8.15 — Save-as-root redesign (correctness + security bug fix + 3 new commands)
 
 `package.json contributes.commands` count goes 100 → **103**.
