@@ -224,3 +224,41 @@ Setting: `sshLite.enableChangeTracking` (not in package.json — may be internal
 | Rename a file | rename, listFiles | |
 | Delete a file | deleteFile, listFiles | |
 | Bulk upload | mkdir, writeFile, writeFile, writeFile, listFiles | unordered |
+
+---
+
+## Save as root protocol (v0.8.14)
+
+`SSHConnection._sudoExecRaw()` ([src/connection/SSHConnection.ts](../../src/connection/SSHConnection.ts)) drives every sudo-elevated file op (`sudoWriteFile`, `sudoReadFile`, `sudoDeleteFile`, `sudoMkdir`, `sudoRename`, `sudoListFiles`, generic `sudoExec`).
+
+### Wire format
+
+```sh
+sudo [-u <runAsUser>] -S -p 'SSHLITE_SUDO_PASS:<nonce>:' -- \
+  sh -c 'echo "SSHLITE_SUDO_READY:<nonce>:" >&2; <inner_cmd>'
+```
+
+The 16-hex-char `<nonce>` (8 random bytes per call) binds the PROMPT and READY tokens to this single invocation so the inner command's own output cannot synthesize a fake sentinel.
+
+### State machine (reading stderr)
+
+| State | Trigger | Action |
+|-------|---------|--------|
+| `WAIT_PROMPT_OR_READY` | `PROMPT` token | Write `password\n` to stdin. → `WAIT_READY`. |
+| `WAIT_PROMPT_OR_READY` | `READY` token (sudo cached or `NOPASSWD`) | Do NOT write password. Write payload, end stdin. → `STREAMING`. |
+| `WAIT_READY` | `READY` token | Write payload, end stdin. → `STREAMING`. |
+| `STREAMING` | stderr data | Captured as the real inner-command stderr. |
+
+Early-reject (before READY) when stderr contains `incorrect password` / `sorry, try again` / `not in the sudoers` / `sudo: not found`. PROMPT seen a second time without an intervening READY also early-rejects as auth failure (no retry loop).
+
+### Why this protocol
+
+The previous implementation (`sudo -S -p '' -- <cmd>` + unconditional `stream.write(password+'\n')` + payload + `end()`) leaked the password into the file's first line whenever sudo skipped its prompt — that is, every time the user had `NOPASSWD` or sudo's 5–15 min credential cache was warm. The stderr-sync sentinel pattern guarantees:
+
+1. **No password write unless sudo asks** — invariant for the file-content correctness fix.
+2. **No payload write before sudo authenticates** — guarantees payload reaches the inner shell, not a sudo error stream.
+3. **Real-command stderr is cleanly separated** from sudo banners and prompt noise.
+
+### `runAsUser`
+
+Every public sudo method takes an optional 4th `runAsUser?: string` argument (validated `^[a-zA-Z_][a-zA-Z0-9_-]{0,31}$`). The manual `sshLite.saveAsUser` command exposes this; the auto-fallback path always defaults to root.

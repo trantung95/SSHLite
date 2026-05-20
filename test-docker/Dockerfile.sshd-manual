@@ -1,0 +1,91 @@
+# Manual smoke-test SSH server for SSH Lite extension.
+# Provides 4 distinct user-configurations to exercise the v0.8.15
+# save-as-root redesign end-to-end:
+#
+#   - root           : root login over SSH allowed (PermitRootLogin yes).
+#                      Used to verify "save to file owned by root" via direct root login.
+#   - sudouser       : default sudoers config — sudo requires password.
+#                      Exercises the PROMPT path of `_sudoExecRaw`.
+#   - nopwsudouser   : NOPASSWD sudo — sudo skips prompt entirely.
+#                      The original v0.8.14 bug class. Exercises the "READY without PROMPT"
+#                      path: must not write the user-supplied password into the file payload.
+#   - plainuser      : no sudo at all.
+#                      Exercises the auto-fallback dialog & terminal-error classification
+#                      ("not in the sudoers file") path.
+#
+# Pre-seeded fixture files:
+#   /etc/sshlite-test.conf    (root:root, 0600)        — write requires sudo
+#   /etc/sshlite-readonly.txt (root:root, 0644)        — readable by all, write requires sudo
+#   /tmp/sshlite-scratch/     (root:root, 0700)        — write requires sudo
+#   /home/<user>/notes.txt    (<user>:<user>, 0644)    — writable by owner, no sudo needed
+
+FROM alpine:3.19
+
+RUN apk add --no-cache openssh-server bash coreutils findutils grep sudo shadow vim nano
+
+RUN mkdir -p /etc/sudoers.d && chmod 750 /etc/sudoers.d
+
+# ─── User 1: root ──────────────────────────────────────────────────────────────
+# Set a known root password so SSH login as root works.
+RUN echo "root:rootpw123" | chpasswd
+
+# ─── User 2: sudouser (default sudo, password required) ───────────────────────
+RUN adduser -D -s /bin/bash sudouser && \
+    echo "sudouser:sudopw123" | chpasswd && \
+    echo 'sudouser ALL=(ALL) ALL' > /etc/sudoers.d/sudouser && \
+    chmod 0440 /etc/sudoers.d/sudouser
+
+# ─── User 3: nopwsudouser (NOPASSWD sudo — the original bug case) ─────────────
+RUN adduser -D -s /bin/bash nopwsudouser && \
+    echo "nopwsudouser:nopwpw123" | chpasswd && \
+    echo 'nopwsudouser ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/nopwsudouser && \
+    chmod 0440 /etc/sudoers.d/nopwsudouser
+
+# ─── User 4: plainuser (no sudo) ──────────────────────────────────────────────
+RUN adduser -D -s /bin/bash plainuser && \
+    echo "plainuser:plainpw123" | chpasswd
+
+# ─── Fixture files for manual smoke tests ─────────────────────────────────────
+
+# Root-only writable config (the canonical test case for "save as root")
+RUN echo '# SSH Lite manual smoke test config' > /etc/sshlite-test.conf && \
+    echo 'server.port=8080' >> /etc/sshlite-test.conf && \
+    echo 'log.level=info' >> /etc/sshlite-test.conf && \
+    chown root:root /etc/sshlite-test.conf && \
+    chmod 0600 /etc/sshlite-test.conf
+
+# Readable by all, writable only by root (typical /etc file)
+RUN echo 'This is a root-owned readonly fixture for SSH Lite smoke tests.' > /etc/sshlite-readonly.txt && \
+    chown root:root /etc/sshlite-readonly.txt && \
+    chmod 0644 /etc/sshlite-readonly.txt
+
+# Scratch dir owned by root (for "New File as Root" command testing)
+RUN mkdir -p /tmp/sshlite-scratch && \
+    chown root:root /tmp/sshlite-scratch && \
+    chmod 0700 /tmp/sshlite-scratch
+
+# Each user gets a writable home file (so plain non-sudo save works too)
+RUN mkdir -p /home/sudouser/projects && \
+    echo 'Welcome sudouser — this file is yours, no sudo needed.' > /home/sudouser/notes.txt && \
+    chown -R sudouser:sudouser /home/sudouser && \
+    \
+    mkdir -p /home/nopwsudouser/projects && \
+    echo 'Welcome nopwsudouser — this file is yours, no sudo needed.' > /home/nopwsudouser/notes.txt && \
+    chown -R nopwsudouser:nopwsudouser /home/nopwsudouser && \
+    \
+    mkdir -p /home/plainuser/projects && \
+    echo 'Welcome plainuser — this file is yours, no sudo needed.' > /home/plainuser/notes.txt && \
+    chown -R plainuser:plainuser /home/plainuser
+
+# ─── SSH daemon configuration ─────────────────────────────────────────────────
+RUN ssh-keygen -A && \
+    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    echo "UsePAM no" >> /etc/ssh/sshd_config && \
+    echo "Subsystem sftp /usr/lib/ssh/sftp-server" >> /etc/ssh/sshd_config
+
+RUN mkdir -p /var/log/sshd
+
+EXPOSE 22
+
+CMD ["/bin/sh", "-c", "/usr/sbin/sshd -D -e 2>&1 | tee /var/log/sshd/sshd.log"]

@@ -2,7 +2,7 @@
   "name": "ssh-lite",
   "displayName": "SSH Lite (SSH Tools)",
   "description": "A visual SSH client for VS Code. Browse, edit, monitor, manage services - by clicking, not typing vi/systemctl/crontab. Nothing installed on the remote server. Perfect for VPS, cloud servers (AWS/Azure/GCP), and Linux administration.",
-  "version": "0.8.13",
+  "version": "0.8.15",
   "publisher": "hybr8",
   "engines": {
     "vscode": "^1.85.0"
@@ -273,6 +273,24 @@
       {
         "command": "sshLite.createFile",
         "title": "New File",
+        "category": "SSH Lite",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "sshLite.saveAsRoot",
+        "title": "Save File as Root",
+        "category": "SSH Lite",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "sshLite.saveAsUser",
+        "title": "Save File as User…",
+        "category": "SSH Lite",
+        "icon": "$(person)"
+      },
+      {
+        "command": "sshLite.newFileAsRoot",
+        "title": "New File as Root…",
         "category": "SSH Lite",
         "icon": "$(new-file)"
       },
@@ -1188,6 +1206,11 @@
           "group": "1_actions@6"
         },
         {
+          "command": "sshLite.newFileAsRoot",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^folder/",
+          "group": "1_actions@7"
+        },
+        {
           "command": "sshLite.createFile",
           "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
           "group": "1_actions@1"
@@ -1196,6 +1219,11 @@
           "command": "sshLite.createFolder",
           "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
           "group": "1_actions@2"
+        },
+        {
+          "command": "sshLite.newFileAsRoot",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "group": "1_actions@3"
         },
         {
           "command": "sshLite.showProperties",

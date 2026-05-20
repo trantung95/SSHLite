@@ -1,6 +1,6 @@
 # Commands Reference
 
-All 100 commands registered by SSH Lite (SSH Tools), organized by category.
+All 103 commands registered by SSH Lite (SSH Tools), organized by category.
 
 ---
 
@@ -58,6 +58,9 @@ All 100 commands registered by SSH Lite (SSH Tools), organized by category.
 | `sshLite.renameRemote` | Rename | Tree context / Keybinding |
 | `sshLite.moveRemote` | Move | Tree context |
 | `sshLite.createFolder` | Create Folder | Tree context |
+| `sshLite.saveAsRoot` | Save File as Root | Palette |
+| `sshLite.saveAsUser` | Save File as User… | Palette |
+| `sshLite.newFileAsRoot` | New File as Root… | Tree context (folder / connection) / Palette |
 | `sshLite.refreshFiles` | Refresh Files | View title / Keybinding |
 | `sshLite.refreshItem` | Refresh Item | Tree context |
 | `sshLite.clearCache` | Clear Cache | View title |

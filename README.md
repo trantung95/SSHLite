@@ -51,9 +51,17 @@ SSH Lite sits in the middle: as light as raw SSH, as friendly as Remote-SSH.
 
 Reads `~/.ssh/config`. Supports SSH keys (RSA / Ed25519 / ECDSA, encrypted), agent, and password.
 
-**100 commands** — full reference at [docs/COMMANDS.md](https://github.com/trantung95/SSHLite/blob/master/docs/COMMANDS.md).
+**103 commands** — full reference at [docs/COMMANDS.md](https://github.com/trantung95/SSHLite/blob/master/docs/COMMANDS.md).
 
 ## Release Notes
+
+**0.8.15** — **Save-as-root redesign** (correctness + security bug fix + new commands).
+
+- **Critical bug fixed** — the previous sudo-fallback wrote your sudo password into the saved file's first line when sudo was `NOPASSWD`-configured or had a warm credential cache. Files like `/etc/nginx/nginx.conf` and `/etc/hosts` could silently get corrupted with your password as their first line, and that password ended up on disk on the remote host. The new `_sudoExecRaw` protocol writes the password only when sudo actually prompts (stderr-sync state machine, modelled on `yy0931/save-as-root`).
+- **New: `Save File as Root`** — manually elevate the active editor's save without having to let SFTP fail first.
+- **New: `Save File as User…`** — save as any specific user (e.g. `www-data`, `postgres`) via `sudo -u`.
+- **New: `New File as Root…`** — right-click a folder (or connection) in REMOTE FILES → creates the file with root ownership in one step.
+- **All sudo paths (write/read/delete/mkdir/rename/list/exec)** now share the fixed protocol; existing auto-fallback dialog ("Sudo Once / Sudo All / Cancel") works the same but no longer leaks the password.
 
 **0.8.13** — **Marketplace listing rewrite** (docs-only — no extension code changes).
 
@@ -63,13 +71,6 @@ Reads `~/.ssh/config`. Supports SSH keys (RSA / Ed25519 / ECDSA, encrypted), age
 - **Marketplace badges** — version badge switched to live Marketplace data (no manual edit on future bumps); added live Installs / Downloads / Rating badges.
 - **`package.json` description rewritten** to match the new pitch (text shown on the Marketplace card before clicking into the listing).
 - **19 new search keywords** (62 → 81) covering visual/GUI value prop, competitor alternatives (`remote-ssh alternative`, `filezilla alternative`, etc.), and feature-specific terms.
-
-**0.8.12** — **Remote file/folder CRUD UX**. Two new commands + multi-select delete + a long-missing right-click affordance.
-
-- **New File** — right-click a folder or connection → "New File" → name it → the file is created empty via SFTP and opens in your editor immediately. Rejects collisions; sudo fallback if the parent isn't writable as your user.
-- **Properties** — right-click any file or folder → modal showing type, size, permissions, owner, group, mtime, atime, and (for symlinks) the target. Read-only.
-- **Bulk delete** — Ctrl/Shift-click multiple items → right-click → "Delete" → one summary confirm → each item is deleted with its own backup. Status bar reports `Deleted X/N items`.
-- **New Folder on connection rows** — right-clicking a connection in the file tree now exposes "New File" and "New Folder" at the top of the menu (folder rows already supported it).
 
 [Full changelog](https://github.com/trantung95/SSHLite/blob/master/.adn/CHANGELOG.md)
 

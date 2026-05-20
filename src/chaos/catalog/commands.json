@@ -88,6 +88,18 @@
     "title": "New File"
   },
   {
+    "id": "sshLite.saveAsRoot",
+    "title": "Save File as Root"
+  },
+  {
+    "id": "sshLite.saveAsUser",
+    "title": "Save File as User…"
+  },
+  {
+    "id": "sshLite.newFileAsRoot",
+    "title": "New File as Root…"
+  },
+  {
     "id": "sshLite.showProperties",
     "title": "Properties"
   },

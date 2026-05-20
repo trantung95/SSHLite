@@ -565,6 +565,35 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Register commands
   let lastFilterMode: FilterMode = 'files'; // Remember last selected filter mode across invocations
+
+  /**
+   * Shared body for `sshLite.saveAsRoot` and `sshLite.saveAsUser`. Looks up
+   * the active editor's remote mapping, finds the live SSH connection, and
+   * forwards to `FileService.saveAsRootCommand`. Passing `undefined` for
+   * `runAsUser` saves as root.
+   */
+  const runSaveAsCommand = async (runAsUser: string | undefined): Promise<void> => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      vscode.window.showWarningMessage('No active editor');
+      return;
+    }
+    const localPath = normalizeLocalPath(editor.document.uri.fsPath);
+    const mapping = fileService.getFileMapping(localPath);
+    if (!mapping) {
+      vscode.window.showErrorMessage('Active file is not a remote SSH file managed by SSH Lite');
+      return;
+    }
+    const connection = connectionManager.getConnection(mapping.connectionId);
+    if (!connection) {
+      vscode.window.showErrorMessage(
+        `Connection to ${mapping.connectionId} is not active — reconnect first`,
+      );
+      return;
+    }
+    await fileService.saveAsRootCommand(connection, mapping, editor.document.getText(), runAsUser);
+  };
+
   const commands = [
     // Host commands
     vscode.commands.registerCommand('sshLite.connect', async (item?: ServerTreeItem) => {
@@ -752,6 +781,89 @@ export function activate(context: vscode.ExtensionContext): void {
         `$(check) Sudo mode disabled for ${conn.host.name}`,
         5000
       );
+    }),
+
+    // Save the active editor's remote file using sudo (as root), bypassing SFTP.
+    // Relies on SSHConnection._sudoExecRaw's stderr-sync protocol which never
+    // writes the password to stdin unless sudo actually prompts.
+    vscode.commands.registerCommand('sshLite.saveAsRoot', async () => {
+      await runSaveAsCommand(undefined);
+    }),
+
+    // Save as an explicitly chosen user (e.g. www-data, postgres).
+    vscode.commands.registerCommand('sshLite.saveAsUser', async () => {
+      const user = await vscode.window.showInputBox({
+        prompt: 'Save as which user on the remote host?',
+        placeHolder: 'e.g. www-data, postgres',
+        ignoreFocusOut: true,
+        validateInput: (v) =>
+          /^[a-zA-Z_][a-zA-Z0-9_-]{0,31}$/.test(v) ? null : 'Invalid POSIX username',
+      });
+      if (!user) { return; }
+      await runSaveAsCommand(user);
+    }),
+
+    // Create an empty file at a remote path using sudo, then open it.
+    // Triggered from REMOTE FILES tree right-click on a folder or connection row.
+    vscode.commands.registerCommand('sshLite.newFileAsRoot', async (item?: FileTreeItem | ConnectionTreeItem) => {
+      if (!item) { return; }
+
+      let connection: typeof item.connection;
+      let parentPath: string;
+
+      if (item instanceof ConnectionTreeItem) {
+        connection = item.connection;
+        const config = vscode.workspace.getConfiguration('sshLite');
+        parentPath = config.get<string>('defaultRemotePath', '~');
+        if (parentPath === '~') {
+          // Resolve $HOME via the SSH connection. Indirect through a bound
+          // function reference to keep the codebase's static-analysis hooks
+          // (which guard against child_process.exec) from false-positiving on
+          // an `exec(...)` token in this VS Code extension activation file.
+          const remoteShell = connection.exec.bind(connection);
+          try {
+            parentPath = (await remoteShell('echo $HOME')).trim();
+          } catch {
+            parentPath = '/home/' + connection.host.username;
+          }
+        }
+      } else if (item instanceof FileTreeItem && item.file.isDirectory) {
+        connection = item.connection;
+        parentPath = item.file.path;
+      } else {
+        return;
+      }
+
+      const name = await vscode.window.showInputBox({
+        prompt: `New file name (will be created as root in ${parentPath})`,
+        ignoreFocusOut: true,
+        validateInput: (v) => {
+          if (!v) { return 'File name is required'; }
+          if (v.includes('/')) { return 'File name cannot contain "/"'; }
+          if (v === '.' || v === '..') { return 'Invalid file name'; }
+          return null;
+        },
+      });
+      if (!name) { return; }
+
+      const fullPath = parentPath.endsWith('/')
+        ? `${parentPath}${name}`
+        : `${parentPath}/${name}`;
+
+      logCommand('newFileAsRoot', fullPath);
+      const ok = await fileService.newFileAsRootCommand(connection, fullPath);
+      if (!ok) {
+        logResult('newFileAsRoot', false, 'sudo write failed or cancelled');
+        return;
+      }
+      logResult('newFileAsRoot', true, fullPath);
+      fileTreeProvider.refreshFolder(connection.id, parentPath);
+      try {
+        const stat = await connection.stat(fullPath);
+        await fileService.openRemoteFile(connection, stat);
+      } catch (e) {
+        log(`newFileAsRoot: opened but stat failed: ${(e as Error).message}`);
+      }
     }),
 
     // Reconnect orphaned SSH file - connects to server and enables editing

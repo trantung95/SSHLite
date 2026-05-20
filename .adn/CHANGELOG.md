@@ -1,5 +1,76 @@
 # Changelog
 
+## v0.8.15 — Save-as-root redesign (correctness + security bug fix + 3 new commands)
+
+`package.json contributes.commands` count goes 100 → **103**.
+
+### Why
+
+User reported the existing sudo fallback "doesn't work well" ("không hoạt động hiệu quả"). Investigation against the reference implementation `yy0931/save-as-root` exposed a concrete correctness AND security bug in `SSHConnection._sudoExecRaw()`:
+
+- The method ran `sudo -S -p '' -- <command>` and then wrote `password + '\n'` to stdin **unconditionally**, followed by the payload, then closed stdin.
+- When the user has `NOPASSWD` in sudoers, OR when sudo's credential cache (default 5–15 min) was still warm, `sudo` did NOT consume stdin for a password.
+- Result: the `password\n` bytes flowed past sudo straight into `tee` (or `base64 -d`) and were written as the **first line of the saved file** on the remote host. Edits to `/etc/nginx/nginx.conf`, `/etc/hosts`, `/etc/cron.d/*` etc. silently broke (service errors), and the user's sudo password ended up cleartext on the remote disk every save.
+
+### Fix — stderr-sync state machine
+
+`_sudoExecRaw` now builds:
+
+```sh
+sudo [-u <runAsUser>] -S -p 'SSHLITE_SUDO_PASS:<nonce>:' -- \
+  sh -c 'echo "SSHLITE_SUDO_READY:<nonce>:" >&2; <inner_cmd>'
+```
+
+Where `<nonce>` is `crypto.randomBytes(8).toString('hex')` per call (binds tokens to this single invocation; collision probability ~ 2^-64).
+
+State machine reading stderr:
+
+| State | Trigger | Action |
+|-------|---------|--------|
+| `WAIT_PROMPT_OR_READY` | `PROMPT` token seen | Write `password\n`. → `WAIT_READY`. |
+| `WAIT_PROMPT_OR_READY` | `READY` token seen (sudo cached / NOPASSWD) | **Do NOT write password.** Write payload, end stdin. → `STREAMING`. |
+| `WAIT_READY` | `READY` token seen | Write payload, end stdin. → `STREAMING`. |
+| `STREAMING` | stderr data | Captured as the inner command's real stderr. |
+
+Early-reject (before READY) on stderr containing `"incorrect password"` / `"sorry, try again"` / `"not in the sudoers"` / `"sudo: not found"`. PROMPT seen a second time after password was already written also early-rejects as auth failure (no infinite retry loop).
+
+### New commands (3)
+
+- `sshLite.saveAsRoot` — save active editor's remote file via `sudo` (bypassing SFTP). Command palette.
+- `sshLite.saveAsUser` — prompt for a POSIX username, save via `sudo -u <user>`. Command palette.
+- `sshLite.newFileAsRoot` — right-click a folder (or connection row) in REMOTE FILES → name file → created as `root:root` and opened.
+
+All 7 public sudo methods on `SSHConnection` (`sudoExec`, `sudoWriteFile`, `sudoReadFile`, `sudoDeleteFile`, `sudoMkdir`, `sudoRename`, `sudoListFiles`) gained an optional `runAsUser?: string` 4th argument (validated against `^[a-zA-Z_][a-zA-Z0-9_-]{0,31}$` at the boundary).
+
+### What did NOT change
+
+- The auto-fallback flow (EACCES → "Sudo Once / Sudo All / Cancel" dialog → retry) stays exactly as v0.8.13. Bug lived one layer below; fixing the protocol fixes the dialog flow automatically.
+- `sshLite.cacheSudoPassword` setting unchanged (in-memory session-only).
+- `FileService.handlePermissionDenied` not touched — its 37 mock-based tests in `FileService.sudo.test.ts` still pass without modification.
+- Binary file pipeline (base64 encode/decode) preserved; just simplified by dropping the now-redundant inner `sh -c` wrapper since the outer wrapper provides one.
+
+### Files touched
+
+- `src/connection/SSHConnection.ts` — `_sudoExecRaw` rewrite, `categorizeSudoError` + `sudoErrorMessage` helpers, `runAsUser` plumbing on all 7 public sudo methods.
+- `src/services/FileService.ts` — `saveAsRootCommand` and `newFileAsRootCommand` helpers; added `infoLog` import.
+- `src/extension.ts` — `runSaveAsCommand` shared body for the 2 save commands, and 3 new `registerCommand` blocks after `disableSudoMode`.
+- `package.json` — 3 command entries (`saveAsRoot`, `saveAsUser`, `newFileAsRoot`), 2 menu entries (`newFileAsRoot` on folder and connection rows).
+- `src/connection/SSHConnection.sudo.test.ts` (new, 14 tests) — unit-level state-machine regression net.
+- `src/connection/SSHConnection.test.ts` — updated existing sudo mock to drive the new protocol via stderr; added `extractInnerCmd` helper for assertions against the outer-escaped command form.
+- `src/chaos/catalog/commands.json` — regenerated via `npm run chaos:catalog` (103 commands).
+- `.adn/configuration/commands-reference.md`, `.adn/flow/extension-activation.md`, `.adn/README.md`, `README.md` — `100` → `103` count bumps.
+
+### Test status
+
+- `npx jest --no-coverage`: **1485 / 1485** pass (up from 1471 — 14 new in `SSHConnection.sudo.test.ts`).
+- Docker integration test (`test/sudo-integration.docker.test.ts`) — see follow-up commit. Runs a NOPASSWD + password-sudo Alpine container, asserts saved file content equals editor content with no password substring.
+
+### Risk + rollback
+
+Risk: state machine off-by-one or sentinel matching bug → save path breaks for everyone. Mitigation: docker integration test is the gate — case 1 (NOPASSWD with fake password) must pass to prove the original bug is fixed. Public API stays backward-compatible (`runAsUser` is optional). Rollback is a clean `git revert` since all changes land in a single commit.
+
+---
+
 ## v0.8.13 — marketplace listing / README rewrite (docs-only)
 
 No extension code, services, commands, settings, or tests changed. `package.json contributes.commands` count unchanged at 100.

@@ -3,7 +3,7 @@ module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
   roots: ['<rootDir>/src'],
-  testMatch: ['**/docker-ssh.test.ts', '**/docker-ssh-tools.test.ts'],
+  testMatch: ['**/docker-ssh.test.ts', '**/docker-ssh-tools.test.ts', '**/docker-ssh-sudo.test.ts'],
   moduleFileExtensions: ['ts', 'js', 'json'],
   // vscode mock required for SSH Tools service tests
   moduleNameMapper: {

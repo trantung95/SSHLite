@@ -927,7 +927,15 @@ describe('SSHConnection - Actual Class', () => {
     let writtenData: any[];
     let lastExecCmd: string;
 
-    // Create a mock stream that fires close(0) immediately after end() is called
+    /**
+     * Mock stream that drives the new stderr-sync sudo protocol.
+     *
+     * Sequence (when stderr.on('data', handler) is attached by the protocol):
+     *   1. Emit `SSHLITE_SUDO_PASS:<nonce>:` on stderr → protocol writes password.
+     *   2. If `stderr` opt looks like a sudo auth error, emit it next → protocol early-rejects.
+     *   3. Otherwise emit `SSHLITE_SUDO_READY:<nonce>:` → protocol writes payload + ends stdin.
+     *   4. After READY: emit any configured stdout/stderr, then close(exitCode).
+     */
     function createAutoStream(opts?: { exitCode?: number; stdout?: string; stderr?: string }) {
       const exitCode = opts?.exitCode ?? 0;
       const stdout = opts?.stdout ?? '';
@@ -935,6 +943,8 @@ describe('SSHConnection - Actual Class', () => {
       const dataHandlers: any[] = [];
       const stderrHandlers: any[] = [];
       const closeHandlers: any[] = [];
+
+      const isAuthFailure = /sorry, try again|incorrect password|not in the sudoers|sudo: not found|sudo: command not found/i.test(stderr);
 
       const stream: any = {
         on: jest.fn().mockImplementation((event: string, handler: any) => {
@@ -944,21 +954,43 @@ describe('SSHConnection - Actual Class', () => {
         }),
         stderr: {
           on: jest.fn().mockImplementation((event: string, handler: any) => {
-            if (event === 'data') { stderrHandlers.push(handler); }
+            if (event !== 'data') { return stream.stderr; }
+            stderrHandlers.push(handler);
+
+            // Drive the protocol simulation. Defer to next tick so the rest
+            // of the protocol's handler registration completes first.
+            process.nextTick(() => {
+              const nonceMatch = lastExecCmd.match(/SSHLITE_SUDO_PASS:([0-9a-f]+):/);
+              const nonce = nonceMatch ? nonceMatch[1] : 'fakenonce';
+
+              // 1. PROMPT → protocol writes password.
+              handler(Buffer.from(`SSHLITE_SUDO_PASS:${nonce}:`));
+
+              process.nextTick(() => {
+                if (isAuthFailure) {
+                  // 2. Auth-error stderr appears BEFORE READY → protocol early-rejects.
+                  handler(Buffer.from(stderr));
+                  // No close needed — early-reject calls stream.destroy().
+                  return;
+                }
+                // 3. READY → protocol writes payload + ends stdin.
+                handler(Buffer.from(`SSHLITE_SUDO_READY:${nonce}:`));
+                // 4. Emit configured stdout/stderr, then close.
+                process.nextTick(() => {
+                  if (stdout) { dataHandlers.forEach(h => h(Buffer.from(stdout))); }
+                  if (stderr) { stderrHandlers.forEach(h => h(Buffer.from(stderr))); }
+                  closeHandlers.forEach(h => h(exitCode));
+                });
+              });
+            });
+
             return stream.stderr;
           }),
         },
         write: jest.fn().mockImplementation((data: any) => {
           writtenData.push(data);
         }),
-        end: jest.fn().mockImplementation(() => {
-          // Fire events after end() — simulates server processing
-          process.nextTick(() => {
-            if (stdout) { dataHandlers.forEach(h => h(Buffer.from(stdout))); }
-            if (stderr) { stderrHandlers.forEach(h => h(Buffer.from(stderr))); }
-            closeHandlers.forEach(h => h(exitCode));
-          });
-        }),
+        end: jest.fn(),
         destroy: jest.fn(),
       };
       return stream;
@@ -977,6 +1009,15 @@ describe('SSHConnection - Actual Class', () => {
       };
     });
 
+    // Helper (scope: 'Sudo operations') — pull the inner shell script out of
+    // `sh -c '<...>'` and reverse the outer single-quote escaping ('\'' → ')
+    // so assertions can match the pre-escape command shape passed to _sudoExecRaw.
+    function extractInnerCmd(sudoCmd: string): string {
+      const m = sudoCmd.match(/sh -c '(.*)'$/);
+      if (!m) { return sudoCmd; }
+      return m[1].replace(/'\\''/g, "'");
+    }
+
     describe('sudoExec', () => {
       it('should send password via stdin followed by newline', async () => {
         (connection as any)._client.exec.mockImplementation((cmd: string, cb: any) => {
@@ -988,9 +1029,16 @@ describe('SSHConnection - Actual Class', () => {
         expect(writtenData[0]).toBe('secret\n');
       });
 
-      it('should construct sudo -S -p command', async () => {
+      it('should construct sudo -S -p command with nonce-bound sentinel tokens', async () => {
         await connection.sudoExec('ls /root', 'pass');
-        expect(lastExecCmd).toBe("sudo -S -p '' -- ls /root");
+        // New stderr-sync protocol: sudo -S with a nonce-bound prompt + sh -c wrapper
+        // emitting a matching READY sentinel before running the inner command.
+        expect(lastExecCmd).toMatch(/^sudo -S -p 'SSHLITE_SUDO_PASS:[0-9a-f]{16}:' -- sh -c '/);
+        const nonceMatch = lastExecCmd.match(/SSHLITE_SUDO_PASS:([0-9a-f]{16}):/);
+        expect(nonceMatch).not.toBeNull();
+        const nonce = nonceMatch![1];
+        expect(lastExecCmd).toContain(`SSHLITE_SUDO_READY:${nonce}:`);
+        expect(lastExecCmd).toContain('ls /root');
       });
 
       it('should throw on incorrect password', async () => {
@@ -1038,7 +1086,9 @@ describe('SSHConnection - Actual Class', () => {
 
       it('should escape single quotes in path', async () => {
         await connection.sudoWriteFile("/etc/it's/config", Buffer.from('x'), 'pass');
-        expect(lastExecCmd).toContain("it'\\''s");
+        // After path-escape: it'\''s ; after inner script then outer sh -c wrap
+        // and double-unescape, the pre-wrap form should reappear.
+        expect(extractInnerCmd(lastExecCmd)).toContain("it'\\''s");
       });
     });
 
@@ -1050,34 +1100,34 @@ describe('SSHConnection - Actual Class', () => {
         });
         const result = await connection.sudoReadFile('/etc/shadow', 'pass');
         expect(result.toString()).toBe('root:x:0:0');
-        expect(lastExecCmd).toContain("cat '/etc/shadow'");
+        expect(extractInnerCmd(lastExecCmd)).toContain("cat '/etc/shadow'");
       });
     });
 
     describe('sudoDeleteFile', () => {
       it('should use rm for files', async () => {
         await connection.sudoDeleteFile('/etc/old.conf', 'pass', false);
-        expect(lastExecCmd).toContain("rm '/etc/old.conf'");
-        expect(lastExecCmd).not.toContain('-rf');
+        expect(extractInnerCmd(lastExecCmd)).toContain("rm '/etc/old.conf'");
+        expect(extractInnerCmd(lastExecCmd)).not.toContain('-rf');
       });
 
       it('should use rm -rf for directories', async () => {
         await connection.sudoDeleteFile('/opt/oldapp', 'pass', true);
-        expect(lastExecCmd).toContain("rm -rf '/opt/oldapp'");
+        expect(extractInnerCmd(lastExecCmd)).toContain("rm -rf '/opt/oldapp'");
       });
     });
 
     describe('sudoMkdir', () => {
       it('should use mkdir -p', async () => {
         await connection.sudoMkdir('/opt/newapp/config', 'pass');
-        expect(lastExecCmd).toContain("mkdir -p '/opt/newapp/config'");
+        expect(extractInnerCmd(lastExecCmd)).toContain("mkdir -p '/opt/newapp/config'");
       });
     });
 
     describe('sudoRename', () => {
       it('should use mv with both paths escaped', async () => {
         await connection.sudoRename('/etc/old.conf', '/etc/new.conf', 'pass');
-        expect(lastExecCmd).toContain("mv '/etc/old.conf' '/etc/new.conf'");
+        expect(extractInnerCmd(lastExecCmd)).toContain("mv '/etc/old.conf' '/etc/new.conf'");
       });
     });
 

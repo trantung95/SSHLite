@@ -1172,39 +1172,183 @@ export class SSHConnection implements ISSHConnection {
   }
 
   /**
-   * Execute a sudo command, piping password via stdin.
-   * Returns { stdout, stderr, code } for callers that need fine-grained control.
+   * Classify a sudo error from stderr. Returns null when the text is not a
+   * recognized sudo failure (so caller can keep waiting / fall back to generic).
+   */
+  private categorizeSudoError(stderr: string): 'auth' | 'sudoers' | 'no-sudo' | null {
+    const lower = stderr.toLowerCase();
+    if (lower.includes('incorrect password') || lower.includes('sorry, try again')) {
+      return 'auth';
+    }
+    if (lower.includes('not in the sudoers') || lower.includes('is not allowed to run sudo')) {
+      return 'sudoers';
+    }
+    if (lower.includes('sudo: command not found') || lower.includes('sudo: not found')) {
+      return 'no-sudo';
+    }
+    return null;
+  }
+
+  private sudoErrorMessage(category: 'auth' | 'sudoers' | 'no-sudo'): string {
+    switch (category) {
+      case 'auth': return 'Sudo authentication failed: incorrect password';
+      case 'sudoers': return 'User is not in the sudoers file or not allowed to use sudo';
+      case 'no-sudo': return 'sudo is not installed on the remote host';
+    }
+  }
+
+  /**
+   * Execute a sudo command using a stderr-sync state-machine protocol.
+   *
+   * Wire format we run on the remote:
+   *   sudo [-u <runAsUser>] -S -p 'SSHLITE_SUDO_PASS:<nonce>:' -- \
+   *     sh -c 'echo "SSHLITE_SUDO_READY:<nonce>:" >&2; <command>'
+   *
+   * Why two sentinel tokens?
+   *  - PROMPT is what sudo itself emits BEFORE reading the password.
+   *    We only write `password\n` when we observe PROMPT — never blindly.
+   *    This prevents the catastrophic bug where a NOPASSWD- or cached-sudo
+   *    invocation would write the password into the file payload via tee.
+   *  - READY is emitted by our inner shell AFTER sudo has handed control over.
+   *    Seeing READY guarantees auth succeeded AND the inner shell is blocking
+   *    on stdin, so it is safe to stream the payload.
+   *
+   * The 8-byte random nonce binds both tokens to this single call: stderr
+   * output from the inner command cannot accidentally match a sentinel
+   * (collision probability ~ 2^-64 per call).
    */
   private async _sudoExecRaw(
     command: string,
     password: string,
-    stdinPayload?: Buffer | string
+    stdinPayload?: Buffer | string,
+    options?: { runAsUser?: string }
   ): Promise<{ stdout: Buffer; stderr: string; code: number }> {
     if (!this._client || this.state !== ConnectionState.Connected) {
       throw new ConnectionError('Not connected');
     }
 
-    const sudoCmd = `sudo -S -p '' -- ${command}`;
-    logSSHCommand(this.host.name, `[sudo] ${command}`);
+    // Validate runAsUser if provided. Usernames cannot legally contain shell
+    // metacharacters; enforcing the regex here removes any injection surface.
+    let userFlag = '';
+    if (options?.runAsUser !== undefined) {
+      if (!/^[a-zA-Z_][a-zA-Z0-9_-]{0,31}$/.test(options.runAsUser)) {
+        throw new SFTPError(`Invalid runAsUser: ${options.runAsUser}`);
+      }
+      userFlag = `-u ${options.runAsUser} `;
+    }
+
+    const nonce = crypto.randomBytes(8).toString('hex');
+    const PROMPT_TOKEN = `SSHLITE_SUDO_PASS:${nonce}:`;
+    const READY_TOKEN = `SSHLITE_SUDO_READY:${nonce}:`;
+
+    // Build the inner script and escape single quotes for embedding inside
+    // the outer single-quoted `sh -c '...'` argument: ' becomes '\''
+    const innerScript = `echo '${READY_TOKEN}' >&2; ${command}`;
+    const escapedInner = innerScript.replace(/'/g, "'\\''");
+    const sudoCmd = `sudo ${userFlag}-S -p '${PROMPT_TOKEN}' -- sh -c '${escapedInner}'`;
+
+    logSSHCommand(
+      this.host.name,
+      `[sudo${options?.runAsUser ? ` -u ${options.runAsUser}` : ''}] ${command}`
+    );
+    infoLog('sudo', 'exec/begin', {
+      host: this.host.name,
+      runAsUser: options?.runAsUser ?? 'root',
+      withPayload: stdinPayload !== undefined,
+    });
 
     const stream = await this._execChannel(sudoCmd);
     const TIMEOUT_MS = 60_000;
 
     return new Promise((resolve, reject) => {
       const stdoutChunks: Buffer[] = [];
-      let stderr = '';
+      let stderrBuf = '';   // stderr seen before READY (sudo prompt/banner/errors)
+      let realStderr = '';  // stderr captured after READY (the inner command's own stderr)
+      let state: 'WAIT_PROMPT_OR_READY' | 'WAIT_READY' | 'STREAMING' = 'WAIT_PROMPT_OR_READY';
+      let passwordWritten = false;
       let settled = false;
 
-      const timer = setTimeout(() => {
-        if (!settled) {
-          settled = true;
+      const settle = (action: () => void): void => {
+        if (settled) { return; }
+        settled = true;
+        clearTimeout(timer);
+        action();
+      };
+
+      const earlyReject = (category: 'auth' | 'sudoers' | 'no-sudo'): void => {
+        infoLog('sudo', 'auth/fail', { host: this.host.name, reason: category });
+        settle(() => {
           stream.destroy();
-          reject(new SFTPError('Sudo operation timed out after 60 seconds'));
-        }
+          reject(new SFTPError(this.sudoErrorMessage(category)));
+        });
+      };
+
+      const timer = setTimeout(() => {
+        settle(() => {
+          infoLog('sudo', 'exec/timeout', {
+            host: this.host.name,
+            lastState: state,
+            stderrBufLen: stderrBuf.length,
+            passwordWritten,
+          });
+          stream.destroy();
+          reject(new SFTPError(
+            'sudo did not respond within 60s — possible NOPASSWD misconfig, network stall, or sudo not present'
+          ));
+        });
       }, TIMEOUT_MS);
 
-      stream.stderr.on('data', (data: Buffer) => {
-        stderr += data.toString();
+      stream.stderr.on('data', (chunk: Buffer) => {
+        if (settled) { return; }
+        const text = chunk.toString();
+
+        if (state === 'STREAMING') {
+          realStderr += text;
+          return;
+        }
+
+        stderrBuf += text;
+
+        // 1. Early-reject on known sudo error phrases (only meaningful before READY).
+        const category = this.categorizeSudoError(stderrBuf);
+        if (category) {
+          earlyReject(category);
+          return;
+        }
+
+        // 2. READY detected → auth passed (or was cached/NOPASSWD), inner shell
+        //    is now blocking on stdin. Safe to stream the payload.
+        const readyIdx = stderrBuf.indexOf(READY_TOKEN);
+        if (readyIdx !== -1) {
+          const mode = passwordWritten ? 'authed' : 'cached';
+          diagLog('sudo', 'auth/ready-seen', { host: this.host.name, nonce, mode });
+          // Anything after READY in this chunk is the start of real stderr.
+          realStderr = stderrBuf.slice(readyIdx + READY_TOKEN.length);
+          stderrBuf = '';
+          state = 'STREAMING';
+          if (stdinPayload !== undefined) {
+            stream.write(stdinPayload);
+          }
+          stream.end();
+          return;
+        }
+
+        // 3. PROMPT detected → sudo is asking for the password.
+        if (stderrBuf.includes(PROMPT_TOKEN)) {
+          if (passwordWritten) {
+            // PROMPT seen again after we already wrote a password → sudo
+            // rejected the first attempt. Treat as auth failure rather than
+            // re-sending the same wrong password in a loop.
+            earlyReject('auth');
+            return;
+          }
+          diagLog('sudo', 'auth/prompt-seen', { host: this.host.name, nonce });
+          stream.write(password + '\n');
+          passwordWritten = true;
+          // Strip the consumed prompt from buffer so it isn't matched again.
+          stderrBuf = stderrBuf.replace(PROMPT_TOKEN, '');
+          state = 'WAIT_READY';
+        }
       });
 
       stream.on('data', (data: Buffer) => {
@@ -1213,35 +1357,49 @@ export class SSHConnection implements ISSHConnection {
 
       stream.on('close', (code: number) => {
         if (settled) { return; }
-        settled = true;
-        clearTimeout(timer);
-        resolve({
-          stdout: Buffer.concat(stdoutChunks),
-          stderr,
-          code: code ?? 0,
+        settle(() => {
+          const finalCode = code ?? 0;
+          const finalStderr = state === 'STREAMING' ? realStderr : stderrBuf;
+          if (finalCode === 0) {
+            infoLog('sudo', 'exec/ok', {
+              host: this.host.name,
+              code: finalCode,
+              stdoutBytes: stdoutChunks.reduce((s, b) => s + b.length, 0),
+            });
+          } else {
+            infoLog('sudo', 'exec/fail', {
+              host: this.host.name,
+              code: finalCode,
+              state,
+              stderrTail: finalStderr.slice(-200),
+            });
+          }
+          resolve({
+            stdout: Buffer.concat(stdoutChunks),
+            stderr: finalStderr,
+            code: finalCode,
+          });
         });
       });
 
-      // Write password + newline (sudo -S reads this from stdin)
-      stream.write(password + '\n');
-
-      // Write additional payload if provided (e.g., file content for tee)
-      if (stdinPayload !== undefined) {
-        stream.write(stdinPayload);
-      }
-
-      // Close stdin to signal EOF
-      stream.end();
+      stream.on('error', (err: Error) => {
+        settle(() => {
+          infoLog('sudo', 'exec/stream-error', {
+            host: this.host.name,
+            errorMessage: err.message,
+          });
+          reject(new SFTPError(`Sudo stream error: ${err.message}`));
+        });
+      });
     });
   }
 
   /** Check sudo exec result for common error patterns and throw appropriate errors */
   private checkSudoResult(result: { stderr: string; code: number }, operation: string): void {
     if (result.code === 0) { return; }
-
-    const lower = result.stderr.toLowerCase();
-    if (lower.includes('incorrect password') || lower.includes('sorry, try again')) {
-      throw new SFTPError('Sudo authentication failed: incorrect password');
+    const category = this.categorizeSudoError(result.stderr);
+    if (category) {
+      throw new SFTPError(this.sudoErrorMessage(category));
     }
     // Sanitize stderr to avoid leaking password-related info
     const safeStderr = result.stderr.replace(/\[sudo\].*password.*/gi, '').trim();
@@ -1250,10 +1408,10 @@ export class SSHConnection implements ISSHConnection {
 
   /**
    * Execute a command with sudo. General-purpose wrapper.
-   * Password is piped via stdin, never appears in command string or logs.
+   * Password is piped via stdin only when sudo actually prompts.
    */
-  async sudoExec(command: string, password: string): Promise<string> {
-    const result = await this._sudoExecRaw(command, password);
+  async sudoExec(command: string, password: string, runAsUser?: string): Promise<string> {
+    const result = await this._sudoExecRaw(command, password, undefined, { runAsUser });
     this.checkSudoResult(result, 'Sudo command');
     return result.stdout.toString('utf8');
   }
@@ -1262,18 +1420,19 @@ export class SSHConnection implements ISSHConnection {
    * Write a file using sudo tee via SSH exec channel.
    * Binary files use base64 encode/decode pipeline.
    */
-  async sudoWriteFile(remotePath: string, content: Buffer, password: string): Promise<void> {
+  async sudoWriteFile(remotePath: string, content: Buffer, password: string, runAsUser?: string): Promise<void> {
     const escaped = this.escapePath(remotePath);
     const isBinary = content.includes(0);
 
     if (isBinary) {
-      // Binary: pipe base64-encoded content through base64 -d into tee
-      const command = `sh -c 'base64 -d > '\\''${escaped}'\\'''`;
-      const result = await this._sudoExecRaw(command, password, Buffer.from(content.toString('base64')));
+      // Binary: pipe base64-encoded content through base64 -d.
+      // No outer `sh -c` needed — the wrapper in _sudoExecRaw already provides one.
+      const command = `base64 -d > '${escaped}'`;
+      const result = await this._sudoExecRaw(command, password, Buffer.from(content.toString('base64')), { runAsUser });
       this.checkSudoResult(result, 'Sudo write');
     } else {
       const command = `tee '${escaped}' > /dev/null`;
-      const result = await this._sudoExecRaw(command, password, content);
+      const result = await this._sudoExecRaw(command, password, content, { runAsUser });
       this.checkSudoResult(result, 'Sudo write');
     }
   }
@@ -1281,9 +1440,9 @@ export class SSHConnection implements ISSHConnection {
   /**
    * Read a file using sudo cat.
    */
-  async sudoReadFile(remotePath: string, password: string): Promise<Buffer> {
+  async sudoReadFile(remotePath: string, password: string, runAsUser?: string): Promise<Buffer> {
     const escaped = this.escapePath(remotePath);
-    const result = await this._sudoExecRaw(`cat '${escaped}'`, password);
+    const result = await this._sudoExecRaw(`cat '${escaped}'`, password, undefined, { runAsUser });
     this.checkSudoResult(result, 'Sudo read');
     return result.stdout;
   }
@@ -1291,38 +1450,38 @@ export class SSHConnection implements ISSHConnection {
   /**
    * Delete a file or directory using sudo rm.
    */
-  async sudoDeleteFile(remotePath: string, password: string, isDirectory: boolean = false): Promise<void> {
+  async sudoDeleteFile(remotePath: string, password: string, isDirectory: boolean = false, runAsUser?: string): Promise<void> {
     const escaped = this.escapePath(remotePath);
     const command = isDirectory ? `rm -rf '${escaped}'` : `rm '${escaped}'`;
-    const result = await this._sudoExecRaw(command, password);
+    const result = await this._sudoExecRaw(command, password, undefined, { runAsUser });
     this.checkSudoResult(result, 'Sudo delete');
   }
 
   /**
    * Create a directory using sudo mkdir -p.
    */
-  async sudoMkdir(remotePath: string, password: string): Promise<void> {
+  async sudoMkdir(remotePath: string, password: string, runAsUser?: string): Promise<void> {
     const escaped = this.escapePath(remotePath);
-    const result = await this._sudoExecRaw(`mkdir -p '${escaped}'`, password);
+    const result = await this._sudoExecRaw(`mkdir -p '${escaped}'`, password, undefined, { runAsUser });
     this.checkSudoResult(result, 'Sudo mkdir');
   }
 
   /**
    * Rename/move a file or directory using sudo mv.
    */
-  async sudoRename(oldPath: string, newPath: string, password: string): Promise<void> {
+  async sudoRename(oldPath: string, newPath: string, password: string, runAsUser?: string): Promise<void> {
     const escapedOld = this.escapePath(oldPath);
     const escapedNew = this.escapePath(newPath);
-    const result = await this._sudoExecRaw(`mv '${escapedOld}' '${escapedNew}'`, password);
+    const result = await this._sudoExecRaw(`mv '${escapedOld}' '${escapedNew}'`, password, undefined, { runAsUser });
     this.checkSudoResult(result, 'Sudo rename');
   }
 
   /**
    * List directory contents using sudo ls -la, parsed into IRemoteFile[].
    */
-  async sudoListFiles(remotePath: string, password: string): Promise<IRemoteFile[]> {
+  async sudoListFiles(remotePath: string, password: string, runAsUser?: string): Promise<IRemoteFile[]> {
     const escaped = this.escapePath(remotePath);
-    const result = await this._sudoExecRaw(`ls -la '${escaped}'`, password);
+    const result = await this._sudoExecRaw(`ls -la '${escaped}'`, password, undefined, { runAsUser });
     this.checkSudoResult(result, 'Sudo list');
 
     const output = result.stdout.toString('utf8');

@@ -15,6 +15,8 @@ const SERVERS = [
   { host: '127.0.0.1', port: 2201, username: 'testuser', password: 'testpass' },
   { host: '127.0.0.1', port: 2202, username: 'testuser', password: 'testpass' },
   { host: '127.0.0.1', port: 2203, username: 'admin', password: 'adminpass' },
+  // v0.8.14: sudo-configured server for the stderr-sync protocol integration test.
+  { host: '127.0.0.1', port: 2204, username: 'usernopasswd', password: 'nopw' },
 ];
 
 /** Try to connect to an SSH server, resolve true if successful */

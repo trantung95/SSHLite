@@ -1,0 +1,65 @@
+# SSH test server with three sudo-configured users.
+# Used by src/integration/docker-ssh-sudo.test.ts to validate the new
+# stderr-sync sudo protocol against a real `sudo` binary under three sudoers
+# configurations:
+#
+#   - usernopasswd : password 'nopw'        → sudoers grants NOPASSWD: ALL
+#   - userpasswd   : password 'pwsecret'    → sudoers grants ALL (requires password)
+#   - targetuser   : password 'targetpw'    → regular user, used as `runAsUser` target
+#
+# The whole point of the test is to verify that when sudo skips its password
+# prompt (NOPASSWD or warm credential cache), the user-supplied password is
+# NEVER written into the file payload — the bug fixed in v0.8.14.
+
+FROM alpine:3.19
+
+RUN apk add --no-cache openssh-server bash coreutils findutils grep sudo shadow
+
+# Allow shell access for sudoers.d files we add below.
+RUN mkdir -p /etc/sudoers.d && chmod 750 /etc/sudoers.d
+
+# User 1: NOPASSWD sudo. This is the case that historically corrupted files
+# because sudo never consumes stdin for a password.
+RUN adduser -D -s /bin/bash usernopasswd && \
+    echo "usernopasswd:nopw" | chpasswd && \
+    echo 'usernopasswd ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/usernopasswd && \
+    chmod 0440 /etc/sudoers.d/usernopasswd
+
+# User 2: regular password-required sudo. Verifies the PROMPT → password write → READY path.
+# `timestamp_type=global` makes the sudo credential cache shared across separate
+# ssh exec channels (each channel is a new process with no tty, so the default
+# tty-bound cache wouldn't survive between calls — needed for the "cached sudo"
+# case 5 of docker-ssh-sudo.test.ts).
+RUN adduser -D -s /bin/bash userpasswd && \
+    echo "userpasswd:pwsecret" | chpasswd && \
+    printf '%s\n' \
+      'Defaults:userpasswd timestamp_type=global' \
+      'Defaults:userpasswd timestamp_timeout=10' \
+      'userpasswd ALL=(ALL) ALL' \
+      > /etc/sudoers.d/userpasswd && \
+    chmod 0440 /etc/sudoers.d/userpasswd
+
+# User 3: ordinary user — destination owner for `sudo -u <user>` ownership checks.
+RUN adduser -D -s /bin/bash targetuser && \
+    echo "targetuser:targetpw" | chpasswd
+
+# Test fixtures
+RUN echo 'original-root-only-content' > /etc/sshlite-rootfile.txt && \
+    chmod 0600 /etc/sshlite-rootfile.txt && \
+    chown root:root /etc/sshlite-rootfile.txt
+
+RUN mkdir -p /home/usernopasswd && chown usernopasswd:usernopasswd /home/usernopasswd
+RUN mkdir -p /home/userpasswd && chown userpasswd:userpasswd /home/userpasswd
+
+# Host keys + sshd config (password auth, no PAM, sftp subsystem)
+RUN ssh-keygen -A && \
+    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && \
+    echo "UsePAM no" >> /etc/ssh/sshd_config && \
+    echo "Subsystem sftp /usr/lib/ssh/sftp-server" >> /etc/ssh/sshd_config
+
+RUN mkdir -p /var/log/sshd
+
+EXPOSE 22
+
+CMD ["/bin/sh", "-c", "/usr/sbin/sshd -D -e 2>&1 | tee /var/log/sshd/sshd.log"]

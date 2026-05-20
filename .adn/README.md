@@ -40,7 +40,7 @@ The `.adn/` folder allows any AI assistant (or new developer) to fully understan
     search-flow.md                       # Search webview -> grep/find -> results
   configuration/
     settings-reference.md                # All sshLite.* settings with defaults
-    commands-reference.md                # All 100 commands, context values, when clauses
+    commands-reference.md                # All 103 commands, context values, when clauses
   testing/
     testing-strategy.md                  # Unit/Docker/MultiOS, mock architecture
     chaos-testing.md                     # Chaos bug discovery module + AI review checklist

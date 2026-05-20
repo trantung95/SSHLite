@@ -16,6 +16,7 @@ import { CredentialService } from './CredentialService';
 import { formatFileSize, normalizeLocalPath } from '../utils/helpers';
 import { isLikelyBinary, DEFAULT_PROGRESSIVE_CONFIG } from '../types/progressive';
 import { registerTabLabel, getConnectionPrefix } from '../utils/connectionPrefix';
+import { infoLog } from '../utils/diagnosticLog';
 
 /**
  * Large file size threshold (100MB default)
@@ -4829,6 +4830,103 @@ export class FileService {
           return this.handlePermissionDenied(connection, fileName, retryFn);
         }
       }
+      return false;
+    }
+  }
+
+  // ─── Manual sudo command helpers (Save as Root / Save as User / New File as Root) ──
+
+  /**
+   * Write the active editor's content to a remote file using sudo, bypassing
+   * the SFTP path entirely. Used by the `Save File as Root` and
+   * `Save File as User…` commands so users don't have to wait for an EACCES
+   * before elevating.
+   *
+   * On success the editor is reverted from disk to clear the dirty marker.
+   * On auth failure the cached sudo password is cleared.
+   */
+  async saveAsRootCommand(
+    connection: SSHConnection,
+    mapping: FileMapping,
+    newContent: string,
+    runAsUser?: string,
+  ): Promise<void> {
+    const fileName = path.basename(mapping.remotePath);
+    const userLabel = runAsUser ?? 'root';
+
+    const password = await this.getSudoPassword(connection);
+    if (!password) { return; }
+
+    const content = Buffer.from(newContent, 'utf-8');
+    infoLog('sudo', 'manual-save/begin', {
+      host: connection.host.name,
+      op: 'write',
+      runAsUser: userLabel,
+      bytes: content.length,
+    });
+
+    try {
+      await connection.sudoWriteFile(mapping.remotePath, content, password, runAsUser);
+      infoLog('sudo', 'manual-save/ok', {
+        host: connection.host.name,
+        remotePath: mapping.remotePath,
+        bytes: content.length,
+        runAsUser: userLabel,
+      });
+      vscode.window.setStatusBarMessage(
+        `$(shield) Saved ${fileName} as ${userLabel}`,
+        5000,
+      );
+      // Refresh the editor from disk so VS Code's dirty marker clears.
+      await vscode.commands.executeCommand('workbench.action.files.revert');
+    } catch (err) {
+      const message = (err as Error).message;
+      infoLog('sudo', 'manual-save/fail', {
+        host: connection.host.name,
+        remotePath: mapping.remotePath,
+        runAsUser: userLabel,
+        errorMessage: message,
+      });
+      if (message.toLowerCase().includes('incorrect password')) {
+        CredentialService.getInstance().clearSudoPassword(connection.host.id);
+      }
+      vscode.window.showErrorMessage(`Save as ${userLabel} failed: ${message}`);
+    }
+  }
+
+  /**
+   * Create an empty file at the given remote path using sudo. The caller is
+   * responsible for refreshing the tree and opening the file in the editor.
+   */
+  async newFileAsRootCommand(
+    connection: SSHConnection,
+    remotePath: string,
+  ): Promise<boolean> {
+    const password = await this.getSudoPassword(connection);
+    if (!password) { return false; }
+
+    infoLog('sudo', 'manual-newfile/begin', {
+      host: connection.host.name,
+      remotePath,
+    });
+    try {
+      await connection.sudoWriteFile(remotePath, Buffer.alloc(0), password);
+      infoLog('sudo', 'manual-newfile/ok', {
+        host: connection.host.name,
+        remotePath,
+      });
+      return true;
+    } catch (err) {
+      const message = (err as Error).message;
+      infoLog('sudo', 'manual-newfile/fail', {
+        host: connection.host.name,
+        remotePath,
+        errorMessage: message,
+      });
+      if (message.toLowerCase().includes('incorrect password')) {
+        CredentialService.getInstance().clearSudoPassword(connection.host.id);
+      }
+      vscode.window.showErrorMessage(`New file as root failed: ${message}`);
       return false;
     }
   }
