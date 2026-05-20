@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y \
     grep \
     procps \
     net-tools \
+    sudo \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /var/run/sshd
@@ -18,6 +19,14 @@ RUN mkdir -p /var/run/sshd
 RUN useradd -m -s /bin/bash testuser && echo "testuser:testpass" | chpasswd
 RUN useradd -m -s /bin/bash admin && echo "admin:adminpass" | chpasswd
 RUN useradd -m -s /bin/bash keyuser && passwd -d keyuser
+
+# v0.8.15: sudo users for cross-OS sudo protocol coverage
+RUN useradd -m -s /bin/bash usernopasswd && echo "usernopasswd:nopw" | chpasswd && \
+    useradd -m -s /bin/bash userpasswd && echo "userpasswd:pwsecret" | chpasswd && \
+    mkdir -p /etc/sudoers.d && chmod 750 /etc/sudoers.d && \
+    echo 'usernopasswd ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/usernopasswd && \
+    echo 'userpasswd ALL=(ALL) ALL' > /etc/sudoers.d/userpasswd && \
+    chmod 0440 /etc/sudoers.d/usernopasswd /etc/sudoers.d/userpasswd
 
 # Configure sshd: enable password + pubkey auth
 RUN sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \

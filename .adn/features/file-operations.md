@@ -224,6 +224,9 @@ Setting: `sshLite.enableChangeTracking` (not in package.json — may be internal
 | Rename a file | rename, listFiles | |
 | Delete a file | deleteFile, listFiles | |
 | Bulk upload | mkdir, writeFile, writeFile, writeFile, listFiles | unordered |
+| Save as root | sudoWriteFile | Exercises the v0.8.15 stderr-sync protocol under chaos faults. Graceful skip when the connected user lacks sudo. |
+| Read as root | sudoReadFile | Same protocol, read path. Targets read-only system files (/etc/hostname etc.). |
+| Sudo exec | sudoExec | Runs a small set of safe commands (whoami, true, id -un) via sudo to validate the protocol against `sudoExec` callers, not just file ops. |
 
 ---
 

@@ -10,6 +10,7 @@ module.exports = {
     '**/integration/multios-monitor.test.ts',
     '**/integration/multios-commandguard.test.ts',
     '**/integration/multios-ssh-tools.test.ts',
+    '**/integration/multios-sudo.test.ts',
   ],
   moduleFileExtensions: ['ts', 'js', 'json'],
   // Map vscode to mock since extension classes import vscode

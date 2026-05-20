@@ -18,6 +18,10 @@ RUN apk add --no-cache openssh-server bash coreutils findutils grep sudo shadow
 # Allow shell access for sudoers.d files we add below.
 RUN mkdir -p /etc/sudoers.d && chmod 750 /etc/sudoers.d
 
+# User 0: root — direct SSH login. Validates "save as a user that doesn't
+# need sudo at all" (root can write anywhere via plain SFTP).
+RUN echo "root:rootpw" | chpasswd
+
 # User 1: NOPASSWD sudo. This is the case that historically corrupted files
 # because sudo never consumes stdin for a password.
 RUN adduser -D -s /bin/bash usernopasswd && \
@@ -43,18 +47,33 @@ RUN adduser -D -s /bin/bash userpasswd && \
 RUN adduser -D -s /bin/bash targetuser && \
     echo "targetuser:targetpw" | chpasswd
 
+# User 4: plain user with NO sudo configuration at all. Validates the
+# "User is not in the sudoers file" terminal-error classification path
+# end-to-end against a real sudo (not just mock).
+RUN adduser -D -s /bin/bash plainuser && \
+    echo "plainuser:plainpw" | chpasswd
+
 # Test fixtures
 RUN echo 'original-root-only-content' > /etc/sshlite-rootfile.txt && \
     chmod 0600 /etc/sshlite-rootfile.txt && \
     chown root:root /etc/sshlite-rootfile.txt
 
+# /etc/sshlite-readonly.txt — root-owned, world-readable. Used by the root-login
+# case to write directly without sudo (root can SFTP-write anywhere).
+RUN echo 'placeholder for root-direct-write test' > /etc/sshlite-readonly.txt && \
+    chmod 0644 /etc/sshlite-readonly.txt && \
+    chown root:root /etc/sshlite-readonly.txt
+
 RUN mkdir -p /home/usernopasswd && chown usernopasswd:usernopasswd /home/usernopasswd
 RUN mkdir -p /home/userpasswd && chown userpasswd:userpasswd /home/userpasswd
+RUN mkdir -p /home/plainuser && chown plainuser:plainuser /home/plainuser
 
-# Host keys + sshd config (password auth, no PAM, sftp subsystem)
+# Host keys + sshd config. PermitRootLogin yes is required for the v0.8.15
+# 4-user matrix (the "save with the user that already has full FS access"
+# case is exercised by direct root login).
 RUN ssh-keygen -A && \
     sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
-    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && \
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && \
     echo "UsePAM no" >> /etc/ssh/sshd_config && \
     echo "Subsystem sftp /usr/lib/ssh/sftp-server" >> /etc/ssh/sshd_config
 

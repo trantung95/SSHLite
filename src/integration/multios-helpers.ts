@@ -31,6 +31,15 @@ export const CI_SERVERS: OSServerConfig[] = [
 
 export const ADMIN_CONFIG = { username: 'admin', password: 'adminpass' };
 
+/**
+ * v0.8.15 sudo users — present on every CI server (Alpine + 4 glibc distros).
+ * Used by multios-sudo.test.ts to validate the stderr-sync sudo protocol
+ * works identically across distros (different `sudo` binaries, different
+ * shell defaults).
+ */
+export const SUDO_NOPASSWD = { username: 'usernopasswd', password: 'nopw' };
+export const SUDO_PASSWORD = { username: 'userpasswd', password: 'pwsecret' };
+
 // ---- Test Key Paths ----
 
 const TEST_KEYS_DIR = path.resolve(__dirname, '../../test-docker/test-keys');
@@ -82,6 +91,9 @@ export function setupCredentialServiceMock(): void {
         if (credId === 'admin-password') return Promise.resolve('adminpass');
         if (credId === 'rsa-passphrase') return Promise.resolve('testphrase');
         if (credId === 'wrong-password') return Promise.resolve('wrongpass');
+        // v0.8.15: sudo user credentials (used by multios-sudo.test.ts)
+        if (credId === 'sudo-nopasswd-pw') return Promise.resolve('nopw');
+        if (credId === 'sudo-password-pw') return Promise.resolve('pwsecret');
         return Promise.resolve(null);
       }
     ),
@@ -148,13 +160,20 @@ export async function createTestConnection(
   let credential: SavedCredential | undefined;
 
   switch (authType) {
-    case 'password':
+    case 'password': {
+      // v0.8.15: map sudo usernames to their dedicated credential IDs so
+      // setupCredentialServiceMock returns the right password.
+      let credId = 'test-password';
+      if (username === 'admin') { credId = 'admin-password'; }
+      else if (username === 'usernopasswd') { credId = 'sudo-nopasswd-pw'; }
+      else if (username === 'userpasswd') { credId = 'sudo-password-pw'; }
       credential = {
-        id: username === 'admin' ? 'admin-password' : 'test-password',
+        id: credId,
         label: `${username} Password`,
         type: 'password',
       };
       break;
+    }
     case 'rsa':
       credential = {
         id: 'rsa-key',

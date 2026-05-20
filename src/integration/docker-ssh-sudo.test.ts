@@ -24,8 +24,10 @@ import { SavedCredential, CredentialService } from '../services/CredentialServic
 const HOST = '127.0.0.1';
 const PORT = 2204;
 
-const USER_NOPW = { id: 'sudo-nopw', label: 'sudo-nopw',  username: 'usernopasswd', password: 'nopw' };
-const USER_PW   = { id: 'sudo-pw',   label: 'sudo-pw',    username: 'userpasswd',   password: 'pwsecret' };
+const USER_NOPW = { id: 'sudo-nopw',  label: 'sudo-nopw',  username: 'usernopasswd', password: 'nopw' };
+const USER_PW   = { id: 'sudo-pw',    label: 'sudo-pw',    username: 'userpasswd',   password: 'pwsecret' };
+const USER_ROOT = { id: 'sudo-root',  label: 'sudo-root',  username: 'root',         password: 'rootpw' };
+const USER_PLAIN = { id: 'sudo-plain', label: 'sudo-plain', username: 'plainuser',   password: 'plainpw' };
 
 const _knownHosts: Record<string, unknown> = {};
 
@@ -243,7 +245,44 @@ describe('Sudo stderr-sync protocol — Docker integration (port 2204)', () => {
   }, 60_000);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // CASE 7 — large payload (1 MiB) survives the protocol without truncation
+  // CASE 7 — root login: direct SFTP write to /etc (no sudo needed)
+  // Validates the v0.8.15 user-matrix completeness: a connection that's
+  // already root must work without ever invoking the sudo wrapper.
+  // ─────────────────────────────────────────────────────────────────────────
+  it('root login: writes /etc file via plain SFTP without invoking sudo path', async () => {
+    const c = await mkConn(USER_ROOT);
+    try {
+      const file = `/etc/sshlite-readonly.txt`;
+      const payload = Buffer.from(`root-write-${Date.now()}\n`);
+
+      // No sudo — root owns / and can write /etc directly via SFTP.
+      await c.writeFile(file, payload);
+
+      const onDisk = await readFileViaSftp(c, file);
+      expect(onDisk.toString('utf-8')).toBe(payload.toString('utf-8'));
+    } finally {
+      await disconnect(c);
+    }
+  }, 30_000);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // CASE 8 — plain user (no sudoers entry) gets the "not in sudoers" classified
+  // error end-to-end (proves the early-reject categorization works against a
+  // real sudo binary, not just the mocked stderr in the unit suite).
+  // ─────────────────────────────────────────────────────────────────────────
+  it('plain user without sudo: surfaces "not in the sudoers file" error', async () => {
+    const c = await mkConn(USER_PLAIN);
+    try {
+      await expect(
+        c.sudoWriteFile(`/etc/sshlite-rootfile.txt`, Buffer.from('x'), 'plainpw'),
+      ).rejects.toThrow(/sudoers|not allowed/i);
+    } finally {
+      await disconnect(c);
+    }
+  }, 30_000);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // CASE 9 — large payload (1 MiB) survives the protocol without truncation
   // ─────────────────────────────────────────────────────────────────────────
   it('NOPASSWD: 1 MiB random payload round-trips with matching sha256', async () => {
     const c = await mkConn(USER_NOPW);

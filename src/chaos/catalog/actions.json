@@ -104,6 +104,27 @@
     "unordered": true
   },
   {
+    "name": "Save as root",
+    "primitives": [
+      "sudoWriteFile"
+    ],
+    "source": "features/file-operations.md"
+  },
+  {
+    "name": "Read as root",
+    "primitives": [
+      "sudoReadFile"
+    ],
+    "source": "features/file-operations.md"
+  },
+  {
+    "name": "Sudo exec",
+    "primitives": [
+      "sudoExec"
+    ],
+    "source": "features/file-operations.md"
+  },
+  {
     "name": "Cross-file search",
     "primitives": [
       "listFiles",

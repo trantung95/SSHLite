@@ -7,7 +7,8 @@ RUN apk add --no-cache \
     findutils \
     grep \
     procps \
-    net-tools
+    net-tools \
+    sudo
 
 # Generate host keys
 RUN ssh-keygen -A
@@ -16,6 +17,14 @@ RUN ssh-keygen -A
 RUN adduser -D -s /bin/bash testuser && echo "testuser:testpass" | chpasswd
 RUN adduser -D -s /bin/bash admin && echo "admin:adminpass" | chpasswd
 RUN adduser -D -s /bin/bash keyuser && passwd -u keyuser
+
+# v0.8.15: sudo users for cross-OS sudo protocol coverage
+RUN adduser -D -s /bin/bash usernopasswd && echo "usernopasswd:nopw" | chpasswd && \
+    adduser -D -s /bin/bash userpasswd && echo "userpasswd:pwsecret" | chpasswd && \
+    mkdir -p /etc/sudoers.d && chmod 750 /etc/sudoers.d && \
+    echo 'usernopasswd ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/usernopasswd && \
+    echo 'userpasswd ALL=(ALL) ALL' > /etc/sudoers.d/userpasswd && \
+    chmod 0440 /etc/sudoers.d/usernopasswd /etc/sudoers.d/userpasswd
 
 # Configure sshd: enable password + pubkey auth
 RUN sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \

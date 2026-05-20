@@ -1,10 +1,17 @@
 FROM alpine:3.19
 
-RUN apk add --no-cache openssh-server bash coreutils findutils grep
+RUN apk add --no-cache openssh-server bash coreutils findutils grep sudo
 
 # Create test users
 RUN adduser -D -s /bin/bash testuser && echo "testuser:testpass" | chpasswd
 RUN adduser -D -s /bin/bash admin && echo "admin:adminpass" | chpasswd
+
+# v0.8.15: give testuser NOPASSWD sudo so chaos primitives (sudoWriteFile /
+# sudoReadFile / sudoExec) can exercise the stderr-sync protocol on basic
+# chaos servers (ports 2201-2203 + multios-alpine 2210). Test-container only.
+RUN mkdir -p /etc/sudoers.d && chmod 750 /etc/sudoers.d && \
+    echo 'testuser ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/testuser && \
+    chmod 0440 /etc/sudoers.d/testuser
 
 # Generate host keys
 RUN ssh-keygen -A
@@ -22,6 +29,8 @@ RUN mkdir -p /home/testuser/projects/src && \
     echo 'TODO: fix bug' > /home/testuser/projects/src/todo.ts && \
     mkdir -p /home/testuser/logs && \
     echo '[2024-01-01] Server started' > /home/testuser/logs/app.log && \
+    mkdir -p /home/testuser/big && \
+    dd if=/dev/zero of=/home/testuser/big/huge.log bs=1M count=10 2>/dev/null && \
     chown -R testuser:testuser /home/testuser
 
 RUN mkdir -p /home/admin/configs && \
