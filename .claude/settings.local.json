@@ -9,5 +9,18 @@
       "Bash(npx jest:*)",
       "Bash(git status:*)"
     ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo \"MANDATORY SESSION-START CHECKLIST - Complete BEFORE any tool call or response, including clarifying questions:\\n  1. Read d:/CT/Repos/SSHLite/.adn/lessons.md (FULL FILE, not skim)\\n  2. Read d:/CT/Repos/SSHLite/.adn/README.md (routing map for the other 18 .adn/ files)\\n  3. Read d:/CT/Repos/SSHLite/.adn/growth/self-maintenance.md (the checklist to run before declaring done)\\n  4. If the task touches a specific area, also Read the matching .adn/ file per CLAUDE.md routing (e.g. features/*.md for feature work, flow/*.md for activation/event order, configuration/commands-reference.md for commands)\\n  5. State the focused area + which LITE principle is at risk at the top of your first reply\\n  6. Before any release-bump or commit, run the Version Bump / Commands Count / Self-Maintenance checklists from CLAUDE.md mentally - no skipping\\nSkipping = restart from root per .adn/lessons.md. Do not optimise this away. The user has explicitly authorised the read cost.\""
+          }
+        ]
+      }
+    ]
   }
 }
