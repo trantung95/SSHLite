@@ -1,8 +1,8 @@
 {
   "name": "ssh-lite",
   "displayName": "SSH Lite (SSH Tools)",
-  "description": "Lightweight SSH client for VS Code. Browse and edit remote files, run terminals, forward ports, manage processes and services, push SSH keys, run snippets and batch commands - all without installing anything on remote servers. Perfect for VPS, cloud servers (AWS/Azure/GCP), and Linux administration.",
-  "version": "0.8.12",
+  "description": "A visual SSH client for VS Code. Browse, edit, monitor, manage services - by clicking, not typing vi/systemctl/crontab. Nothing installed on the remote server. Perfect for VPS, cloud servers (AWS/Azure/GCP), and Linux administration.",
+  "version": "0.8.13",
   "publisher": "hybr8",
   "engines": {
     "vscode": "^1.85.0"
@@ -73,7 +73,26 @@
     "ssh utilities",
     "ssh manager",
     "ssh suite",
-    "remote tools"
+    "remote tools",
+    "ssh gui",
+    "visual ssh",
+    "graphical ssh",
+    "ssh gui client",
+    "remote-ssh alternative",
+    "filezilla alternative",
+    "winscp alternative",
+    "mobaxterm alternative",
+    "termius alternative",
+    "remote process manager",
+    "systemctl gui",
+    "cron editor",
+    "crontab gui",
+    "remote diff",
+    "ssh snippets",
+    "ssh key manager",
+    "sudo ssh",
+    "ssh audit",
+    "ssh grep"
   ],
   "icon": "images/icon.png",
   "galleryBanner": {

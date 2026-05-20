@@ -1,5 +1,56 @@
 # Changelog
 
+## v0.8.13 — marketplace listing / README rewrite (docs-only)
+
+No extension code, services, commands, settings, or tests changed. `package.json contributes.commands` count unchanged at 100.
+
+### What changed and why
+
+The Marketplace listing renders the README and the listing card description. Both were feature-list style — accurate but didn't lead with what makes SSH Lite different from raw SSH (terminal + vi) or Remote-SSH. User flagged this: the central value prop is **visual/GUI ops replacing CLI muscle memory** (`vi`, `systemctl`, `crontab -e`, `ps aux | grep`). v0.8.13 rewrites the marketing layer accordingly. Also closed a long-standing gap where 5 user-visible features (Filter by Name from v0.8.5, Auto-backup on destructive ops, Sudo fallback, Audit log + Activity panel, Folder pin + recent folders) had shipped but were never surfaced in the README's Features list.
+
+### README changes
+
+- **Opening pitch rewritten** ([README.md](../README.md)) — "A visual SSH client for VS Code ... by clicking, not by typing `vi` / `systemctl` / `crontab -e` / `ps aux | grep`".
+- **"Why SSH Lite?" comparison table** — was 2 columns (SSH Lite vs Remote-SSH), now 3 columns (SSH Lite vs Raw SSH (terminal + vi) vs Remote-SSH). New rows: Interaction, Edit files, Terminal at any folder. SSH Lite is positioned in the middle: as light as raw SSH, as friendly as Remote-SSH. The "Edit files" row is symmetric across SSH Lite and Remote-SSH ("In VS Code" on both) — no marketing asymmetry that overclaims SSH Lite has more editor features than Remote-SSH.
+- **Features list expanded 6 → 11 bullets**:
+  - Bullet 1 (File browser): added create / rename / delete (auto-backup) / Properties to the existing list; tab badges note kept.
+  - Bullet 2 (**Filter by name**, new) — instant filter on any folder or full connection in the tree; non-matches grayed, count shown next to the row. v0.8.5 feature.
+  - Bullet 3 (Multi-server search): added "(one webview instead of per-host `grep -r`)" clarifier.
+  - Bullet 5 (**Visual SSH Tools suite**, reworded): leads with "instead of `ps aux` / `systemctl` / `printenv` / `crontab -e` / `diff` / `ssh-keygen`, click through ..." framing — same feature list, repositioned as CLI-replacement.
+  - 4 new bullets at the end (already-shipped features now surfaced): **Auto-backup on every destructive op** (timestamped `.bak` per delete/overwrite, restore via "Show Server Backups"); **Sudo fallback** (write-permission-denied → sudo password → retry over same SSH connection); **Audit log + Activity panel** (every SSH op recorded; cancel running ops from the Activity tree); **Folder pin + recent folders** (per-host quick-jump).
+- **Marketplace badges row** — switched the version badge from a static `version-X.X.X-blue` to dynamic `visual-studio-marketplace/v/hybr8.ssh-lite` (auto-fetched from the Marketplace API after publish — no manual edit needed on future bumps). Added 3 new live-data badges: Installs, Downloads, Rating. Dropped the "status-beta" badge (project is mature enough that "beta" undersells).
+- **Release Notes section trimmed** — was 10 versions (0.8.3 → 0.8.12), now 2 (last 2 versions only). Older entries live only in this CHANGELOG via the [Full changelog] link at the bottom of the section. v0.8.11 trimmed to 2 short bullets (was a 700-word wall of text); v0.8.12 trimmed from 7 dev-detailed bullets (function names, file paths, test counts, audit-log formats) down to 4 user-actionable bullets.
+
+### package.json changes
+
+- **Description rewritten** — was a feature-list ("Browse and edit remote files, run terminals, forward ports, manage processes and services..."), now leads with the visual/GUI framing matching the README pitch. This text is what shows on the Marketplace card **before** a user clicks into the listing — first impression now has the right pitch.
+- **19 new keywords added** (62 → 81 total), in three thematic blocks:
+  - Visual/GUI value prop (4): `ssh gui`, `visual ssh`, `graphical ssh`, `ssh gui client`
+  - Competitor alternatives (5): `remote-ssh alternative`, `filezilla alternative`, `winscp alternative`, `mobaxterm alternative`, `termius alternative`
+  - Feature-specific (10): `remote process manager`, `systemctl gui`, `cron editor`, `crontab gui`, `remote diff`, `ssh snippets`, `ssh key manager`, `sudo ssh`, `ssh audit`, `ssh grep`
+
+### CLAUDE.md changes
+
+- **Version Bump rule step 2 marked "No manual edit"** — the README version badge is now dynamic (Marketplace-fetched). Future version bumps skip the badge edit. The table column explains the new state inline.
+- **Version Bump rule step 4 expanded** — now mandates "prepend new section, then **trim to keep only the last 2 versions**" with a "Why trim README" rationale block. Closes a long-standing gap where the README Release Notes section grew unbounded across versions because the original rule only said "prepend" without a "trim cold" step.
+
+### Local-memory updates
+
+Two new feedback memories saved to `~/.claude/projects/d--CT-Repos-SSHLite/memory/`:
+
+- `feedback_readme_release_notes.md` — README Release Notes section must keep only the last 2 versions; older entries live only in `.adn/CHANGELOG.md`. Captures the rationale (Marketplace card freshness, value-prop visibility) so future Claude sessions don't drift back to unbounded growth.
+- `feedback_readme_gui_value.md` — README marketing must lead with visual/GUI value (click vs type `vi`/`systemctl`/`crontab -e`), not just feature lists. Captures the user's framing direction so future copy-edits / vendor description rewrites stay aligned.
+
+Both are local-only (pure session-context, not project doc). The canonical version of both rules lives in `CLAUDE.md` ("Version Bump — All Locations" and the new pitch in the README itself).
+
+### Files changed
+
+- `README.md` — title kept; badge row (6 badges, 4 dynamic); pitch rewrite; comparison table 3-col; Features list 11 bullets; Release Notes trimmed to v0.8.13 + v0.8.12.
+- `package.json` — version `0.8.12` → `0.8.13`; description rewrite; +19 keywords.
+- `CLAUDE.md` — Version Bump rule (step 2 marked no-edit; step 4 expanded with trim rule and "why trim README" rationale).
+- `docs/COMMANDS.md` — regenerated via `npm run docs:commands` (unchanged content; commands still at 100).
+- `.adn/CHANGELOG.md` — this entry.
+
 ## v0.8.12 — remote file/folder CRUD UX bundle
 
 Closes 4 gaps in the file-explorer right-click menu identified by a CRUD audit during v0.8.11 planning. `chmod` / `chown` are intentionally deferred — Properties exposes the current values, and the natural next step is `sshLite.changePermissions` + `sshLite.changeOwner` shelling out via the SSH-side command runner with the same safe-quote pattern + sudo fallback. Will be tackled in a follow-up release.

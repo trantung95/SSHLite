@@ -37,10 +37,12 @@ When bumping the version (e.g. "update to 0.8.0"), change **in this order**:
 | Step | File | What |
 |------|------|------|
 | 1 | `package.json` line 5 | `"version": "X.X.X"` |
-| 2 | `README.md` line 3 | `![Version](https://img.shields.io/badge/version-X.X.X-blue)` |
+| 2 | `README.md` version badge | **No manual edit** — the badge is `visual-studio-marketplace/v/hybr8.ssh-lite` (dynamic, auto-fetched from Marketplace after publish). Skip this step. |
 | 3 | run `npm run docs:commands` | auto-updates `docs/COMMANDS.md` |
-| 4 | `README.md` Release Notes | prepend new `### X.X.X —` section |
-| 5 | `.adn/CHANGELOG.md` | prepend new `## vX.X.X —` section |
+| 4 | `README.md` Release Notes | prepend new `**X.X.X** —` section, then **trim the section to keep only the last 2 versions** — older entries already live in `.adn/CHANGELOG.md` via the `[Full changelog]` link |
+| 5 | `.adn/CHANGELOG.md` | prepend new `## vX.X.X —` section (this is the full archive — never trim) |
+
+**Why trim README**: the Marketplace listing renders README. A long, accreting Release Notes section pushes donate / license / features below the fold and makes the page look stale. Keep README = last 2 versions + `[Full changelog]` link; keep `.adn/CHANGELOG.md` = full history.
 
 `package-lock.json` and `docs/superpowers/specs/` are **never** touched manually.
 
