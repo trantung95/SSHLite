@@ -87,16 +87,21 @@ src/
 - No preloading → lazy-load on demand
 - Cache aggressively, reuse single connection, debounce 300ms+
 - True data, no missing → wait for all results, never truncate/filter/lose data
+- Backward compat: no breaking changes to connection configs / host settings / keybindings without a migration path; opt-in over opt-out; trace all callers before removing a function
 
 ## AI Behavior (CRITICAL)
 
-1. **Plan first, code later.** Wrong mid-way? Stop, re-plan
-2. **Delegate hard tasks to sub-agents.** Keep main context clean
+0. **Session start**: Read `.adn/lessons.md` in full before any other work. Same mistake twice = broken process.
+1. **Plan first, code later.** Wrong mid-way? Stop, re-plan from scratch. When a conclusion turns out wrong, discard it AND every assumption it rested on, then rebuild from first evidence. Patching on top of a broken premise compounds the error.
+2. **Sub-agents first (no permission needed).** Dispatch a sub-agent for ANY task that can be separated — research, code exploration, file reads, parallel analysis, code review, Docker/test runs. Do NOT ask the user before dispatching; announce with a one-line notification at the top of the response (e.g. "Dispatching sub-agent: read ssh2 event docs"). Sub-agents may spawn their own sub-agents recursively; avoid going beyond 3 levels deep (main - level 1 - level 2) unless clearly necessary. Goal: keep main context clean, prevent context compaction.
 3. **Self-improvement loop.** Record lessons to `.adn/lessons.md`
 4. **Prove it works.** Run tests, check logs — not done until verified
 5. **Self-fix bugs.** Check logs, find root cause, fix it
 6. **Repro on a real local SSH server (docker), not mocks**, whenever a bug touches ssh2 / sftp / event-loop / large-file paths. Start with `docker compose -f test-docker/docker-compose.yml up -d ssh-server-1`. Mocks confirm code shape, not crash behaviour under real crypto load.
 7. **Codex will review your output once you are done** — self-verify rigorously before reporting complete
+8. **Auto code-review before claiming done.** After any TypeScript + test change set, dispatch the `superpowers:requesting-code-review` skill before reporting complete. Catches async/Promise issues, missing guards, untested edge cases before commit.
+9. **Auto-document after every prompt.** After every response, scan all data that entered context (user message, tool results, error output, file contents): does anything here have generalizable value for future work? If yes, add it to `.adn/lessons.md` (tactical one-offs) or `CLAUDE.md` (reusable patterns) in the SAME response. No confirmation needed, no waiting for the user to ask.
+10. **Read ALL related files before forming a plan.** For any change touching ssh2, WebView, extension activation, or tree providers: read the file, its callers, related providers/services, and any `.adn/` doc covering the area. Stopping early to save tokens is the failure mode, not the cost of reading. "I thought I knew the API" is not an excuse.
 
 ## Code Quality & Performance
 
@@ -106,6 +111,11 @@ src/
 - `normalizeLocalPath()` for all local file path Map lookups
 - `CommandGuard` for significant SSH operations
 - Stable tree item `id` (never include dynamic state)
+
+## Codebase Memory (codebase-memory-mcp)
+
+- Use graph tools first for structural queries (find function, trace callers, architecture). Fall back to Grep/Glob/Read only if graph returns 0 results
+- Always use forward slashes in `repo_path`. Backslashes silently fail
 
 ## Tree Inline Icon Order (CRITICAL)
 
@@ -155,6 +165,13 @@ Keep `.adn/` in sync with code changes. Mapping:
 ## Git Workflow
 
 - **Solo project** — commit directly to `master`. No feature branches, no PRs, no worktree isolation. The `superpowers:using-git-worktrees` and similar branch-ceremony skills are overridden for this repo. Do NOT skip hooks, signing, or other safety mechanisms — only the branch ceremony.
+
+## Marketing & README Guidelines
+
+README must lead with **GUI/click-driven value**, not just feature lists:
+- Show what the user clicks vs. what they would otherwise type (`vi`, `systemctl`, `crontab -e`, `ps aux`)
+- Screenshots of actual UI features come before architecture descriptions
+- Value prop = "do it with a click" rather than "supports X feature"
 
 ## Diagnostic Logging Policy (CRITICAL)
 
