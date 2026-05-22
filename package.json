@@ -842,7 +842,7 @@
           "group": "navigation@5"
         },
         {
-          "command": "sshLite.filterFiles",
+          "command": "sshLite.showSearch",
           "when": "view == sshLite.fileExplorer",
           "group": "navigation@6"
         },
@@ -852,7 +852,7 @@
           "group": "navigation@7"
         },
         {
-          "command": "sshLite.showSearch",
+          "command": "sshLite.filterFiles",
           "when": "view == sshLite.fileExplorer",
           "group": "navigation@8"
         },
