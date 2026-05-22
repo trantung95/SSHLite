@@ -4,7 +4,7 @@
 
 ### Why
 
-User reported a download failure when running SSH Lite inside a VS Code window connected to a Linux server via the built-in Remote-SSH extension. The save dialog defaulted to a path like `/tmp/<vscode-tmp-id>/<filename>` and the file never reached the user's local Windows machine. The user expected the same behaviour as the PDF Viewer extension — an **Install in Local** button, SSH Lite running on their own machine, files downloading to `C:\Users\<user>\...`.
+User reported a download failure when running SSH Lite inside a VS Code window connected to a remote server via the built-in Remote-SSH extension. The save dialog defaulted to a path like `/tmp/<vscode-tmp-id>/<filename>` (on the *remote* host, not the user's own machine) and the file never reached the user's local filesystem. The user expected the same behaviour as the PDF Viewer extension — an **Install in Local** button, SSH Lite running on the user's own machine, files downloading to their home directory (`C:\Users\<user>\...` on Windows, `/Users/<user>/...` on macOS, `/home/<user>/...` on Linux). Same failure mode reproduces for Windows, macOS, and Linux clients connecting via Remote-SSH — the bug is about which extension host runs the code, not about the client OS.
 
 Two stacked layers caused this:
 

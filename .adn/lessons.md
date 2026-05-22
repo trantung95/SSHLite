@@ -5,13 +5,31 @@ Add new entries as bugs are found, mistakes are made, or better approaches are d
 
 ---
 
+## 2026-05-22 — Never default to one-OS framing when the extension supports all OSes
+
+**What happened**: While writing v0.8.17 docs (README "Remote-SSH compatibility" section, `.adn/lessons.md` entry, `.adn/CHANGELOG.md` "Why" paragraph), the reporter was on Windows and I anchored every sentence on Windows: "user's local Windows machine", `C:\Users\<user>\...` as the only example, "files downloading to Windows". The actual extension runs on Windows + macOS + Linux clients identically; framing it as a Windows-only flow misleads mac / Linux users into thinking the extension or the fix doesn't apply to them, and trains future AI sessions to assume Windows-as-default.
+
+**Lesson — applies to every doc, comment, lesson entry, README section, and changelog blurb from now on**:
+
+- **Start from the OS-agnostic statement**, then list the per-OS examples. "SSH Lite installs on the user's local machine" — **then** "Windows: `C:\Users\<user>\...`, macOS: `/Users/<user>/...`, Linux: `/home/<user>/...`". Never just one of the three.
+- **The reporter's OS is a trigger, not a scope**. If a bug only repros on one OS, say so explicitly (`reproduces on Windows only because …`). Otherwise, the lesson body must be OS-neutral and the reporter's OS goes in a single contextual note up front, not woven into every sentence.
+- **Audit doc edits** with a 30-second `Grep` for `Windows|C:\\Users|/home/|/Users/|macOS|Linux` before commit. If any one OS dominates without the other two appearing, rewrite. (Historical entries describing OS-specific work — e.g. v0.7.5/v0.7.6 Windows-portable chaos — are exempt; that work *was* OS-specific.)
+- **Code stays OS-agnostic by design**: `os.homedir()`, `vscode.workspace.fs`, `vscode.Uri.joinPath`, `SecretStorage` all dispatch correctly across OSes. If a future change adds `process.platform === 'win32'` branches, that is a code smell — escalate before merging.
+- **Activation hint message wording**: the v0.8.17 hint in `extension.ts:3712` says "your local machine", not "your Windows machine". Keep this neutral phrasing for any future user-visible notification about extension-host placement.
+
+**Why this matters**: SSH Lite's value proposition is "talk to remote servers from where the user sits" — that is identical whether the user sits at Windows, macOS, or Linux. Docs that privilege one OS make the project look like a Windows tool that happens to also work elsewhere, which is the opposite of the truth.
+
+---
+
 ## 2026-05-22 — `fs.writeFileSync(uri.fsPath, …)` is unsafe; declare `extensionKind` when an extension belongs on the user's machine
 
-**What happened**: User A on Windows used VS Code's built-in **Remote-SSH** extension to connect to a Linux server, then installed SSH Lite from the Marketplace inside that session. Because `package.json` did not declare `extensionKind`, VS Code placed SSH Lite on the **workspace** extension host (running on remote Linux), not on the user's Windows machine. When the user clicked **Download** on a remote file:
+**Applies to all OSes the user can run VS Code from** — Windows, macOS, Linux. The bug below is about *which extension host* the extension lands in, not the user's OS. The reporter happened to be on Windows; the same failure mode reproduces from a macOS or Linux client whose Remote-SSH target is a different machine.
 
-- The save dialog defaulted to `/tmp/<vscode-tmp-id>/<name>` (a VS Code session-temp on the remote), not the user's actual home.
+**What happened**: A user on a client OS (Windows in the original report; same applies to macOS / Linux clients) used VS Code's built-in **Remote-SSH** extension to connect to a remote server, then installed SSH Lite from the Marketplace inside that session. Because `package.json` did not declare `extensionKind`, VS Code placed SSH Lite on the **workspace** extension host (running on the remote machine), not on the user's own machine. When the user clicked **Download** on a remote file:
+
+- The save dialog defaulted to `/tmp/<vscode-tmp-id>/<name>` (a VS Code session-temp on the *remote* Unix-like host), not the user's actual home on their own machine.
 - The download silently failed — `fs.writeFileSync(saveUri.fsPath, content)` either landed in a hidden VS Code temp dir or threw `EACCES`, depending on the Remote-SSH setup.
-- The user expected behaviour like the PDF Viewer extension: an **Install in Local** button, with SSH Lite running on Windows and the file landing at `C:\Users\<user>\...`.
+- The user expected behaviour like the PDF Viewer extension: an **Install in Local** button, with SSH Lite running on their own machine and the file landing in their own home (`C:\Users\<user>\...` on Windows, `/Users/<user>/...` on macOS, `/home/<user>/...` on Linux).
 
 **Root cause** (two stacked layers):
 
