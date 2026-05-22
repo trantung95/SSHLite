@@ -3465,6 +3465,19 @@ export class FileService {
   }
 
   /**
+   * Write bytes to a URI returned by showSaveDialog / showOpenDialog.
+   * Goes through vscode.workspace.fs which respects the URI scheme — handles
+   * file:, vscode-remote:, vscode-vfs:, and any registered FileSystemProvider
+   * scheme. The older direct fs.writeFileSync(uri.fsPath, ...) call silently
+   * broke when the dialog returned a non-file: URI (e.g. on Remote-SSH
+   * workspace host, downloads landed in /tmp/<vscode-tmp-id>/ instead of the
+   * user-chosen path). See .adn/lessons.md 2026-05-22.
+   */
+  private async writeUserSelectedUri(uri: vscode.Uri, content: Buffer): Promise<void> {
+    await vscode.workspace.fs.writeFile(uri, content);
+  }
+
+  /**
    * Download a file to a user-selected location
    */
   async downloadFileTo(connection: SSHConnection, remoteFile: IRemoteFile): Promise<void> {
@@ -3523,7 +3536,7 @@ export class FileService {
 
           progress.report({ increment: 90 - currentProgress, message: 'Saving file...' });
           activityService.updateProgress(activityId, 90, 'Saving file...');
-          fs.writeFileSync(saveUri.fsPath, content);
+          await this.writeUserSelectedUri(saveUri, content);
           progress.report({ increment: 10, message: 'Complete!' });
         }
       );
@@ -3562,7 +3575,10 @@ export class FileService {
       return;
     }
 
-    const targetDir = path.join(folderUri[0].fsPath, remoteFile.name);
+    // Resolve the destination as a URI (not a string fsPath) so non-file
+    // schemes (vscode-remote:, vscode-vfs:, custom providers) work — same
+    // motivation as writeUserSelectedUri above.
+    const targetUri = vscode.Uri.joinPath(folderUri[0], remoteFile.name);
 
     try {
       await vscode.window.withProgress(
@@ -3573,7 +3589,7 @@ export class FileService {
         },
         async (progress) => {
           progress.report({ increment: 5, message: 'Scanning folder...' });
-          await this.downloadFolderRecursive(connection, remoteFile.path, targetDir, progress, { count: 0 });
+          await this.downloadFolderRecursive(connection, remoteFile.path, targetUri, progress, { count: 0 });
           progress.report({ increment: 5, message: 'Complete!' });
         }
       );
@@ -3590,30 +3606,28 @@ export class FileService {
   private async downloadFolderRecursive(
     connection: SSHConnection,
     remotePath: string,
-    localPath: string,
+    destFolderUri: vscode.Uri,
     progress: vscode.Progress<{ message?: string; increment?: number }>,
     counter: { count: number }
   ): Promise<void> {
-    // Create local directory
-    if (!fs.existsSync(localPath)) {
-      fs.mkdirSync(localPath, { recursive: true });
-    }
+    // createDirectory is idempotent — no need for existsSync guard.
+    await vscode.workspace.fs.createDirectory(destFolderUri);
 
     // List remote directory
     const files = await connection.listFiles(remotePath);
 
     for (const file of files) {
-      const localFilePath = path.join(localPath, file.name);
+      const childUri = vscode.Uri.joinPath(destFolderUri, file.name);
       counter.count++;
 
       if (file.isDirectory) {
         progress.report({ increment: 1, message: `Folder: ${file.name}` });
-        await this.downloadFolderRecursive(connection, file.path, localFilePath, progress, counter);
+        await this.downloadFolderRecursive(connection, file.path, childUri, progress, counter);
       } else {
         const fileSizeStr = formatFileSize(file.size);
         progress.report({ increment: 1, message: `${file.name} (${fileSizeStr})` });
         const content = await connection.readFile(file.path);
-        fs.writeFileSync(localFilePath, content);
+        await vscode.workspace.fs.writeFile(childUri, content);
       }
     }
   }

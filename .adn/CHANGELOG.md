@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.8.17 — Remote-SSH compatibility: local-first install + URI-scheme-safe downloads
+
+### Why
+
+User reported a download failure when running SSH Lite inside a VS Code window connected to a Linux server via the built-in Remote-SSH extension. The save dialog defaulted to a path like `/tmp/<vscode-tmp-id>/<filename>` and the file never reached the user's local Windows machine. The user expected the same behaviour as the PDF Viewer extension — an **Install in Local** button, SSH Lite running on their own machine, files downloading to `C:\Users\<user>\...`.
+
+Two stacked layers caused this:
+
+- `package.json` didn't declare `extensionKind`, so Marketplace placed SSH Lite on the workspace (remote Linux) extension host by default.
+- `FileService.downloadFileTo` / `downloadFolder` used `fs.writeFileSync(saveUri.fsPath, content)`. On a workspace host inside Remote-SSH, `showSaveDialog` returns a `vscode-remote://` URI whose `.fsPath` does not point to anything raw Node `fs` can write to safely.
+
+### Changes
+
+- **Manifest** — `extensionKind: ["ui", "workspace"]` added to `package.json`. SSH Lite now installs on the user's local machine by default in any VS Code window (regular or Remote-SSH session). Users can still install on the workspace host explicitly for chained-SSH scenarios.
+- **Download write path** — `FileService.downloadFileTo`, `downloadFolder`, and `downloadFolderRecursive` now use `vscode.workspace.fs.writeFile` and `vscode.workspace.fs.createDirectory` instead of raw `fs.writeFileSync` / `fs.mkdirSync`. URI scheme (`file:`, `vscode-remote:`, `vscode-vfs:`, custom providers) is now respected throughout. `vscode.Uri.joinPath` is used to build child URIs so the scheme is preserved on recursive folder downloads.
+- **Activation hint** — when SSH Lite detects it is running on a workspace host inside a Remote-SSH session (`vscode.env.remoteName === 'ssh-remote'` + `extensionKind === Workspace`), it shows a one-time information message suggesting **Install in Local**, with an "Open Extensions" button and a "Don't show again" dismissal. Suppressible via the new `sshLite.suppressLocalInstallHint` setting. Wrapped in `safeStep` so detection failure cannot kill activation.
+- **Settings** — new `sshLite.suppressLocalInstallHint` (boolean, default `false`).
+- **Tests** — `FileService.downloadUri.test.ts` proves the URI routing across `file:` / `vscode-remote:` / custom-scheme dialogs, plus the cancel path and recursive folder writes. `extension.activate.test.ts` adds 4 cases for the Remote-SSH hint (fires on workspace host + ssh-remote, silent on UI host, silent when not on Remote-SSH, silent when suppressed). `docker-ssh-download.test.ts` is a new docker integration test that proves real SSH bytes flow through the full download pipeline with SHA256 preservation for both `file:` and `vscode-remote:` URIs.
+- **Docs** — `README.md` gains a "Remote-SSH compatibility" section; `.adn/architecture/overview.md` adds an "Extension host model" subsection; `.adn/lessons.md` records the bug + the new rules about `fs.writeFileSync(uri.fsPath, …)` and `extensionKind`.
+
+### Backward compatibility
+
+- Existing local-only installs: no behaviour change. The new `extensionKind` declaration just makes the placement deterministic.
+- Existing users who installed SSH Lite on a workspace via Remote-SSH (rare): on upgrade, they see the one-time hint suggesting Install in Local. They can keep the workspace install if they want chained-SSH behaviour — the download bug is fixed for that path too.
+- Saved hosts in `sshLite.hosts` (VS Code user settings) are untouched.
+
+### Known gaps tracked in `.adn/lessons.md`
+
+Four other dialog call sites still use `.fsPath` with raw `fs`: `AuditService.exportLogs`, `keyCommands.pushPubkey`, `diffCommand`, and `FileService.uploadFileTo` (read side). Lower user impact; folded into the next change that touches the area.
+
+---
+
 ## v0.8.16 — Donate: multi-token support (docs-only)
 
 README donate section updated — no extension code changes.

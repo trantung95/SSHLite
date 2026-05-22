@@ -5,6 +5,30 @@ Add new entries as bugs are found, mistakes are made, or better approaches are d
 
 ---
 
+## 2026-05-22 — `fs.writeFileSync(uri.fsPath, …)` is unsafe; declare `extensionKind` when an extension belongs on the user's machine
+
+**What happened**: User A on Windows used VS Code's built-in **Remote-SSH** extension to connect to a Linux server, then installed SSH Lite from the Marketplace inside that session. Because `package.json` did not declare `extensionKind`, VS Code placed SSH Lite on the **workspace** extension host (running on remote Linux), not on the user's Windows machine. When the user clicked **Download** on a remote file:
+
+- The save dialog defaulted to `/tmp/<vscode-tmp-id>/<name>` (a VS Code session-temp on the remote), not the user's actual home.
+- The download silently failed — `fs.writeFileSync(saveUri.fsPath, content)` either landed in a hidden VS Code temp dir or threw `EACCES`, depending on the Remote-SSH setup.
+- The user expected behaviour like the PDF Viewer extension: an **Install in Local** button, with SSH Lite running on Windows and the file landing at `C:\Users\<user>\...`.
+
+**Root cause** (two stacked layers):
+
+- **Manifest layer**: `extensionKind` was undeclared. Marketplace falls back to "wherever VS Code prefers", which for a Remote-SSH session is the workspace host. SSH Lite was already designed as a UI-only client (all I/O via `vscode.SecretStorage`, `showSaveDialog`, `ssh2` native client; no `process.platform` branches; no local-file assumptions) but it never *told* VS Code that.
+- **Code layer**: `FileService.downloadFileTo` and `downloadFolder` used `fs.writeFileSync(saveUri.fsPath, content)` / `fs.mkdirSync(folderUri.fsPath, ...)`. The dialog can return a URI whose scheme is **not** `file:` — on Remote-SSH workspace host it returns `vscode-remote://ssh-remote+host/...`, and `.fsPath` on that URI resolves to a path the raw Node `fs` module cannot reach (or writes to the wrong host's filesystem). The unit + integration suites only ever exercised `file:` URIs, so this latent bug shipped.
+
+**Lesson** (mandatory checks for any future feature touching save/open dialogs OR extension hosts):
+
+- **Declare `extensionKind` explicitly** for any extension whose semantic is "talk to remote servers from where the user actually sits". For SSH-client-type extensions like SSH Lite, `["ui", "workspace"]` (UI preferred, workspace allowed for chained SSH) is the right shape. Never rely on VS Code's default placement — it varies by VS Code version and remote backend.
+- **Never call `fs.writeFileSync(uri.fsPath, …)`** (or `fs.readFileSync(uri.fsPath)`, `fs.mkdirSync`, etc.) on a URI returned by `showSaveDialog` / `showOpenDialog`. The URI scheme is **not** guaranteed to be `file:` — it can be `vscode-remote:`, `vscode-vfs:` (GitHub Codespaces, virtual workspaces), `untitled:`, or any registered `FileSystemProvider` scheme. Use `vscode.workspace.fs.{readFile,writeFile,createDirectory,delete,stat,readDirectory}` — they dispatch via the URI provider system and respect the scheme. `vscode.workspace.fs.createDirectory` is idempotent; drop the `if (!fs.existsSync(...)) fs.mkdirSync(...)` guard.
+- **Use `vscode.Uri.joinPath(baseUri, ...segments)`** to build child URIs inside a folder dialog result. `path.join(folderUri.fsPath, name)` produces a *string*, dropping the scheme — when you later feed that string back into a URI you lose `vscode-remote:` / `vscode-vfs:`.
+- **Surface a one-time hint** when an extension lands on the wrong host. Detection combo: `vscode.env.remoteName === 'ssh-remote'` plus `context.extension.extensionKind === vscode.ExtensionKind.Workspace`. Offer "Install in Local" + a dismissible "Don't show again" backed by a settings key (`sshLite.suppressLocalInstallHint`). "Download failed silently to a path I've never heard of" is a hostile experience; the user does not know which host the extension ran on.
+- **Regression net**: every dialog-write path needs a unit test that exercises **at least three URI schemes** — `file:`, `vscode-remote:`, and one arbitrary custom scheme (`mem:`, etc.). The test asserts `vscode.workspace.fs.writeFile` was called AND `fs.writeFileSync` was NOT called on the dialog URI. See `src/services/FileService.downloadUri.test.ts` for the template.
+- **Remaining dialog call sites with the same latent bug** (still using `.fsPath` with raw `fs`): `AuditService.exportLogs`, `keyCommands.pushPubkey`, `diffCommand`, `FileService.uploadFileTo` (read side). Lower user impact but track as a known gap — fix when the next change touches that area.
+
+---
+
 ## 2026-05-19 — `activate()` init steps MUST be wrapped in `safeStep`; an unguarded throw silently kills all tree views
 
 **What happened**: A user on v0.8.10 reported all 4 SSH Lite tree views ("SSH HOSTS", "REMOTE FILES", "ACTIVITY", "PORT FORWARDS") showed *"There is no data provider registered"* and their saved hosts looked gone. We traced it to `src/extension.ts` `activate()`: it ran ~18 sequential init steps (service inits, virtual-doc providers, tree-provider constructors, then four `vscode.window.createTreeView` calls) **with no try/catch and minimal logging**. A single throw in any step — `credentialService.initialize`, `connectionManager.initialize`, `portForwardService.initialize`, `folderHistoryService.initialize`, `SnippetService.initialize`, or any tree-provider constructor — aborted the whole function before reaching `createTreeView`. Result: no view ever registered, no log to tell us which step failed, no way to recover without an extension reinstall. (Hosts were not actually deleted — they remained in VS Code User `settings.json` under `sshLite.hosts` — but with no tree to render them, the user thought they were lost and was on the verge of re-adding everything from memory.)

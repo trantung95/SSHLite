@@ -3676,7 +3676,56 @@ export function activate(context: vscode.ExtensionContext): void {
     failedNames: [..._activateFailures],
   });
 
+  // v0.8.17: if SSH Lite somehow ended up on the workspace extension host
+  // inside a Remote-SSH session (despite preferring "ui" in extensionKind),
+  // downloads will land on the remote filesystem — not the user's local
+  // machine. Surface a one-time hint so the user can re-install in local.
+  safeStep('remote-ssh-hint', () => maybeShowRemoteSshHint(context));
+
   log('SSH Lite extension activated');
+}
+
+/**
+ * One-time hint: when SSH Lite runs on the workspace extension host inside a
+ * Remote-SSH session, downloads will land on the remote filesystem. The user
+ * almost certainly meant to install on local. Wired so the user can dismiss
+ * permanently via `sshLite.suppressLocalInstallHint`.
+ */
+function maybeShowRemoteSshHint(context: vscode.ExtensionContext): void {
+  const onSshRemote = vscode.env.remoteName === 'ssh-remote';
+  const onWorkspaceHost =
+    context.extension?.extensionKind === vscode.ExtensionKind.Workspace;
+  if (!onSshRemote || !onWorkspaceHost) return;
+
+  infoLog('lifecycle', 'activate/workspace-host-on-remote-ssh', {
+    remoteName: vscode.env.remoteName,
+    extensionKind: 'Workspace',
+  });
+
+  const suppressed = vscode.workspace
+    .getConfiguration('sshLite')
+    .get<boolean>('suppressLocalInstallHint', false);
+  if (suppressed) return;
+
+  void vscode.window
+    .showInformationMessage(
+      "SSH Lite is running on the remote host. Downloads will land on the remote filesystem. To download files to your local machine, click 'Install in Local' for SSH Lite in the Extensions sidebar.",
+      'Open Extensions',
+      "Don't show again",
+    )
+    .then((choice) => {
+      if (choice === 'Open Extensions') {
+        void vscode.commands.executeCommand('workbench.view.extensions');
+      } else if (choice === "Don't show again") {
+        void vscode.workspace
+          .getConfiguration('sshLite')
+          .update(
+            'suppressLocalInstallHint',
+            true,
+            vscode.ConfigurationTarget.Global,
+          );
+      }
+    });
 }
 
 /**

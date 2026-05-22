@@ -206,6 +206,17 @@ Unlike Remote-SSH, SSH Lite uses pure SSH/SFTP for all operations. This means:
 - Works behind firewalls/restricted environments
 - Trade-off: No IntelliSense, no remote debugging, no extension forwarding
 
+### Extension host model (v0.8.17+)
+
+`package.json` declares `"extensionKind": ["ui", "workspace"]`. VS Code prefers the first entry, so the placement is:
+
+- **Local install (default)**: in a regular VS Code window AND in a Remote-SSH session, SSH Lite is installed on the local **UI extension host** (the user's own machine). SSH connections originate from the user's machine; downloads land on the local filesystem; port forwards bind to the user's machine. When VS Code is connected to a Remote-SSH workspace, the Marketplace shows an **Install in Local** button — the same UX as the PDF Viewer and other UI-first extensions.
+- **Workspace install (advanced)**: the user can explicitly install SSH Lite on the workspace host when they want to use SSH Lite *from* a remote Linux server to a third machine (chained SSH). In this mode, downloads land on the workspace host's filesystem and port forwards bind to that host. SSH Lite shows a one-time hint on activation explaining this and suggesting **Install in Local** (suppressible via `sshLite.suppressLocalInstallHint`).
+
+All file I/O on dialog URIs goes through `vscode.workspace.fs` (not raw Node `fs`), so URI schemes other than `file:` — notably `vscode-remote:` and any registered `FileSystemProvider` — are handled correctly. The `vscode.Uri.joinPath` helper is used to build child URIs inside folder dialog results, preserving the scheme. See `.adn/lessons.md` "2026-05-22" for the bug that motivated this.
+
+**Edge case — port forwarding scope**: when SSH Lite runs on UI host inside a Remote-SSH window, the forwarded port lives on the user's machine, not the remote workspace. Tools running inside the Remote-SSH workspace (e.g., `curl` in the Remote-SSH terminal) cannot reach that port. For workspace-side access, either use VS Code's built-in Remote-SSH port forwarding, or install SSH Lite a second time on the workspace host.
+
 ### Why singletons instead of dependency injection?
 VS Code extensions have a single activation point (`activate()`). Singletons keep the architecture simple and allow any component to access services without passing references through constructors. The trade-off is testing complexity (need to reset singletons between tests).
 

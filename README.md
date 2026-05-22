@@ -53,20 +53,30 @@ Reads `~/.ssh/config`. Supports SSH keys (RSA / Ed25519 / ECDSA, encrypted), age
 
 **103 commands** — full reference at [docs/COMMANDS.md](https://github.com/trantung95/SSHLite/blob/master/docs/COMMANDS.md).
 
+## Remote-SSH compatibility
+
+SSH Lite prefers to run on **your local machine** even when VS Code is connected to a remote workspace via the built-in Remote-SSH extension. When you install SSH Lite from the Marketplace inside a Remote-SSH session, you will see the **Install in Local** button on the extension page — click it. SSH Lite then connects to remote servers directly from your local machine and downloads files to your local filesystem (e.g. `C:\Users\you\...` on Windows, `~/Downloads/...` on macOS / Linux).
+
+Side-by-side use works without surprises: keep your Remote-SSH editing session on Linux server **A**, and use SSH Lite to browse, download from, terminal into, and port-forward from any number of other servers **B**, **C**, **D** — all from your own machine. File browsing, editing, terminals, port forwards, search, snippets, cron, diffs, and the rest of the SSH Tools suite all operate over SSH Lite's own SSH/SFTP connections, independent of where the VS Code workspace lives.
+
+Two edge cases worth knowing:
+
+- **Port forwards bind to your local machine.** A process running inside the Remote-SSH workspace (e.g. `curl` in the Remote-SSH terminal) cannot reach the forwarded port. Use VS Code's built-in Remote-SSH port forwarding for that direction.
+- **Chained SSH (rare).** If you specifically want to run SSH Lite *from* the remote Linux machine to a third server, install SSH Lite on the workspace host as well. SSH Lite will detect this and show a one-time hint pointing you back to Install in Local; dismiss it with the `sshLite.suppressLocalInstallHint` setting.
+
 ## Release Notes
+
+**0.8.17** — **Remote-SSH compatibility**: SSH Lite now declares `extensionKind` so it installs on your local machine by default, even when VS Code is connected to a remote host via Remote-SSH. Downloads now route through `vscode.workspace.fs` and land correctly regardless of URI scheme.
+
+- **Local-first install** — the Extensions page shows an **Install in Local** button inside Remote-SSH sessions. SSH connections originate from your machine; downloads land on your filesystem.
+- **Download bug fixed** — `Download` and `Download Folder` previously misbehaved on workspace-installed setups (file ended up in `/tmp/<vscode-tmp-id>/`, not the path you picked). All write paths now use `vscode.workspace.fs.writeFile` / `createDirectory`, respecting `file:`, `vscode-remote:`, and custom `FileSystemProvider` schemes.
+- **Workspace-host hint** — if SSH Lite is installed on a remote workspace host inside Remote-SSH, it shows a one-time message suggesting Install in Local. Dismiss permanently via the new `sshLite.suppressLocalInstallHint` setting.
+- **New setting** — `sshLite.suppressLocalInstallHint` (boolean, default `false`).
 
 **0.8.16** — **Donate: multi-token support** (docs-only — no extension code changes).
 
 - SOL QR now accepts **SOL · USDT · USDC** — same Solana address receives any SPL token.
 - TON QR now accepts **TON · USDT** — same TON address receives any Jetton.
-
-**0.8.15** — **Save-as-root redesign** (correctness + security bug fix + new commands).
-
-- **Critical bug fixed** — the previous sudo-fallback wrote your sudo password into the saved file's first line when sudo was `NOPASSWD`-configured or had a warm credential cache. Files like `/etc/nginx/nginx.conf` and `/etc/hosts` could silently get corrupted with your password as their first line, and that password ended up on disk on the remote host. The new `_sudoExecRaw` protocol writes the password only when sudo actually prompts (stderr-sync state machine, modelled on `yy0931/save-as-root`).
-- **New: `Save File as Root`** — manually elevate the active editor's save without having to let SFTP fail first.
-- **New: `Save File as User…`** — save as any specific user (e.g. `www-data`, `postgres`) via `sudo -u`.
-- **New: `New File as Root…`** — right-click a folder (or connection) in REMOTE FILES → creates the file with root ownership in one step.
-- **All sudo paths (write/read/delete/mkdir/rename/list/exec)** now share the fixed protocol; existing auto-fallback dialog ("Sudo Once / Sudo All / Cancel") works the same but no longer leaks the password.
 
 [Full changelog](https://github.com/trantung95/SSHLite/blob/master/.adn/CHANGELOG.md)
 

@@ -2,7 +2,7 @@
   "name": "ssh-lite",
   "displayName": "SSH Lite (SSH Tools)",
   "description": "A visual SSH client for VS Code. Browse, edit, monitor, manage services - by clicking, not typing vi/systemctl/crontab. Nothing installed on the remote server. Perfect for VPS, cloud servers (AWS/Azure/GCP), and Linux administration.",
-  "version": "0.8.16",
+  "version": "0.8.17",
   "publisher": "hybr8",
   "engines": {
     "vscode": "^1.85.0"
@@ -113,6 +113,10 @@
     "onStartupFinished"
   ],
   "main": "./out/extension.js",
+  "extensionKind": [
+    "ui",
+    "workspace"
+  ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -1360,6 +1364,11 @@
     "configuration": {
       "title": "SSH Lite",
       "properties": {
+        "sshLite.suppressLocalInstallHint": {
+          "type": "boolean",
+          "default": false,
+          "description": "Suppress the one-time hint shown when SSH Lite is running on a remote workspace host (Remote-SSH). When false (default), SSH Lite reminds you that downloads will land on the remote machine and suggests clicking 'Install in Local'."
+        },
         "sshLite.hosts": {
           "type": "array",
           "default": [],

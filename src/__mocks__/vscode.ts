@@ -35,6 +35,17 @@ export class Uri {
     return new Uri('file', '', value, '', '');
   }
 
+  static joinPath(base: Uri, ...segments: string[]): Uri {
+    // Join with forward slashes; collapse duplicate separators. Matches
+    // VS Code's behaviour for non-file schemes; for file: it preserves the
+    // drive letter on Windows-style paths.
+    const joined = segments.reduce<string>(
+      (acc, seg) => (acc.endsWith('/') ? `${acc}${seg}` : `${acc}/${seg}`),
+      base.path,
+    );
+    return base.with({ path: joined.replace(/\/+/g, '/') });
+  }
+
   constructor(
     public readonly scheme: string,
     public readonly authority: string,
@@ -180,6 +191,11 @@ export enum ViewColumn {
   Three = 3
 }
 
+export enum ExtensionKind {
+  UI = 1,
+  Workspace = 2
+}
+
 // Disposable mock
 export class Disposable {
   static from(...disposables: { dispose(): unknown }[]): Disposable {
@@ -238,9 +254,11 @@ export const workspace = {
   registerFileSystemProvider: jest.fn().mockReturnValue({ dispose: jest.fn() }),
   fs: {
     readFile: jest.fn(),
-    writeFile: jest.fn(),
+    writeFile: jest.fn().mockResolvedValue(undefined),
     delete: jest.fn(),
     stat: jest.fn(),
+    createDirectory: jest.fn().mockResolvedValue(undefined),
+    readDirectory: jest.fn().mockResolvedValue([]),
   },
 };
 
@@ -372,6 +390,7 @@ export const env = {
   appRoot: '/app',
   machineId: 'test-machine-id',
   sessionId: 'test-session-id',
+  remoteName: undefined as string | undefined,
 };
 
 // SecretStorage mock

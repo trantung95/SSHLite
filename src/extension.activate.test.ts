@@ -44,10 +44,12 @@ function resetAllSingletons(): void {
   }
 }
 
-function makeMockContext(): vscode.ExtensionContext {
+function makeMockContext(
+  extensionKind: vscode.ExtensionKind = vscode.ExtensionKind.UI,
+): vscode.ExtensionContext {
   return {
     subscriptions: [] as { dispose(): unknown }[],
-    extension: { packageJSON: { version: '0.8.11-test' } },
+    extension: { packageJSON: { version: '0.8.11-test' }, extensionKind },
     extensionPath: '/fake/extension/path',
     globalState: {
       get: jest.fn().mockReturnValue(undefined),
@@ -95,6 +97,88 @@ describe('extension.activate — regression net for v0.8.10 tree-view-fail-to-re
       ]);
 
       expect(__testGetActivateFailures()).toEqual([]);
+    });
+  });
+
+  describe('Remote-SSH workspace-host hint (v0.8.17)', () => {
+    beforeEach(() => {
+      (vscode.env as { remoteName: string | undefined }).remoteName = undefined;
+    });
+
+    afterEach(() => {
+      (vscode.env as { remoteName: string | undefined }).remoteName = undefined;
+    });
+
+    it('shows the Install in Local hint when on ssh-remote AND extensionKind=Workspace', () => {
+      (vscode.env as { remoteName: string | undefined }).remoteName = 'ssh-remote';
+      const context = makeMockContext(vscode.ExtensionKind.Workspace);
+      const showInfo = vscode.window.showInformationMessage as jest.Mock;
+
+      activate(context);
+
+      const installInLocalCalls = showInfo.mock.calls.filter((c) =>
+        typeof c[0] === 'string' && (c[0] as string).includes('Install in Local'),
+      );
+      expect(installInLocalCalls.length).toBe(1);
+    });
+
+    it('does NOT show the hint when extensionKind=UI', () => {
+      (vscode.env as { remoteName: string | undefined }).remoteName = 'ssh-remote';
+      const context = makeMockContext(vscode.ExtensionKind.UI);
+      const showInfo = vscode.window.showInformationMessage as jest.Mock;
+
+      activate(context);
+
+      const installInLocalCalls = showInfo.mock.calls.filter((c) =>
+        typeof c[0] === 'string' && (c[0] as string).includes('Install in Local'),
+      );
+      expect(installInLocalCalls.length).toBe(0);
+    });
+
+    it('does NOT show the hint when not on Remote-SSH', () => {
+      (vscode.env as { remoteName: string | undefined }).remoteName = undefined;
+      const context = makeMockContext(vscode.ExtensionKind.Workspace);
+      const showInfo = vscode.window.showInformationMessage as jest.Mock;
+
+      activate(context);
+
+      const installInLocalCalls = showInfo.mock.calls.filter((c) =>
+        typeof c[0] === 'string' && (c[0] as string).includes('Install in Local'),
+      );
+      expect(installInLocalCalls.length).toBe(0);
+    });
+
+    it('respects sshLite.suppressLocalInstallHint = true', () => {
+      (vscode.env as { remoteName: string | undefined }).remoteName = 'ssh-remote';
+      const context = makeMockContext(vscode.ExtensionKind.Workspace);
+      const showInfo = vscode.window.showInformationMessage as jest.Mock;
+
+      const originalGetConfig = vscode.workspace.getConfiguration;
+      const spy = jest
+        .spyOn(vscode.workspace, 'getConfiguration')
+        .mockImplementation((section?: string) => {
+          const real = originalGetConfig.call(vscode.workspace, section);
+          if (section === 'sshLite') {
+            return {
+              ...real,
+              get: <T,>(key: string, def?: T): T | undefined => {
+                if (key === 'suppressLocalInstallHint') return true as unknown as T;
+                return real.get(key, def);
+              },
+            } as ReturnType<typeof originalGetConfig>;
+          }
+          return real;
+        });
+
+      try {
+        activate(context);
+        const installInLocalCalls = showInfo.mock.calls.filter((c) =>
+          typeof c[0] === 'string' && (c[0] as string).includes('Install in Local'),
+        );
+        expect(installInLocalCalls.length).toBe(0);
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 
