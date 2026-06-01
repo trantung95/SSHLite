@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.8.18 — Remote-SSH upload fix: URI-scheme-safe reads + point-of-action Install-in-Local hint
+
+### Why
+
+Companion report to the v0.8.17 download bug. A user connected to a server with VS Code's built-in **Remote-SSH** extension, installed SSH Lite from inside that session (landing on the remote/workspace extension host), then clicked **Upload File**. Instead of a local file-picker, the dialog browsed a path on the **remote server** — the user could not select a file from their own machine. Same failure mode reproduces for Windows, macOS, and Linux clients connecting via Remote-SSH — the bug is about which extension host runs the code, not the client OS.
+
+Two stacked layers, mirroring the download bug:
+
+- **Host placement (the visible symptom).** On the VS Code workspace (remote) extension host, *every* file dialog (`showOpenDialog` / `showSaveDialog`) is served by the remote and browses the server's filesystem. No code can make a workspace-host extension open a local-machine picker — the genuine remedy is to run SSH Lite on the **UI (local) host** via *Install in Local*. The v0.8.17 activation hint only mentioned downloads, so a user clicking Upload received no guidance.
+- **Latent code bug.** `FileService.uploadFileTo` extracted `uri.fsPath` from the dialog result and read it with raw `fs.statSync` / `fs.readFileSync` — unsafe for non-`file:` URIs (`vscode-remote:`, `vscode-vfs:`, custom `FileSystemProvider` schemes). This was already logged as a known gap in `.adn/lessons.md` (2026-05-22).
+
+### Changes
+
+- **Upload read path** — `FileService.uploadFileTo` now reads the user-selected file via a new `readUserSelectedUri(uri)` helper using `vscode.workspace.fs.stat` + `vscode.workspace.fs.readFile` (scheme-safe), instead of raw `fs.statSync` / `fs.readFileSync` on `uri.fsPath`. The leaf filename is derived from the URI path with `decodeUriComponentSafe(path.posix.basename(uri.path))` (not `fsPath`, which mangles non-file schemes and uses the client OS separator), and the remembered parent folder uses `vscode.Uri.joinPath(uri, '..')` to preserve the scheme.
+- **Read-failure UX** — a failed read now shows a `showErrorMessage` and returns early (matching the download path) rather than only being logged by the caller.
+- **Point-of-action hint** — when SSH Lite runs on the remote workspace host, `uploadFileTo` warns *before* opening the server-only picker and offers **Install in Local** / *Pick from server anyway* / *Don't show again*, gated by `FileService.onRemoteWorkspaceHost` (set from `activate()` via the new `isOnRemoteWorkspaceHost(context)` helper) and honoring the existing `sshLite.suppressLocalInstallHint` opt-out.
+- **Activation hint** — broadened to state that file dialogs browse the remote server for both downloads *and* uploads (previously download-only), kept OS-neutral.
+- **Helper** — new `decodeUriComponentSafe` in `utils/helpers.ts`: percent-decodes a URI segment but falls back to the raw string when decoding throws (e.g. a literal `%` in a `file:` name like `100%.txt`).
+- **Tests** — new `FileService.uploadUri.test.ts` mirrors `downloadUri.test.ts`: asserts `vscode.workspace.fs.readFile` is used (and raw `fs.readFileSync` is not) across `file:` / `vscode-remote:` / `mem:` schemes, plus dialog-cancel, read-failure → `showErrorMessage`, percent-decoded names, and literal-`%` names.
+
+### Backward compatibility
+
+- Local installs (the default): no behaviour change — uploads work as before, now with scheme-safe reads.
+- Workspace-host installs inside Remote-SSH: users now get an actionable upload-time warning instead of a silently-wrong server picker. The same `sshLite.suppressLocalInstallHint` setting dismisses both the activation and upload hints.
+- No command, setting, keybinding, or host-config changes.
+
+### Known gaps still tracked in `.adn/lessons.md`
+
+- Identical raw-`fs`-on-dialog-`.fsPath` pattern remains in `AuditService.exportLogs`, `keyCommands.pushPubkey`, and `diffCommand` — to be fixed with the same `readUserSelectedUri` / `writeUserSelectedUri` + `decodeUriComponentSafe` shape when those areas are next touched.
+
 ## v0.8.17 — Remote-SSH compatibility: local-first install + URI-scheme-safe downloads
 
 ### Why

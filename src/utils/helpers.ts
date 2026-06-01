@@ -41,6 +41,23 @@ export function validatePort(value: string): string | null {
 }
 
 /**
+ * Decode a percent-encoded URI path segment, but never throw.
+ *
+ * A `vscode.Uri` parsed from a `vscode-remote:` / custom-scheme string may keep
+ * its path percent-encoded (e.g. "my%20file.txt"), while a `file:` URI's path
+ * holds the raw name which can legitimately contain a literal '%' that is NOT
+ * valid encoding (e.g. "100%.txt"). `decodeURIComponent` throws on the latter,
+ * so we fall back to the original string when decoding fails.
+ */
+export function decodeUriComponentSafe(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+/**
  * Format file size in human-readable format
  */
 export function formatFileSize(bytes: number): string {

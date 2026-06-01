@@ -3678,24 +3678,41 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // v0.8.17: if SSH Lite somehow ended up on the workspace extension host
   // inside a Remote-SSH session (despite preferring "ui" in extensionKind),
-  // downloads will land on the remote filesystem — not the user's local
-  // machine. Surface a one-time hint so the user can re-install in local.
+  // file dialogs browse the remote filesystem — not the user's local machine,
+  // breaking both downloads and uploads. Surface a one-time hint so the user
+  // can re-install in local, and tell FileService so the upload command can
+  // warn at the point of action (v0.8.18).
+  const onRemoteWorkspaceHost = isOnRemoteWorkspaceHost(context);
+  safeStep('remote-ssh-host-flag', () =>
+    fileService.setRemoteWorkspaceHost(onRemoteWorkspaceHost),
+  );
   safeStep('remote-ssh-hint', () => maybeShowRemoteSshHint(context));
 
   log('SSH Lite extension activated');
 }
 
 /**
+ * True when this extension instance runs on the VS Code *workspace* (remote)
+ * extension host while connected over Remote-SSH. In that placement every file
+ * dialog (showOpenDialog / showSaveDialog) browses the remote server, not the
+ * user's local machine — so both downloads and uploads target the wrong host.
+ */
+function isOnRemoteWorkspaceHost(context: vscode.ExtensionContext): boolean {
+  return (
+    vscode.env.remoteName === 'ssh-remote' &&
+    context.extension?.extensionKind === vscode.ExtensionKind.Workspace
+  );
+}
+
+/**
  * One-time hint: when SSH Lite runs on the workspace extension host inside a
- * Remote-SSH session, downloads will land on the remote filesystem. The user
+ * Remote-SSH session, file dialogs browse the remote server's filesystem — so
+ * downloads land on the remote and uploads can only pick remote files. The user
  * almost certainly meant to install on local. Wired so the user can dismiss
  * permanently via `sshLite.suppressLocalInstallHint`.
  */
 function maybeShowRemoteSshHint(context: vscode.ExtensionContext): void {
-  const onSshRemote = vscode.env.remoteName === 'ssh-remote';
-  const onWorkspaceHost =
-    context.extension?.extensionKind === vscode.ExtensionKind.Workspace;
-  if (!onSshRemote || !onWorkspaceHost) return;
+  if (!isOnRemoteWorkspaceHost(context)) return;
 
   infoLog('lifecycle', 'activate/workspace-host-on-remote-ssh', {
     remoteName: vscode.env.remoteName,
@@ -3709,7 +3726,7 @@ function maybeShowRemoteSshHint(context: vscode.ExtensionContext): void {
 
   void vscode.window
     .showInformationMessage(
-      "SSH Lite is running on the remote host. Downloads will land on the remote filesystem. To download files to your local machine, click 'Install in Local' for SSH Lite in the Extensions sidebar.",
+      "SSH Lite is running on the remote host, so file dialogs browse the remote server's filesystem — not your local machine. Downloads land on the remote, and uploads can only pick remote files. To work with files on your own machine, click 'Install in Local' for SSH Lite in the Extensions sidebar.",
       'Open Extensions',
       "Don't show again",
     )

@@ -160,10 +160,21 @@ Revert:
 Upload a local file to a remote directory via the tree context menu.
 
 ```
-1. Show file picker dialog (defaultUri = last upload folder, remembered in-memory)
-2. Upload file via SFTP writeFile
-3. Targeted tree refresh: refreshFolder(connectionId, remoteFolderPath) clears cache + refreshes
+1. (If on remote workspace host) warn the picker browses the server, offer Install in Local
+2. Show file picker dialog (defaultUri = last upload folder ?? home, remembered in-memory)
+3. Read selected file scheme-safely via readUserSelectedUri() → vscode.workspace.fs.{stat,readFile}
+4. Upload file via SFTP writeFile
+5. Targeted tree refresh: refreshFolder(connectionId, remoteFolderPath) clears cache + refreshes
 ```
+
+**URI-scheme safety (v0.8.18)**: the selected file is read through `vscode.workspace.fs`
+(respects `file:`, `vscode-remote:`, `vscode-vfs:`, custom schemes) — never raw `fs.readFileSync(uri.fsPath)`,
+which breaks on a Remote-SSH workspace host. The leaf name comes from `decodeUriComponentSafe(path.posix.basename(uri.path))`
+(not `fsPath`), and the remembered parent folder uses `vscode.Uri.joinPath(uri, '..')`. A read failure surfaces
+via `showErrorMessage` and returns early. This mirrors the v0.8.17 download write fix (`writeUserSelectedUri`).
+When SSH Lite runs on the workspace (remote) extension host, file dialogs browse the *server*, not the user's
+machine — so `uploadFileTo` warns at the point of action and points to **Install in Local**
+(`FileService.onRemoteWorkspaceHost`, set from `activate()`; opt out via `sshLite.suppressLocalInstallHint`).
 
 Delete and create-folder commands also use `refreshFolder()` for targeted cache invalidation.
 

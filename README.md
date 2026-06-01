@@ -70,17 +70,17 @@ Two edge cases worth knowing:
 
 ## Release Notes
 
+**0.8.18** — **Remote-SSH upload fix**: clicking **Upload File** while SSH Lite ran on the remote (workspace) extension host browsed the *server's* files instead of your own machine, and read them through an unsafe raw-`fs` path. Companion to the v0.8.17 download fix.
+
+- **Upload picks from your machine** — when SSH Lite runs locally (the default), the file picker browses your own filesystem; the selected file is read through `vscode.workspace.fs` so any URI scheme (`file:`, `vscode-remote:`, custom providers) is handled and bytes are preserved end to end.
+- **Point-of-action guidance** — if SSH Lite is running on the remote host, the upload command now warns *before* opening a server-only picker and offers **Install in Local**. The activation hint also now mentions uploads, not just downloads. Dismiss permanently via `sshLite.suppressLocalInstallHint`.
+
 **0.8.17** — **Remote-SSH compatibility**: SSH Lite now declares `extensionKind` so it installs on your local machine by default, even when VS Code is connected to a remote host via Remote-SSH. Downloads now route through `vscode.workspace.fs` and land correctly regardless of URI scheme.
 
 - **Local-first install** — the Extensions page shows an **Install in Local** button inside Remote-SSH sessions. SSH connections originate from your machine; downloads land on your filesystem.
 - **Download bug fixed** — `Download` and `Download Folder` previously misbehaved on workspace-installed setups (file ended up in `/tmp/<vscode-tmp-id>/`, not the path you picked). All write paths now use `vscode.workspace.fs.writeFile` / `createDirectory`, respecting `file:`, `vscode-remote:`, and custom `FileSystemProvider` schemes.
 - **Workspace-host hint** — if SSH Lite is installed on a remote workspace host inside Remote-SSH, it shows a one-time message suggesting Install in Local. Dismiss permanently via the new `sshLite.suppressLocalInstallHint` setting.
 - **New setting** — `sshLite.suppressLocalInstallHint` (boolean, default `false`).
-
-**0.8.16** — **Donate: multi-token support** (docs-only — no extension code changes).
-
-- SOL QR now accepts **SOL · USDT · USDC** — same Solana address receives any SPL token.
-- TON QR now accepts **TON · USDT** — same TON address receives any Jetton.
 
 [Full changelog](https://github.com/trantung95/SSHLite/blob/master/.adn/CHANGELOG.md)
 

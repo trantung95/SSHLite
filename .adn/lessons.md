@@ -5,6 +5,24 @@ Add new entries as bugs are found, mistakes are made, or better approaches are d
 
 ---
 
+## 2026-06-01 — Upload had the same `.fsPath`+raw-`fs` bug as download; the *real* fix is host placement, not just scheme-safe I/O
+
+**Applies to all OSes** (Windows/macOS/Linux clients equally). A user connected to a server with VS Code's built-in **Remote-SSH**, then installed SSH Lite from inside that session. Clicking **Upload File** did not open a local file-picker — it browsed a path on the **remote server**. Two stacked layers, mirror of the v0.8.17 download bug:
+
+- **Layer A (the symptom the user actually sees) — host placement.** When SSH Lite runs on the VS Code **workspace (remote) extension host**, *every* file dialog (`showOpenDialog` / `showSaveDialog`) is served by the remote and browses the **server's** filesystem. **No code change can make a workspace-host extension pop a local-machine file picker** — that is inherent VS Code architecture. The only genuine remedy is to run the extension on the **UI (local) host** via "Install in Local". `extensionKind: ["ui","workspace"]` only *prefers* UI; a user who installs into the remote session still lands on workspace. So the fix is **guidance**, not code: the v0.8.17 activation hint only mentioned *downloads*, so a user clicking Upload got nothing. v0.8.18 broadens the activation hint to cover uploads AND adds a **point-of-action** warning in `uploadFileTo` (the activation hint is easy to miss) offering "Install in Local", gated by `FileService.onRemoteWorkspaceHost` (set from `activate()` via `isOnRemoteWorkspaceHost(context)`), honoring the same `sshLite.suppressLocalInstallHint` opt-out.
+- **Layer B (latent correctness) — `.fsPath` + raw `fs`.** `uploadFileTo` did `const localPath = uri.fsPath; fs.statSync(localPath); fs.readFileSync(localPath)`. Unsafe for non-`file:` URIs, exactly like the download write bug. Fixed with `readUserSelectedUri(uri)` → `vscode.workspace.fs.stat` + `vscode.workspace.fs.readFile` (scheme-safe), leaf name via `decodeUriComponentSafe(path.posix.basename(uri.path))` (NOT `fsPath` — it mangles non-file schemes and uses the *client* OS separator), and parent dir via `vscode.Uri.joinPath(uri, '..')`.
+
+**Lessons** (carry forward):
+
+- **When you fix one dialog-I/O path, the symmetric path almost always has the same bug.** Download write was fixed in v0.8.17; the upload read was the mirror image and was already logged as a known gap. Fix symmetric pairs together or they ship as separate "critical" reports weeks apart.
+- **Separate "wrong host" from "wrong code".** A scheme-safe I/O fix alone would NOT have solved this user's complaint — the picker would still browse the server. Always ask "which extension host is this running on, and does that placement alone defeat the feature?" before assuming a code fix is sufficient. For client-side-by-nature features (local file pick/save), host placement IS the feature.
+- **Decode URI leaf names with a guard, never bare `decodeURIComponent`.** A parsed `vscode-remote:` path may be percent-encoded (`my%20file.txt`); a `file:` path may contain a *literal* `%` that is invalid encoding (`100%.txt`) and makes `decodeURIComponent` throw. `decodeUriComponentSafe` (in `utils/helpers.ts`) try/catches and falls back to the raw segment.
+- **Reads before the `try/catch` must surface their own errors.** The read was moved before `startActivity`; a failed `vscode.workspace.fs.readFile` would otherwise only be `logResult`'d by the caller with no user-visible message. Wrapped it in its own try/catch → `showErrorMessage` + early return, matching the download path's UX.
+- **Regression net**: `src/services/FileService.uploadUri.test.ts` mirrors `downloadUri.test.ts` — exercises `file:` / `vscode-remote:` / `mem:` schemes (asserts `vscode.workspace.fs.readFile` used, raw `fs.readFileSync` NOT), plus read-failure → `showErrorMessage`, plus percent-decoded and literal-`%` leaf names.
+- **Still-open identical gaps** (raw `fs` on a dialog `.fsPath`): `AuditService.exportLogs`, `keyCommands.pushPubkey`, `diffCommand`. Fix with the same `readUserSelectedUri`/`writeUserSelectedUri` + `decodeUriComponentSafe` shape when next touching those areas.
+
+---
+
 ## 2026-05-22 — Never default to one-OS framing when the extension supports all OSes
 
 **What happened**: While writing v0.8.17 docs (README "Remote-SSH compatibility" section, `.adn/lessons.md` entry, `.adn/CHANGELOG.md` "Why" paragraph), the reporter was on Windows and I anchored every sentence on Windows: "user's local Windows machine", `C:\Users\<user>\...` as the only example, "files downloading to Windows". The actual extension runs on Windows + macOS + Linux clients identically; framing it as a Windows-only flow misleads mac / Linux users into thinking the extension or the fix doesn't apply to them, and trains future AI sessions to assume Windows-as-default.
@@ -43,7 +61,7 @@ Add new entries as bugs are found, mistakes are made, or better approaches are d
 - **Use `vscode.Uri.joinPath(baseUri, ...segments)`** to build child URIs inside a folder dialog result. `path.join(folderUri.fsPath, name)` produces a *string*, dropping the scheme — when you later feed that string back into a URI you lose `vscode-remote:` / `vscode-vfs:`.
 - **Surface a one-time hint** when an extension lands on the wrong host. Detection combo: `vscode.env.remoteName === 'ssh-remote'` plus `context.extension.extensionKind === vscode.ExtensionKind.Workspace`. Offer "Install in Local" + a dismissible "Don't show again" backed by a settings key (`sshLite.suppressLocalInstallHint`). "Download failed silently to a path I've never heard of" is a hostile experience; the user does not know which host the extension ran on.
 - **Regression net**: every dialog-write path needs a unit test that exercises **at least three URI schemes** — `file:`, `vscode-remote:`, and one arbitrary custom scheme (`mem:`, etc.). The test asserts `vscode.workspace.fs.writeFile` was called AND `fs.writeFileSync` was NOT called on the dialog URI. See `src/services/FileService.downloadUri.test.ts` for the template.
-- **Remaining dialog call sites with the same latent bug** (still using `.fsPath` with raw `fs`): `AuditService.exportLogs`, `keyCommands.pushPubkey`, `diffCommand`, `FileService.uploadFileTo` (read side). Lower user impact but track as a known gap — fix when the next change touches that area.
+- **Remaining dialog call sites with the same latent bug** (still using `.fsPath` with raw `fs`): `AuditService.exportLogs`, `keyCommands.pushPubkey`, `diffCommand`. (`FileService.uploadFileTo` read side was fixed in v0.8.18 — see the 2026-06-01 entry below.) Lower user impact but track as a known gap — fix when the next change touches that area.
 
 ---
 

@@ -13,7 +13,7 @@ import { PriorityQueueService, PreloadPriority } from './PriorityQueueService';
 import { ActivityService } from './ActivityService';
 import { CommandGuard } from './CommandGuard';
 import { CredentialService } from './CredentialService';
-import { formatFileSize, normalizeLocalPath } from '../utils/helpers';
+import { formatFileSize, normalizeLocalPath, decodeUriComponentSafe } from '../utils/helpers';
 import { isLikelyBinary, DEFAULT_PROGRESSIVE_CONFIG } from '../types/progressive';
 import { registerTabLabel, getConnectionPrefix } from '../utils/connectionPrefix';
 import { infoLog } from '../utils/diagnosticLog';
@@ -3478,6 +3478,64 @@ export class FileService {
   }
 
   /**
+   * Read bytes from a URI returned by showOpenDialog. Goes through
+   * vscode.workspace.fs which respects the URI scheme — handles file:,
+   * vscode-remote:, vscode-vfs:, and any registered FileSystemProvider scheme.
+   * The older direct fs.readFileSync(uri.fsPath, ...) / fs.statSync(uri.fsPath)
+   * calls broke when the dialog returned a non-file: URI (e.g. on a Remote-SSH
+   * workspace host the picker returns `vscode-remote://` URIs whose .fsPath the
+   * raw `fs` module cannot reach). See .adn/lessons.md 2026-05-22.
+   */
+  private async readUserSelectedUri(uri: vscode.Uri): Promise<{ content: Buffer; size: number }> {
+    // stat() rejects on failure (it never resolves to null), so a successful
+    // resolve guarantees a numeric size.
+    const stat = await vscode.workspace.fs.stat(uri);
+    const data = await vscode.workspace.fs.readFile(uri);
+    return { content: Buffer.from(data), size: stat.size };
+  }
+
+  /**
+   * Whether this extension instance is running on the VS Code workspace
+   * (remote) extension host while connected over Remote-SSH. In that placement
+   * file dialogs browse the *remote* server's filesystem, not the user's local
+   * machine, so uploads cannot reach local files. Set from activate().
+   */
+  private onRemoteWorkspaceHost = false;
+
+  setRemoteWorkspaceHost(value: boolean): void {
+    this.onRemoteWorkspaceHost = value;
+  }
+
+  /**
+   * When running on the remote workspace host, the upload file-picker browses
+   * the server — not the user's machine. Warn at the point of action (the
+   * activation hint is easy to miss) and let the user reach "Install in Local".
+   * Returns true if the upload should proceed, false to abort. Honors the same
+   * `sshLite.suppressLocalInstallHint` opt-out as the activation hint.
+   */
+  private async warnRemoteWorkspaceUpload(): Promise<boolean> {
+    const config = vscode.workspace.getConfiguration('sshLite');
+    if (config.get<boolean>('suppressLocalInstallHint', false)) {
+      return true;
+    }
+    const choice = await vscode.window.showWarningMessage(
+      "SSH Lite is running on the remote host, so the file picker browses the server's filesystem — not your local machine. To upload a file from your own computer, install SSH Lite in Local.",
+      'Open Extensions',
+      'Pick from server anyway',
+      "Don't show again",
+    );
+    if (choice === 'Open Extensions') {
+      void vscode.commands.executeCommand('workbench.view.extensions');
+      return false;
+    }
+    if (choice === "Don't show again") {
+      void config.update('suppressLocalInstallHint', true, vscode.ConfigurationTarget.Global);
+      return true;
+    }
+    return choice === 'Pick from server anyway';
+  }
+
+  /**
    * Download a file to a user-selected location
    */
   async downloadFileTo(connection: SSHConnection, remoteFile: IRemoteFile): Promise<void> {
@@ -3636,25 +3694,47 @@ export class FileService {
    * Upload a file from local to remote
    */
   async uploadFileTo(connection: SSHConnection, remoteFolderPath: string): Promise<void> {
+    // On the remote workspace host the picker browses the server, not the
+    // user's machine — warn before opening a dialog that cannot reach local
+    // files. (No-op on the UI/local host, where uploads work as expected.)
+    if (this.onRemoteWorkspaceHost && !(await this.warnRemoteWorkspaceUpload())) {
+      return;
+    }
+
     const fileUri = await vscode.window.showOpenDialog({
       canSelectFolders: false,
       canSelectFiles: true,
       canSelectMany: false,
       openLabel: 'Select File to Upload',
-      defaultUri: this.lastUploadUri,
+      defaultUri: this.lastUploadUri ?? vscode.Uri.file(os.homedir()),
     });
 
     if (!fileUri || fileUri.length === 0) {
       return;
     }
 
-    const localPath = fileUri[0].fsPath;
-    this.lastUploadUri = vscode.Uri.file(path.dirname(localPath));
-    const fileName = path.basename(localPath);
+    const selectedUri = fileUri[0];
+    // Remember the parent folder as a URI (scheme-preserving) for next time.
+    this.lastUploadUri = vscode.Uri.joinPath(selectedUri, '..');
+    // Derive the leaf name from the URI path (always '/'-separated, scheme-safe)
+    // rather than fsPath, which mangles non-file: schemes. A parsed URI path may
+    // be percent-encoded (e.g. "my%20file.txt") — decode it, but guard against a
+    // literal '%' in a file: path that isn't valid encoding (e.g. "100%.txt").
+    const fileName = decodeUriComponentSafe(path.posix.basename(selectedUri.path));
+    const localPath = selectedUri.fsPath; // display/audit only — never fed to raw fs
     const remotePath = `${remoteFolderPath}/${fileName}`;
 
     const activityService = ActivityService.getInstance();
-    const fileSize = fs.statSync(localPath).size;
+    // Read BEFORE starting the activity; a read failure must surface to the user
+    // (the caller only logs), matching the download path's error handling.
+    let localContent: Buffer;
+    let fileSize: number;
+    try {
+      ({ content: localContent, size: fileSize } = await this.readUserSelectedUri(selectedUri));
+    } catch (error) {
+      vscode.window.showErrorMessage(`Failed to read file for upload: ${(error as Error).message}`);
+      return;
+    }
     const activityId = activityService.startActivity(
       'upload',
       connection.id,
@@ -3674,9 +3754,8 @@ export class FileService {
           cancellable: false,
         },
         async () => {
-          const content = fs.readFileSync(localPath);
           activityService.updateProgress(activityId, 50, 'Uploading...');
-          await connection.writeFile(remotePath, content);
+          await connection.writeFile(remotePath, localContent);
         }
       );
 
