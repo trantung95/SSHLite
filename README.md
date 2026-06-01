@@ -70,10 +70,10 @@ Two edge cases worth knowing:
 
 ## Release Notes
 
-**0.8.18** — **Remote-SSH upload fix**: clicking **Upload File** while SSH Lite ran on the remote (workspace) extension host browsed the *server's* files instead of your own machine, and read them through an unsafe raw-`fs` path. Companion to the v0.8.17 download fix.
+**0.8.18** — **Remote-SSH upload fix**: in a Remote-SSH window, **Upload File** opened a picker showing the *remote server's* files instead of your own machine — even with SSH Lite installed locally (Download already worked). Cause: the upload dialog wasn't told where to open, so it fell back to the remote workspace folder; Download didn't have this because it already opened at your local home.
 
-- **Upload picks from your machine** — when SSH Lite runs locally (the default), the file picker browses your own filesystem; the selected file is read through `vscode.workspace.fs` so any URI scheme (`file:`, `vscode-remote:`, custom providers) is handled and bytes are preserved end to end.
-- **Point-of-action guidance** — if SSH Lite is running on the remote host, the upload command now warns *before* opening a server-only picker and offers **Install in Local**. The activation hint also now mentions uploads, not just downloads. Dismiss permanently via `sshLite.suppressLocalInstallHint`.
+- **Upload now opens on your machine** — the file picker opens at your local home directory (same as Download), so it browses your own filesystem. Just update to 0.8.18 — no reinstall or host change needed.
+- **Hardening** — the selected file is read through `vscode.workspace.fs`, so any URI scheme (`file:`, `vscode-remote:`, custom providers) is handled and bytes are preserved end to end. If SSH Lite is genuinely installed *on* a remote host, the upload command now points you to **Install in Local** (dismiss via `sshLite.suppressLocalInstallHint`).
 
 **0.8.17** — **Remote-SSH compatibility**: SSH Lite now declares `extensionKind` so it installs on your local machine by default, even when VS Code is connected to a remote host via Remote-SSH. Downloads now route through `vscode.workspace.fs` and land correctly regardless of URI scheme.
 

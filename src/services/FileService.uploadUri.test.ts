@@ -207,6 +207,23 @@ describe('FileService upload — URI-scheme-safe reads (v0.8.18 regression net)'
     expect(fs.readFileSync as jest.Mock).not.toHaveBeenCalled();
   });
 
+  it('opens the picker at a local file: defaultUri (so it browses the user machine, not the remote workspace)', async () => {
+    // Root cause of the 0.8.17 upload bug: with no defaultUri, showOpenDialog
+    // falls back to the window folder, which is the remote server in a
+    // Remote-SSH window — even when the extension runs on the local UI host.
+    // Download worked because it seeded a local file: defaultUri; upload didn't.
+    const pickUri = vscode.Uri.file('/home/test/foo.bin');
+    (vscode.window.showOpenDialog as jest.Mock).mockResolvedValueOnce([pickUri]);
+
+    await service.uploadFileTo(mockConnection as any, '/remote/dir');
+
+    expect(vscode.window.showOpenDialog).toHaveBeenCalledTimes(1);
+    const opts = (vscode.window.showOpenDialog as jest.Mock).mock.calls[0][0];
+    expect(opts.defaultUri).toBeDefined();
+    expect(opts.defaultUri.scheme).toBe('file');
+    expect(opts.defaultUri.path).toBe('/home/test'); // os.homedir() mock
+  });
+
   it('surfaces an error and does not upload when the read fails', async () => {
     const pickUri = vscode.Uri.file('/home/test/gone.bin');
     (vscode.window.showOpenDialog as jest.Mock).mockResolvedValueOnce([pickUri]);
