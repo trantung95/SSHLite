@@ -1,6 +1,6 @@
 # Commands Reference
 
-All 103 commands registered by SSH Lite (SSH Tools), organized by category.
+All 108 commands registered by SSH Lite (SSH Tools), organized by category.
 
 ---
 
@@ -187,6 +187,18 @@ Backing services: `SystemToolsService` (processes + systemctl), `SnippetService`
 | `sshLite.expandFirstLevel` | Expand First Level | View title |
 | `sshLite.collapseAll` | Collapse All | View title |
 | `sshLite.cancelPreloading` | Cancel Preloading | Status bar |
+
+### Support Commands
+
+Surfaced as buttons in the `sshLite.support` WebviewView (and via the Command Palette). Secondary purposes — not SSH Lite's core function. See `features/support-view.md`.
+
+| Command | Title | Source |
+|---------|-------|--------|
+| `sshLite.reportIssue` | Report a Bug or Suggest a Feature | Support view / palette |
+| `sshLite.donate` | Donate (Keep This Project Independent) → opens Bánh Mì panel | Support view / palette |
+| `sshLite.starGithub` | Star on GitHub | Support view / palette |
+| `sshLite.rateMarketplace` | Rate on Marketplace | Support view / palette |
+| `sshLite.shareExtension` | Share Extension | Support view / palette |
 
 ---
 

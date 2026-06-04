@@ -1,52 +1,65 @@
 // build/build-webview.js
 //
-// Bundles the search webview source (webview-src/search/) into media/search/.
-// Emits main.js (bundled JS), main.css (lifted from styles.css), and copies
-// index.html verbatim. The extension's SearchPanel.getWebviewContent() reads
-// these artifacts at runtime via webview.asWebviewUri().
+// Bundles the webview sources (webview-src/<name>/) into media/<name>/.
+// For each entry it emits main.js (bundled JS), main.css (lifted from
+// styles.css), and copies index.html verbatim. The extension reads these
+// artifacts at runtime via webview.asWebviewUri():
+//   - search:  SearchPanel.getWebviewContent()
+//   - support: SupportViewProvider.getHtml()
 
 const esbuild = require('esbuild');
 const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
-const SRC = path.join(ROOT, 'webview-src', 'search');
-const OUT = path.join(ROOT, 'media', 'search');
+
+// One entry per webview. Adding a webview = add one line here; no other
+// change to this file is needed.
+const ENTRIES = [
+  { name: 'search', src: path.join(ROOT, 'webview-src', 'search'), out: path.join(ROOT, 'media', 'search') },
+  { name: 'support', src: path.join(ROOT, 'webview-src', 'support'), out: path.join(ROOT, 'media', 'support') },
+];
 
 const watch = process.argv.includes('--watch');
 
-async function build() {
-  fs.mkdirSync(OUT, { recursive: true });
-  fs.copyFileSync(path.join(SRC, 'index.html'), path.join(OUT, 'index.html'));
+async function buildEntry(entry) {
+  fs.mkdirSync(entry.out, { recursive: true });
+  fs.copyFileSync(path.join(entry.src, 'index.html'), path.join(entry.out, 'index.html'));
 
-  const ctx = await esbuild.context({
-    entryPoints: [path.join(SRC, 'index.ts')],
+  const jsCtx = await esbuild.context({
+    entryPoints: [path.join(entry.src, 'index.ts')],
     bundle: true,
     format: 'iife',
     target: ['es2020'],
     platform: 'browser',
-    outfile: path.join(OUT, 'main.js'),
+    outfile: path.join(entry.out, 'main.js'),
     sourcemap: 'inline',
     logLevel: 'info',
   });
 
   const cssCtx = await esbuild.context({
-    entryPoints: [path.join(SRC, 'styles.css')],
+    entryPoints: [path.join(entry.src, 'styles.css')],
     bundle: true,
-    outfile: path.join(OUT, 'main.css'),
+    outfile: path.join(entry.out, 'main.css'),
     logLevel: 'info',
   });
 
   if (watch) {
-    await ctx.watch();
+    await jsCtx.watch();
     await cssCtx.watch();
-    console.log('[build-webview] watching webview-src/search/ ...');
+    console.log(`[build-webview] watching webview-src/${entry.name}/ ...`);
   } else {
-    await ctx.rebuild();
+    await jsCtx.rebuild();
     await cssCtx.rebuild();
-    await ctx.dispose();
+    await jsCtx.dispose();
     await cssCtx.dispose();
-    console.log('[build-webview] bundled to media/search/');
+    console.log(`[build-webview] bundled to media/${entry.name}/`);
+  }
+}
+
+async function build() {
+  for (const entry of ENTRIES) {
+    await buildEntry(entry);
   }
 }
 

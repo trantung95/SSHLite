@@ -29,6 +29,5 @@ These are the load-bearing rules for working in SSH Lite, distilled from `CLAUDE
 
 ## Output style
 
-- No em-dash character (U+2014) in any output or file. Use a spaced hyphen ( - ), a colon, parentheses, or a sentence break. Do not substitute the SQL-style double hyphen.
 - Expand abbreviations on first use.
 - Record reusable lessons in `.adn/lessons.md` and reusable patterns in `CLAUDE.md` in the same response you discover them.

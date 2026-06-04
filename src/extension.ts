@@ -25,6 +25,8 @@ import { PortForwardTreeProvider, PortForwardTreeItem, SavedForwardTreeItem } fr
 import { ActivityTreeProvider, ActivityTreeItem, ServerGroupTreeItem } from './providers/ActivityTreeProvider';
 import { ActivityService } from './services/ActivityService';
 import { SearchPanel, ServerSearchEntry } from './webviews/SearchPanel';
+import { SupportViewProvider } from './webviews/SupportViewProvider';
+import { DonatePanel } from './webviews/DonatePanel';
 import { SSHFileDecorationProvider } from './providers/FileDecorationProvider';
 import { ProgressiveFileContentProvider } from './providers/ProgressiveFileContentProvider';
 import { PROGRESSIVE_PREVIEW_SCHEME, parsePreviewUri } from './types/progressive';
@@ -261,6 +263,45 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Wire up port forward service with its tree provider
   portForwardService.setTreeProvider(portForwardTreeProvider);
+
+  // Register the "Support SSH Lite" webview view (top of the container,
+  // collapsed by default). Wrapped in safeStep so a registration failure
+  // doesn't cascade and leave the tree views unrendered (v0.8.11 hardening).
+  // retainContextWhenHidden:false keeps it LITE — VS Code tears the webview down
+  // when collapsed and may re-resolve it on re-show (the provider clears its
+  // disposables at the top of resolveWebviewView to stay leak-safe).
+  const supportViewProvider = new SupportViewProvider(context.extensionUri, context.extensionPath);
+  safeStep('support-webview-view', () =>
+    context.subscriptions.push(
+      vscode.window.registerWebviewViewProvider(SupportViewProvider.viewType, supportViewProvider, {
+        webviewOptions: { retainContextWhenHidden: false },
+      })
+    )
+  );
+
+  // Make the promo coder "type" when the user is active. The webview can't see
+  // raw keystrokes (sandboxed — and there is no VS Code API for keys in other
+  // extensions' webviews or the terminal; that would need an OS keylogger), so
+  // we forward a pulse on the broadest *supported* signals: editing a document,
+  // moving the cursor / navigating in an editor, and running a terminal command
+  // (shell integration). notifyTyped() is a no-op unless the Support view is
+  // expanded + visible, and it self-throttles, so this is cheap.
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeTextDocument((e) => {
+      if (e.contentChanges.length > 0) {
+        supportViewProvider.notifyTyped();
+      }
+    }),
+    vscode.window.onDidChangeTextEditorSelection(() => supportViewProvider.notifyTyped())
+  );
+  // Terminal shell-execution events are stable only on newer VS Code; feature-detect
+  // so we keep working on engines down to ^1.85 without an activation error.
+  const onTerminalExec = (vscode.window as unknown as {
+    onDidStartTerminalShellExecution?: (cb: () => void) => vscode.Disposable;
+  }).onDidStartTerminalShellExecution;
+  if (typeof onTerminalExec === 'function') {
+    context.subscriptions.push(onTerminalExec(() => supportViewProvider.notifyTyped()));
+  }
 
   // Register tree views (showCollapseAll: false - we provide custom toggle buttons).
   // Each createTreeView is wrapped in safeStep so a single VS Code-level
@@ -3187,6 +3228,42 @@ export function activate(context: vscode.ExtensionContext): void {
       const tempDir = fileService.getTempDir();
       const uri = vscode.Uri.file(tempDir);
       await vscode.env.openExternal(uri);
+    }),
+
+    // --- Support SSH Lite (secondary links, surfaced by the Support webview view) ---
+    // Report a Bug → GitHub issues
+    vscode.commands.registerCommand('sshLite.reportIssue', async () => {
+      infoLog('support', 'cmd', { cmd: 'reportIssue' });
+      await vscode.env.openExternal(vscode.Uri.parse('https://github.com/trantung95/SSHLite/issues'));
+    }),
+
+    // Star on GitHub → repo
+    vscode.commands.registerCommand('sshLite.starGithub', async () => {
+      infoLog('support', 'cmd', { cmd: 'starGithub' });
+      await vscode.env.openExternal(vscode.Uri.parse('https://github.com/trantung95/SSHLite'));
+    }),
+
+    // Rate on Marketplace → review tab deep link
+    vscode.commands.registerCommand('sshLite.rateMarketplace', async () => {
+      infoLog('support', 'cmd', { cmd: 'rateMarketplace' });
+      await vscode.env.openExternal(
+        vscode.Uri.parse('https://marketplace.visualstudio.com/items?itemName=hybr8.ssh-lite&ssr=false#review-details')
+      );
+    }),
+
+    // Donate (keep this project independent) → opens the "Send me a Bánh Mì"
+    // animation webview, which shows QR + addresses (all from donate/donateInfo.ts,
+    // mirrored by README). Fully offline — copy happens via the panel.
+    vscode.commands.registerCommand('sshLite.donate', () => {
+      infoLog('support', 'cmd', { cmd: 'donate' });
+      DonatePanel.show(context.extensionUri);
+    }),
+
+    // Share Extension → copy the Marketplace link
+    vscode.commands.registerCommand('sshLite.shareExtension', async () => {
+      infoLog('support', 'cmd', { cmd: 'shareExtension' });
+      await vscode.env.clipboard.writeText('https://marketplace.visualstudio.com/items?itemName=hybr8.ssh-lite');
+      vscode.window.showInformationMessage('SSH Lite Marketplace link copied to clipboard — share away! 🔗');
     }),
 
     // Clear cache (factory reset except credentials)

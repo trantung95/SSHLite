@@ -2,7 +2,7 @@
   "name": "ssh-lite",
   "displayName": "SSH Lite (SSH Tools)",
   "description": "A visual SSH client for VS Code. Browse, edit, monitor, manage services - by clicking, not typing vi/systemctl/crontab. Nothing installed on the remote server. Perfect for VPS, cloud servers (AWS/Azure/GCP), and Linux administration.",
-  "version": "0.8.18",
+  "version": "0.9.0",
   "publisher": "hybr8",
   "engines": {
     "vscode": "^1.85.0"
@@ -129,6 +129,12 @@
     },
     "views": {
       "sshLite": [
+        {
+          "id": "sshLite.support",
+          "name": "Support SSH Lite",
+          "type": "webview",
+          "visibility": "collapsed"
+        },
         {
           "id": "sshLite.hosts",
           "name": "SSH Hosts"
@@ -765,6 +771,36 @@
         "title": "Diff with Local File",
         "category": "SSH Tools",
         "icon": "$(diff)"
+      },
+      {
+        "command": "sshLite.reportIssue",
+        "title": "Report a Bug or Suggest a Feature",
+        "category": "SSH Lite",
+        "icon": "$(bug)"
+      },
+      {
+        "command": "sshLite.donate",
+        "title": "Donate (Keep This Project Independent)",
+        "category": "SSH Lite",
+        "icon": "$(heart)"
+      },
+      {
+        "command": "sshLite.starGithub",
+        "title": "Star on GitHub",
+        "category": "SSH Lite",
+        "icon": "$(star)"
+      },
+      {
+        "command": "sshLite.rateMarketplace",
+        "title": "Rate on Marketplace",
+        "category": "SSH Lite",
+        "icon": "$(feedback)"
+      },
+      {
+        "command": "sshLite.shareExtension",
+        "title": "Share Extension",
+        "category": "SSH Lite",
+        "icon": "$(link)"
       }
     ],
     "menus": {

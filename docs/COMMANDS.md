@@ -1,7 +1,7 @@
 # SSH Lite (SSH Tools) — Command Reference
 
 > Auto-generated from `package.json`. Run `npm run docs:commands` to regenerate.
-> Last updated: 2026-06-01 · Version: 0.8.18
+> Last updated: 2026-06-04 · Version: 0.9.0
 
 This document lists every command registered by SSH Lite (SSH Tools), organized by category.
 Open the Command Palette (**Ctrl+Shift+P** / **Cmd+Shift+P**) and type the command title to find it.
@@ -109,6 +109,11 @@ Open the Command Palette (**Ctrl+Shift+P** / **Cmd+Shift+P**) and type the comma
 | Cut | `sshLite.cutRemoteItem` | `ctrl+x / cmd+x (Mac)` | Keybinding: ctrl+x / cmd+x (Mac), Tree context menu |
 | Paste | `sshLite.pasteRemoteItem` | `ctrl+v / cmd+v (Mac)` | Keybinding: ctrl+v / cmd+v (Mac), Tree context menu |
 | Clear SSH Clipboard | `sshLite.clearRemoteClipboard` | — | Command Palette only |
+| Report a Bug or Suggest a Feature | `sshLite.reportIssue` | — | Command Palette only |
+| Donate (Keep This Project Independent) | `sshLite.donate` | — | Command Palette only |
+| Star on GitHub | `sshLite.starGithub` | — | Command Palette only |
+| Rate on Marketplace | `sshLite.rateMarketplace` | — | Command Palette only |
+| Share Extension | `sshLite.shareExtension` | — | Command Palette only |
 
 ## SSH Tools {#ssh-tools}
 

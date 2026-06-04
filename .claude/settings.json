@@ -1,5 +1,5 @@
 {
-  "$comment": "Shared project settings (committed). Hook commands use $env:CLAUDE_PROJECT_DIR (PowerShell-side expansion via -Command) because Claude Code does not expand $CLAUDE_PROJECT_DIR inside JSON args on Windows. Context-automation + em-dash hooks ported from D:\\CT\\Repos\\3in1 via the porting-ai-docs skill.",
+  "$comment": "Shared project settings (committed). Hook commands use $env:CLAUDE_PROJECT_DIR (PowerShell-side expansion via -Command) because Claude Code does not expand $CLAUDE_PROJECT_DIR inside JSON args on Windows. Context-automation hooks ported from D:\\CT\\Repos\\3in1 via the porting-ai-docs skill.",
   "hooks": {
     "SessionStart": [
       {
@@ -40,12 +40,6 @@
             "if": "Write(*.adn/features/*.md)|Edit(*.adn/features/*.md)|Write(*.adn/flow/*.md)|Edit(*.adn/flow/*.md)",
             "command": "node scripts/build-chaos-catalog.js 2>/dev/null || true",
             "statusMessage": "Regenerating chaos catalog..."
-          },
-          {
-            "type": "command",
-            "command": "powershell.exe",
-            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "& \"$env:CLAUDE_PROJECT_DIR\\.claude\\hooks\\block-em-dash.ps1\"; exit $LASTEXITCODE"],
-            "timeout": 5
           }
         ]
       }

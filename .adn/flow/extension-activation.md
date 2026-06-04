@@ -25,6 +25,7 @@ function safeStep<T>(name: string, fn: () => T): T | undefined
 | `port-forward-svc` | `portForwardService.initialize(context)` — port-forward persistence |
 | `folder-history-svc` | `folderHistoryService.initialize(context)` — smart preload history |
 | `snippet-svc` | `SnippetService.getInstance().initialize(context)` |
+| `support-webview-view` | `vscode.window.registerWebviewViewProvider('sshLite.support', …)` — collapsed promo/links WebviewView, `retainContextWhenHidden:false` (see `features/support-view.md`) |
 | `host-tree-view` | `vscode.window.createTreeView('sshLite.hosts', …)` |
 | `file-tree-view` | `vscode.window.createTreeView('sshLite.fileExplorer', …)` (with drag/drop + multi-select) |
 | `port-forward-tree-view` | `vscode.window.createTreeView('sshLite.portForwards', …)` |
@@ -73,7 +74,7 @@ All 8 services: `ConnectionManager`, `HostService`, `FileService`, `TerminalServ
 `ProgressiveDownloadManager.initialize(contentProvider)`. Register `ssh-lite-preview` URI scheme.
 
 ### Phase 7: Register Tree Views
-4 views: `sshLite.hosts`, `sshLite.fileExplorer` (+ drag/drop, multi-select), port forwards, activity. All with `showCollapseAll: false` (custom 3-state toggle).
+4 tree views: `sshLite.hosts`, `sshLite.fileExplorer` (+ drag/drop, multi-select), port forwards, activity. All with `showCollapseAll: false` (custom 3-state toggle). Plus 1 WebviewView registered just before them: `sshLite.support` (collapsed-by-default promo/links, `retainContextWhenHidden:false`).
 
 ### Phase 8: Wire Providers ↔ Services
 - `portForwardService.setTreeProvider(treeProvider)`
@@ -98,4 +99,4 @@ All commands push to `context.subscriptions`.
 
 ## Command Handler Pattern
 
-All 103 commands: determine target (TreeItem from context menu or `selectConnection()` from palette) → perform operation → update UI → catch errors. Must handle both tree item and `undefined` (command palette) invocation.
+All 108 commands: determine target (TreeItem from context menu or `selectConnection()` from palette) → perform operation → update UI → catch errors. Must handle both tree item and `undefined` (command palette) invocation.

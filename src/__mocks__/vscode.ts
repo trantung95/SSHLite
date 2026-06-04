@@ -248,6 +248,7 @@ export const workspace = {
     save: jest.fn().mockResolvedValue(true),
   }),
   onDidSaveTextDocument: new EventEmitter<unknown>().event,
+  onDidChangeTextDocument: new EventEmitter<unknown>().event,
   onDidCloseTextDocument: new EventEmitter<unknown>().event,
   onDidChangeConfiguration: new EventEmitter<unknown>().event,
   registerTextDocumentContentProvider: jest.fn().mockReturnValue({ dispose: jest.fn() }),
@@ -309,6 +310,7 @@ export const window = {
   activeTextEditor: undefined,
   visibleTextEditors: [] as Array<{ document: { uri: { fsPath: string } } }>,
   onDidChangeActiveTextEditor: new EventEmitter<unknown>().event,
+  onDidChangeTextEditorSelection: new EventEmitter<unknown>().event,
   onDidChangeVisibleTextEditors: (_listener: (e: unknown) => void) => ({ dispose: jest.fn() }),
   setStatusBarMessage: jest.fn().mockReturnValue({ dispose: jest.fn() }),
   withProgress: jest.fn().mockImplementation(async (options, task) => {
@@ -319,6 +321,7 @@ export const window = {
   createWebviewPanel: jest.fn().mockReturnValue({
     webview: {
       html: '',
+      cspSource: 'vscode-webview://test',
       onDidReceiveMessage: new EventEmitter<unknown>().event,
       postMessage: jest.fn().mockResolvedValue(true),
       asWebviewUri: (uri: Uri) => uri,
@@ -447,6 +450,39 @@ export function createMockExtensionContext(): {
     globalStoragePath: '/globalStorage',
     logPath: '/logs',
     asAbsolutePath: (relativePath: string) => `/extension/${relativePath}`,
+  };
+}
+
+// WebviewView mock factory (for WebviewViewProvider tests, e.g. SupportViewProvider).
+// Use _fireMessage(msg) to simulate a message posted from the webview.
+export function createMockWebviewView(): {
+  webview: {
+    html: string;
+    options: unknown;
+    cspSource: string;
+    asWebviewUri: (uri: Uri) => Uri;
+    onDidReceiveMessage: (listener: (e: unknown) => void) => { dispose: () => void };
+    postMessage: jest.Mock;
+  };
+  visible: boolean;
+  onDidChangeVisibility: (listener: () => void) => { dispose: () => void };
+  onDidDispose: (listener: () => void) => { dispose: () => void };
+  _fireMessage: (msg: unknown) => void;
+} {
+  const messageEmitter = new EventEmitter<unknown>();
+  return {
+    webview: {
+      html: '',
+      options: {},
+      cspSource: 'vscode-webview://test',
+      asWebviewUri: (uri: Uri) => uri,
+      onDidReceiveMessage: messageEmitter.event,
+      postMessage: jest.fn().mockResolvedValue(true),
+    },
+    visible: true,
+    onDidChangeVisibility: new EventEmitter<void>().event,
+    onDidDispose: new EventEmitter<void>().event,
+    _fireMessage: (msg: unknown) => messageEmitter.fire(msg),
   };
 }
 

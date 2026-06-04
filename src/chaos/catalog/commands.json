@@ -410,5 +410,25 @@
   {
     "id": "sshLite.diffWithLocal",
     "title": "Diff with Local File"
+  },
+  {
+    "id": "sshLite.reportIssue",
+    "title": "Report a Bug or Suggest a Feature"
+  },
+  {
+    "id": "sshLite.donate",
+    "title": "Donate (Keep This Project Independent)"
+  },
+  {
+    "id": "sshLite.starGithub",
+    "title": "Star on GitHub"
+  },
+  {
+    "id": "sshLite.rateMarketplace",
+    "title": "Rate on Marketplace"
+  },
+  {
+    "id": "sshLite.shareExtension",
+    "title": "Share Extension"
   }
 ]

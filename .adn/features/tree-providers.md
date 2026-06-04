@@ -2,6 +2,11 @@
 
 Covers `HostTreeProvider`, `FileTreeProvider`, and `FileDecorationProvider`.
 
+> Note: the `sshLite.support` view (top of the container) is **not** a
+> `TreeDataProvider` — it is a `WebviewViewProvider` (`SupportViewProvider`).
+> A tree row can only show a ~16px icon; the support section needs an animated
+> image, so it is HTML. See `features/support-view.md`.
+
 ---
 
 ## HostTreeProvider (`src/providers/HostTreeProvider.ts`)

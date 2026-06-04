@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- CSP and asset URIs are injected by SupportViewProvider.getHtml() at runtime.
+       The placeholders below are replaced via simple string substitution. -->
+  <meta http-equiv="Content-Security-Policy" content="__CSP__">
+  <title>Support SSH Lite</title>
+  <link rel="stylesheet" href="__STYLES_URI__">
+</head>
+<body>
+  <div class="support-container">
+    <!-- Promo: a pixel-art coder typing, drawn by index.ts on a <canvas>.
+         Internal resolution stays 160x120; CSS upscales it crisply
+         (image-rendering:pixelated). Width follows the section width by default,
+         but the zoom control below sets an independent pixel width capped at the
+         section width (max-width:100%). Clicking the coder's shirt / mug /
+         glasses recolours that part (handled in index.ts, no link). -->
+    <div class="promo" title="Click the shirt, mug or glasses to recolour">
+      <canvas id="promoCanvas" class="promo-img" width="160" height="120"></canvas>
+    </div>
+
+    <div class="zoom" aria-label="Animation zoom">
+      <button id="zoomOut" class="zoom-btn" title="Zoom out">&#8722;</button>
+      <button id="zoomFit" class="zoom-btn" title="Fit to width">Fit</button>
+      <button id="zoomIn" class="zoom-btn" title="Zoom in">&#43;</button>
+      <input id="rateInput" class="rate-input" type="number" min="0" step="1" inputmode="numeric"
+             title="Key popups per minute around the keyboard (0 = every key shows one). Saved automatically.">
+    </div>
+
+    <div class="links">
+      <button class="link-btn" data-cmd="reportIssue"><span class="ico">🐛</span> Report a bug or suggest a feature</button>
+      <button class="link-btn" data-cmd="donate"><span class="ico">❤️</span> Donate, keep this project independent</button>
+      <button class="link-btn" data-cmd="starGithub"><span class="ico">⭐</span> Star on GitHub</button>
+      <button class="link-btn" data-cmd="rateMarketplace"><span class="ico">📝</span> Rate on Marketplace</button>
+      <button class="link-btn" data-cmd="shareExtension"><span class="ico">🔗</span> Share extension</button>
+    </div>
+  </div>
+
+  <script nonce="__NONCE__" src="__SCRIPT_URI__"></script>
+</body>
+</html>
