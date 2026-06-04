@@ -89,9 +89,9 @@ src/
 - True data, no missing → wait for all results, never truncate/filter/lose data
 - Backward compat: no breaking changes to connection configs / host settings / keybindings without a migration path; opt-in over opt-out; trace all callers before removing a function
 
-## AI Behavior (CRITICAL)
+## AI Behavior
 
-0. **Session start**: Read `.adn/lessons.md` in full before any other work. Same mistake twice = broken process.
+0. **Session start**: Skim `.adn/lessons.md` for lessons relevant to the task. The `prompt-context-injector` hook also surfaces matching lesson entries automatically, so a full read up front is not required.
 1. **Plan first, code later.** Wrong mid-way? Stop, re-plan from scratch. When a conclusion turns out wrong, discard it AND every assumption it rested on, then rebuild from first evidence. Patching on top of a broken premise compounds the error.
 2. **Sub-agents first (no permission needed).** Dispatch a sub-agent for ANY task that can be separated — research, code exploration, file reads, parallel analysis, code review, Docker/test runs. Do NOT ask the user before dispatching; announce with a one-line notification at the top of the response (e.g. "Dispatching sub-agent: read ssh2 event docs"). Sub-agents may spawn their own sub-agents recursively; avoid going beyond 3 levels deep (main - level 1 - level 2) unless clearly necessary. Goal: keep main context clean, prevent context compaction.
 3. **Self-improvement loop.** Record lessons to `.adn/lessons.md`
@@ -183,6 +183,15 @@ Pervasive logging in every new code path — entry, exit, state transitions, err
 - All logs land in the single **SSH Lite** Output channel (created in `extension.ts`). No second channel, no `console.log`, no DevTools-only logging — one collection point so users reporting issues do: enable diag → reproduce → View → Output → SSH Lite → copy
 - Webview code posts `{type:'log', level, scope, event, payload}` back to the extension, which forwards via `infoLog`/`diagLog`. Webview logs MUST reach the same channel
 - "Don't log in loops" still applies — for hot per-iteration paths, gate behind `diagLog` (not `infoLog`) and consider sampling
+
+## AI Infrastructure (.claude/)
+
+Beyond this `CLAUDE.md` and `.adn/`, the repo carries Claude Code automation under `.claude/` (committable; runtime state is gitignored):
+
+- `.claude/critical-rules.md` - slim, always-injected rule set (LITE Principles + working method), distilled from this file.
+- `.claude/skills/` - project skills: `porting-ai-docs` (re-sync AI infrastructure from the 3in1 project; decision list in its `references/catalog.md`), plus writing-style and documentation-discipline skills (`no-em-dash`, `no-shorthand`, `short-simple-answers`, `auto-document-reusable`, `auto-gotcha`).
+- `.claude/hooks/` - context-automation hooks wired in `.claude/settings.json`: `prompt-context-injector` (injects critical-rules plus matching `.adn/lessons.md` entries per prompt), `pre/post-compact` (checkpoint plus re-inject across compaction), `subagent-rules-inject` (gives built-in sub-agents project context), `block-em-dash` (blocks the em-dash character U+2014 in writes).
+- To bring more infrastructure over from another repo, invoke the `porting-ai-docs` skill.
 
 ## AI Doc Auto-Sync (CRITICAL)
 

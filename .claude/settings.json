@@ -1,4 +1,5 @@
 {
+  "$comment": "Shared project settings (committed). Hook commands use $env:CLAUDE_PROJECT_DIR (PowerShell-side expansion via -Command) because Claude Code does not expand $CLAUDE_PROJECT_DIR inside JSON args on Windows. Context-automation + em-dash hooks ported from D:\\CT\\Repos\\3in1 via the porting-ai-docs skill.",
   "hooks": {
     "SessionStart": [
       {
@@ -6,7 +7,20 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo MANDATORY: Read .adn/lessons.md IN FULL before any work. Same mistake twice = broken process."
+            "command": "echo Reminder: check .adn/lessons.md and the matching .adn/ doc for the area you are working in."
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "& \"$env:CLAUDE_PROJECT_DIR\\.claude\\hooks\\prompt-context-injector.ps1\"; exit $LASTEXITCODE"],
+            "timeout": 5
           }
         ]
       }
@@ -26,6 +40,51 @@
             "if": "Write(*.adn/features/*.md)|Edit(*.adn/features/*.md)|Write(*.adn/flow/*.md)|Edit(*.adn/flow/*.md)",
             "command": "node scripts/build-chaos-catalog.js 2>/dev/null || true",
             "statusMessage": "Regenerating chaos catalog..."
+          },
+          {
+            "type": "command",
+            "command": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "& \"$env:CLAUDE_PROJECT_DIR\\.claude\\hooks\\block-em-dash.ps1\"; exit $LASTEXITCODE"],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "& \"$env:CLAUDE_PROJECT_DIR\\.claude\\hooks\\pre-compact-backup.ps1\"; exit $LASTEXITCODE"],
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "& \"$env:CLAUDE_PROJECT_DIR\\.claude\\hooks\\post-compact-reinject.ps1\"; exit $LASTEXITCODE"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "& \"$env:CLAUDE_PROJECT_DIR\\.claude\\hooks\\subagent-rules-inject.ps1\"; exit $LASTEXITCODE"],
+            "timeout": 5
           }
         ]
       }

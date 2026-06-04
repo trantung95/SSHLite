@@ -1,9 +1,20 @@
 # Lessons Learned
 
-AI assistants must read this file at the start of every session and apply all lessons.
+AI assistants should skim this file and apply the lessons relevant to the current task. The `prompt-context-injector` hook also surfaces matching entries automatically.
 Add new entries as bugs are found, mistakes are made, or better approaches are discovered.
 
 ---
+
+## 2026-06-04 - Ported AI infrastructure (skills + context hooks) from the 3in1 project via a new `porting-ai-docs` skill
+
+Brought a curated slice of `D:\CT\Repos\3in1`'s AI-doc infrastructure into SSH Lite and captured the method as a reusable skill (`.claude/skills/porting-ai-docs/`). Generalizable points:
+
+- **Classify before copying.** Every source artifact is PORTABLE (generic AI-workflow value), PERSONAL (about the user, not the project), or SOURCE-SPECIFIC (the source's domain: its database, ticket system, build, reviewers). Only the first two install; the third is dropped. Full decision list in `.claude/skills/porting-ai-docs/references/catalog.md`.
+- **Injector hooks must match the target's lessons format.** 3in1 splits lessons on `- **` bullets; SSH Lite lessons are `## YYYY-MM-DD` blocks, so the ported `prompt-context-injector.ps1` splits on `^## ` instead. A mismatched split silently returns zero matches (the hook still exits 0, so the failure is invisible).
+- **Relax strict enforcement for a solo repo.** Per-action git approval, mandatory multi-file read gates, and "restart from root" framing fit a team / production source, not a solo target. Kept the substance (LITE, sub-agents-first, verify-before-done), dropped the ceremony. Policy in `.claude/skills/porting-ai-docs/references/relaxation-policy.md`.
+- **Windows hook wiring:** `$env:CLAUDE_PROJECT_DIR` is expanded PowerShell-side (`powershell.exe -Command & "$env:CLAUDE_PROJECT_DIR\.claude\hooks\x.ps1"`), not by Claude Code inside JSON args.
+- **Augment, never clobber:** the port ADDS `.claude/skills`, `.claude/hooks`, and a slim `.claude/critical-rules.md`; it leaves SSH Lite's own `CLAUDE.md` / `.adn/` content intact. Ported skills cross-reference existing rules instead of duplicating them.
+- Hook runtime artifacts (`.claude_hook_report/`, `.claude/_session_state.json`, `.claude/_context_checkpoint.md`) are gitignored; the rest of `.claude/` is committable.
 
 ## 2026-06-01 — Upload showed the remote filesystem because the dialog had no local `defaultUri` — NOT because of host placement (corrected diagnosis)
 
