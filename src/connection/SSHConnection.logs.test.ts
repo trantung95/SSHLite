@@ -38,7 +38,12 @@ jest.mock('../services/CredentialService', () => ({
   CredentialService: {
     getInstance: jest.fn().mockReturnValue({
       getCredentialPassword: jest.fn().mockResolvedValue(undefined),
-      getOrPrompt: jest.fn().mockResolvedValue(undefined),
+      // Return a password so buildAuthConfig() always has at least one auth
+      // method. Otherwise — on a machine with no default ~/.ssh/id_* keys and
+      // no SSH_AUTH_SOCK (fs is NOT mocked here) — it throws "No authentication
+      // method available" before reaching auth-methods / handler registration,
+      // making these tests pass or fail by accident of the host's ~/.ssh.
+      getOrPrompt: jest.fn().mockResolvedValue('test-password'),
       getCredentialSecret: jest.fn().mockResolvedValue(undefined),
       listCredentials: jest.fn().mockReturnValue([]),
       deleteAll: jest.fn(),
@@ -52,6 +57,20 @@ beforeEach(() => {
   capturedClientHandlers = {};
   lastConnectArgs = null;
 });
+
+/**
+ * Flush microtasks until `cond` is true (or maxTicks reached). connect() awaits
+ * buildAuthConfig() before it logs `auth-methods` and registers the error/close
+ * handlers, and how many microtask ticks that takes depends on the credential
+ * path. Poll for the observable effect rather than assuming a fixed tick count
+ * (the old `await Promise.resolve()` ×2 was brittle and broke when the auth
+ * path gained an await).
+ */
+async function flushUntil(cond: () => boolean, maxTicks = 100): Promise<void> {
+  for (let i = 0; i < maxTicks && !cond(); i++) {
+    await Promise.resolve();
+  }
+}
 
 describe('SSHConnection.connect — begin + auth-methods', () => {
   it('emits connect/begin immediately with full host config (always-on)', async () => {
@@ -82,8 +101,7 @@ describe('SSHConnection.connect — begin + auth-methods', () => {
     const cap = setupLogCapture({ enableDiag: false });
     const conn = new SSHConnection(createMockHostConfig());
     void conn.connect().catch(() => { /* ignored */ });
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushUntil(() => cap.find('INFO', 'ssh-connect', 'auth-methods').length > 0);
     const auth = cap.find('INFO', 'ssh-connect', 'auth-methods');
     expect(auth).toHaveLength(1);
     // tryKeyboard is always added in the no-credential path
@@ -99,8 +117,7 @@ describe('SSHConnection.connect — error / close events', () => {
     const cap = setupLogCapture({ enableDiag: false });
     const conn = new SSHConnection(createMockHostConfig());
     const p = conn.connect().catch(() => { /* expected */ });
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushUntil(() => !!capturedClientHandlers['error']?.length);
     // Fire an authentication-style error so the connect promise rejects
     capturedClientHandlers['error']?.[0]?.(Object.assign(new Error('Permission denied'), { level: 'client-authentication', code: 'AUTH_ERR' }));
     await p;
@@ -118,8 +135,7 @@ describe('SSHConnection.connect — error / close events', () => {
     const cap = setupLogCapture({ enableDiag: false });
     const conn = new SSHConnection(createMockHostConfig());
     void conn.connect().catch(() => { /* ignored */ });
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushUntil(() => !!capturedClientHandlers['close']?.length);
     cap.reset();
     capturedClientHandlers['close']?.[0]?.();
     expect(cap.find('INFO', 'ssh-connect', 'close')).toHaveLength(1);
