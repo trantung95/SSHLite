@@ -544,9 +544,22 @@ function setupZoom(canvas: HTMLCanvasElement): void {
   const STEP = 24;
   const saved = getState().zoom;
   let zoom = typeof saved === 'number' && saved > 0 ? saved : 0; // 0 = fit to section width
+  // Publish the canvas display scale (display px / internal 160px) as a CSS var on
+  // the .promo container so the floating popups/labels (which live there) scale
+  // with the coder — otherwise they stay full-size when the NPC is zoomed out.
+  const updateScale = (): void => {
+    const parent = canvas.parentElement;
+    if (!parent) {
+      return;
+    }
+    const w = canvas.offsetWidth || canvas.getBoundingClientRect().width;
+    const s = w > 0 ? w / (canvas.width || 160) : 1;
+    parent.style.setProperty('--npc-scale', String(s));
+  };
   const apply = (): void => {
     canvas.style.width = zoom > 0 ? `${zoom}px` : '100%';
     patchState({ zoom });
+    updateScale();
   };
   const cur = (): number => Math.round(canvas.getBoundingClientRect().width) || canvas.width;
   const zoomIn = (): void => {
@@ -588,6 +601,9 @@ function setupZoom(canvas: HTMLCanvasElement): void {
     { passive: false }
   );
   apply();
+  // Re-scale popups when the panel width changes (fit mode follows the section).
+  window.addEventListener('resize', updateScale);
+  requestAnimationFrame(updateScale); // once after first layout
 }
 
 function startPromo(): void {

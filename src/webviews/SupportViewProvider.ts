@@ -87,6 +87,12 @@ export class SupportViewProvider implements vscode.WebviewViewProvider {
   /** Per-source throttle for activity pulses (keyed by `src`). */
   private readonly lastNotifyBySrc = new Map<string, number>();
 
+  /** Last time an AI tool was reported active; used to not attribute the AI's edits to the user. */
+  private lastAiActiveAt = 0;
+
+  /** Window during which editor changes are treated as AI edits (matches the AI label TTL). */
+  private static readonly AI_ACTIVE_MS = 2000;
+
   /**
    * Fires when the view becomes visible (true) or hidden/disposed (false).
    * External activity watchers (AI activity, cross-window beacon) gate their
@@ -169,7 +175,7 @@ export class SupportViewProvider implements vscode.WebviewViewProvider {
    * only posts when the view is actually visible (collapsed → no work), and
    * coalesces bursts so a paste / multi-cursor edit is one tap, not hundreds.
    */
-  public notifyTyped(src: TypedSource = 'editor', text?: string): void {
+  public notifyTyped(src: TypedSource = 'editor', text?: string, isUserInput = false): void {
     const view = this.view;
     if (!view || !view.visible) {
       return;
@@ -185,17 +191,33 @@ export class SupportViewProvider implements vscode.WebviewViewProvider {
     }
     this.lastNotifyBySrc.set(src, now);
     this.lastTypeNotify = now;
-    // `text` is the actual inserted characters (editor document change) so the
-    // coder can fly the real key(s) the user typed; bounded so a paste isn't huge.
-    // `user` lets the webview show a "you are working" label when the source is
-    // the local user (editor / own terminal).
-    const snippet = typeof text === 'string' && text ? text.slice(0, 24) : undefined;
-    void view.webview.postMessage(
-      snippet
-        ? { type: 'typed', src, user: this.userName, text: snippet }
-        : { type: 'typed', src, user: this.userName }
-    );
-    diagLog('support-view', 'typed', { src, hasText: !!snippet });
+    // Decide whether this is the LOCAL USER (show the "you" label + the typed
+    // characters) or some other source (plain pulse, no name). `onDidChangeText
+    // Document` fires identically for the user typing and for another extension
+    // (Claude, a formatter) editing a file, so the caller passes `isUserInput`,
+    // derived from intrinsic signals it CAN trust: a keystroke-shaped change
+    // (single ≤2-char edit) for document edits, or a Keyboard/Mouse selection
+    // kind for cursor moves. SSH Lite's own terminal input is always the user.
+    // An AI being active in the same window is an extra guard for editor edits.
+    let attributeToUser = false;
+    if (src === 'terminal-in') {
+      attributeToUser = true;
+    } else if (src === 'editor') {
+      const aiActive = now - this.lastAiActiveAt < SupportViewProvider.AI_ACTIVE_MS;
+      attributeToUser = isUserInput && !aiActive;
+    }
+    if (attributeToUser) {
+      const snippet = typeof text === 'string' && text ? text.slice(0, 24) : undefined;
+      void view.webview.postMessage(
+        snippet
+          ? { type: 'typed', src, user: this.userName, text: snippet }
+          : { type: 'typed', src, user: this.userName }
+      );
+      diagLog('support-view', 'typed', { src, hasText: !!snippet });
+    } else {
+      void view.webview.postMessage({ type: 'typed', src });
+      diagLog('support-view', 'typed', { src, user: false });
+    }
   }
 
   /** Wire the AI-hook controller (install/remove/status). */
@@ -217,6 +239,10 @@ export class SupportViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     const now = Date.now();
+    // Mark AI as active so a near-simultaneous editor change (the AI editing a
+    // file) is not misattributed to the local user. Set before the throttle so
+    // even coalesced pulses keep the window fresh.
+    this.lastAiActiveAt = now;
     const key = `ai:${id}`;
     const last = this.lastNotifyBySrc.get(key) ?? 0;
     // A prompt-carrying hook event bypasses the throttle (it is rare and the

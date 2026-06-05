@@ -48,10 +48,12 @@ body {
   z-index: 2;
   pointer-events: auto;
   cursor: pointer;
-  padding: 2px 7px;
+  padding: 0.18em 0.5em;
   border-radius: 4px;
   font-family: var(--vscode-font-family);
-  font-size: 12px;
+  /* Scale with the coder: --npc-scale = canvas display width / internal 160px,
+     set by index.ts on zoom/resize, so popups shrink/grow with the NPC. */
+  font-size: calc(8px * var(--npc-scale, 1.5));
   font-weight: 700;
   line-height: 1.3;
   color: #10131f;
@@ -79,10 +81,10 @@ body {
   transform: translate(-50%, -50%);
   z-index: 3;
   pointer-events: none;
-  padding: 1px 6px;
+  padding: 0.18em 0.5em;
   border-radius: 6px;
   font-family: var(--vscode-font-family);
-  font-size: 11px;
+  font-size: calc(7px * var(--npc-scale, 1.5)); /* scales with the coder (see .kpop) */
   font-weight: 700;
   line-height: 1.3;
   color: #10131f;

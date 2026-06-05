@@ -161,18 +161,41 @@ describe('SupportViewProvider', () => {
   });
 
   describe('notifyTyped — activity pulse', () => {
-    it('posts {type:"typed", src} to the webview when the view is visible', () => {
+    it('shows the user name for a keystroke-shaped editor edit (isUserInput)', () => {
       const provider = makeProvider();
       const view = createMockWebviewView();
       provider.resolveWebviewView(view as any, {} as any, {} as any);
       (view.webview.postMessage as jest.Mock).mockClear();
 
-      provider.notifyTyped();
+      provider.notifyTyped('editor', undefined, true);
 
       expect(view.webview.postMessage).toHaveBeenCalledWith({ type: 'typed', src: 'editor', user: 'You' });
     });
 
-    it('forwards the source on the message', () => {
+    it('does NOT show the user name for a non-keystroke editor change (e.g. Claude/formatter edit)', () => {
+      const provider = makeProvider();
+      const view = createMockWebviewView();
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      (view.webview.postMessage as jest.Mock).mockClear();
+
+      provider.notifyTyped('editor', 'a whole block Claude wrote', false);
+
+      expect(view.webview.postMessage).toHaveBeenCalledWith({ type: 'typed', src: 'editor' });
+    });
+
+    it('does NOT show the user name for an editor edit while an AI tool is active', () => {
+      const provider = makeProvider();
+      const view = createMockWebviewView();
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      provider.notifyAiActive('claude-code', 'Claude Code'); // AI just became active
+      (view.webview.postMessage as jest.Mock).mockClear();
+
+      provider.notifyTyped('editor', 'x', true); // even a keystroke-shaped change
+
+      expect(view.webview.postMessage).toHaveBeenCalledWith({ type: 'typed', src: 'editor' });
+    });
+
+    it('terminal input is always attributed to the local user', () => {
       const provider = makeProvider();
       const view = createMockWebviewView();
       provider.resolveWebviewView(view as any, {} as any, {} as any);
@@ -189,7 +212,7 @@ describe('SupportViewProvider', () => {
       provider.resolveWebviewView(view as any, {} as any, {} as any);
       (view.webview.postMessage as jest.Mock).mockClear();
 
-      provider.notifyTyped('editor', 'h');
+      provider.notifyTyped('editor', 'h', true);
 
       expect(view.webview.postMessage).toHaveBeenCalledWith({ type: 'typed', src: 'editor', user: 'You', text: 'h' });
     });
@@ -200,7 +223,7 @@ describe('SupportViewProvider', () => {
       provider.resolveWebviewView(view as any, {} as any, {} as any);
       (view.webview.postMessage as jest.Mock).mockClear();
 
-      provider.notifyTyped('editor', 'x'.repeat(500));
+      provider.notifyTyped('editor', 'x'.repeat(500), true);
 
       const msg = (view.webview.postMessage as jest.Mock).mock.calls[0][0];
       expect(msg.text.length).toBe(24);

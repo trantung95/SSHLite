@@ -70,18 +70,17 @@ Two edge cases worth knowing:
 
 ## Release Notes
 
+**0.9.4** - **NPC fixes**: the coder no longer mislabels Claude's file edits as your typing, and the flying popups/labels now scale with the zoomed coder.
+
+- **Correct "who's working"** - when Claude Code (or a formatter) edits a file, the coder no longer shows YOUR name (or both names). It tells real typing from another tool's edits by the change shape and the cursor-move kind, so only the AI's label shows while it works.
+- **Popups scale with zoom** - the flying key/word popups and the name labels now shrink and grow together with the pixel coder when you zoom it in or out.
+
 **0.9.3** - **The coder types what you type into AI**: AI input hooks make the Support-view pixel coder fly the actual words you send to your AI assistants - plus a settings gear and crisper key popups.
 
 - **AI input hooks (auto-set-up)** - the first time you open the Support view, SSH Lite adds a tiny *prompt-submit* hook to the AI tools you already have (Claude Code, Codex, Gemini, Cursor, Copilot), so when you send a prompt the coder flies the real characters you typed. Manage or remove it from the gear ⚙ panel; turn auto-setup off with `sshLite.npcAutoSetupHooks`.
 - **Safe by construction** - hooks are written to each tool's own config with an append-only merge (your existing config and hooks are preserved), a backup, and atomic writes; a config it can't safely parse is left untouched. Nothing leaves your machine - the hook just nudges a tiny local file SSH Lite watches, so it never reads your AI transcripts.
 - **Heads-up on the Claude Code VS Code extension** - it doesn't run hooks (an Anthropic limitation); hooks fire for Claude Code in a terminal, the Codex/Gemini CLIs, Cursor, and Copilot. The coder still reacts to the Claude extension when it produces output.
 - **Settings gear + livelier coder** - a ⚙ button opens a settings panel (react-to-other-windows + hook controls); the coder flies the exact characters you type (Tab/Ctrl/Alt included in-panel), wakes when the window regains focus, and occasionally glances to the side.
-
-**0.9.2** - **Terminal that feels native**: SSH Lite terminals now run remote shell plugins and TUI apps with the same colors and glyphs you'd get opening a terminal directly on the server.
-
-- **fzf-tab and friends just work** - the terminal advertises `xterm-256color` (instead of the bare `vt100` default), so fuzzy tab-completion (fzf-tab), prompts (powerlevel10k, starship), and full-screen apps (vim, tmux, htop, lazygit, ranger) render in full color with correct box-drawing.
-- **Locale forwarded like real `ssh`** - your `LANG` / `LC_*` and `COLORTERM` are sent to new terminals (mirroring OpenSSH's `SendEnv`), so UTF-8 powerline / nerd-font glyphs show correctly. The remote server must allow them via `AcceptEnv` (most do by default).
-- **Configurable, backward-compatible, LITE** - tune `sshLite.terminal.termType`, `sshLite.terminal.forwardEnv`, and `sshLite.terminal.env`; applied once when the terminal opens (no polling, no extra server commands). This is native shell completion, not an extension keylogger - SSH Lite never intercepts your keystrokes.
 
 [Full changelog](https://github.com/trantung95/SSHLite/blob/master/.adn/CHANGELOG.md)
 

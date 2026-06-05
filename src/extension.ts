@@ -375,20 +375,32 @@ export function activate(context: vscode.ExtensionContext): void {
         // The change carries the inserted text, so the coder can fly the actual
         // characters typed (empty for a pure deletion → webview flies a word).
         const inserted = e.contentChanges.map((c) => c.text).join('');
-        supportViewProvider.notifyTyped('editor', inserted);
+        // Only a keystroke-shaped change (one small ≤2-char edit) is treated as the
+        // LOCAL USER typing — so another extension editing a file (Claude Code, a
+        // formatter) does NOT show the user's name. Bulk/multi-range edits fall
+        // through to a plain pulse.
+        const cc = e.contentChanges;
+        const isKeystroke = cc.length === 1 && cc[0].text.length <= 2 && cc[0].rangeLength <= 2;
+        supportViewProvider.notifyTyped('editor', inserted, isKeystroke);
         void beaconService.writeActivity('editor');
       }
     }),
-    vscode.window.onDidChangeTextEditorSelection(() => {
-      supportViewProvider.notifyTyped('editor');
+    vscode.window.onDidChangeTextEditorSelection((e) => {
+      // TextEditorSelectionChangeKind: 1=Keyboard, 2=Mouse, 3=Command (programmatic).
+      // A Keyboard/Mouse selection is the user; a Command selection (Claude/another
+      // extension moving the cursor) is not — so it won't show the user's name.
+      const userSel = !!e && (e.kind === 1 || e.kind === 2);
+      supportViewProvider.notifyTyped('editor', undefined, userSel);
       void beaconService.writeActivity('editor');
     }),
     // SSH Lite's own terminal keystrokes / server output (coarse, no content).
-    // notifyTyped self-throttles per source; rate-limit the beacon write at the
-    // boundary so high-throughput server output doesn't schedule a microtask per
-    // data chunk.
+    // Terminal input is always the local user (Claude can't type in SSH Lite's own
+    // terminal). notifyTyped self-throttles per source; rate-limit the beacon write
+    // at the boundary so high-throughput server output doesn't schedule a microtask
+    // per data chunk.
     terminalService.onActivity((kind) => {
-      supportViewProvider.notifyTyped(kind === 'input' ? 'terminal-in' : 'terminal-out');
+      const isInput = kind === 'input';
+      supportViewProvider.notifyTyped(isInput ? 'terminal-in' : 'terminal-out', undefined, isInput);
       const now = Date.now();
       if (now - lastTerminalBeaconAt >= 250) {
         lastTerminalBeaconAt = now;

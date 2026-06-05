@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.9.4 - NPC fixes: label attribution (don't mislabel Claude's edits as the user) + zoomed-popup scaling
+
+### Why
+
+Two NPC bugs surfaced after v0.9.3. (1) When Claude Code (or a formatter) edited a file, `onDidChangeTextDocument` fired identically to the user typing, so the coder showed the LOCAL USER's name label — sometimes both the user's and Claude's labels — even though the user wasn't typing. The earlier 2-second "AI active" timing guard was unreliable (the AI's transcript write and its file edit don't always overlap). (2) The floating key/word popups and name labels kept a fixed font size while the canvas scaled with zoom, so they didn't shrink/grow with the coder.
+
+### Changes
+
+- **Attribute editor activity by intrinsic signal, not timing.** A document change counts as the local user only when it is **keystroke-shaped** (`contentChanges.length === 1 && text.length <= 2 && rangeLength <= 2`); bulk/multi-range edits (Claude Code, a formatter) no longer show the user's name. Cursor moves use **`TextEditorSelectionChangeKind`** (Keyboard/Mouse = user, Command = programmatic). SSH Lite's own terminal input is always the user. An "AI active" window remains only as a secondary guard. Result: while Claude Code works, only its label shows — never the user's, never both.
+- **Popups/labels scale with the coder.** `index.ts` publishes `--npc-scale` (canvas display width ÷ internal 160px) on the popup container on zoom + window resize; `.kpop` / `.ailabel` size via `calc(8px * var(--npc-scale))` with `em` padding, so the floating popups and labels shrink/grow with the zoomed pixel coder.
+
 ## v0.9.3 - AI input hooks: the NPC flies your actual prompt text; settings gear; actual-key popups; Mode B (transcript reading) reverted
 
 ### Why

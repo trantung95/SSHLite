@@ -5,6 +5,16 @@ Add new entries as bugs are found, mistakes are made, or better approaches are d
 
 ---
 
+## 2026-06-05 - `onDidChangeTextDocument` can't tell the user from another extension; attribute by change SHAPE + selection KIND, not timing. Popups over a zoomed canvas need a CSS scale var
+
+**Context**: the NPC showed the local user's name label when **Claude Code (or a formatter) edited a file** — `onDidChangeTextDocument` fires identically for user typing and another extension's programmatic edit. A timing guard ("AI active within 2s") was unreliable (the AI's transcript write and its file edit don't always overlap → name still leaked). Reusable gotchas:
+
+- **There is no "who edited this" API.** Distinguish by **intrinsic** signals: a document change is the user only when it is **keystroke-shaped** (`contentChanges.length === 1 && text.length <= 2 && rangeLength <= 2`) — bulk/multi-range inserts are programmatic (Claude/formatter). For cursor moves use **`TextEditorSelectionChangeKind`** (1=Keyboard, 2=Mouse = user; 3=Command = programmatic) — the one place VS Code *does* tell you. Use numeric literals (`e.kind === 1 || e.kind === 2`), the enum may be absent in the test mock. Keep an "AI active" timing check only as a secondary guard, never the primary signal. SSH Lite's own terminal input is always the user (another tool can't type into it).
+
+- **Floating DOM popups over a CSS-scaled canvas don't scale with it.** The canvas internal res is fixed (160px) and CSS scales the display width; popups positioned by `offsetWidth` fractions move correctly but their `font-size`/padding stay fixed → they look huge when the art is zoomed out. Fix: publish `--npc-scale = canvas.offsetWidth / canvas.width` as a CSS var on the popups' container (update on zoom + `resize`), and size popups with `font-size: calc(8px * var(--npc-scale))` + `em` padding.
+
+---
+
 ## 2026-06-05 - AI tools have NO real-time activity API, but most expose installable prompt-submit HOOKS — push to a beacon instead of reading transcripts; write the user's config defensively
 
 **Context**: a user relayed a claim that "Claude Code publishes an API so an external extension knows when it is typing/thinking/implementing." Verified false. First built a transcript-tail-reading "Mode B" (`npcAiState`, v0.9.2), then — after verifying every tool — replaced it with an opt-in **hook installer** (v0.9.3) and reverted Mode B. Reusable facts:
