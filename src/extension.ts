@@ -351,10 +351,12 @@ export function activate(context: vscode.ExtensionContext): void {
     const cfg = vscode.workspace.getConfiguration('sshLite');
     const npcAiActivity = cfg.get<boolean>('npcAiActivity', true);
     const npcCrossWindowBeacon = cfg.get<boolean>('npcCrossWindowBeacon', true);
+    const npcBannerText = (cfg.get<string>('npcBannerText', 'VN') ?? 'VN').trim().slice(0, SupportViewProvider.BANNER_TEXT_MAX);
+    const npcBannerMode = SupportViewProvider.bannerMode(cfg.get<string>('npcBannerMode', 'never'));
     beaconService.setEnabled(npcCrossWindowBeacon);
     aiActivityService.setEnabled(npcAiActivity);
     aiActivityService.setToolFilter(cfg.get<string[]>('npcAiActivityTools', []) ?? []);
-    supportViewProvider.postSettings({ npcAiActivity, npcCrossWindowBeacon }); // keep the panel in sync
+    supportViewProvider.postSettings({ npcAiActivity, npcCrossWindowBeacon, npcBannerText, npcBannerMode }); // keep the panel in sync
   };
   safeStep('npc-external-sources', applyNpcSettings);
 
@@ -421,7 +423,9 @@ export function activate(context: vscode.ExtensionContext): void {
       if (
         e.affectsConfiguration('sshLite.npcCrossWindowBeacon') ||
         e.affectsConfiguration('sshLite.npcAiActivity') ||
-        e.affectsConfiguration('sshLite.npcAiActivityTools')
+        e.affectsConfiguration('sshLite.npcAiActivityTools') ||
+        e.affectsConfiguration('sshLite.npcBannerText') ||
+        e.affectsConfiguration('sshLite.npcBannerMode')
       ) {
         applyNpcSettings();
       }

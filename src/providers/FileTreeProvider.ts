@@ -1875,7 +1875,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     }
 
     // Resolve ~ to absolute path for comparison
-    let currentPath = this.getCurrentPath(connectionId);
+    const currentPath = this.getCurrentPath(connectionId);
     let resolvedCurrentPath = currentPath;
     if (currentPath === '~' || currentPath.startsWith('~/')) {
       try {

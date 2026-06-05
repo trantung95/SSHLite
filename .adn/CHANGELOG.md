@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.9.5 - Cheering headband on the NPC: a tilted Vietnam flag + text, with a user-set label
+
+### Why
+
+A fun, low-key flourish for the Support-view coder, requested by the user: every so often a small **cheering headband** ("băng cổ động") appears across the pixel coder's forehead — a Vietnam flag and a short text — then fades. It had to be tasteful (rare, not flashy), configurable (the text), readable at any zoom, sit on the forehead like a real fan's headband, and impossible to look broken (never spilling off the head, always legible colours). Settings also got a tooltip pass while in the neighbourhood.
+
+### Changes
+
+- **Cheering headband (webview only).** Occasionally a thin tilted band (about the glasses' height) appears across the coder's forehead — between the hairline and the glasses, like a sports fan's headband: an inline-SVG **Vietnam flag** (red field + centred yellow five-point star — no image asset, safe under `default-src 'none'`) and, a short gap away, a short **text**. It **zooms in**, lingers a few minutes, then **zooms out**. Rendered as crisp DOM over the `.promo` container (like the keycaps/labels), never on the pixelated canvas.
+- **Everything randomised per appearance, but bounded.** Random **tilt** (±11°, preserved across the zoom via a `--tilt` keyframe var); random **colours** — the background avoids the flag's red/yellow and is never the same as the text, the text is a near-complement with the opposite lightness band so it always contrasts. The band is a **fixed-width headband** (at least the head's width, optionally a few px wider at random); its width is **independent of the text** — editing the label swaps the content in place and never resizes the band. Inside it, the **flag always sits off to one side** (random left/right, never mid-forehead) with the text trailing toward the centre (scaled to fit if a long 5-char text / tiny zoom would exceed the band).
+- **Tracks the coder.** Sizing derives from the head width, so the banner **scales with the NPC zoom**, and it **follows the head's up/down bob** each frame so it stays glued to the head while the coder types.
+- **`sshLite.npcBannerText` (string, default "VN", max 5).** Editable both in the Support view's **gear → NPC settings** panel (a new text input) and in the VS Code Settings UI; trimmed and clamped to 5 characters on both sides (rendered via `textContent`, so a user value cannot inject markup). **Empty shows the flag only.** By default the banner appears **≥10 minutes apart** and each stays **≥3 minutes**; one banner at a time; `prefers-reduced-motion` shortens the zoom.
+- **`sshLite.npcBannerMode` (enum, default `never`) — one visibility dropdown.** A single mutually-exclusive control (Sometimes / Always / Never) beside the banner-text input, replacing the idea of two conflicting checkboxes. **Off by default** (`never`); `occasional` is the ≥10-min cycle; `always` keeps a persistent banner (no auto-retire; promotes an in-flight occasional one; updates in place on a live text edit).
+- **Settings tooltips.** Every row in the NPC settings panel now has a hover `title` tooltip (the previously bare "React to other VS Code windows" checkbox + the new banner-text row + the visibility dropdown). All VS Code configuration settings already carry descriptions.
+- **Marketplace tags.** Added pixel-art / NPC discoverability keywords (`pixel art`, `pixel art coder`, `npc`, `coding companion`, `desktop pet`, `vietnam flag`, …).
+- **Tooling: `npm run lint` works again.** Added the missing root `.eslintrc.js` (ESLint 8 + `@typescript-eslint` were installed but had no config) and fixed the handful of genuine lint errors it surfaced; rules the codebase relies on by design (e.g. `var` in `@swc/jest` mock factories, guarded `while (true)` loops) are scoped/relaxed. Lint is green (pre-existing unused-var findings remain as warnings).
+
 ## v0.9.4 - NPC fixes: label attribution (don't mislabel Claude's edits as the user) + zoomed-popup scaling
 
 ### Why

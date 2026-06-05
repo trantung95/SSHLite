@@ -70,8 +70,29 @@ export class SupportViewProvider implements vscode.WebviewViewProvider {
     'shareExtension',
   ]);
 
-  /** Allowlist of settings the webview's settings panel may flip (boolean only). */
-  private static readonly SETTING_KEYS = new Set(['npcAiActivity', 'npcCrossWindowBeacon']);
+  /** Allowlist of boolean settings the webview's settings panel may flip. */
+  private static readonly BOOL_SETTING_KEYS = new Set(['npcAiActivity', 'npcCrossWindowBeacon']);
+
+  /** Allowlist of string settings the webview may set (clamped + trimmed server-side). */
+  private static readonly STRING_SETTING_KEYS = new Set(['npcBannerText']);
+
+  /** Allowlist of enum settings the webview may set, with their permitted values. */
+  private static readonly ENUM_SETTING_KEYS = new Map<string, Set<string>>([
+    ['npcBannerMode', new Set(['occasional', 'always', 'never'])],
+  ]);
+
+  /** Valid cheering-banner visibility modes (mirror of package.json enum). */
+  public static readonly BANNER_MODES = ['occasional', 'always', 'never'] as const;
+
+  /** Coerce an arbitrary value to a valid banner mode, defaulting to 'never'. */
+  public static bannerMode(value: unknown): string {
+    return typeof value === 'string' && (SupportViewProvider.BANNER_MODES as readonly string[]).includes(value)
+      ? value
+      : 'never';
+  }
+
+  /** Max length of the cheering-banner text (mirror of package.json maxLength). */
+  public static readonly BANNER_TEXT_MAX = 5;
 
   /** Injected AI-hook controller (set by extension.ts); undefined → hooks UI disabled. */
   private hookController: HookController | undefined;
@@ -263,13 +284,19 @@ export class SupportViewProvider implements vscode.WebviewViewProvider {
    * webview's settings-panel toggles. Sent on the `ready` handshake and whenever
    * a setting changes (panel or Settings UI) so the panel stays in sync.
    */
-  public postSettings(settings: { npcAiActivity: boolean; npcCrossWindowBeacon: boolean }): void {
+  public postSettings(settings: {
+    npcAiActivity: boolean;
+    npcCrossWindowBeacon: boolean;
+    npcBannerText: string;
+    npcBannerMode: string;
+  }): void {
     const view = this.view;
     if (!view) {
       return;
     }
     void view.webview.postMessage({ type: 'settings', ...settings });
-    diagLog('support-view', 'settings', settings);
+    // Log the banner text's length only, never its content.
+    diagLog('support-view', 'settings', { ...settings, npcBannerText: settings.npcBannerText.length });
   }
 
   /** Push the AI-hook install state to the webview's settings panel. */
@@ -380,12 +407,32 @@ export class SupportViewProvider implements vscode.WebviewViewProvider {
 
       case 'setSetting': {
         const key = typeof message.key === 'string' ? message.key : '';
-        if (SupportViewProvider.SETTING_KEYS.has(key)) {
+        if (SupportViewProvider.BOOL_SETTING_KEYS.has(key)) {
           const value = !!message.value;
           infoLog('support-view', 'set-setting', { key, value });
           await vscode.workspace
             .getConfiguration('sshLite')
             .update(key, value, vscode.ConfigurationTarget.Global);
+        } else if (SupportViewProvider.STRING_SETTING_KEYS.has(key)) {
+          // Clamp + trim defensively (the webview maxlength is not authoritative).
+          const raw = typeof message.value === 'string' ? message.value : '';
+          const value = raw.trim().slice(0, SupportViewProvider.BANNER_TEXT_MAX);
+          infoLog('support-view', 'set-setting', { key, len: value.length });
+          await vscode.workspace
+            .getConfiguration('sshLite')
+            .update(key, value, vscode.ConfigurationTarget.Global);
+        } else if (SupportViewProvider.ENUM_SETTING_KEYS.has(key)) {
+          // Only accept one of the declared enum values.
+          const allowed = SupportViewProvider.ENUM_SETTING_KEYS.get(key)!;
+          const value = typeof message.value === 'string' ? message.value : '';
+          if (allowed.has(value)) {
+            infoLog('support-view', 'set-setting', { key, value });
+            await vscode.workspace
+              .getConfiguration('sshLite')
+              .update(key, value, vscode.ConfigurationTarget.Global);
+          } else {
+            infoLog('support-view', 'set-setting-invalid', { key });
+          }
         } else {
           infoLog('support-view', 'set-setting-unknown', { key });
         }
@@ -423,6 +470,10 @@ export class SupportViewProvider implements vscode.WebviewViewProvider {
         this.postSettings({
           npcAiActivity: cfg.get<boolean>('npcAiActivity', true),
           npcCrossWindowBeacon: cfg.get<boolean>('npcCrossWindowBeacon', true),
+          npcBannerText: (cfg.get<string>('npcBannerText', 'VN') ?? 'VN')
+            .trim()
+            .slice(0, SupportViewProvider.BANNER_TEXT_MAX),
+          npcBannerMode: SupportViewProvider.bannerMode(cfg.get<string>('npcBannerMode', 'never')),
         });
         this.postHookStatus();
         break;

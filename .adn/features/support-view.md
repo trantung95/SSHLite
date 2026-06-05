@@ -132,7 +132,7 @@ derives the shades, then redraws immediately.
 | `{type:'action', cmd}` | run `sshLite.<cmd>` (allowlisted; the 5 link buttons only) |
 | `{type:'log', level, scope, event, payload}` | forward to `infoLog`/`diagLog` (one SSH Lite Output channel) |
 | `{type:'webviewError', message, stack}` | `infoLog('support-view','webview-error', …)` |
-| `{type:'setSetting', key, value}` | flip an **allow-listed** boolean setting (`SETTING_KEYS` = `{npcAiActivity, npcCrossWindowBeacon}`) via `getConfiguration('sshLite').update(key, !!value, Global)`. Sent by the settings-panel checkboxes. Unknown keys are ignored |
+| `{type:'setSetting', key, value}` | update an **allow-listed** setting via `getConfiguration('sshLite').update(key, …, Global)`. Booleans (`BOOL_SETTING_KEYS` = `{npcAiActivity, npcCrossWindowBeacon}`) coerce with `!!value`; strings (`STRING_SETTING_KEYS` = `{npcBannerText}`) are trimmed and clamped to `BANNER_TEXT_MAX` (5) chars. Sent by the settings-panel checkbox + the banner-text input. Unknown keys are ignored |
 | `{type:'installHooks'｜'uninstallHooks'}` | the panel's "Set up AI hooks" / "Remove" buttons → run `HookInstallerService.installAll()` / `uninstallAll()`, then push an updated `hookStatus` |
 | `{type:'ready'}` | sent once the webview wired its listeners (and on each gear-open) → extension echoes `settings` + `hookStatus` so the panel renders correctly |
 
@@ -142,7 +142,7 @@ derives the shades, then redraws immediately.
 |---------|------------------|
 | `{type:'typed', src}` | sent by `notifyTyped(src)` on any activity pulse → wakes the coder and taps a hand. `src` tags the source: editor / selection / terminal-in / terminal-out / beacon (cross-window) / window (this window regained OS focus, via `onDidChangeWindowState`, feature-detected) |
 | `{type:'aiActive', id, name, prompt?}` | a known AI coding assistant went active → float that tool's `name` as a label around the coder. `id` keys the per-tool label so repeats refresh the same label's time-to-live. When AI **input hooks** are installed, `prompt` carries the bounded text the user just submitted and the coder flies the actual characters; without hooks `prompt` is absent and a random word flies |
-| `{type:'settings', npcAiActivity, npcCrossWindowBeacon}` | reflect the two settings on the panel checkboxes. Sent on the `ready` handshake and whenever a setting changes (panel or Settings UI) |
+| `{type:'settings', npcAiActivity, npcCrossWindowBeacon, npcBannerText, npcBannerMode}` | reflect the settings on the panel: the checkbox + the banner-text input + the visibility dropdown. `npcBannerText` drives the cheering banner live; `npcBannerMode` (`occasional`/`always`/`never`) drives whether/when it shows. Sent on the `ready` handshake and whenever a setting changes (panel or Settings UI) |
 | `{type:'hookStatus', tools, message?}` | per-tool AI-hook state (`{id,name,present,installed}[]`) + an optional status line → render the hooks section |
 
 ## Typing reaction
@@ -298,6 +298,73 @@ when the mouse leaves the panel. This is **panel-only**: a sandboxed extension
 cannot track the cursor in other windows or anywhere in the operating system, so no
 attempt is made. Pure canvas effect.
 
+## Cheering banner ("băng cổ động") — webview only
+
+Added in **v0.9.5**. Once in a while a small **tilted headband** appears **across
+the coder's forehead** (like a sports fan's cheering band — between the hairline and
+the glasses, not floating above the head). It is a thin strip about the **glasses'
+height**, carrying a **Vietnam flag** (a red field with a centred yellow five-point
+star, drawn as an inline SVG — no image asset, works under `default-src 'none'`)
+and, a short gap away, a short **text** (`sshLite.npcBannerText`, default "VN").
+It **zooms in**, lingers a few minutes, then **zooms out**. Pure webview DOM over
+the `.promo` container (like the `.kpop` keycaps and `.ailabel` labels) — never on
+the pixelated canvas, so the flag and text stay crisp.
+
+Each appearance randomises:
+
+- **Tilt** — a random rotation (±11°), carried by an inline `--tilt` CSS var that
+  each `@keyframes` step restates, so the zoom in/out animates `scale()` while the
+  tilt and centring survive.
+- **Colours** — `pickBannerColours()`: the background hue is chosen from the arcs
+  `(15..40)∪(70..345)` so it **never matches the flag's red `#da251d` / yellow
+  `#ffff00`**, with a random dark or light lightness band; the text is a
+  near-complementary hue with the **opposite** lightness band (and a vivid
+  saturation), so it always contrasts and is **never the same colour as the
+  background**. Applied via inline `--bg` / `--txt` vars.
+- **Band width** — a **fixed headband** whose straight middle spans the head width
+  (`canvas.offsetWidth * 34/160`); it is widened by **2× the corner radius**
+  (`VN_BANNER_RADIUS`, must match the CSS) so the **rounded corners sit outside the
+  head**, plus **0–4 internal px** more at random (`VN_BANNER_EXTRA_MAX`). The width
+  is set once per appearance and is **independent of the text** — editing the label
+  swaps the content in place (`refreshBannerInner`) and never resizes the band.
+  `overflow:hidden` clips content to the rounded ends.
+- **Flag position** — the flag is **always off to one side** (`bannerFlagSide`,
+  random left/right), never mid-forehead: it is the outermost element on that side
+  with the text trailing toward the centre a short gap away, and
+  `layoutBannerContent` pushes the content 78–100% of the way to that side
+  (`--shift`). If the content is wider than the band (long 5-char text or a tiny
+  zoom) it is **scaled down to fit** (`--fit`) instead.
+
+Sizing is derived from the head width (`canvas.offsetWidth * 34/160`), so the banner
+**scales with the NPC zoom**; the text/gap also use `--npc-scale` like the keycaps.
+The banner **follows the head's up/down bob**: `draw()` calls
+`syncBannerToHeadBob(bob)` each frame, adding the head's vertical bob (in DOM px) to
+the banner's resting `top`, so it stays glued to the head while the coder types.
+
+**Timing (tunable constants in `index.ts`):** appearances are **≥10 minutes apart**
+(random 10–20 min); each one stays **≥3 minutes** (random 3–5 min) before zooming
+out. Only **one banner at a time**. The self-rescheduling `setTimeout` (the
+idle-glance pattern) runs only while the webview is alive (`retainContextWhenHidden:
+false` tears it down on collapse) and skips spawning while `document.hidden`.
+`prefers-reduced-motion` shortens the zoom to a snap. An **empty** `npcBannerText`
+shows the **flag only** (no text or gap). The banner text is rendered via
+`textContent` (never `innerHTML`) and clamped to 5 chars on both the webview and
+extension sides, so a user-set value cannot inject markup.
+
+**Visibility mode (`sshLite.npcBannerMode`: `occasional` / `always` / `never`
+(default)).** One dropdown drives whether/when the headband shows (the three states
+are mutually exclusive by construction — no conflicting toggles). **The feature is
+off by default (`never`)** — it's a niche flourish, opt-in via the dropdown:
+- `occasional` — the ≥10-min cycle above.
+- `always` — kept shown continuously: spawned as a *persistent* banner with no
+  auto-retire (`bannerPersistent`); an in-flight occasional banner is *promoted* to
+  persistent (its hold timer cancelled); a live `npcBannerText` edit swaps the
+  content in place so the new text shows immediately.
+- `never` (default) — any current banner is retired and nothing respawns.
+
+The occasional scheduler keeps firing underneath but only spawns in `occasional`
+mode, and no-ops while a banner is already present (one banner at a time).
+
 ## Key popups, zoom, and the settings gear
 
 - **Key popups** - on each typed pulse, `index.ts` spawns a small keycap **as a
@@ -319,12 +386,16 @@ attempt is made. Pure canvas effect.
 - **Settings gear** - a `#settingsToggle` (⚙) button on the zoom row expands /
   collapses the `#npcSettings` panel (collapsed by default; open state persisted via
   `patchState({settingsOpen})`). The panel holds: a **React to other VS Code
-  windows** checkbox (`npcCrossWindowBeacon`) and the **AI input hooks** section
-  (per-tool install state + "Set up AI hooks" / "Remove" buttons). The
-  `npcAiActivity` toggle lives in the VS Code Settings UI, not the panel. The
-  checkbox posts `setSetting`; buttons post `installHooks` / `uninstallHooks`. On
-  open (and load) the webview posts `{type:'ready'}` so the extension echoes
-  `settings` + `hookStatus`.
+  windows** checkbox (`npcCrossWindowBeacon`), a **Banner text** row with the
+  `npcBannerText` input (`maxlength=5`, see "Cheering banner" below) and a
+  visibility **dropdown** (`npcBannerMode`: Sometimes / Always / Never) beside it,
+  and the **AI input hooks** section
+  (per-tool install state + "Set up AI hooks" / "Remove" buttons). Every row carries
+  a hover `title` tooltip. The `npcAiActivity` toggle lives in the VS Code Settings
+  UI, not the panel. The checkboxes + input post `setSetting` (the input debounced
+  ~400ms, value trimmed/clamped to 5); buttons post `installHooks` /
+  `uninstallHooks`. On open (and load) the webview posts `{type:'ready'}` so the
+  extension echoes `settings` + `hookStatus`.
 - **Zoom** - the same row has buttons (and Ctrl+wheel over the canvas) that set
   the canvas CSS width in pixels. `max-width:100%` caps it at the section width,
   so it is independent of the width-driven scaling but can never exceed the

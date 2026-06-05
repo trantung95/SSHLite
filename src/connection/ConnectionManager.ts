@@ -594,7 +594,7 @@ export class ConnectionManager {
     // handler can see it. Do NOT call stopReconnect() before disconnect() because
     // stopReconnect() deletes the entry from _disconnectedConnections.
     const disconnectInfo = this._disconnectedConnections.get(connectionId) || {
-      host: this._connections.get(connectionId)?.host!,
+      host: this._connections.get(connectionId)?.host as IHostConfig,
       reconnectAttempts: 0,
       isManualDisconnect: true,
     };
@@ -652,7 +652,7 @@ export class ConnectionManager {
     // Mark all as manual disconnect (but don't delete entries yet)
     for (const connectionId of this._connections.keys()) {
       const disconnectInfo = this._disconnectedConnections.get(connectionId) || {
-        host: this._connections.get(connectionId)?.host!,
+        host: this._connections.get(connectionId)?.host as IHostConfig,
         reconnectAttempts: 0,
         isManualDisconnect: true,
       };

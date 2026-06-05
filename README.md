@@ -31,17 +31,15 @@ SSH Lite sits in the middle: as light as raw SSH, as friendly as Remote-SSH.
 
 ## Features
 
-- **File browser** — SFTP browse / create / edit / rename / **delete (auto-backup)** / upload / download / **Properties**, with tab badges (✓ ↑ ✗) for sync state
-- **Filter by name** — instant filter on any folder or full connection in the tree; non-matches grayed, count shown next to the row (per-host, per-folder)
-- **Multi-server search** — regex, whole word, include/exclude patterns, results grouped by server (one webview instead of per-host `grep -r`)
-- **Integrated terminals** — many per connection, no re-auth
-- **Visual SSH Tools suite** — instead of `ps aux` / `systemctl` / `printenv` / `crontab -e` / `diff` / `ssh-keygen`, click through process viewer, service manager, env inspector, cron editor, snippet library, batch runner, script runner, key manager (generate + push), and remote diff
-- **Port forwarding** + **server monitor** (CPU / memory / disk / top processes) — visible state, click to stop
-- **Remote copy / paste** — `Ctrl+C` / `Ctrl+X` / `Ctrl+V` across hosts, auto-renames on conflict
-- **Auto-backup on every destructive op** — every delete / overwrite creates a timestamped `.bak`; restore via right-click → "Show Server Backups"
-- **Sudo fallback** — when a write hits permission denied, prompts for sudo password and retries over the same SSH connection (no child process, no second login)
-- **Audit log + Activity panel** — every SSH op recorded; cancel running operations from the Activity tree
-- **Folder pin + recent folders** — quick jump to frequently-used paths per host
+📖 **[Full feature reference →](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md)** - every feature, with what you click vs. what you would otherwise type. Highlights:
+
+| | |
+|---|---|
+| [<img src="docs/images/feat-file-browser.png" width="380" alt="File browser and editing">](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#browse-and-edit-over-sftp)<br>**[Browse and edit files](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#browse-and-edit-over-sftp)** - SFTP browse, open in your editor, `Ctrl+S` saves back | [<img src="docs/images/feat-search.png" width="380" alt="Multi-server search">](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#multi-server-search)<br>**[Multi-server search](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#multi-server-search)** - one webview instead of per-host `grep -r` |
+| [<img src="docs/images/feat-server-monitor.png" width="380" alt="Server monitor">](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#server-monitor)<br>**[Server monitor](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#server-monitor)** - CPU / memory / disk + top processes, no `htop` | [<img src="docs/images/feat-remote-diff.png" width="380" alt="Remote versus local diff">](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#remote-diff)<br>**[Remote vs local diff](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#remote-diff)** - side-by-side, no `scp` then `diff` |
+| [<img src="docs/images/feat-cron-editor.png" width="380" alt="Cron editor">](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#cron-editor)<br>**[Cron editor](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#cron-editor)** - edit crontab in a real editor, not `crontab -e` | [<img src="docs/images/feat-npc-coder.png" width="380" alt="Pixel coder in the Support view">](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#animated-coder-and-cheering-banner)<br>**[The pixel coder](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#animated-coder-and-cheering-banner)** - reacts to your typing and your AI assistant |
+
+**Also:** [terminals](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#integrated-terminals) · [port forwarding](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#set-up-a-port-forward) · [process viewer](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#process-viewer) · [service manager](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#service-manager) · [env inspector](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#environment-inspector) · [snippets](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#snippet-library) · [batch runner](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#batch-command-runner) · [key gen + push](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#ssh-key-generator-and-push) · [auto-backup + restore](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#auto-backup-and-restore) · [sudo fallback](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#sudo-fallback) · [copy / paste across hosts](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#copy-cut-and-paste-across-hosts) · [filter by name](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#filter-by-name) · [activity + audit](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#activity-panel) · [pinned folders](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#pinned-and-recent-folders)
 
 ## Quick Start
 
@@ -70,17 +68,17 @@ Two edge cases worth knowing:
 
 ## Release Notes
 
+**0.9.5** - **A cheering headband for the coder**: now and then a tilted Vietnam-flag headband with a short text of your choice appears across the pixel coder's forehead, then fades.
+
+- **Băng cổ động** - every so often a thin headband (about the glasses' height, at least as wide as the head) zooms in across the coder's forehead, like a sports fan's cheering band (a Vietnam flag off to one side + a short label), lingers a few minutes, then zooms out. Each time it picks a random tilt, random colours (always readable, never clashing with the flag), and a random side for the flag - and it scales and bobs along with the coder. Editing the label never changes the band's width.
+- **Your text (`sshLite.npcBannerText`)** - set the banner label (up to 5 characters, "VN" by default) from the Support view's ⚙ → NPC settings, or in VS Code Settings. Leave it empty to show just the flag.
+- **Sometimes / Always / Never** - one dropdown in the ⚙ → NPC settings controls when it shows. **Off by default** - flip it to "Sometimes" or "Always" to enable.
+- **Tooltips on every NPC setting** - each row in the NPC settings panel now explains itself on hover.
+
 **0.9.4** - **NPC fixes**: the coder no longer mislabels Claude's file edits as your typing, and the flying popups/labels now scale with the zoomed coder.
 
 - **Correct "who's working"** - when Claude Code (or a formatter) edits a file, the coder no longer shows YOUR name (or both names). It tells real typing from another tool's edits by the change shape and the cursor-move kind, so only the AI's label shows while it works.
 - **Popups scale with zoom** - the flying key/word popups and the name labels now shrink and grow together with the pixel coder when you zoom it in or out.
-
-**0.9.3** - **The coder types what you type into AI**: AI input hooks make the Support-view pixel coder fly the actual words you send to your AI assistants - plus a settings gear and crisper key popups.
-
-- **AI input hooks (auto-set-up)** - the first time you open the Support view, SSH Lite adds a tiny *prompt-submit* hook to the AI tools you already have (Claude Code, Codex, Gemini, Cursor, Copilot), so when you send a prompt the coder flies the real characters you typed. Manage or remove it from the gear ⚙ panel; turn auto-setup off with `sshLite.npcAutoSetupHooks`.
-- **Safe by construction** - hooks are written to each tool's own config with an append-only merge (your existing config and hooks are preserved), a backup, and atomic writes; a config it can't safely parse is left untouched. Nothing leaves your machine - the hook just nudges a tiny local file SSH Lite watches, so it never reads your AI transcripts.
-- **Heads-up on the Claude Code VS Code extension** - it doesn't run hooks (an Anthropic limitation); hooks fire for Claude Code in a terminal, the Codex/Gemini CLIs, Cursor, and Copilot. The coder still reacts to the Claude extension when it produces output.
-- **Settings gear + livelier coder** - a ⚙ button opens a settings panel (react-to-other-windows + hook controls); the coder flies the exact characters you type (Tab/Ctrl/Alt included in-panel), wakes when the window regains focus, and occasionally glances to the side.
 
 [Full changelog](https://github.com/trantung95/SSHLite/blob/master/.adn/CHANGELOG.md)
 

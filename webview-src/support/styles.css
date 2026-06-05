@@ -125,6 +125,83 @@ body {
   .ailabel.ailabel-out { animation-duration: 0.2s; }
 }
 
+/* Cheering banner ("băng cổ động") above the NPC's head: a tilted flag + short
+ * text that zooms in, lingers, then zooms out. The OUTER element carries the
+ * random tilt + the zoom in/out animation; the INNER block carries the random
+ * horizontal shift + an overflow fit-scale, so the two never fight. Background
+ * (--bg) and text (--txt) colours are set inline per appearance. */
+.vnbanner {
+  position: absolute;
+  transform: translate(-50%, -50%) rotate(var(--tilt, 0deg));
+  transform-origin: center center;
+  z-index: 4; /* above .ailabel (3) and .kpop (2) — a headline element */
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Thin headband: its WIDTH is fixed in JS (≥ head width); only the vertical
+   * padding scales with the coder so the strip stays about the glasses' height.
+   * No horizontal padding — the band is wider than its content by design. */
+  padding: calc(0.4px * var(--npc-scale, 1.5)) 0;
+  border-radius: calc(2px * var(--npc-scale, 1.5));
+  overflow: hidden; /* clip the content to the band's rounded ends */
+  background: var(--bg, rgba(16, 19, 31, 0.92));
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  white-space: nowrap;
+  animation: vnbanner-in var(--in-ms, 450ms) cubic-bezier(0.2, 1.4, 0.4, 1) both;
+}
+
+.vnbanner.vnbanner-out {
+  animation: vnbanner-out var(--out-ms, 450ms) ease-in forwards;
+}
+
+.vnbanner-inner {
+  display: flex;
+  align-items: center;
+  transform: translateX(var(--shift, 0px)) scale(var(--fit, 1));
+  transform-origin: center center;
+}
+
+.vnbanner-flag {
+  display: block;
+  border-radius: 1px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+/* The "short gap" between the flag and the text; scales with the coder. */
+.vnbanner-gap {
+  display: inline-block;
+  width: calc(2px * var(--npc-scale, 1.5));
+}
+
+.vnbanner-text {
+  font-family: var(--vscode-font-family);
+  font-weight: 800;
+  /* ~glasses height so the band stays a thin forehead strip. */
+  font-size: calc(5px * var(--npc-scale, 1.5));
+  line-height: 1;
+  color: var(--txt, #ffd479);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
+}
+
+/* Zoom-in on appear, zoom-out on disappear. Each step RESTATES the full transform
+ * (translate + rotate(var(--tilt))) so the tilt + centring survive while only
+ * scale() animates. */
+@keyframes vnbanner-in {
+  0% { opacity: 0; transform: translate(-50%, -50%) rotate(var(--tilt, 0deg)) scale(0.2); }
+  100% { opacity: 1; transform: translate(-50%, -50%) rotate(var(--tilt, 0deg)) scale(1); }
+}
+
+@keyframes vnbanner-out {
+  0% { opacity: 1; transform: translate(-50%, -50%) rotate(var(--tilt, 0deg)) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -50%) rotate(var(--tilt, 0deg)) scale(0.2); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vnbanner { animation-duration: 0.12s; }
+  .vnbanner.vnbanner-out { animation-duration: 0.12s; }
+}
+
 /* Width follows the section by default (width:100%); the zoom control sets an
  * explicit pixel width instead. max-width:100% caps it at the section width so
  * the art can never be wider than the section. */
@@ -209,6 +286,50 @@ body {
   gap: 6px;
   cursor: pointer;
   font-size: inherit;
+}
+
+/* Text-setting row (the cheering-banner text): label on the left, the input +
+ * visibility dropdown grouped on the right. */
+.npc-set-row-text {
+  justify-content: space-between;
+  cursor: default;
+}
+
+.npc-banner-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.npc-banner-controls select {
+  padding: 2px 4px;
+  border: 1px solid var(--vscode-dropdown-border, var(--vscode-widget-border, transparent));
+  border-radius: 4px;
+  background: var(--vscode-dropdown-background, transparent);
+  color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+  font-family: inherit;
+  font-size: inherit;
+}
+
+.npc-banner-controls select:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.npc-set-row-text input[type='text'] {
+  width: 5.5em;
+  padding: 2px 6px;
+  border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, transparent));
+  border-radius: 4px;
+  background: var(--vscode-input-background, transparent);
+  color: var(--vscode-input-foreground, var(--vscode-foreground));
+  font-family: inherit;
+  font-size: inherit;
+}
+
+.npc-set-row-text input[type='text']:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
 }
 
 .npc-hooks {

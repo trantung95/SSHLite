@@ -33,9 +33,27 @@
 
     <!-- NPC settings: collapsed by default; the gear button toggles it. -->
     <div id="npcSettings" class="npc-settings collapsed" aria-label="NPC settings">
-      <label class="npc-set-row">
+      <label class="npc-set-row"
+             title="React when another VS Code window on this machine is active. Writes only a tiny activity beacon (timestamp + coarse category), never typed content — nothing leaves your machine.">
         <input type="checkbox" id="setCrossWindow"> React to other VS Code windows
       </label>
+
+      <div class="npc-set-row npc-set-row-text">
+        <span title="Text shown on the occasional cheering banner above the coder's head (next to a small Vietnam flag). Up to 5 characters; leave empty to show the flag only.">Banner text</span>
+        <span class="npc-banner-controls">
+          <input type="text" id="setBannerText" maxlength="5" autocomplete="off" spellcheck="false"
+                 placeholder="VN"
+                 title="Text shown on the cheering headband on the coder's forehead (next to a small Vietnam flag). Up to 5 characters; leave empty to show the flag only."
+                 aria-label="Cheering banner text (max 5 characters)">
+          <select id="setBannerMode"
+                  title="When the cheering headband appears: occasionally, always, or never."
+                  aria-label="When the cheering banner appears">
+            <option value="occasional">Sometimes</option>
+            <option value="always">Always</option>
+            <option value="never">Never</option>
+          </select>
+        </span>
+      </div>
 
       <div class="npc-hooks">
         <div class="npc-hooks-head"

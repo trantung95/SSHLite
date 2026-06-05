@@ -5,6 +5,19 @@ Add new entries as bugs are found, mistakes are made, or better approaches are d
 
 ---
 
+## 2026-06-05 - Webview NPC cheering banner: CSS @keyframes overwrite the base transform; `npm run lint` has no config (use `tsc`)
+
+**Context**: added the Vietnam-flag cheering banner above the Support-view NPC (`webview-src/support/`). Reusable gotchas:
+
+- **A CSS `@keyframes` step that sets `transform` REPLACES the element's base `transform` for the animation's duration.** The `.vnbanner` base is `translate(-50%,-50%) rotate(var(--tilt))`; the zoom in/out keyframes animate `scale()`. If a keyframe writes only `transform: scale(...)`, the centring + tilt vanish mid-animation (the banner jumps to top-left and un-tilts). Fix: every keyframe step restates the FULL transform `translate(-50%,-50%) rotate(var(--tilt)) scale(...)`, and the dynamic tilt is an inline CSS var (`--tilt`) so the static keyframes can reference it. General rule: when animating one transform function via keyframes on an element that already has a base transform, restate all the other functions in every step.
+
+- **Separate "animated" from "positioned" transforms onto different elements so they don't fight.** OUTER `.vnbanner` owns the keyframe scale + rotate (+ its `top` is updated per-frame to follow the head bob, independent of `transform`); INNER `.vnbanner-inner` owns `translateX(var(--shift)) scale(var(--fit))` for the random horizontal shift + overflow fit. One element can't host two competing `transform` sources (a per-frame JS write would stomp the keyframe), so split them across parent/child. Writing `el.style.top` each frame is fine — `top` and `transform` are independent properties.
+
+- **`npm run lint` now works (added the root `.eslintrc.js` in v0.9.5).** The deps (`eslint@^8`, `@typescript-eslint/*@^6`) were always installed but there was no root config, so `eslint src --ext ts` errored with "couldn't find a configuration file". The config is eslintrc-format (not flat) and deliberately relaxes rules the codebase relies on — most importantly **`no-var` is OFF only for test/mock files** because `@swc/jest` requires `var` in `jest.mock()` factories (do NOT make `no-var` global), plus `no-constant-condition:{checkLoops:false}` for guarded `while(true)`, and `no-explicit-any`/`no-non-null-assertion` off. Lint is green (0 errors); ~62 pre-existing unused-var findings remain as **warnings** (don't fail the build). `tsc` (`npm run compile`) is still the type gate. Editing `webview-src/support/*` has no runtime effect until `compile:webview` rebundles `media/support/`.
+- **Don't "fix" a lint error in core ssh code by tightening a non-null assertion blindly.** Changing `map.get(id)?.host!` → `map.get(id)!.host` LOOKS equivalent but is NOT at runtime: `?.host` returns `undefined` safely when the entry is absent, while `!.host` throws (the `!` is compile-only). It broke the "disconnect non-existent connection" test. The lint-safe AND behaviour-preserving form is `map.get(id)?.host as IHostConfig` (keep the optional chain, cast instead of assert).
+
+---
+
 ## 2026-06-05 - SSHConnection log tests were host-dependent (real `fs`); and "broken lock" was really a stale `node_modules`
 
 **Context**: after a fresh `npm install` let the unit suite run, 3 `SSHConnection.logs.test.ts` tests failed (`auth-methods`, `error`, `close` all saw 0 logs). Misdiagnosed twice before finding root cause. Reusable gotchas:

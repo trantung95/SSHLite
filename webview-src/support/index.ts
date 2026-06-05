@@ -25,7 +25,7 @@
 // locally here (no link, no message). A zoom control sets an independent pixel
 // width for the animation, capped at the section width.
 
-import { info, getVsCodeApi } from './log';
+import { info, diag, getVsCodeApi } from './log';
 
 const vscode = getVsCodeApi();
 
@@ -314,6 +314,298 @@ function sweepAiLabels(): void {
 // Always-on (cheap) sweep so labels expire even under prefers-reduced-motion.
 window.setInterval(sweepAiLabels, 1000);
 
+// ----------------------------------------------------------------------------
+// Cheering banner ("băng cổ động"): once in a while a small tilted banner with a
+// Vietnam flag (red field + centred yellow star) and a short text appears ABOVE
+// the NPC's head, zooms in, lingers a few minutes, then zooms out. Each spawn
+// randomises the tilt, the colours (background never the flag's red/yellow and
+// always distinct from the text; text high-contrast against the background), the
+// flag's left/right position (text before OR after it), and it follows the head's
+// up/down bob. Rendered as DOM (crisp SVG + text) over the .promo container, like
+// the keycaps and labels — never on the pixelated canvas.
+// ----------------------------------------------------------------------------
+const VN_BANNER_GAP_MIN = 10 * 60 * 1000; // ≥10 min between appearances
+const VN_BANNER_GAP_RAND = 10 * 60 * 1000; // +0..10 min → 10–20 min apart
+const VN_BANNER_HOLD_MIN = 3 * 60 * 1000; // ≥3 min visible
+const VN_BANNER_HOLD_RAND = 2 * 60 * 1000; // +0..2 min → 3–5 min visible
+const VN_BANNER_IN_MS = 450; // zoom-in (matches the CSS keyframe)
+const VN_BANNER_OUT_MS = 450; // zoom-out
+const VN_BANNER_MAX_TILT = 11; // ± degrees of random tilt
+const VN_BANNER_RADIUS = 2; // band corner radius in internal px — MUST match styles.css .vnbanner
+const VN_BANNER_EXTRA_MAX = 4; // extra random width on top of the minimum (internal px)
+// Internal-y (of the 160×120 art) where the headband sits: high on the forehead /
+// at the hairline (hairline ~y27, glasses/brows ~y34) — like a sports fan's
+// cheering headband, not floating above the head.
+const VN_BANNER_FOREHEAD_Y = 28;
+// Upward 5-point star centred in a 30×20 viewBox (cx=15, cy=10, R=6, r≈2.29).
+const VN_STAR_POINTS =
+  '15,4 16.35,8.27 20.71,8.29 17.19,10.91 18.53,15.18 15,12.55 11.47,15.18 12.81,10.91 9.29,8.29 13.65,8.27';
+
+let bannerText = 'VN';
+let bannerMode: 'occasional' | 'always' | 'never' = 'never'; // sshLite.npcBannerMode (default off)
+let bannerEl: HTMLDivElement | null = null;
+let bannerInnerEl: HTMLElement | null = null; // the content (flag+text) inside the band
+let bannerBandW = 0; // the band's fixed width (px) — independent of the text
+let bannerFlagSide: 'left' | 'right' = 'left'; // the flag always sits off to this side
+let bannerBaseTop = 0; // the resting `top` (px); the head bob is added on top of it
+let bannerPersistent = false; // whether the current banner is the always-on one (no auto-retire)
+let bannerHoldTimer = 0; // timeout id for an occasional banner's auto-removal
+
+// Random banner background hue that AVOIDS the flag's red (~345..360 / 0..15) and
+// yellow (~40..70) bands. Picked from the two allowed arcs (15..40)∪(70..345) with
+// no retry loop (map a value in a 300-wide range onto the arcs).
+function pickBannerBgHue(): number {
+  const r = Math.random() * 300; // 25 (15..40) + 275 (70..345)
+  return r < 25 ? 15 + r : 70 + (r - 25);
+}
+
+// Background + text colours: background avoids red/yellow; text is a near-complement
+// with the OPPOSITE lightness band, so it always contrasts and is never the same as
+// the background.
+function pickBannerColours(): { bg: string; txt: string } {
+  const bgHue = pickBannerBgHue();
+  const dark = Math.random() < 0.5;
+  const bgL = dark ? 22 + Math.random() * 14 : 64 + Math.random() * 14; // 22–36 or 64–78
+  const bgS = 55 + Math.random() * 20; // 55–75
+  const bg = hslToHex(bgHue, bgS, bgL);
+  const txtHue = (bgHue + 150 + Math.random() * 60) % 360; // near-complement → "đối màu"
+  const txtL = dark ? 80 + Math.random() * 12 : 16 + Math.random() * 12; // light on dark / dark on light
+  const txtS = 70 + Math.random() * 20; // vivid → stands out
+  const txt = hslToHex(txtHue, txtS, txtL);
+  return { bg, txt };
+}
+
+// Build the banner CONTENT (flag + optional gap + text). Returned separately from
+// the band so the text can be swapped in place without touching the band's width.
+function makeBannerInner(headW: number, txt: string, side: 'left' | 'right'): HTMLDivElement {
+  const inner = document.createElement('div');
+  inner.className = 'vnbanner-inner';
+
+  // Vietnam flag as an inline SVG (no asset; works under default-src 'none'),
+  // sized to ~the NPC's glasses height so the band reads as a thin forehead
+  // headband (the glasses lens is 6 of the head's 34 internal px).
+  const glassesH = headW * (6 / 34);
+  const flagH = Math.max(5, Math.round(glassesH * 0.85));
+  const flagW = Math.round(flagH * 1.5); // 3:2 field
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(svgNS, 'svg');
+  svg.setAttribute('class', 'vnbanner-flag');
+  svg.setAttribute('viewBox', '0 0 30 20');
+  svg.setAttribute('width', String(flagW));
+  svg.setAttribute('height', String(flagH));
+  const rect = document.createElementNS(svgNS, 'rect');
+  rect.setAttribute('width', '30');
+  rect.setAttribute('height', '20');
+  rect.setAttribute('fill', '#da251d');
+  const star = document.createElementNS(svgNS, 'polygon');
+  star.setAttribute('points', VN_STAR_POINTS);
+  star.setAttribute('fill', '#ffff00');
+  svg.appendChild(rect);
+  svg.appendChild(star);
+
+  if (txt) {
+    const gap = document.createElement('span');
+    gap.className = 'vnbanner-gap';
+    const span = document.createElement('span');
+    span.className = 'vnbanner-text';
+    span.textContent = txt; // textContent → no HTML injection from a user-set value
+    // The flag is the OUTERMOST element on `side`; the text trails toward the
+    // centre, a short gap away. layoutBannerContent then pushes the group to that
+    // side so the flag always sits off-centre (never mid-forehead).
+    if (side === 'left') {
+      inner.appendChild(svg);
+      inner.appendChild(gap);
+      inner.appendChild(span);
+    } else {
+      inner.appendChild(span);
+      inner.appendChild(gap);
+      inner.appendChild(svg);
+    }
+  } else {
+    inner.appendChild(svg); // empty text → flag only
+  }
+  return inner;
+}
+
+// Centre the content inside the fixed-width band, shifting it left/right by a
+// random clamped amount (so the flag's position varies) and shrinking it to fit
+// only if it would exceed the band. Does NOT change the band's width.
+function layoutBannerContent(inner: HTMLElement, bandW: number, scale: number, side: 'left' | 'right'): void {
+  const blockW = inner.getBoundingClientRect().width || inner.offsetWidth;
+  const pad = 4 * scale; // keep content off the rounded ends
+  const avail = Math.max(0, bandW - 2 * pad);
+  let fit = 1;
+  let shift = 0;
+  if (blockW <= 0) {
+    // Layout not settled — leave it centred. Should not happen (appended to a
+    // visible, laid-out container before measuring), so surface it if it does.
+    diag('support-webview', 'vnbanner-blockw-zero', {});
+  } else if (blockW > avail && avail > 0) {
+    fit = avail / blockW; // shrink to fit the band (long text / tiny zoom)
+  } else {
+    const maxShift = Math.max(0, (avail - blockW) / 2);
+    // Push the content strongly toward `side` (78–100% of the way) so the flag
+    // always lands off-centre, never in the middle of the forehead.
+    const frac = 0.78 + Math.random() * 0.22;
+    shift = (side === 'left' ? -1 : 1) * maxShift * frac;
+  }
+  inner.style.setProperty('--fit', fit.toFixed(3));
+  inner.style.setProperty('--shift', `${shift.toFixed(1)}px`);
+}
+
+// Swap the banner's content (flag + new text) in place, keeping the band's width,
+// tilt, colours and position — so editing the text never resizes the banner.
+function refreshBannerInner(): void {
+  const canvas = promoCanvasEl;
+  if (!bannerEl || !bannerInnerEl || !canvas) {
+    return;
+  }
+  const scale = (canvas.offsetWidth || 160) / 160;
+  const headW = canvas.offsetWidth * (34 / 160);
+  const next = makeBannerInner(headW, bannerText, bannerFlagSide);
+  bannerEl.replaceChild(next, bannerInnerEl);
+  bannerInnerEl = next;
+  layoutBannerContent(next, bannerBandW, scale, bannerFlagSide);
+}
+
+// Anchor centred on the head and just above its top; remember the resting `top`
+// so the per-frame bob sync can add the head's vertical bob to it.
+function placeVnBanner(outer: HTMLElement, canvas: HTMLCanvasElement): void {
+  const cx = canvas.offsetLeft + canvas.offsetWidth * 0.5; // head centre x (internal 80/160)
+  // Sit ON the forehead (like a fan's cheering headband), not in the empty space
+  // above the head. `translate(-50%,-50%)` means `top` is the band's centre.
+  bannerBaseTop = canvas.offsetTop + canvas.offsetHeight * (VN_BANNER_FOREHEAD_Y / 120);
+  outer.style.left = `${cx}px`;
+  outer.style.top = `${bannerBaseTop}px`;
+}
+
+function spawnVnBanner(persistent = false): void {
+  const canvas = promoCanvasEl;
+  const parent = canvas && canvas.parentElement;
+  if (!canvas || !parent || bannerEl) {
+    return; // one banner at a time
+  }
+  const scale = canvas.offsetWidth / 160;
+  const headW = canvas.offsetWidth * (34 / 160); // head width in DOM px
+  if (headW <= 0) {
+    return;
+  }
+  // The band is a fixed-width headband. Its straight middle spans the head width;
+  // it is widened by 2× the corner radius so the ROUNDED CORNERS sit OUTSIDE the
+  // head's width, plus a few random px. Width does NOT depend on the text, so
+  // editing the label never resizes it.
+  const bandW = headW + (2 * VN_BANNER_RADIUS + Math.random() * VN_BANNER_EXTRA_MAX) * scale;
+  const txt = bannerText;
+  bannerFlagSide = Math.random() < 0.5 ? 'left' : 'right'; // flag off to a random side
+
+  const outer = document.createElement('div');
+  outer.className = 'vnbanner';
+  outer.style.width = `${bandW.toFixed(1)}px`;
+  const inner = makeBannerInner(headW, txt, bannerFlagSide);
+  outer.appendChild(inner);
+
+  const tilt = (Math.random() * 2 - 1) * VN_BANNER_MAX_TILT;
+  const { bg, txt: txtColour } = pickBannerColours();
+  outer.style.setProperty('--tilt', `${tilt.toFixed(2)}deg`);
+  outer.style.setProperty('--in-ms', `${VN_BANNER_IN_MS}ms`);
+  outer.style.setProperty('--out-ms', `${VN_BANNER_OUT_MS}ms`);
+  outer.style.setProperty('--bg', bg);
+  outer.style.setProperty('--txt', txtColour);
+
+  parent.appendChild(outer);
+  placeVnBanner(outer, canvas);
+  layoutBannerContent(inner, bandW, scale, bannerFlagSide);
+
+  bannerEl = outer;
+  bannerInnerEl = inner;
+  bannerBandW = bandW;
+  bannerPersistent = persistent;
+  diag('support-webview', 'vnbanner-spawn', { tilt: Math.round(tilt), hasText: !!txt, persistent });
+
+  // An always-on banner stays; an occasional one retires after a few minutes.
+  if (!persistent) {
+    const hold = VN_BANNER_HOLD_MIN + Math.random() * VN_BANNER_HOLD_RAND;
+    bannerHoldTimer = window.setTimeout(() => retireVnBanner(), hold);
+  }
+}
+
+// Animate the current banner out and remove it. If always-on is still set once
+// it's gone, immediately bring a fresh one back (e.g. after a text change).
+function retireVnBanner(): void {
+  const el = bannerEl;
+  if (!el) {
+    return;
+  }
+  if (bannerHoldTimer) {
+    window.clearTimeout(bannerHoldTimer);
+    bannerHoldTimer = 0;
+  }
+  el.classList.add('vnbanner-out');
+  window.setTimeout(() => {
+    if (el.parentElement) {
+      el.parentElement.removeChild(el);
+    }
+    if (bannerEl === el) {
+      bannerEl = null;
+      bannerInnerEl = null;
+      bannerBandW = 0;
+      bannerPersistent = false;
+      if (bannerMode === 'always') {
+        spawnVnBanner(true); // keep it shown
+      }
+    }
+  }, VN_BANNER_OUT_MS + 50);
+}
+
+// Reconcile the live banner with the visibility mode (occasional / always / never).
+function applyBannerMode(): void {
+  if (bannerMode === 'always') {
+    if (!bannerEl) {
+      spawnVnBanner(true);
+    } else {
+      // Promote an occasional banner to persistent: cancel its auto-removal.
+      bannerPersistent = true;
+      if (bannerHoldTimer) {
+        window.clearTimeout(bannerHoldTimer);
+        bannerHoldTimer = 0;
+      }
+    }
+  } else if (bannerMode === 'never') {
+    if (bannerEl) {
+      retireVnBanner(); // hide any current banner; nothing respawns it
+    }
+  } else if (bannerEl && bannerPersistent) {
+    // occasional: drop a leftover always-on banner; the occasional cycle resumes
+    retireVnBanner();
+  }
+}
+
+// Self-rescheduling occasional spawner (idle-glance pattern). Dies with the
+// webview (retainContextWhenHidden:false), so no explicit teardown is needed.
+function scheduleVnBanner(): void {
+  const next = VN_BANNER_GAP_MIN + Math.random() * VN_BANNER_GAP_RAND;
+  window.setTimeout(() => {
+    // Only the 'occasional' mode spawns from the timer; 'always' already keeps a
+    // persistent banner up, 'never' shows nothing.
+    if (promoCanvasEl && !document.hidden && bannerMode === 'occasional') {
+      spawnVnBanner();
+    }
+    scheduleVnBanner();
+  }, next);
+}
+
+// Glue the banner to the head as it bobs up/down. `bob` is the internal-px head
+// offset from draw(); convert to DOM px with the same scale --npc-scale uses.
+function syncBannerToHeadBob(bob: number): void {
+  const el = bannerEl;
+  const canvas = promoCanvasEl;
+  if (!el || !canvas) {
+    return;
+  }
+  const scale = (canvas.offsetWidth || 160) / 160;
+  el.style.top = `${bannerBaseTop + bob * scale}px`;
+}
+
 window.addEventListener('message', (ev: MessageEvent) => {
   const m = ev.data as { type?: string; src?: string; id?: string; name?: string; user?: string; prompt?: string; text?: string } | undefined;
   if (!m) {
@@ -449,6 +741,50 @@ function setupSettingsPanel(): void {
   };
   wireCheck('setCrossWindow', 'npcCrossWindowBeacon');
 
+  const setText = (id: string, value: string): void => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    if (el && el.value !== value) {
+      el.value = value;
+    }
+  };
+  // Text setting: debounce keystrokes, flush on change/blur. The value is clamped
+  // to 5 chars here and again server-side (the maxlength attribute is not trusted).
+  const wireText = (id: string, key: string): void => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    if (!el) {
+      return;
+    }
+    let t = 0;
+    const post = (): void => {
+      vscode.postMessage({ type: 'setSetting', key, value: el.value.trim().slice(0, 5) });
+    };
+    el.addEventListener('input', () => {
+      window.clearTimeout(t);
+      t = window.setTimeout(post, 400);
+    });
+    el.addEventListener('change', () => {
+      window.clearTimeout(t);
+      post();
+    });
+  };
+  const setSelect = (id: string, value: string): void => {
+    const el = document.getElementById(id) as HTMLSelectElement | null;
+    if (el && el.value !== value) {
+      el.value = value;
+    }
+  };
+  const wireSelect = (id: string, key: string): void => {
+    const el = document.getElementById(id) as HTMLSelectElement | null;
+    if (!el) {
+      return;
+    }
+    el.addEventListener('change', () => {
+      vscode.postMessage({ type: 'setSetting', key, value: el.value });
+    });
+  };
+  wireText('setBannerText', 'npcBannerText');
+  wireSelect('setBannerMode', 'npcBannerMode');
+
   const installBtn = document.getElementById('installHooks') as HTMLButtonElement | null;
   const uninstallBtn = document.getElementById('uninstallHooks') as HTMLButtonElement | null;
   const setBusy = (busy: boolean): void => {
@@ -517,13 +853,37 @@ function setupSettingsPanel(): void {
 
   window.addEventListener('message', (ev: MessageEvent) => {
     const m = ev.data as
-      | { type?: string; npcAiActivity?: boolean; npcCrossWindowBeacon?: boolean; tools?: HookToolState[]; message?: string }
+      | {
+          type?: string;
+          npcAiActivity?: boolean;
+          npcCrossWindowBeacon?: boolean;
+          npcBannerText?: string;
+          npcBannerMode?: string;
+          tools?: HookToolState[];
+          message?: string;
+        }
       | undefined;
     if (!m) {
       return;
     }
     if (m.type === 'settings') {
       setChecked('setCrossWindow', !!m.npcCrossWindowBeacon);
+      if (typeof m.npcBannerText === 'string') {
+        const next = m.npcBannerText.trim().slice(0, 5);
+        const changed = next !== bannerText;
+        bannerText = next; // drive the banner live
+        setText('setBannerText', bannerText);
+        // Reflect a live text change on the current banner WITHOUT changing its
+        // width: swap the content inside the fixed-width band in place.
+        if (changed && bannerEl) {
+          refreshBannerInner();
+        }
+      }
+      if (typeof m.npcBannerMode === 'string') {
+        bannerMode = m.npcBannerMode === 'always' || m.npcBannerMode === 'never' ? m.npcBannerMode : 'occasional';
+        setSelect('setBannerMode', bannerMode);
+        applyBannerMode();
+      }
     } else if (m.type === 'hookStatus' && Array.isArray(m.tools)) {
       renderHookStatus(m.tools, m.message);
     }
@@ -716,6 +1076,7 @@ function startPromo(): void {
     ctx.globalAlpha = 1;
 
     const bob = animate ? Math.round(Math.sin(now / 760)) : 0;
+    syncBannerToHeadBob(bob); // keep the cheering banner glued to the bobbing head
 
     // ----- body / hoodie (slim build) -----
     px(54, 50, 52, 38, hood.main);
@@ -908,3 +1269,4 @@ function startPromo(): void {
 info('support-webview', 'ready', {});
 startPromo();
 setupSettingsPanel();
+scheduleVnBanner();

@@ -1513,7 +1513,7 @@ export class SSHConnection implements ISSHConnection {
 
       // Parse ls -la output: drwxr-xr-x 2 user group 4096 Jan  1 12:00 filename
       const match = line.match(
-        /^([d\-lbcps])([rwxsStT\-]{9})\s+\d+\s+(\S+)\s+(\S+)\s+(\d+)\s+(\w+\s+\d+\s+[\d:]+)\s+(.+)$/
+        /^([d\-lbcps])([rwxsStT-]{9})\s+\d+\s+(\S+)\s+(\S+)\s+(\d+)\s+(\w+\s+\d+\s+[\d:]+)\s+(.+)$/
       );
       if (!match) { continue; }
 

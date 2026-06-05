@@ -333,6 +333,102 @@ describe('SupportViewProvider', () => {
       jest.restoreAllMocks();
     });
 
+    it('updates the enum banner-mode setting (npcBannerMode) for a valid value', () => {
+      const provider = makeProvider();
+      const view = createMockWebviewView();
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+
+      const update = jest.fn().mockResolvedValue(undefined);
+      jest.spyOn(workspace, 'getConfiguration').mockReturnValue({
+        get: <T>(_k: string, d?: T) => d,
+        update,
+        has: () => false,
+        inspect: () => undefined,
+      } as any);
+
+      view._fireMessage({ type: 'setSetting', key: 'npcBannerMode', value: 'never' });
+
+      expect(update).toHaveBeenCalledWith('npcBannerMode', 'never', ConfigurationTarget.Global);
+      jest.restoreAllMocks();
+    });
+
+    it('rejects an invalid banner-mode value (does not write config)', () => {
+      const provider = makeProvider();
+      const view = createMockWebviewView();
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+
+      const update = jest.fn();
+      jest.spyOn(workspace, 'getConfiguration').mockReturnValue({
+        get: <T>(_k: string, d?: T) => d,
+        update,
+        has: () => false,
+        inspect: () => undefined,
+      } as any);
+
+      view._fireMessage({ type: 'setSetting', key: 'npcBannerMode', value: 'bogus' });
+
+      expect(update).not.toHaveBeenCalled();
+      expect(infoLog).toHaveBeenCalledWith('support-view', 'set-setting-invalid', { key: 'npcBannerMode' });
+      jest.restoreAllMocks();
+    });
+
+    it('clamps + trims an allow-listed string setting (npcBannerText) to 5 chars', () => {
+      const provider = makeProvider();
+      const view = createMockWebviewView();
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+
+      const update = jest.fn().mockResolvedValue(undefined);
+      jest.spyOn(workspace, 'getConfiguration').mockReturnValue({
+        get: <T>(_k: string, d?: T) => d,
+        update,
+        has: () => false,
+        inspect: () => undefined,
+      } as any);
+
+      view._fireMessage({ type: 'setSetting', key: 'npcBannerText', value: '  HELLOOO  ' });
+
+      expect(update).toHaveBeenCalledWith('npcBannerText', 'HELLO', ConfigurationTarget.Global);
+      jest.restoreAllMocks();
+    });
+
+    it('allows an empty banner text (flag only)', () => {
+      const provider = makeProvider();
+      const view = createMockWebviewView();
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+
+      const update = jest.fn().mockResolvedValue(undefined);
+      jest.spyOn(workspace, 'getConfiguration').mockReturnValue({
+        get: <T>(_k: string, d?: T) => d,
+        update,
+        has: () => false,
+        inspect: () => undefined,
+      } as any);
+
+      view._fireMessage({ type: 'setSetting', key: 'npcBannerText', value: '' });
+
+      expect(update).toHaveBeenCalledWith('npcBannerText', '', ConfigurationTarget.Global);
+      jest.restoreAllMocks();
+    });
+
+    it('coerces a non-string banner text to empty', () => {
+      const provider = makeProvider();
+      const view = createMockWebviewView();
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+
+      const update = jest.fn().mockResolvedValue(undefined);
+      jest.spyOn(workspace, 'getConfiguration').mockReturnValue({
+        get: <T>(_k: string, d?: T) => d,
+        update,
+        has: () => false,
+        inspect: () => undefined,
+      } as any);
+
+      view._fireMessage({ type: 'setSetting', key: 'npcBannerText', value: 42 });
+
+      expect(update).toHaveBeenCalledWith('npcBannerText', '', ConfigurationTarget.Global);
+      jest.restoreAllMocks();
+    });
+
     it('ignores a key that is not on the allow-list', () => {
       const provider = makeProvider();
       const view = createMockWebviewView();
@@ -379,6 +475,8 @@ describe('SupportViewProvider', () => {
         type: 'settings',
         npcAiActivity: true,
         npcCrossWindowBeacon: true,
+        npcBannerText: 'VN',
+        npcBannerMode: 'never',
       });
       expect(view.webview.postMessage).toHaveBeenCalledWith({
         type: 'hookStatus',
@@ -428,12 +526,14 @@ describe('SupportViewProvider', () => {
       provider.resolveWebviewView(view as any, {} as any, {} as any);
       (view.webview.postMessage as jest.Mock).mockClear();
 
-      provider.postSettings({ npcAiActivity: false, npcCrossWindowBeacon: true });
+      provider.postSettings({ npcAiActivity: false, npcCrossWindowBeacon: true, npcBannerText: 'VN', npcBannerMode: 'occasional' });
 
       expect(view.webview.postMessage).toHaveBeenCalledWith({
         type: 'settings',
         npcAiActivity: false,
         npcCrossWindowBeacon: true,
+        npcBannerText: 'VN',
+        npcBannerMode: 'occasional',
       });
     });
   });

@@ -2,7 +2,7 @@
   "name": "ssh-lite",
   "displayName": "SSH Lite (SSH Tools)",
   "description": "A visual SSH client for VS Code. Browse, edit, monitor, manage services - by clicking, not typing vi/systemctl/crontab. Nothing installed on the remote server. Perfect for VPS, cloud servers (AWS/Azure/GCP), and Linux administration.",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "publisher": "hybr8",
   "engines": {
     "vscode": "^1.85.0"
@@ -92,7 +92,20 @@
     "ssh key manager",
     "sudo ssh",
     "ssh audit",
-    "ssh grep"
+    "ssh grep",
+    "pixel art",
+    "pixel art coder",
+    "npc",
+    "animated npc",
+    "coding companion",
+    "coding buddy",
+    "desktop pet",
+    "code mascot",
+    "ai activity indicator",
+    "typing animation",
+    "fun extension",
+    "easter egg",
+    "vietnam flag"
   ],
   "icon": "images/icon.png",
   "galleryBanner": {
@@ -1652,6 +1665,23 @@
           "type": "boolean",
           "default": true,
           "description": "Let the Support view's coder react when ANOTHER VS Code window on this machine is active. Writes a tiny activity beacon (timestamp + coarse category 'editor'/'terminal', never any typed content) to SSH Lite's global storage and watches it from other windows. No data leaves your machine. Turn off to disable."
+        },
+        "sshLite.npcBannerText": {
+          "type": "string",
+          "default": "VN",
+          "maxLength": 5,
+          "description": "Text shown on the occasional cheering banner above the Support view coder's head (next to a small Vietnam flag). Up to 5 characters; longer values are trimmed. Leave empty to show the flag only."
+        },
+        "sshLite.npcBannerMode": {
+          "type": "string",
+          "enum": ["occasional", "always", "never"],
+          "enumDescriptions": [
+            "Show the cheering headband once in a while.",
+            "Keep the cheering headband shown continuously.",
+            "Never show the cheering headband (default)."
+          ],
+          "default": "never",
+          "description": "When the cheering headband (a small Vietnam flag + text) appears on the Support view coder's forehead: occasionally, always, or never (default)."
         },
         "sshLite.diffTempRetentionHours": {
           "type": "number",

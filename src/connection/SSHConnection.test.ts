@@ -551,7 +551,7 @@ describe('SSHConnection - Actual Class', () => {
       beforeEach(() => {
         capturedCommand = '';
         const mockStream = {
-          on: jest.fn().mockImplementation(function(this: any, event: string, cb: Function) {
+          on: jest.fn().mockImplementation(function(this: any, event: string, cb: (...args: any[]) => void) {
             if (event === 'close') {
               // Fire close immediately to resolve the promise
               setTimeout(() => cb(), 0);
@@ -563,7 +563,7 @@ describe('SSHConnection - Actual Class', () => {
           },
           close: jest.fn(),
         };
-        clientExecSpy = jest.fn().mockImplementation((cmd: string, cb: Function) => {
+        clientExecSpy = jest.fn().mockImplementation((cmd: string, cb: (...args: any[]) => void) => {
           capturedCommand = cmd;
           cb(null, mockStream);
         });
