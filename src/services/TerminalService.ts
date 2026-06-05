@@ -29,6 +29,20 @@ export class TerminalService {
   private readonly _onActivity = new vscode.EventEmitter<'input' | 'output'>();
   public readonly onActivity: vscode.Event<'input' | 'output'> = this._onActivity.event;
 
+  /**
+   * Locale + color env vars forwarded to the remote shell, mirroring a native
+   * `ssh` session's default `SendEnv LANG LC_*` (plus COLORTERM). Forwarding
+   * these makes UTF-8 glyphs (powerline / nerd fonts, box-drawing) and colors
+   * render the same as a terminal opened directly on the server. The remote
+   * sshd must allow them via `AcceptEnv` (most distros allow `LANG LC_*`).
+   */
+  private static readonly FORWARDED_ENV_KEYS = [
+    'LANG', 'LANGUAGE', 'LC_ALL', 'LC_CTYPE', 'LC_NUMERIC', 'LC_TIME',
+    'LC_COLLATE', 'LC_MONETARY', 'LC_MESSAGES', 'LC_PAPER', 'LC_NAME',
+    'LC_ADDRESS', 'LC_TELEPHONE', 'LC_MEASUREMENT', 'LC_IDENTIFICATION',
+    'COLORTERM',
+  ];
+
   private constructor() {}
 
   /**
@@ -39,6 +53,47 @@ export class TerminalService {
       TerminalService._instance = new TerminalService();
     }
     return TerminalService._instance;
+  }
+
+  /**
+   * Terminal type ($TERM) advertised to the remote interactive shell.
+   * Defaults to `xterm-256color` (vs ssh2's bare `vt100` default) so 256-color
+   * TUI apps and shell plugins render correctly. Overridable via
+   * `sshLite.terminal.termType` for old servers lacking that terminfo entry.
+   */
+  getTermType(): string {
+    const cfg = vscode.workspace.getConfiguration('sshLite');
+    return cfg.get<string>('terminal.termType', 'xterm-256color') || 'xterm-256color';
+  }
+
+  /**
+   * Build the environment forwarded to a new SSH terminal: the client's locale
+   * vars + COLORTERM (gated by `sshLite.terminal.forwardEnv`, default on),
+   * overlaid with any user-defined `sshLite.terminal.env`. Only forwards values
+   * that actually exist locally — never fabricates a locale (a missing one on
+   * the remote would trigger `setlocale` warnings).
+   */
+  buildShellEnv(): Record<string, string> {
+    const cfg = vscode.workspace.getConfiguration('sshLite');
+    const env: Record<string, string> = {};
+
+    if (cfg.get<boolean>('terminal.forwardEnv', true)) {
+      for (const key of TerminalService.FORWARDED_ENV_KEYS) {
+        const val = process.env[key];
+        if (val !== undefined && val !== '') {
+          env[key] = val;
+        }
+      }
+    }
+
+    const userEnv = cfg.get<Record<string, string>>('terminal.env', {}) ?? {};
+    for (const [k, v] of Object.entries(userEnv)) {
+      if (typeof v === 'string') {
+        env[k] = v;
+      }
+    }
+
+    return env;
   }
 
   /**
@@ -61,8 +116,18 @@ export class TerminalService {
     });
 
     try {
-      // Create a new shell channel on the existing SSH connection (no re-auth needed)
-      const shell = preOpenedShell ?? await connection.shell();
+      // Create a new shell channel on the existing SSH connection (no re-auth needed).
+      // Request a native-parity PTY (TERM + forwarded locale/COLORTERM) so remote
+      // TUI apps and shell plugins render like a terminal opened directly on the server.
+      let shell: ClientChannel;
+      if (preOpenedShell) {
+        shell = preOpenedShell;
+      } else {
+        const term = this.getTermType();
+        const env = this.buildShellEnv();
+        infoLog('terminal', 'pty/open', { connectionId: connection.id, term, envKeys: Object.keys(env) });
+        shell = await connection.shell({ term }, { env });
+      }
       const terminalInfo = this.createPseudoTerminal(connection, shell, terminalId, terminalNumber);
 
       this.terminals.set(terminalId, terminalInfo);

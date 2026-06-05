@@ -28,6 +28,28 @@ sshLite.openTerminalHere command:
 
 **LITE principle**: Terminals reuse the existing SSH connection. No new SSH session is created — `connection.shell()` opens a new channel on the existing multiplexed connection.
 
+### Native-parity PTY (`term` + forwarded env)
+
+SSH Lite's terminal is a VS Code `Pseudoterminal` whose input is written raw to an ssh2 `shell()` channel and whose output is fired raw to the terminal — so it is a faithful PTY. Remote shell plugins and TUI apps (oh-my-zsh, powerlevel10k, starship, **fzf-tab**, zsh-autosuggestions / -syntax-highlighting, bash-completion, ble.sh, vim/neovim, tmux, htop/btop, lazygit, ranger/lf/nnn, mc, k9s) run entirely on the remote and "just work" through this channel, exactly as in a native `ssh user@host` session — SSH Lite does not implement them, it provides the PTY they need.
+
+To match a native session, `TerminalService` requests the PTY with two things (set once when the channel opens — no polling, no extra server commands, fully LITE):
+
+1. **`term`** — `getTermType()` reads `sshLite.terminal.termType` (default `xterm-256color`). Without this, ssh2 defaults `$TERM` to `vt100`, under which 256-color menus, box-drawing, and prompts render wrong.
+2. **`env`** — `buildShellEnv()` forwards the client's locale (`LANG`, `LC_*`) and `COLORTERM`, mirroring OpenSSH's default `SendEnv LANG LC_*`. Gated by `sshLite.terminal.forwardEnv` (default on) and merged with user-defined `sshLite.terminal.env`. Only values that actually exist locally are forwarded (never a fabricated locale, which would trigger remote `setlocale` warnings). The remote `sshd` must allow them via `AcceptEnv` — most distributions allow `LANG LC_*` by default; if the server rejects them the request is silently ignored (harmless, server keeps its default).
+
+**Plumbing** (the chokepoint every terminal path funnels through): `SSHConnection.shell(pty?, opts?)` forwards to ssh2 `client.shell(pty, opts, cb)`; a bare `shell()` keeps the old `vt100` behaviour (backward-compat for the chaos suite and any non-terminal caller). `CommandGuard.openShell(connection, pty?, opts?)` threads the same options for the channel-guarded paths (`openTerminal` / `openTerminalHere` in `extension.ts`); the direct paths (`FileService`, `ServerMonitorService` → `createTerminal`) get them inside `createTerminal`.
+
+**Capability matrix** — what is already native vs. what is out of reach:
+
+| Capability | Status |
+|---|---|
+| `$TERM` 256-color, login-shell rc sourcing (so plugins load), window resize/SIGWINCH, mouse reporting, alternate screen, bracketed paste, arrow/F-keys, Ctrl-C/Z/D, 24-bit truecolor escapes | Work via the faithful PTY + byte pass-through (truecolor also needs `COLORTERM` forwarded **and** a remote app that opts in, e.g. vim `termguicolors`) |
+| Locale `LANG`/`LC_*`, `COLORTERM` | Forwarded — **server-gated** by `sshd` `AcceptEnv` |
+| OSC 52 clipboard (remote app → local clipboard) | **Not available** — VS Code does not yet implement it (upstream microsoft/vscode#210302) |
+| Some `Alt`/`Meta` and chord keys | Intercepted by VS Code; user tunes `terminal.integrated.sendKeybindingsToShell` / `commandsToSkipShell` |
+
+> Out of scope by design: extension-side autocomplete (intercepting TAB / querying the server per keystroke) would mean automatic server commands + polling — a LITE violation. Native shell completion (and fzf-tab) already cover this on the remote.
+
 ### Activity event (`onActivity`)
 
 `TerminalService` exposes a public event `onActivity: vscode.Event<'input'|'output'>`, a coarse signal that fires on terminal input (user typing) or output (data from the shell), carrying only the direction tag, never the keystroke or data content. `extension.ts` forwards it to the Support view coder via `SupportViewProvider.notifyTyped('terminal-in'|'terminal-out')`, so the animated coder reacts to activity in SSH Lite's own terminals. See `.adn/features/support-view.md`.

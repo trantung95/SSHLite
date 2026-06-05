@@ -5,6 +5,20 @@ Add new entries as bugs are found, mistakes are made, or better approaches are d
 
 ---
 
+## 2026-06-05 - Native-parity terminal PTY: ssh2 `shell()` defaults `TERM=vt100`; forward locale like OpenSSH `SendEnv`; env is server-gated
+
+**Context**: made SSH Lite's terminal behave like a native `ssh user@host` session so fzf-tab and the whole class of remote shell plugins / TUI apps render correctly (v0.9.2). Reusable gotchas:
+
+- **ssh2's `client.shell()` defaults `$TERM` to `vt100`** (`node_modules/ssh2/lib/client.js`, `let term = 'vt100'`). A bare `shell()` gives remote TUIs a near-useless terminal type — 256-color menus, box-drawing, and prompts (powerlevel10k, fzf-tab, vim, tmux, htop) render wrong. Pass `shell({ term: 'xterm-256color' }, opts, cb)`. ssh2 signature is `shell(window, options, cb)` where `window` is `PseudoTtyOptions` (`term`/`rows`/`cols`) and `options` is `ShellOptions` (`env`). Keep a bare `shell(cb)` branch for backward-compat so non-terminal callers (the chaos suite) are unchanged.
+
+- **A faithful PTY is all that's needed for remote plugins — SSH Lite does NOT implement fzf-tab/vim/tmux.** They run on the remote and "just work" over a raw byte-pass-through Pseudoterminal (input → `shell.write`, output → `writeEmitter.fire`, plus `setWindow` on resize). Mouse reporting, alternate screen, bracketed paste, arrow/F-keys, Ctrl-C/Z/D, and 24-bit truecolor escapes all transit untouched. The only levers the extension controls are `term`, `env`, window size, and login-shell rc sourcing (interactive shell ⇒ `~/.zshrc`/`~/.bashrc` sourced ⇒ plugins load).
+
+- **Forward locale like native ssh, but know it's server-gated.** OpenSSH's default is `SendEnv LANG LC_*`; without it the remote falls back to `C`/`POSIX` and UTF-8 glyphs (powerline / nerd fonts, box-drawing) break. Forward `LANG`, `LC_*`, `COLORTERM` via `ShellOptions.env` — but the request only takes effect if the remote `sshd` lists them under `AcceptEnv`. **Verified on docker**: with `AcceptEnv LANG LC_* COLORTERM`, `$LANG`/`$COLORTERM` arrive; without it they are silently dropped (server keeps its default) — harmless. So: only forward vars that actually exist locally (never fabricate a locale → avoids remote `setlocale` warnings), gate with a setting (`sshLite.terminal.forwardEnv`), and document the `AcceptEnv` dependency rather than trying to force it.
+
+- **Extension-side autocomplete is a LITE non-starter; native shell completion is the answer.** Intercepting TAB and querying the server per keystroke = automatic server commands + polling. The remote shell's own completion (and fzf-tab) already cover it for free over the faithful PTY — the correct move is to make the PTY faithful, not to reimplement completion in the extension.
+
+- **Verifying PTY/ssh2 behaviour without driving the VS Code UI**: a tiny Node script using the project's own `ssh2` to `client.shell({term},{env}, …)` against the docker server reproduces the exact request the extension issues and reads `$TERM`/`$LANG` back — enough to prove the contract that determines whether TUIs render. To toggle `AcceptEnv` on the running container without killing it, append to `sshd_config` and `kill -HUP 1` (sshd re-execs as PID 1); do **not** `pkill sshd` — that stops the container whose CMD is the foreground sshd.
+
 ## 2026-06-05 - Support coder "liveliness": cross-window IPC via globalStorageUri, watching paths outside the workspace, the diff temp-dir leak, and the keylogger boundary
 
 **Context**: built the v0.9.1 "NPC liveliness" upgrade for the Support view; the coder now reacts to SSH Lite terminals, AI coding assistants, and other VS Code windows, follows the cursor, and dozes when idle, plus a `HousekeepingService` that fixes a real temp-dir leak. Reusable gotchas:

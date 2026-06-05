@@ -2662,7 +2662,11 @@ export function activate(context: vscode.ExtensionContext): void {
             title: 'Waiting for a free channel to open terminal...',
             cancellable: false,
           },
-          () => commandGuard.openShell(connection)
+          () => commandGuard.openShell(
+            connection,
+            { term: terminalService.getTermType() },
+            { env: terminalService.buildShellEnv() }
+          )
         );
         const terminal = await terminalService.createTerminal(connection, shell);
         if (terminal) {
@@ -2731,7 +2735,11 @@ export function activate(context: vscode.ExtensionContext): void {
             title: 'Waiting for a free channel to open terminal...',
             cancellable: false,
           },
-          () => commandGuard.openShell(connection)
+          () => commandGuard.openShell(
+            connection,
+            { term: terminalService.getTermType() },
+            { env: terminalService.buildShellEnv() }
+          )
         );
         const terminal = await terminalService.createTerminal(connection, shell);
         if (terminal) {

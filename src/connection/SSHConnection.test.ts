@@ -54,6 +54,51 @@ describe('SSHConnection - Actual Class', () => {
     connection.dispose();
   });
 
+  describe('shell (interactive PTY)', () => {
+    it('calls ssh2 client.shell() bare (no pty/options) when invoked with no args — backward-compat', async () => {
+      const stream = { id: 'stream' };
+      const shellSpy = jest.fn((...args: any[]) => {
+        const cb = args[args.length - 1];
+        cb(null, stream);
+      });
+      (connection as any)._client = { shell: shellSpy, end: jest.fn(), destroy: jest.fn() };
+      (connection as any).state = ConnectionState.Connected;
+
+      const result = await connection.shell();
+
+      expect(result).toBe(stream);
+      // Bare form preserves ssh2's default PTY (term=vt100): only a callback is passed.
+      expect(shellSpy).toHaveBeenCalledTimes(1);
+      expect(shellSpy.mock.calls[0]).toHaveLength(1);
+      expect(typeof shellSpy.mock.calls[0][0]).toBe('function');
+    });
+
+    it('forwards pty options (term) and shell options (env) to ssh2 client.shell()', async () => {
+      const stream = { id: 'stream' };
+      const shellSpy = jest.fn((...args: any[]) => {
+        const cb = args[args.length - 1];
+        cb(null, stream);
+      });
+      (connection as any)._client = { shell: shellSpy, end: jest.fn(), destroy: jest.fn() };
+      (connection as any).state = ConnectionState.Connected;
+
+      const pty = { term: 'xterm-256color' };
+      const opts = { env: { LANG: 'en_US.UTF-8' } };
+      const result = await connection.shell(pty, opts);
+
+      expect(result).toBe(stream);
+      expect(shellSpy.mock.calls[0][0]).toEqual(pty);
+      expect(shellSpy.mock.calls[0][1]).toEqual(opts);
+      expect(typeof shellSpy.mock.calls[0][2]).toBe('function');
+    });
+
+    it('rejects when not connected', async () => {
+      (connection as any)._client = { shell: jest.fn() };
+      (connection as any).state = ConnectionState.Disconnected;
+      await expect(connection.shell()).rejects.toThrow('Not connected');
+    });
+  });
+
   describe('constructor & connection ID', () => {
     it('should generate ID as host:port:username', () => {
       expect(connection.id).toBe('10.0.0.1:22:testuser');

@@ -45,6 +45,18 @@ await config.update('hosts', updatedHosts, vscode.ConfigurationTarget.Global);
 
 ---
 
+## Terminal Settings
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `sshLite.terminal.termType` | `string` | `"xterm-256color"` | `$TERM` advertised to the remote interactive shell. Enables 256-color rendering for TUI apps and shell plugins (fzf-tab, vim, tmux, htop, powerlevel10k). Use `vt100` only for very old servers lacking the `xterm-256color` terminfo entry. |
+| `sshLite.terminal.forwardEnv` | `boolean` | `true` | Forward the client's locale (`LANG`, `LC_*`) and `COLORTERM` to new terminals, mirroring a native `ssh` session (`SendEnv`). Improves UTF-8 glyph and color rendering. **Server-gated**: the remote `sshd` must allow them via `AcceptEnv` (most distributions allow `LANG LC_*` by default). |
+| `sshLite.terminal.env` | `object` | `{}` | Extra environment variables for new terminals, e.g. `{ "COLORTERM": "truecolor" }`. Merged over the forwarded locale variables (these win on conflict). Also subject to the server's `AcceptEnv`. |
+
+**LITE note**: these are applied once when the shell channel opens (no polling, no extra server commands). A bare interactive shell keeps the previous behaviour, so the change is backward-compatible. See `.adn/features/terminal-port-forwarding.md` → *Native-parity PTY*.
+
+---
+
 ## File Operations
 
 | Setting | Type | Default | Min | Description |

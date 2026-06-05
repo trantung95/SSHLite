@@ -289,6 +289,25 @@ describe('CommandGuard', () => {
     });
   });
 
+  describe('openShell', () => {
+    it('forwards pty options and shell options to connection.shell()', async () => {
+      const channel: any = { on: jest.fn() };
+      const shellSpy = jest.fn().mockResolvedValue(channel);
+      const conn = createMockConnection() as any;
+      conn.shell = shellSpy;
+
+      const pty = { term: 'xterm-256color' };
+      const opts = { env: { LANG: 'en_US.UTF-8' } };
+      const result = await guard.openShell(conn, pty, opts);
+
+      expect(result).toBe(channel);
+      expect(shellSpy).toHaveBeenCalledWith(pty, opts);
+      // Slot is held until the channel closes/exits.
+      expect(channel.on).toHaveBeenCalledWith('close', expect.any(Function));
+      expect(channel.on).toHaveBeenCalledWith('exit', expect.any(Function));
+    });
+  });
+
   describe('trackDisconnect', () => {
     it('should create and immediately complete disconnect activity', () => {
       const conn = createMockConnection();

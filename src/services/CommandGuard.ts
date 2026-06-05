@@ -104,7 +104,11 @@ export class CommandGuard {
    * Note: connection.shell() is SSHConnection.shell() - opens a remote interactive shell,
    * NOT a local shell. No local injection risk.
    */
-  async openShell(connection: SSHConnection): Promise<ClientChannel> {
+  async openShell(
+    connection: SSHConnection,
+    pty?: { term?: string; rows?: number; cols?: number },
+    opts?: { env?: Record<string, string> }
+  ): Promise<ClientChannel> {
     const semaphore = this.getSemaphore(connection.id);
     const acquireStart = Date.now();
     diagLog('command-guard', 'openShell/begin', {
@@ -132,7 +136,7 @@ export class CommandGuard {
     let channel: ClientChannel;
     const shellStart = Date.now();
     try {
-      channel = await connection.shell();
+      channel = await connection.shell(pty, opts);
     } catch (error) {
       const e = error as Error;
       infoLog('command-guard', 'openShell/shell-failed', {

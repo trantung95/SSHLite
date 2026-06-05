@@ -797,21 +797,41 @@ export class SSHConnection implements ISSHConnection {
   }
 
   /**
-   * Create an interactive shell
+   * Create an interactive shell.
+   *
+   * When called bare (`shell()`) it keeps ssh2's default PTY (TERM=vt100) for
+   * backward compatibility. Pass `pty`/`opts` to request a native-parity PTY —
+   * e.g. `{ term: 'xterm-256color' }` plus forwarded locale `{ env: {...} }` —
+   * so remote TUI apps and shell plugins (fzf-tab, powerlevel10k, vim, tmux)
+   * render exactly as in a native `ssh user@host` session. These are sent once
+   * when the channel opens (no polling, no extra server commands).
    */
-  async shell(): Promise<ClientChannel> {
+  async shell(
+    pty?: { term?: string; rows?: number; cols?: number },
+    opts?: { env?: Record<string, string> }
+  ): Promise<ClientChannel> {
     if (!this._client || this.state !== ConnectionState.Connected) {
       throw new ConnectionError('Not connected');
     }
 
     return new Promise((resolve, reject) => {
-      this._client!.shell((err, stream) => {
+      const cb = (err: Error | undefined, stream: ClientChannel) => {
         if (err) {
           reject(new SFTPError(`Failed to create shell: ${err.message}`, err));
           return;
         }
         resolve(stream);
-      });
+      };
+      if (pty || opts) {
+        // ssh2 overload: shell(window, options, cb). Passing {} for an absent
+        // arg requests a default PTY — fine here because every real caller that
+        // supplies opts also supplies pty (the terminal always sets `term`).
+        this._client!.shell(pty ?? {}, opts ?? {}, cb);
+      } else {
+        // Bare call → ssh2's shell(cb): default PTY (TERM=vt100), unchanged for
+        // non-terminal callers (e.g. the chaos suite).
+        this._client!.shell(cb);
+      }
     });
   }
 

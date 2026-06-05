@@ -136,4 +136,96 @@ describe('TerminalService', () => {
       expect(events).toHaveLength(0);
     });
   });
+
+  describe('native-parity PTY (term + env)', () => {
+    const ORIG_ENV = { ...process.env };
+    const ENV_KEYS = ['LANG', 'LC_CTYPE', 'LC_ALL', 'COLORTERM'];
+
+    function mockConfig(values: Record<string, unknown>) {
+      jest.spyOn(vscode.workspace, 'getConfiguration').mockReturnValue({
+        get: (key: string, def?: unknown) => (key in values ? values[key] : def),
+      } as any);
+    }
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+      for (const k of ENV_KEYS) {
+        delete process.env[k];
+        if (ORIG_ENV[k] !== undefined) process.env[k] = ORIG_ENV[k];
+      }
+      (vscode.window.createTerminal as jest.Mock)
+        .mockReset()
+        .mockReturnValue({ show: jest.fn(), dispose: jest.fn() });
+    });
+
+    it('getTermType defaults to xterm-256color', () => {
+      mockConfig({});
+      expect(service.getTermType()).toBe('xterm-256color');
+    });
+
+    it('getTermType honors a configured value', () => {
+      mockConfig({ 'terminal.termType': 'vt100' });
+      expect(service.getTermType()).toBe('vt100');
+    });
+
+    it('buildShellEnv forwards client locale vars when forwardEnv is on (default)', () => {
+      mockConfig({});
+      process.env.LANG = 'en_US.UTF-8';
+      process.env.LC_CTYPE = 'en_US.UTF-8';
+      const env = service.buildShellEnv();
+      expect(env.LANG).toBe('en_US.UTF-8');
+      expect(env.LC_CTYPE).toBe('en_US.UTF-8');
+    });
+
+    it('buildShellEnv omits locale vars when forwardEnv is disabled', () => {
+      mockConfig({ 'terminal.forwardEnv': false });
+      process.env.LANG = 'en_US.UTF-8';
+      const env = service.buildShellEnv();
+      expect(env.LANG).toBeUndefined();
+    });
+
+    it('buildShellEnv merges user terminal.env over forwarded vars', () => {
+      mockConfig({ 'terminal.env': { COLORTERM: 'truecolor', LANG: 'C.UTF-8' } });
+      process.env.LANG = 'en_US.UTF-8';
+      const env = service.buildShellEnv();
+      expect(env.COLORTERM).toBe('truecolor');
+      expect(env.LANG).toBe('C.UTF-8'); // user override wins over forwarded value
+    });
+
+    it('createTerminal requests a PTY with term + env on the shell channel', async () => {
+      mockConfig({});
+      process.env.LANG = 'en_US.UTF-8';
+      (vscode.window.createTerminal as jest.Mock).mockReturnValue({ show: jest.fn(), dispose: jest.fn() });
+
+      const shell: any = new EventEmitter();
+      shell.write = jest.fn();
+      shell.setWindow = jest.fn();
+      shell.end = jest.fn();
+      const shellSpy = jest.fn().mockResolvedValue(shell);
+      const connection: any = { id: 'c1', host: { name: 'host' }, shell: shellSpy };
+
+      await service.createTerminal(connection);
+
+      expect(shellSpy).toHaveBeenCalledTimes(1);
+      const [ptyArg, optsArg] = shellSpy.mock.calls[0];
+      expect(ptyArg).toEqual({ term: 'xterm-256color' });
+      expect(optsArg.env.LANG).toBe('en_US.UTF-8');
+    });
+
+    it('createTerminal reuses a preOpened shell and does not open a new one', async () => {
+      mockConfig({});
+      (vscode.window.createTerminal as jest.Mock).mockReturnValue({ show: jest.fn(), dispose: jest.fn() });
+
+      const shell: any = new EventEmitter();
+      shell.write = jest.fn();
+      shell.setWindow = jest.fn();
+      shell.end = jest.fn();
+      const shellSpy = jest.fn();
+      const connection: any = { id: 'c2', host: { name: 'host' }, shell: shellSpy };
+
+      await service.createTerminal(connection, shell);
+
+      expect(shellSpy).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.9.2 - Native-parity terminal: TERM=xterm-256color + locale/COLORTERM forwarding (fzf-tab and all remote shell plugins render correctly)
+
+### Why
+
+SSH Lite's terminal is a faithful PTY (a VS Code `Pseudoterminal` wired raw to an ssh2 `shell()` channel), so remote shell plugins and TUI apps already run on it. But two things made it diverge from a terminal opened directly on the server: ssh2's `shell()` defaults `$TERM` to `vt100` (under which 256-color menus, box-drawing, and prompts render wrong), and SSH Lite forwarded none of the client's locale variables (so the remote fell back to `C`/`POSIX` and UTF-8 glyphs from powerline / nerd fonts broke). The trigger was a request to support **fzf-tab** (a zsh tab-completion plugin) — which needs no extension code, only a correct PTY. This release makes the terminal advertise a real terminal type and forward locale the way a native `ssh` session does, so fzf-tab, powerlevel10k, starship, vim, tmux, htop, lazygit, and the rest render as they do natively.
+
+This is **not** extension-side autocomplete (intercepting TAB and querying the server per keystroke) — that would mean automatic server commands plus polling, a LITE violation. The remote shell's own completion (and fzf-tab) already cover it over the faithful PTY.
+
+### Changes
+
+- **`$TERM` is now `xterm-256color`** (was ssh2's `vt100` default) for every SSH terminal, enabling 256-color rendering for TUI apps and shell plugins. Configurable via the new `sshLite.terminal.termType` setting (use `vt100` only for very old servers lacking that terminfo entry).
+- **Locale + color forwarding** mirroring OpenSSH's default `SendEnv LANG LC_*`: new terminals forward the client's `LANG`, `LC_*`, and `COLORTERM` so UTF-8 glyphs and colors match a native session. Gated by `sshLite.terminal.forwardEnv` (default on) and extendable via `sshLite.terminal.env` (e.g. `{ "COLORTERM": "truecolor" }`). Only values that exist locally are forwarded (never a fabricated locale, which would trigger remote `setlocale` warnings). **Server-gated**: the remote `sshd` must allow them via `AcceptEnv` (most distributions allow `LANG LC_*` by default); if rejected, the request is silently ignored and the server keeps its default.
+- **Applied once when the channel opens** — no polling, no extra server commands. A bare interactive shell keeps the previous behaviour, so the change is backward-compatible (the chaos suite and any non-terminal caller are unchanged).
+
+### Implementation
+
+- `SSHConnection.shell(pty?, opts?)` now forwards to ssh2 `client.shell(pty, opts, cb)`; a bare `shell()` keeps the old `vt100` path.
+- `CommandGuard.openShell(connection, pty?, opts?)` threads the options through the channel-guarded terminal paths (`openTerminal` / `openTerminalHere`).
+- `TerminalService` gained `getTermType()` and `buildShellEnv()`; `createTerminal` applies them on the direct paths (`FileService`, `ServerMonitorService`).
+- 3 new settings under `sshLite.terminal.*`. No new commands (count unchanged at 108).
+
+### Out of reach (documented, not bugs)
+
+- **OSC 52 clipboard** (remote app → local clipboard): VS Code does not yet implement it (upstream microsoft/vscode#210302).
+- **Some `Alt`/`Meta` and chord keys**: intercepted by VS Code; tune `terminal.integrated.sendKeybindingsToShell` / `commandsToSkipShell`.
+- **24-bit truecolor**: needs `COLORTERM` forwarded **and** a remote app that opts in (e.g. vim `set termguicolors`), and the server allowing `COLORTERM` via `AcceptEnv`.
+
+### Verification
+
+Unit tests cover `shell()` forwarding + backward-compat, `openShell` forwarding, and `getTermType` / `buildShellEnv` (forward on/off, user-override merge, PTY applied on `createTerminal`). Reproduced on a real docker SSH server with the project's own `ssh2`: native-parity request yields `TERM=xterm-256color` and (with `AcceptEnv` on) `LANG=en_US.UTF-8` / `COLORTERM=truecolor`; bare `shell()` still yields `TERM=vt100`; without `AcceptEnv`, forwarded env is silently dropped.
+
 ## v0.9.1 - Support coder "liveliness" upgrade: AI / terminal / cross-window reactions, name labels, cursor-follow, idle drowsiness, and temp-dir housekeeping
 
 ### Why
