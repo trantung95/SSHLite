@@ -5,6 +5,18 @@ Add new entries as bugs are found, mistakes are made, or better approaches are d
 
 ---
 
+## 2026-06-05 - SSHConnection log tests were host-dependent (real `fs`); and "broken lock" was really a stale `node_modules`
+
+**Context**: after a fresh `npm install` let the unit suite run, 3 `SSHConnection.logs.test.ts` tests failed (`auth-methods`, `error`, `close` all saw 0 logs). Misdiagnosed twice before finding root cause. Reusable gotchas:
+
+- **`buildAuthConfig()` throws `"No authentication method available"` when there's no key + no agent + no password — and `fs` is NOT mocked in these tests.** So on a machine with no default `~/.ssh/id_rsa|id_ed25519|id_ecdsa`, the no-credential path collects nothing, throws at the empty-check *before* setting `tryKeyboard`, and `connect()` rejects — so `auth-methods` never logs and the `error`/`close` handlers (registered later in `connect()`) never exist. The tests passed or failed **by accident of the host's `~/.ssh`**. Fix: mock `CredentialService.getOrPrompt` to resolve a password so an auth method always exists, independent of the host. Anything that calls `connect()`/`buildAuthConfig()` in a unit test must provide an auth method or mock `fs`.
+
+- **Don't assume a fixed microtask-tick count to observe async effects.** The old `await Promise.resolve()` ×2 assumed `buildAuthConfig()` resolved within 2 ticks; that's brittle (the auth path can gain awaits). Poll the observable effect instead — a `flushUntil(cond, maxTicks)` helper that yields microtasks until the log appears / handler is registered. NOTE: polling only works once the awaited call actually resolves — if it *throws* (as above), no amount of flushing helps, which is the tell that the cause is logical, not timing.
+
+- **A lockfile that "looks broken" is usually a stale `node_modules`, not a bad lock.** Symptom was "`@swc/jest` not found" → I assumed `package-lock.json` was missing devDeps. It wasn't: the committed lock (v3) already listed them; `node_modules` was just physically incomplete (interrupted install). Test of truth: **`npm ci`** — it errors if the lock is out of sync with `package.json`, and succeeds (without modifying the lock) if the lock is sound. `npm install` can rewrite the lock cosmetically (re-resolving patch versions) even when it's fine, so an `M package-lock.json` after `npm install` is NOT evidence the lock was broken. Use `npm ci` to repair `node_modules`; revert opportunistic `npm install` lock churn.
+
+---
+
 ## 2026-06-05 - Docker test server identity is asserted in 3 files; `test:docker` removes containers on exit; verifying a remote shell prompt on Windows hits Git-Bash path mangling
 
 **Context**: renamed the 3 basic test-server hostnames to production-style (`hybr8-prod-web-01` / `-api-01` / `-db-01`) and layered a rich seed tree (`test-docker/seed-showcase.sh`, run from `Dockerfile.sshd` via a `SERVER_FLAVOR` build arg) for screenshots + richer tests. Reusable gotchas:
