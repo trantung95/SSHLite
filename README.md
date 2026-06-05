@@ -70,19 +70,18 @@ Two edge cases worth knowing:
 
 ## Release Notes
 
+**0.9.3** - **The coder types what you type into AI**: AI input hooks make the Support-view pixel coder fly the actual words you send to your AI assistants - plus a settings gear and crisper key popups.
+
+- **AI input hooks (auto-set-up)** - the first time you open the Support view, SSH Lite adds a tiny *prompt-submit* hook to the AI tools you already have (Claude Code, Codex, Gemini, Cursor, Copilot), so when you send a prompt the coder flies the real characters you typed. Manage or remove it from the gear ⚙ panel; turn auto-setup off with `sshLite.npcAutoSetupHooks`.
+- **Safe by construction** - hooks are written to each tool's own config with an append-only merge (your existing config and hooks are preserved), a backup, and atomic writes; a config it can't safely parse is left untouched. Nothing leaves your machine - the hook just nudges a tiny local file SSH Lite watches, so it never reads your AI transcripts.
+- **Heads-up on the Claude Code VS Code extension** - it doesn't run hooks (an Anthropic limitation); hooks fire for Claude Code in a terminal, the Codex/Gemini CLIs, Cursor, and Copilot. The coder still reacts to the Claude extension when it produces output.
+- **Settings gear + livelier coder** - a ⚙ button opens a settings panel (react-to-other-windows + hook controls); the coder flies the exact characters you type (Tab/Ctrl/Alt included in-panel), wakes when the window regains focus, and occasionally glances to the side.
+
 **0.9.2** - **Terminal that feels native**: SSH Lite terminals now run remote shell plugins and TUI apps with the same colors and glyphs you'd get opening a terminal directly on the server.
 
 - **fzf-tab and friends just work** - the terminal advertises `xterm-256color` (instead of the bare `vt100` default), so fuzzy tab-completion (fzf-tab), prompts (powerlevel10k, starship), and full-screen apps (vim, tmux, htop, lazygit, ranger) render in full color with correct box-drawing.
 - **Locale forwarded like real `ssh`** - your `LANG` / `LC_*` and `COLORTERM` are sent to new terminals (mirroring OpenSSH's `SendEnv`), so UTF-8 powerline / nerd-font glyphs show correctly. The remote server must allow them via `AcceptEnv` (most do by default).
 - **Configurable, backward-compatible, LITE** - tune `sshLite.terminal.termType`, `sshLite.terminal.forwardEnv`, and `sshLite.terminal.env`; applied once when the terminal opens (no polling, no extra server commands). This is native shell completion, not an extension keylogger - SSH Lite never intercepts your keystrokes.
-
-**0.9.1** - **The Support coder comes alive**: the pixel-art coder in the "Support SSH Lite" panel now reacts when your AI assistants, terminals, and other VS Code windows are busy, shows who is working (you and your AI assistants by name), follows your cursor, and dozes off when idle; plus automatic cleanup of leftover diff temp files.
-
-- **Reacts to your AI assistants** - when Claude Code, Codex, Gemini, Cursor, Aider, Cline, Roo Code, Kilo Code, Continue, or Copilot Chat is working, the coder reacts and floats that tool's name as a label; several busy tools show several labels, each fading about two seconds after it goes quiet. It only watches the on-disk transcript files those tools write (activity signal, never the content), and only while the panel is open.
-- **Reacts to terminals and other windows** - typing or output in an SSH Lite terminal makes the coder type along, and when another VS Code window on the same machine is active the coder pulses too (via a tiny shared timestamp file, no keystrokes or paths).
-- **Eyes follow your cursor, dozes when idle** - the coder's eyes track your mouse over the panel and recentre when it leaves; after about 15 seconds of no activity it closes its eyes and breathes slowly, waking instantly on any activity. Pure canvas effect, respects reduced-motion.
-- **Automatic temp cleanup** - leftover `sshlite-diff-*` folders from "Diff with Local" are now removed when the diff tab closes, with a safety-net sweep for anything older than `sshLite.diffTempRetentionHours` (default 24).
-- **Privacy by design** - a sandboxed extension cannot see keystrokes in other windows, terminals it did not open, or the OS without a native keylogger, which SSH Lite will never ship. All new signals are event-driven file-change watches with no content, gated to when the panel is visible, and toggleable via `sshLite.npcAiActivity` and `sshLite.npcCrossWindowBeacon`.
 
 [Full changelog](https://github.com/trantung95/SSHLite/blob/master/.adn/CHANGELOG.md)
 

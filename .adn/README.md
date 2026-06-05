@@ -33,7 +33,8 @@ The `.adn/` folder allows any AI assistant (or new developer) to fully understan
     terminal-port-forwarding.md          # TerminalService, PortForwardService
     tree-providers.md                    # HostTreeProvider, FileTreeProvider, decorations
     activity-audit.md                    # ActivityService, AuditService, CommandGuard
-    support-view.md                      # SupportViewProvider WebviewView (promo + links)
+    support-view.md                      # SupportViewProvider WebviewView (promo + links + NPC)
+    ai-hooks.md                          # AI input hooks: NPC flies your prompt (HookInstaller/HookBeacon)
   flow/
     extension-activation.md              # Startup sequence, init order, wiring
     file-save-flow.md                    # Ctrl+S -> debounce -> upload -> badge

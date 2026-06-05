@@ -19,7 +19,9 @@ import { CreateWatcher } from './BeaconService';
  * transcript contents. Watchers attach only while the setting is on AND the
  * Support view is visible, skip non-existent base directories, use the narrowest
  * root that still catches the file (never `${HOME}` with `**`), and are disposed
- * on hide / disable / deactivate.
+ * on hide / disable / deactivate. (For the richer, prompt-text reaction the user
+ * can install per-tool hooks — see HookInstallerService / HookBeaconService —
+ * which push events to a tiny beacon instead of us reading transcripts.)
  *
  * Granularity is per turn / per tool-call (the chat input is a webview — typed
  * characters aren't written to disk until submit), not per keystroke.

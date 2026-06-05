@@ -7,12 +7,19 @@
 // @author hybr8
 //
 // Contract with the extension (SupportViewProvider.handleMessage):
-//   { type: 'action', cmd }            -> sshLite.<cmd>
-//   { type: 'log', level, scope, ... }  -> infoLog/diagLog (via log.ts)
-//   { type: 'webviewError', message }   -> infoLog('support-view','webview-error')
+//   { type: 'action', cmd }                  -> sshLite.<cmd>
+//   { type: 'setSetting', key, value }       -> workspace setting update (allow-listed)
+//   { type: 'installHooks' | 'uninstallHooks'} -> add/remove AI prompt hooks
+//   { type: 'ready' }                        -> ask the extension to echo settings + hook status
+//   { type: 'log', level, scope, ... }        -> infoLog/diagLog (via log.ts)
+//   { type: 'webviewError', message }         -> infoLog('support-view','webview-error')
 // Extension -> webview:
-//   { type: 'typed', src }              -> the coder taps a hand (activity)
-//   { type: 'aiActive', id, name }      -> float an AI assistant's name label
+//   { type: 'typed', src, text? }            -> the coder taps a hand; `text` (editor
+//                                               insertions) flies the actual key(s) typed
+//   { type: 'aiActive', id, name, prompt? }  -> float an AI assistant's name label; if `prompt`
+//                                               is present (hooks installed) fly the typed text
+//   { type: 'settings', npcAiActivity, npcCrossWindowBeacon } -> reflect the panel toggles
+//   { type: 'hookStatus', tools, message? }  -> render the AI-hook install state
 //
 // Clicking the coder recolours a part (shirt / coffee mug / glasses), handled
 // locally here (no link, no message). A zoom control sets an independent pixel
@@ -22,17 +29,18 @@ import { info, getVsCodeApi } from './log';
 
 const vscode = getVsCodeApi();
 
-// Persisted webview state (zoom + popup rate). VS Code keeps this across webview
-// reloads, so the settings are remembered.
+// Persisted webview state (zoom + settings-panel open). VS Code keeps this across
+// webview reloads, so the zoom level and panel state are remembered.
+type PersistState = { zoom?: number; settingsOpen?: boolean };
 const stateApi = vscode as unknown as { getState?: () => unknown; setState?: (s: unknown) => void };
-function getState(): { zoom?: number; rate?: number } {
+function getState(): PersistState {
   try {
-    return (stateApi.getState && (stateApi.getState() as { zoom?: number; rate?: number })) || {};
+    return (stateApi.getState && (stateApi.getState() as PersistState)) || {};
   } catch (e) {
     return {};
   }
 }
-function patchState(patch: { zoom?: number; rate?: number }): void {
+function patchState(patch: PersistState): void {
   try {
     if (stateApi.setState) {
       stateApi.setState({ ...getState(), ...patch });
@@ -123,23 +131,12 @@ let lastTypeAt = -10000;
 // pops up as a little keycap around the keyboard, in a random colour, then fades
 // and floats up; clicking it dismisses it. Rendered as real DOM elements (crisp
 // text) rather than on the pixelated canvas.
-const POPUP_KEYS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789{}();=>'.split('');
 const POPUP_WORDS = ['const', 'let', 'async', 'await', 'ssh', 'sftp', 'git', 'npm', 'grep', 'vim', 'sudo', 'build', 'push', 'pull', 'diff', 'code', 'LITE', 'run'];
-let lastPopupAt = -10000;
 let promoCanvasEl: HTMLCanvasElement | null = null;
-// Max popups per minute (0 = every key spawns one). Editable + persisted.
-let popupRate = ((): number => {
-  const r = getState().rate;
-  return typeof r === 'number' && r >= 0 ? Math.floor(r) : 0;
-})();
 
+// Every activity pulse spawns a popup; the extension already throttles its
+// pulses per source (30ms user / 150ms server + AI), so no extra rate limit here.
 function spawnPopup(text: string): void {
-  const t = performance.now();
-  const minInterval = popupRate > 0 ? 60000 / popupRate : 0;
-  if (t - lastPopupAt < minInterval) {
-    return; // throttle to popupRate per minute (0 = no throttle)
-  }
-  lastPopupAt = t;
   const canvas = promoCanvasEl;
   const parent = canvas && canvas.parentElement;
   if (!canvas || !parent) {
@@ -167,16 +164,67 @@ function spawnPopup(text: string): void {
   window.setTimeout(remove, 1000); // safety net if animationend does not fire
 }
 
+// Labels for non-character keys (ev.key is a multi-char name for these) so EVERY
+// key on the keyboard shows a readable keycap, not a random word. Covers the
+// standard KeyboardEvent.key set; anything not listed falls back to its name.
+const KEY_LABELS: Record<string, string> = {
+  // whitespace / common edit
+  ' ': 'Space', Tab: 'Tab', Enter: 'Enter', Escape: 'Esc', Backspace: 'Bksp',
+  Delete: 'Del', Insert: 'Ins', Clear: 'Clr',
+  // modifiers / locks
+  Control: 'Ctrl', Alt: 'Alt', AltGraph: 'AltGr', Shift: 'Shift', Meta: 'Cmd',
+  CapsLock: 'Caps', NumLock: 'Num', ScrollLock: 'Scroll', Fn: 'Fn', FnLock: 'FnLk',
+  Super: 'Super', Hyper: 'Hyper',
+  // navigation
+  ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+  Home: 'Home', End: 'End', PageUp: 'PgUp', PageDown: 'PgDn',
+  // system / UI
+  ContextMenu: 'Menu', Pause: 'Pause', PrintScreen: 'PrtSc', Help: 'Help',
+  Cancel: 'Cancel', Select: 'Sel', Execute: 'Exec',
+  // editing intents (some keyboards emit these)
+  Copy: 'Copy', Cut: 'Cut', Paste: 'Paste', Undo: 'Undo', Redo: 'Redo', Again: 'Again',
+  // numpad named keys
+  Decimal: '.', Add: '+', Subtract: '-', Multiply: '*', Divide: '/', Separator: ',',
+  // misc
+  Dead: '◌', Unidentified: '?', Process: 'IME', Compose: 'Comp',
+};
+function keyLabel(key: string): string {
+  if (KEY_LABELS[key]) {
+    return KEY_LABELS[key];
+  }
+  if (key.length === 1) {
+    return key.toUpperCase(); // letter / digit / punctuation / shifted symbol
+  }
+  if (/^F\d{1,2}$/.test(key)) {
+    return key; // F1..F20
+  }
+  // Any other named key (media keys, launch apps, IME names, …): show its name,
+  // capped so a very long value still fits the keycap.
+  return key.length > 8 ? key.slice(0, 8) : key;
+}
+
+// When the actual key is known (the webview's own keydown), fly THAT key —
+// including non-character keys like Tab / Ctrl / Alt (mapped via keyLabel). When
+// it isn't (the extension's `typed` pulses can't see which key), fly a random
+// word — never a random single key.
 function registerKey(key?: string): void {
   lastTypeAt = performance.now();
-  let text: string;
-  if (Math.random() < 0.4) {
-    text = POPUP_WORDS[Math.floor(Math.random() * POPUP_WORDS.length)]; // sometimes a word
-  } else {
-    const useReal = !!key && key.length === 1 && key !== ' ';
-    text = useReal ? (key as string).toUpperCase() : POPUP_KEYS[Math.floor(Math.random() * POPUP_KEYS.length)];
-  }
+  const text = key ? keyLabel(key) : POPUP_WORDS[Math.floor(Math.random() * POPUP_WORDS.length)];
   spawnPopup(text);
+}
+
+// Fly the user's ACTUAL prompt text (pushed by an installed AI hook): a short
+// staggered burst of the real characters, capped so a long prompt isn't a flood.
+function flyPromptText(text: string): void {
+  lastTypeAt = performance.now();
+  const chars = text.replace(/\s+/g, '').slice(0, 10).split('');
+  if (chars.length === 0) {
+    registerKey();
+    return;
+  }
+  chars.forEach((c, i) => {
+    window.setTimeout(() => spawnPopup(c.toUpperCase()), i * 70);
+  });
 }
 
 // ----------------------------------------------------------------------------
@@ -267,12 +315,19 @@ function sweepAiLabels(): void {
 window.setInterval(sweepAiLabels, 1000);
 
 window.addEventListener('message', (ev: MessageEvent) => {
-  const m = ev.data as { type?: string; src?: string; id?: string; name?: string; user?: string } | undefined;
+  const m = ev.data as { type?: string; src?: string; id?: string; name?: string; user?: string; prompt?: string; text?: string } | undefined;
   if (!m) {
     return;
   }
   if (m.type === 'typed') {
-    registerKey(); // editor/terminal/window activity: key unknown, use a random key or word
+    // Editor edits carry the inserted text → fly the ACTUAL characters typed.
+    // Sources without text (cursor move, deletion, terminal, window focus) → a
+    // random word.
+    if (typeof m.text === 'string' && m.text) {
+      flyPromptText(m.text);
+    } else {
+      registerKey();
+    }
     // Local-user activity (editing or typing in our own terminal) floats a
     // "you" label, mirroring the AI name labels.
     if ((m.src === 'editor' || m.src === 'terminal-in') && typeof m.user === 'string' && m.user) {
@@ -280,45 +335,202 @@ window.addEventListener('message', (ev: MessageEvent) => {
     }
   } else if (m.type === 'aiActive' && typeof m.id === 'string' && typeof m.name === 'string') {
     showAiLabel(m.id, m.name);
+    // Hooks installed: the AI tool pushed the actual prompt — fly the real text.
+    // Otherwise just a pulse from the transcript watcher → a random word.
+    if (typeof m.prompt === 'string' && m.prompt) {
+      flyPromptText(m.prompt);
+    } else {
+      registerKey();
+    }
     lastTypeAt = performance.now(); // an active AI keeps the NPC awake
   }
 });
 window.addEventListener('keydown', (ev: KeyboardEvent) => {
   const tgt = ev.target as HTMLElement | null;
-  if (tgt && tgt.tagName === 'INPUT') {
-    return; // typing in the rate field should not spawn popups
+  if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA')) {
+    return; // typing inside a form field should not spawn popups
   }
   registerKey(ev.key);
 });
 
-// Rate input: edit how many key popups appear per minute (0 = every key).
-// Auto-saves on change; rejects negative / invalid input.
-function setupRate(): void {
-  const input = document.getElementById('rateInput') as HTMLInputElement | null;
-  if (!input) {
-    return;
+// Grab keyboard focus when the user clicks a non-interactive area (the coder /
+// canvas). Without this, clicking the panel leaves focus elsewhere and the
+// keydown listener never fires — so modifier keys (Ctrl/Alt/Shift/CapsLock) and
+// the rest only show once the panel actually holds keyboard focus.
+window.addEventListener('pointerdown', (ev: PointerEvent) => {
+  const tgt = ev.target as HTMLElement | null;
+  if (tgt && tgt.closest('button, input, a, textarea, select')) {
+    return; // let interactive controls keep their own focus
   }
-  input.value = String(popupRate);
-  const commit = (): void => {
-    const raw = input.value;
-    if (raw === '') {
-      return; // mid-edit, wait for a value
+  const container = document.querySelector('.support-container') as HTMLElement | null;
+  if (container) {
+    try {
+      container.focus({ preventScroll: true });
+    } catch (e) {
+      container.focus();
     }
-    const v = parseInt(raw, 10);
-    if (isNaN(v) || v < 0) {
-      input.value = String(popupRate); // reject negative / invalid
+  }
+});
+
+// A mouse click anywhere in the panel pops a "Click" keycap (clicking a popup
+// itself just dismisses it — its handler stops propagation, so it won't reach here).
+window.addEventListener('click', () => {
+  lastTypeAt = performance.now();
+  spawnPopup('Click');
+});
+
+// Scrolling pops a "Scroll" keycap. Wheel events fire many times per scroll, so
+// throttle; Ctrl+wheel is the zoom gesture (handled on the canvas), so skip it.
+let lastScrollPopupAt = -10000;
+window.addEventListener(
+  'wheel',
+  (ev: WheelEvent) => {
+    if (ev.ctrlKey) {
       return;
     }
-    popupRate = v;
-    patchState({ rate: popupRate });
+    const t = performance.now();
+    if (t - lastScrollPopupAt < 250) {
+      return;
+    }
+    lastScrollPopupAt = t;
+    lastTypeAt = performance.now();
+    spawnPopup('Scroll');
+  },
+  { passive: true }
+);
+
+// Settings panel: the gear button expands/collapses a panel with the NPC's
+// reaction toggles and the AI-hook install controls. The extension owns the
+// truth; we render optimistically and reconcile from `settings` / `hookStatus`.
+interface HookToolState {
+  id: string;
+  name: string;
+  present: boolean;
+  installed: boolean;
+  configPath?: string;
+}
+
+function setupSettingsPanel(): void {
+  const gear = document.getElementById('settingsToggle');
+  const panel = document.getElementById('npcSettings');
+  if (!gear || !panel) {
+    return;
+  }
+
+  let expanded = getState().settingsOpen === true;
+  const renderPanel = (): void => {
+    panel.classList.toggle('collapsed', !expanded);
+    gear.setAttribute('aria-expanded', String(expanded));
   };
-  input.addEventListener('input', commit);
-  input.addEventListener('change', commit);
-  input.addEventListener('blur', () => {
-    if (input.value === '') {
-      input.value = String(popupRate);
+  renderPanel();
+  gear.addEventListener('click', () => {
+    expanded = !expanded;
+    patchState({ settingsOpen: expanded });
+    renderPanel();
+    if (expanded) {
+      vscode.postMessage({ type: 'ready' }); // refresh settings + hook status on open
     }
   });
+
+  const setChecked = (id: string, on: boolean): void => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    if (el) {
+      el.checked = on;
+    }
+  };
+  const wireCheck = (id: string, key: string): void => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    if (!el) {
+      return;
+    }
+    el.addEventListener('change', () => {
+      vscode.postMessage({ type: 'setSetting', key, value: el.checked });
+    });
+  };
+  wireCheck('setCrossWindow', 'npcCrossWindowBeacon');
+
+  const installBtn = document.getElementById('installHooks') as HTMLButtonElement | null;
+  const uninstallBtn = document.getElementById('uninstallHooks') as HTMLButtonElement | null;
+  const setBusy = (busy: boolean): void => {
+    if (installBtn) {
+      installBtn.disabled = busy;
+    }
+    if (uninstallBtn) {
+      uninstallBtn.disabled = busy;
+    }
+  };
+  installBtn?.addEventListener('click', () => {
+    setBusy(true);
+    info('support-webview', 'hooks-install-click', {});
+    vscode.postMessage({ type: 'installHooks' });
+  });
+  uninstallBtn?.addEventListener('click', () => {
+    setBusy(true);
+    info('support-webview', 'hooks-uninstall-click', {});
+    vscode.postMessage({ type: 'uninstallHooks' });
+  });
+
+  const renderHookStatus = (tools: HookToolState[], message?: string): void => {
+    setBusy(false);
+    const list = document.getElementById('hookList');
+    if (list) {
+      list.textContent = '';
+      // Only show AI tools actually detected on this machine (present home dir);
+      // we never offer to write configs for tools the user doesn't have.
+      const available = tools.filter((t) => t.present);
+      if (available.length === 0) {
+        const row = document.createElement('div');
+        row.className = 'npc-hook-item';
+        row.textContent = 'No supported AI tools detected.';
+        list.appendChild(row);
+      } else {
+        available.forEach((t) => {
+          const row = document.createElement('div');
+          row.className = 'npc-hook-item';
+          const dot = document.createElement('span');
+          dot.className = 'npc-hook-dot';
+          dot.textContent = t.installed ? '✓' : '•';
+          dot.style.color = t.installed
+            ? 'var(--vscode-testing-iconPassed, #3fb950)'
+            : 'var(--vscode-descriptionForeground)';
+          const label = document.createElement('span');
+          label.textContent = t.name + (t.installed ? ' — on' : '');
+          row.appendChild(dot);
+          row.appendChild(label);
+          list.appendChild(row);
+          // When installed, show the hook config file path in dim text.
+          if (t.installed && t.configPath) {
+            const path = document.createElement('div');
+            path.className = 'npc-hook-path';
+            path.textContent = t.configPath;
+            path.title = t.configPath;
+            list.appendChild(path);
+          }
+        });
+      }
+    }
+    const msg = document.getElementById('hookMsg');
+    if (msg) {
+      msg.textContent = message || '';
+    }
+  };
+
+  window.addEventListener('message', (ev: MessageEvent) => {
+    const m = ev.data as
+      | { type?: string; npcAiActivity?: boolean; npcCrossWindowBeacon?: boolean; tools?: HookToolState[]; message?: string }
+      | undefined;
+    if (!m) {
+      return;
+    }
+    if (m.type === 'settings') {
+      setChecked('setCrossWindow', !!m.npcCrossWindowBeacon);
+    } else if (m.type === 'hookStatus' && Array.isArray(m.tools)) {
+      renderHookStatus(m.tools, m.message);
+    }
+  });
+
+  // Ask the extension for current settings + hook status so the panel starts synced.
+  vscode.postMessage({ type: 'ready' });
 }
 
 // ----------------------------------------------------------------------------
@@ -399,6 +611,18 @@ function startPromo(): void {
   let pupilDX = 0;
   let pupilDY = 0;
   let lastMoveAt = -10000;
+  // Idle glance: when the mouse isn't driving the pupils, occasionally dart the
+  // eyes in a RANDOM direction for ~1.5s, then back to centre ("liếc mắt").
+  let glanceUntil = -10000;
+  let nextGlanceAt = 4000;
+  let glanceDX = 0;
+  let glanceDY = 0;
+  // Eye-white slack is wider than tall, so X spans ±2, Y spans ±1. Exclude (0,0).
+  const GLANCE_DIRS = [
+    [-2, 0], [2, 0], [0, -1], [0, 1],
+    [-2, -1], [2, -1], [-2, 1], [2, 1],
+    [-1, -1], [1, 1], [-1, 1], [1, -1],
+  ];
   canvas.addEventListener('mousemove', (ev: MouseEvent) => {
     const rect = canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) {
@@ -511,9 +735,19 @@ function startPromo(): void {
     px(83, 33 + hy, 8, 1, C.hairLine);
     px(69, 35 + hy, 8, 4, C.white);
     px(83, 35 + hy, 8, 4, C.white);
-    // Pupils track the cursor (clamped) while the mouse is over the panel.
-    const pdx = Math.round(pupilDX);
-    const pdy = Math.round(pupilDY);
+    // Pupils track the cursor (clamped) while the mouse is over the panel; when it
+    // isn't, an occasional idle side-glance moves them instead.
+    const mouseActive = now - lastMoveAt < 900;
+    if (animate && !mouseActive && now >= nextGlanceAt) {
+      const d = GLANCE_DIRS[Math.floor(Math.random() * GLANCE_DIRS.length)];
+      glanceDX = d[0];
+      glanceDY = d[1];
+      glanceUntil = now + 1400 + Math.random() * 1100;
+      nextGlanceAt = glanceUntil + 5000 + Math.random() * 7000;
+    }
+    const glancing = animate && !mouseActive && now < glanceUntil;
+    const pdx = Math.round(mouseActive ? pupilDX : glancing ? glanceDX : 0);
+    const pdy = Math.round(mouseActive ? pupilDY : glancing ? glanceDY : 0);
     px(72 + pdx, 35 + hy + pdy, 3, 4, C.pupil);
     px(85 + pdx, 35 + hy + pdy, 3, 4, C.pupil);
 
@@ -657,4 +891,4 @@ function startPromo(): void {
 
 info('support-webview', 'ready', {});
 startPromo();
-setupRate();
+setupSettingsPanel();

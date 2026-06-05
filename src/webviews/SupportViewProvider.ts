@@ -10,14 +10,38 @@ import { infoLog, diagLog } from '../utils/diagnosticLog';
  */
 type SupportMessage =
   | { type: 'action'; cmd?: unknown }
+  | { type: 'setSetting'; key?: unknown; value?: unknown }
+  | { type: 'installHooks' }
+  | { type: 'uninstallHooks' }
+  | { type: 'ready' }
   | { type: 'log'; level?: unknown; scope?: unknown; event?: unknown; payload?: unknown }
   | { type: 'webviewError'; message?: unknown; stack?: unknown };
+
+/** A single AI tool's hook state, shown in the webview's settings panel. */
+export interface HookToolState {
+  id: string;
+  name: string;
+  present: boolean;
+  installed: boolean;
+  /** Home-shortened hook config path (shown dim under installed tools). */
+  configPath?: string;
+}
+
+/**
+ * Controls AI-hook install/remove for the settings panel. HookInstallerService
+ * satisfies this structurally; injected so the provider stays decoupled.
+ */
+export interface HookController {
+  status(): HookToolState[];
+  installAll(): Array<{ id: string; ok: boolean; reason?: string }>;
+  uninstallAll(): Array<{ id: string; ok: boolean; reason?: string }>;
+}
 
 /**
  * Source of a typing pulse, forwarded to the webview so it can flavour the
  * popup. `ai:<id>` is used for AI-assistant file activity.
  */
-export type TypedSource = 'editor' | 'terminal-in' | 'terminal-out' | 'beacon' | `ai:${string}`;
+export type TypedSource = 'editor' | 'terminal-in' | 'terminal-out' | 'beacon' | 'window' | `ai:${string}`;
 
 /**
  * SupportViewProvider — the extension's first WebviewView (note: View, not
@@ -45,6 +69,12 @@ export class SupportViewProvider implements vscode.WebviewViewProvider {
     'rateMarketplace',
     'shareExtension',
   ]);
+
+  /** Allowlist of settings the webview's settings panel may flip (boolean only). */
+  private static readonly SETTING_KEYS = new Set(['npcAiActivity', 'npcCrossWindowBeacon']);
+
+  /** Injected AI-hook controller (set by extension.ts); undefined → hooks UI disabled. */
+  private hookController: HookController | undefined;
 
   private readonly disposables: vscode.Disposable[] = [];
 
@@ -139,7 +169,7 @@ export class SupportViewProvider implements vscode.WebviewViewProvider {
    * only posts when the view is actually visible (collapsed → no work), and
    * coalesces bursts so a paste / multi-cursor edit is one tap, not hundreds.
    */
-  public notifyTyped(src: TypedSource = 'editor'): void {
+  public notifyTyped(src: TypedSource = 'editor', text?: string): void {
     const view = this.view;
     if (!view || !view.visible) {
       return;
@@ -155,19 +185,33 @@ export class SupportViewProvider implements vscode.WebviewViewProvider {
     }
     this.lastNotifyBySrc.set(src, now);
     this.lastTypeNotify = now;
-    // `user` lets the webview show a "you are working" label (mirrors the AI
-    // name labels) when the source is the local user (editor / own terminal).
-    void view.webview.postMessage({ type: 'typed', src, user: this.userName });
-    diagLog('support-view', 'typed', { src });
+    // `text` is the actual inserted characters (editor document change) so the
+    // coder can fly the real key(s) the user typed; bounded so a paste isn't huge.
+    // `user` lets the webview show a "you are working" label when the source is
+    // the local user (editor / own terminal).
+    const snippet = typeof text === 'string' && text ? text.slice(0, 24) : undefined;
+    void view.webview.postMessage(
+      snippet
+        ? { type: 'typed', src, user: this.userName, text: snippet }
+        : { type: 'typed', src, user: this.userName }
+    );
+    diagLog('support-view', 'typed', { src, hasText: !!snippet });
+  }
+
+  /** Wire the AI-hook controller (install/remove/status). */
+  public setHookController(controller: HookController): void {
+    this.hookController = controller;
   }
 
   /**
    * Tell the webview an AI coding assistant is currently active so it can show a
    * floating name label around the NPC. The label is removed by the webview once
-   * no further activity arrives for a few seconds (TTL). Carries only the tool's
-   * id + display name — never any transcript content.
+   * no further activity arrives for a few seconds (TTL). Carries the tool's id +
+   * display name, and — when the user installed prompt hooks — the bounded
+   * `prompt` snippet so the NPC can fly the actual typed text. Never read from a
+   * transcript; the prompt is pushed by the tool's own hook.
    */
-  public notifyAiActive(id: string, name: string): void {
+  public notifyAiActive(id: string, name: string, prompt?: string): void {
     const view = this.view;
     if (!view || !view.visible) {
       return;
@@ -175,13 +219,47 @@ export class SupportViewProvider implements vscode.WebviewViewProvider {
     const now = Date.now();
     const key = `ai:${id}`;
     const last = this.lastNotifyBySrc.get(key) ?? 0;
-    if (now - last < 150) {
+    // A prompt-carrying hook event bypasses the throttle (it is rare and the
+    // real content we most want to show); plain activity pulses stay throttled.
+    if (!prompt && now - last < 150) {
       return;
     }
     this.lastNotifyBySrc.set(key, now);
     this.lastTypeNotify = now;
-    void view.webview.postMessage({ type: 'aiActive', id, name });
-    diagLog('support-view', 'ai-active', { id });
+    void view.webview.postMessage(
+      prompt ? { type: 'aiActive', id, name, prompt } : { type: 'aiActive', id, name }
+    );
+    diagLog('support-view', 'ai-active', { id, hasPrompt: !!prompt });
+  }
+
+  /**
+   * Reflect the NPC settings (`npcAiActivity`, `npcCrossWindowBeacon`) on the
+   * webview's settings-panel toggles. Sent on the `ready` handshake and whenever
+   * a setting changes (panel or Settings UI) so the panel stays in sync.
+   */
+  public postSettings(settings: { npcAiActivity: boolean; npcCrossWindowBeacon: boolean }): void {
+    const view = this.view;
+    if (!view) {
+      return;
+    }
+    void view.webview.postMessage({ type: 'settings', ...settings });
+    diagLog('support-view', 'settings', settings);
+  }
+
+  /** Push the AI-hook install state to the webview's settings panel. */
+  public postHookStatus(message?: string): void {
+    const view = this.view;
+    if (!view || !this.hookController) {
+      return;
+    }
+    let tools: HookToolState[] = [];
+    try {
+      tools = this.hookController.status();
+    } catch (err) {
+      infoLog('support-view', 'hook-status-failed', { error: (err as Error).message });
+    }
+    void view.webview.postMessage({ type: 'hookStatus', tools, message });
+    diagLog('support-view', 'hook-status', { count: tools.length });
   }
 
   /** Dispose provider-level resources (the visibility event emitter). */
@@ -271,6 +349,56 @@ export class SupportViewProvider implements vscode.WebviewViewProvider {
         } else {
           infoLog('support-view', 'action-unknown', { cmd });
         }
+        break;
+      }
+
+      case 'setSetting': {
+        const key = typeof message.key === 'string' ? message.key : '';
+        if (SupportViewProvider.SETTING_KEYS.has(key)) {
+          const value = !!message.value;
+          infoLog('support-view', 'set-setting', { key, value });
+          await vscode.workspace
+            .getConfiguration('sshLite')
+            .update(key, value, vscode.ConfigurationTarget.Global);
+        } else {
+          infoLog('support-view', 'set-setting-unknown', { key });
+        }
+        break;
+      }
+
+      case 'installHooks':
+      case 'uninstallHooks': {
+        if (!this.hookController) {
+          break;
+        }
+        const installing = message.type === 'installHooks';
+        infoLog('support-view', installing ? 'hooks-install' : 'hooks-uninstall', {});
+        let results: Array<{ id: string; ok: boolean; reason?: string }> = [];
+        try {
+          results = installing ? this.hookController.installAll() : this.hookController.uninstallAll();
+        } catch (err) {
+          infoLog('support-view', 'hooks-op-failed', { error: (err as Error).message });
+        }
+        const ok = results.filter((r) => r.ok).length;
+        const failed = results.filter((r) => !r.ok);
+        const verb = installing ? 'Installed' : 'Removed';
+        let summary = results.length === 0 ? 'No AI tools found to set up.' : `${verb} hooks for ${ok} tool(s).`;
+        if (failed.length) {
+          summary += ` ${failed.length} skipped.`;
+        }
+        this.postHookStatus(summary);
+        break;
+      }
+
+      case 'ready': {
+        // Webview just wired its listeners — echo current settings + hook state so
+        // the panel renders correctly.
+        const cfg = vscode.workspace.getConfiguration('sshLite');
+        this.postSettings({
+          npcAiActivity: cfg.get<boolean>('npcAiActivity', true),
+          npcCrossWindowBeacon: cfg.get<boolean>('npcCrossWindowBeacon', true),
+        });
+        this.postHookStatus();
         break;
       }
 

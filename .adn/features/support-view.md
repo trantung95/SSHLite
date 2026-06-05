@@ -132,13 +132,18 @@ derives the shades, then redraws immediately.
 | `{type:'action', cmd}` | run `sshLite.<cmd>` (allowlisted; the 5 link buttons only) |
 | `{type:'log', level, scope, event, payload}` | forward to `infoLog`/`diagLog` (one SSH Lite Output channel) |
 | `{type:'webviewError', message, stack}` | `infoLog('support-view','webview-error', …)` |
+| `{type:'setSetting', key, value}` | flip an **allow-listed** boolean setting (`SETTING_KEYS` = `{npcAiActivity, npcCrossWindowBeacon}`) via `getConfiguration('sshLite').update(key, !!value, Global)`. Sent by the settings-panel checkboxes. Unknown keys are ignored |
+| `{type:'installHooks'｜'uninstallHooks'}` | the panel's "Set up AI hooks" / "Remove" buttons → run `HookInstallerService.installAll()` / `uninstallAll()`, then push an updated `hookStatus` |
+| `{type:'ready'}` | sent once the webview wired its listeners (and on each gear-open) → extension echoes `settings` + `hookStatus` so the panel renders correctly |
 
 **Extension → webview:**
 
 | message | trigger / effect |
 |---------|------------------|
-| `{type:'typed', src}` | sent by `notifyTyped(src)` on any activity pulse → wakes the coder and taps a hand. `src` tags the source: editor / selection / terminal-in / terminal-out / beacon (cross-window) |
-| `{type:'aiActive', id, name}` | a known AI coding assistant went active (a watched transcript file changed) → float that tool's `name` as a label around the coder. `id` keys the per-tool label so repeats refresh the same label's time-to-live |
+| `{type:'typed', src}` | sent by `notifyTyped(src)` on any activity pulse → wakes the coder and taps a hand. `src` tags the source: editor / selection / terminal-in / terminal-out / beacon (cross-window) / window (this window regained OS focus, via `onDidChangeWindowState`, feature-detected) |
+| `{type:'aiActive', id, name, prompt?}` | a known AI coding assistant went active → float that tool's `name` as a label around the coder. `id` keys the per-tool label so repeats refresh the same label's time-to-live. When AI **input hooks** are installed, `prompt` carries the bounded text the user just submitted and the coder flies the actual characters; without hooks `prompt` is absent and a random word flies |
+| `{type:'settings', npcAiActivity, npcCrossWindowBeacon}` | reflect the two settings on the panel checkboxes. Sent on the `ready` handshake and whenever a setting changes (panel or Settings UI) |
+| `{type:'hookStatus', tools, message?}` | per-tool AI-hook state (`{id,name,present,installed}[]`) + an optional status line → render the hooks section |
 
 ## Typing reaction
 
@@ -183,13 +188,39 @@ coding assistant is working, and floats that tool's **name** as a label around t
 coder. It watches the transcript / history files those tools write on disk using
 `vscode.createFileSystemWatcher` (event-driven, **no polling**). On a file-change
 event it calls `supportViewProvider.notifyAiActive(id, name)`, which posts
-`{type:'aiActive', id, name}`; the webview floats the name at a random position.
-Multiple active tools show multiple labels; a label disappears about **2 seconds**
-after the tool goes quiet (a time-to-live keyed by `id`).
+`{type:'aiActive', id, name}`; the webview floats the name at a random position and
+flies a random word. Multiple active tools show multiple labels; a label disappears
+about **2 seconds** after the tool goes quiet (a time-to-live keyed by `id`).
 
 **Reads file-change events only, never file contents.** Watchers attach only while
 the Support view is **visible** AND `sshLite.npcAiActivity` is on, **skip
-non-existent directories**, and are disposed on hide / disable / deactivate.
+non-existent directories**, and are disposed on hide / disable / deactivate. For a
+richer reaction that flies the user's actual prompt text, see **AI input hooks**
+below (and `.adn/features/ai-hooks.md`) — those push the prompt to a beacon instead
+of SSH Lite reading any transcript.
+
+### AI input hooks (`HookInstallerService` + `HookBeaconService`)
+
+The opt-in way to make the coder fly the words the user actually types into an AI
+tool. From the Support view's **gear → settings panel → "Set up AI hooks"**,
+`HookInstallerService` installs a tiny *prompt-submit* hook into each AI tool the
+user has (user-global config). Each tool's hook runs the bundled
+`assets/hooks/npc-beacon.js`, which extracts only the bounded prompt text and
+OVERWRITES one tiny beacon file in globalStorage. `HookBeaconService` watches that
+single file and posts `{type:'aiActive', …, prompt}` so the coder flies the real
+characters. SSH Lite still never reads the AI tools' transcripts.
+
+**Safety (never break the user's config):** parse-or-abort (an unparseable config
+is left untouched), append-only merge (existing keys/hooks preserved), idempotent
+(dedup by the `npc-beacon.js` marker), `<file>.sshlite.bak` backup + atomic
+temp-rename write, presence-gated (only writes where the tool's home dir exists),
+and uninstall removes only our entry (Copilot uses its own dedicated file).
+
+**Coverage (verified schemas):** Claude Code (`~/.claude/settings.json`), Codex
+(`~/.codex/hooks.json`), Gemini (`~/.gemini/settings.json`, `BeforeAgent`), Cursor
+(`~/.cursor/hooks.json`, `beforeSubmitPrompt`), Copilot (`~/.copilot/hooks/ssh-lite-npc.json`).
+Cline is UI-only (script-in-directory + in-app toggle, macOS/Linux only) so it is
+excluded; Aider and Roo Code ship no hooks.
 
 **Watching paths outside the workspace** requires
 `new vscode.RelativePattern(vscode.Uri.file(base), glob)`; a plain string glob only
@@ -267,27 +298,39 @@ when the mouse leaves the panel. This is **panel-only**: a sandboxed extension
 cannot track the cursor in other windows or anywhere in the operating system, so no
 attempt is made. Pure canvas effect.
 
-## Key popups, zoom, and the rate input
+## Key popups, zoom, and the settings gear
 
-- **Key popups** - on each typed pulse, `index.ts` occasionally spawns a small
-  keycap **as a real DOM element** (a `.kpop` div over the `.promo` container),
-  not on the canvas, so the text stays crisp instead of being upscaled by the
-  pixelated canvas. The keycap shows the just-typed key when known (the webview's
-  own `keydown`), otherwise a random key or a random word; it gets a random
-  colour, floats up and fades via CSS (`@keyframes kpop-rise`), removes itself on
-  `animationend`, and dismisses on click.
-- **Popup rate** - a `<input type="number">` on the zoom row sets the max popups
-  per minute. `spawnPopup` throttles to `60000 / rate` ms between popups; **0**
-  means no throttle (every key spawns one). Edited inline (hover shows the
-  tooltip), auto-saved on change via `patchState({rate})`, negatives/invalid
-  rejected. Default is **0**.
+- **Key popups** - on each typed pulse, `index.ts` spawns a small keycap **as a
+  real DOM element** (a `.kpop` div over the `.promo` container), not on the
+  canvas, so the text stays crisp instead of being upscaled by the pixelated
+  canvas. When the **actual characters are known** it flies them: the panel's own
+  `keydown` (EVERY key — letters, digits, and named keys Tab/Ctrl/Alt/F1‑F20/etc.
+  via `keyLabel`), and **editor edits** (the `onDidChangeTextDocument` change carries
+  the inserted text → forwarded as `typed.text`). A **mouse click** pops "Click" and
+  **scroll** pops "Scroll" (throttled; Ctrl+wheel stays the zoom gesture). When the
+  characters aren't known (cursor move, deletion, terminal, window-focus pulse) it
+  flies a **random word** — never a random single key. An AI pulse with an installed
+  hook flies the user's **actual prompt characters** (a short staggered burst via
+  `flyPromptText`, capped at 10). Each keycap gets a random colour, floats
+  up and fades via CSS (`@keyframes kpop-rise`), removes itself on `animationend`,
+  and dismisses on click. **No rate limit** - every pulse spawns one; the extension
+  already throttles its pulses per source (30 ms user / 150 ms server + AI), so
+  flooding is bounded upstream.
+- **Settings gear** - a `#settingsToggle` (⚙) button on the zoom row expands /
+  collapses the `#npcSettings` panel (collapsed by default; open state persisted via
+  `patchState({settingsOpen})`). The panel holds: a **React to other VS Code
+  windows** checkbox (`npcCrossWindowBeacon`) and the **AI input hooks** section
+  (per-tool install state + "Set up AI hooks" / "Remove" buttons). The
+  `npcAiActivity` toggle lives in the VS Code Settings UI, not the panel. The
+  checkbox posts `setSetting`; buttons post `installHooks` / `uninstallHooks`. On
+  open (and load) the webview posts `{type:'ready'}` so the extension echoes
+  `settings` + `hookStatus`.
 - **Zoom** - the same row has buttons (and Ctrl+wheel over the canvas) that set
   the canvas CSS width in pixels. `max-width:100%` caps it at the section width,
   so it is independent of the width-driven scaling but can never exceed the
-  section. Persisted via `patchState({zoom})`. Both zoom and rate share one
-  persisted state object (`getState`/`patchState` over the webview state API).
-- Typing into the rate input is excluded from popup spawning (the global
-  `keydown` handler ignores events whose target is an `INPUT`).
+  section. Persisted via `patchState({zoom})`.
+- Typing inside a form field is excluded from popup spawning (the global `keydown`
+  handler ignores events whose target is an `INPUT`/`TEXTAREA`).
 
 ## CSP (identical to SearchPanel)
 
@@ -344,8 +387,10 @@ The sidebar view resizes on **both axes** — width (drag the sidebar) and heigh
   `createFileSystemWatcher` (no polling), attach **only while the Support view is
   visible** AND the setting is on (`sshLite.npcAiActivity` /
   `sshLite.npcCrossWindowBeacon`, both default on), read **file-change events only,
-  never contents**, and are disposed on hide / disable / deactivate. The cursor-
-  follow and idle-drowsiness effects are pure webview canvas (no extension traffic).
+  never contents**, and are disposed on hide / disable / deactivate. The opt-in AI
+  input hooks (`HookBeaconService`) likewise watch only one tiny beacon file SSH
+  Lite owns — never the AI tools' transcripts. The cursor-follow and idle-drowsiness
+  effects are pure webview canvas (no extension traffic).
 
 ## Tests
 

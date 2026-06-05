@@ -14,7 +14,7 @@
 
 import * as fs from 'fs';
 import { SupportViewProvider } from './SupportViewProvider';
-import { commands, env, createMockWebviewView, Uri } from '../__mocks__/vscode';
+import { commands, env, createMockWebviewView, Uri, workspace, ConfigurationTarget } from '../__mocks__/vscode';
 import { infoLog, diagLog } from '../utils/diagnosticLog';
 
 // Mock at the module-registry level so the provider's own `import * as fs`
@@ -183,6 +183,29 @@ describe('SupportViewProvider', () => {
       expect(view.webview.postMessage).toHaveBeenCalledWith({ type: 'typed', src: 'terminal-in', user: 'You' });
     });
 
+    it('forwards the actual inserted text (bounded) so the coder flies real keys', () => {
+      const provider = makeProvider();
+      const view = createMockWebviewView();
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      (view.webview.postMessage as jest.Mock).mockClear();
+
+      provider.notifyTyped('editor', 'h');
+
+      expect(view.webview.postMessage).toHaveBeenCalledWith({ type: 'typed', src: 'editor', user: 'You', text: 'h' });
+    });
+
+    it('bounds the forwarded text (a big paste is truncated)', () => {
+      const provider = makeProvider();
+      const view = createMockWebviewView();
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      (view.webview.postMessage as jest.Mock).mockClear();
+
+      provider.notifyTyped('editor', 'x'.repeat(500));
+
+      const msg = (view.webview.postMessage as jest.Mock).mock.calls[0][0];
+      expect(msg.text.length).toBe(24);
+    });
+
     it('throttles server output (terminal-out) harder than editor typing', () => {
       const provider = makeProvider();
       const view = createMockWebviewView();
@@ -238,6 +261,22 @@ describe('SupportViewProvider', () => {
       });
     });
 
+    it('forwards the prompt text when an installed hook provides it', () => {
+      const provider = makeProvider();
+      const view = createMockWebviewView();
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      (view.webview.postMessage as jest.Mock).mockClear();
+
+      provider.notifyAiActive('claude-code', 'Claude Code', 'hello world');
+
+      expect(view.webview.postMessage).toHaveBeenCalledWith({
+        type: 'aiActive',
+        id: 'claude-code',
+        name: 'Claude Code',
+        prompt: 'hello world',
+      });
+    });
+
     it('is a no-op when not visible', () => {
       const provider = makeProvider();
       const view = createMockWebviewView();
@@ -248,6 +287,131 @@ describe('SupportViewProvider', () => {
       provider.notifyAiActive('codex', 'Codex');
 
       expect(view.webview.postMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('handleMessage — setSetting (settings panel)', () => {
+    it('updates an allow-listed setting (npcAiActivity) globally', () => {
+      const provider = makeProvider();
+      const view = createMockWebviewView();
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+
+      const update = jest.fn().mockResolvedValue(undefined);
+      jest.spyOn(workspace, 'getConfiguration').mockReturnValue({
+        get: <T>(_k: string, d?: T) => d,
+        update,
+        has: () => false,
+        inspect: () => undefined,
+      } as any);
+
+      view._fireMessage({ type: 'setSetting', key: 'npcAiActivity', value: false });
+
+      expect(update).toHaveBeenCalledWith('npcAiActivity', false, ConfigurationTarget.Global);
+      jest.restoreAllMocks();
+    });
+
+    it('ignores a key that is not on the allow-list', () => {
+      const provider = makeProvider();
+      const view = createMockWebviewView();
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+
+      const update = jest.fn();
+      jest.spyOn(workspace, 'getConfiguration').mockReturnValue({
+        get: <T>(_k: string, d?: T) => d,
+        update,
+        has: () => false,
+        inspect: () => undefined,
+      } as any);
+
+      view._fireMessage({ type: 'setSetting', key: 'someEvilKey', value: true });
+
+      expect(update).not.toHaveBeenCalled();
+      expect(infoLog).toHaveBeenCalledWith('support-view', 'set-setting-unknown', { key: 'someEvilKey' });
+      jest.restoreAllMocks();
+    });
+  });
+
+  describe('handleMessage — ready handshake', () => {
+    it('echoes current settings and hook status', () => {
+      const provider = makeProvider();
+      const view = createMockWebviewView();
+      provider.setHookController({
+        status: () => [{ id: 'claude-code', name: 'Claude Code', present: true, installed: false }],
+        installAll: () => [],
+        uninstallAll: () => [],
+      });
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+
+      jest.spyOn(workspace, 'getConfiguration').mockReturnValue({
+        get: <T>(_k: string, d?: T) => d, // settings default to their fallback
+        update: jest.fn(),
+        has: () => false,
+        inspect: () => undefined,
+      } as any);
+      (view.webview.postMessage as jest.Mock).mockClear();
+
+      view._fireMessage({ type: 'ready' });
+
+      expect(view.webview.postMessage).toHaveBeenCalledWith({
+        type: 'settings',
+        npcAiActivity: true,
+        npcCrossWindowBeacon: true,
+      });
+      expect(view.webview.postMessage).toHaveBeenCalledWith({
+        type: 'hookStatus',
+        tools: [{ id: 'claude-code', name: 'Claude Code', present: true, installed: false }],
+        message: undefined,
+      });
+      jest.restoreAllMocks();
+    });
+  });
+
+  describe('handleMessage — installHooks / uninstallHooks', () => {
+    it('installs via the controller and posts an updated hook status', () => {
+      const provider = makeProvider();
+      const view = createMockWebviewView();
+      const installAll = jest.fn(() => [{ id: 'claude-code', ok: true }]);
+      provider.setHookController({
+        status: () => [{ id: 'claude-code', name: 'Claude Code', present: true, installed: true }],
+        installAll,
+        uninstallAll: () => [],
+      });
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      (view.webview.postMessage as jest.Mock).mockClear();
+
+      view._fireMessage({ type: 'installHooks' });
+
+      expect(installAll).toHaveBeenCalled();
+      expect(view.webview.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'hookStatus', message: 'Installed hooks for 1 tool(s).' })
+      );
+    });
+
+    it('does nothing without a hook controller', () => {
+      const provider = makeProvider();
+      const view = createMockWebviewView();
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      (view.webview.postMessage as jest.Mock).mockClear();
+
+      expect(() => view._fireMessage({ type: 'installHooks' })).not.toThrow();
+      expect(view.webview.postMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('postSettings', () => {
+    it('posts {type:"settings", ...} to the webview', () => {
+      const provider = makeProvider();
+      const view = createMockWebviewView();
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      (view.webview.postMessage as jest.Mock).mockClear();
+
+      provider.postSettings({ npcAiActivity: false, npcCrossWindowBeacon: true });
+
+      expect(view.webview.postMessage).toHaveBeenCalledWith({
+        type: 'settings',
+        npcAiActivity: false,
+        npcCrossWindowBeacon: true,
+      });
     });
   });
 

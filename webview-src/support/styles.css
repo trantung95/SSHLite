@@ -166,15 +166,129 @@ body {
   outline-offset: -1px;
 }
 
-.rate-input {
-  width: 48px;
-  padding: 2px 6px;
-  border: 1px solid var(--vscode-focusBorder, var(--vscode-widget-border, transparent));
+/* The container is keyboard-focusable (tabindex) so it can capture keydown for
+   every key; hide the focus ring so it doesn't look like a text field. */
+.support-container:focus,
+.support-container:focus-visible {
+  outline: none;
+}
+
+/* Gear button: reuses .zoom-btn; rotates slightly when the panel is open. */
+.gear-btn {
+  font-size: 1.05em;
+  line-height: 1;
+}
+
+.gear-btn[aria-expanded='true'] {
+  background: var(--vscode-list-hoverBackground);
+}
+
+/* Collapsible NPC settings panel, toggled by the gear. */
+.npc-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px;
+  border: 1px solid var(--vscode-widget-border, transparent);
   border-radius: 4px;
-  background: var(--vscode-input-background);
-  color: var(--vscode-input-foreground);
+  background: var(--vscode-editorWidget-background, transparent);
+  box-sizing: border-box;
+}
+
+.npc-settings.collapsed {
+  display: none;
+}
+
+.npc-set-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: inherit;
+}
+
+.npc-hooks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--vscode-widget-border, transparent);
+}
+
+.npc-hooks-head {
+  font-weight: 600;
+  cursor: help;
+}
+
+.npc-hooks-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.92em;
+  opacity: 0.9;
+}
+
+.npc-hook-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.npc-hook-dot {
+  flex: 0 0 auto;
+}
+
+/* Dim hook-config path shown under an installed tool. */
+.npc-hook-path {
+  margin-left: 16px;
+  font-size: 0.82em;
+  opacity: 0.5;
+  word-break: break-all;
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.npc-hooks-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.npc-btn {
+  padding: 4px 10px;
+  cursor: pointer;
+  border: 1px solid var(--vscode-widget-border, transparent);
+  border-radius: 4px;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
   font-family: inherit;
   font-size: inherit;
+}
+
+.npc-btn:hover {
+  background: var(--vscode-button-hoverBackground, var(--vscode-button-background));
+}
+
+.npc-btn[disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.npc-btn-secondary {
+  background: var(--vscode-button-secondaryBackground, transparent);
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+}
+
+.npc-btn-secondary:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.npc-hooks-msg {
+  font-size: 0.9em;
+  opacity: 0.85;
+  min-height: 1em;
 }
 
 .links {

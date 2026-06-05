@@ -20,6 +20,8 @@ import { registerSshToolsCommands } from './commands/sshToolsCommands';
 import { ProgressiveDownloadManager } from './services/ProgressiveDownloadManager';
 import { BeaconService } from './services/BeaconService';
 import { AiActivityWatchService } from './services/AiActivityWatchService';
+import { HookInstallerService } from './services/HookInstallerService';
+import { HookBeaconService } from './services/HookBeaconService';
 import { HousekeepingService } from './services/HousekeepingService';
 import { RemoteDiffService, DIFF_TMP_PREFIX } from './services/RemoteDiffService';
 import { HostTreeProvider, ServerTreeItem, UserCredentialTreeItem, CredentialTreeItem, PinnedFolderTreeItem, setExtensionPath } from './providers/HostTreeProvider';
@@ -310,11 +312,49 @@ export function activate(context: vscode.ExtensionContext): void {
     (id, name) => supportViewProvider.notifyAiActive(id, name)
   );
 
+  // AI prompt hooks (opt-in, set up from the NPC settings panel): each AI tool's
+  // hook writes a tiny beacon we watch here, letting the coder fly the user's
+  // actual prompt text instead of us reading any transcript.
+  const hookBeaconUri = vscode.Uri.joinPath(context.globalStorageUri, 'npc-ai-hook-beacon.json');
+  const hookBeaconService = new HookBeaconService(hookBeaconUri, (e) =>
+    supportViewProvider.notifyAiActive(e.id, e.name, e.prompt)
+  );
+  const hookInstaller = new HookInstallerService(os.homedir(), {
+    assetScriptPath: path.join(context.extensionPath, 'assets', 'hooks', 'npc-beacon.js'),
+    scriptPath: vscode.Uri.joinPath(context.globalStorageUri, 'hooks', 'npc-beacon.js').fsPath,
+    beaconPath: hookBeaconUri.fsPath,
+  });
+  supportViewProvider.setHookController(hookInstaller);
+
+  // Auto-setup AI hooks (default on via `sshLite.npcAutoSetupHooks`): the first
+  // time the user opens the NPC panel, install hooks for the AI tools present on
+  // this machine. Lazy (only when the panel is shown) so it never writes configs
+  // during activation/tests; once-only (globalState flag) so a later manual
+  // "Remove" is respected. installAll() is idempotent + presence-gated + backed up.
+  let autoHooksAttempted = false;
+  const maybeAutoSetupHooks = (): void => {
+    const cfg = vscode.workspace.getConfiguration('sshLite');
+    if (!cfg.get<boolean>('npcAutoSetupHooks', true)) {
+      return;
+    }
+    if (context.globalState.get<boolean>('npcAutoHooksDone')) {
+      return; // already auto-set-up once — don't re-add after a manual removal
+    }
+    safeStep('npc-auto-hooks', () => {
+      hookInstaller.installAll();
+      void context.globalState.update('npcAutoHooksDone', true);
+      supportViewProvider.postHookStatus();
+    });
+  };
+
   const applyNpcSettings = (): void => {
     const cfg = vscode.workspace.getConfiguration('sshLite');
-    beaconService.setEnabled(cfg.get<boolean>('npcCrossWindowBeacon', true));
-    aiActivityService.setEnabled(cfg.get<boolean>('npcAiActivity', true));
+    const npcAiActivity = cfg.get<boolean>('npcAiActivity', true);
+    const npcCrossWindowBeacon = cfg.get<boolean>('npcCrossWindowBeacon', true);
+    beaconService.setEnabled(npcCrossWindowBeacon);
+    aiActivityService.setEnabled(npcAiActivity);
     aiActivityService.setToolFilter(cfg.get<string[]>('npcAiActivityTools', []) ?? []);
+    supportViewProvider.postSettings({ npcAiActivity, npcCrossWindowBeacon }); // keep the panel in sync
   };
   safeStep('npc-external-sources', applyNpcSettings);
 
@@ -332,7 +372,10 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument((e) => {
       if (e.contentChanges.length > 0) {
-        supportViewProvider.notifyTyped('editor');
+        // The change carries the inserted text, so the coder can fly the actual
+        // characters typed (empty for a pure deletion → webview flies a word).
+        const inserted = e.contentChanges.map((c) => c.text).join('');
+        supportViewProvider.notifyTyped('editor', inserted);
         void beaconService.writeActivity('editor');
       }
     }),
@@ -356,6 +399,11 @@ export function activate(context: vscode.ExtensionContext): void {
     supportViewProvider.onDidChangeVisible((visible) => {
       beaconService.setVisible(visible);
       aiActivityService.setVisible(visible);
+      hookBeaconService.setVisible(visible);
+      if (visible && !autoHooksAttempted) {
+        autoHooksAttempted = true;
+        maybeAutoSetupHooks();
+      }
     }),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (
@@ -367,7 +415,8 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
     { dispose: () => beaconService.dispose() },
-    { dispose: () => aiActivityService.dispose() }
+    { dispose: () => aiActivityService.dispose() },
+    { dispose: () => hookBeaconService.dispose() }
   );
   // Terminal shell-execution events are stable only on newer VS Code; feature-detect
   // so we keep working on engines down to ^1.85 without an activation error.
@@ -379,6 +428,22 @@ export function activate(context: vscode.ExtensionContext): void {
       supportViewProvider.notifyTyped('terminal-out');
       void beaconService.writeActivity('terminal');
     }));
+  }
+  // Wake the coder when THIS window regains OS focus (the user came back). Pure
+  // event-driven signal (no polling); feature-detected so the test mock / older
+  // engines without it just skip the wiring. notifyTyped self-throttles + no-ops
+  // while the panel is collapsed.
+  const onWinState = (vscode.window as unknown as {
+    onDidChangeWindowState?: (cb: (e: { focused: boolean }) => void) => vscode.Disposable;
+  }).onDidChangeWindowState;
+  if (typeof onWinState === 'function') {
+    context.subscriptions.push(
+      onWinState((e) => {
+        if (e.focused) {
+          supportViewProvider.notifyTyped('window');
+        }
+      })
+    );
   }
 
   // ── Housekeeping ─────────────────────────────────────────────────────────

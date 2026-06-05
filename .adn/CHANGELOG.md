@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.9.3 - AI input hooks: the NPC flies your actual prompt text; settings gear; actual-key popups; Mode B (transcript reading) reverted
+
+### Why
+
+v0.9.2 (last turn) added a "Mode B" that read the last line of an AI tool's transcript to derive a coarse state. The better, lighter design — confirmed after verifying every supported tool — is to have each AI tool **push** the user's prompt to SSH Lite via that tool's own **prompt-submit hook**, instead of SSH Lite reading transcripts. Six of the supported tools expose installable hooks; five have a verified, safely-writable schema. So this release replaces the transcript-reading path with an opt-in, one-click hook installer and reverts Mode B entirely. The trigger was a user request: a gear button to expand/collapse NPC settings, a button to auto-create AI hooks (synced with the AI tools SSH Lite supports), and — since hooks are feasible — drop the file-reading for performance.
+
+### Changes
+
+- **AI input hooks (opt-in, one click).** New `HookInstallerService` installs a tiny *prompt-submit* hook into the user-global config of each AI tool the user has, so the Support-view coder flies the actual prompt text the user submits. Verified, safely-writable schemas for **Claude Code** (`~/.claude/settings.json`, `UserPromptSubmit`), **Codex** (`~/.codex/hooks.json`), **Gemini** (`~/.gemini/settings.json`, `BeforeAgent`), **Cursor** (`~/.cursor/hooks.json`, `beforeSubmitPrompt`), and **Copilot** (`~/.copilot/hooks/ssh-lite-npc.json`). Cline is UI-only and excluded; Aider/Roo ship no hooks.
+- **Never breaks the user's config.** Parse-or-abort (an unparseable config is left untouched), append-only merge (existing keys/hooks preserved), idempotent (dedup by the `npc-beacon.js` marker), `<file>.sshlite.bak` backup + atomic temp-rename write, presence-gated (only writes where the tool's home dir exists), and uninstall removes only our entry. The bundled `assets/hooks/npc-beacon.js` always exits 0 and never writes stdout, so a failing hook cannot disrupt the AI tool.
+- **Hook reader.** New `HookBeaconService` watches one tiny beacon file SSH Lite owns (event-driven, visible-gated, dedups by timestamp, drops stale) and flies the prompt — SSH Lite never reads the AI tools' transcripts.
+- **Settings gear.** The coder panel gains a ⚙ button that expands/collapses a settings panel: react-to-AI (`npcAiActivity`) and react-to-other-windows (`npcCrossWindowBeacon`) toggles plus the hook install/remove controls + per-tool status.
+- **Actual-key popups.** When the real key is known (the panel's own keydown) the coder flies that exact key; the random fallback (for activity whose key it can't see) is now words only, never random single keys.
+- **Reverted Mode B.** Removed transcript tail-reading (`deriveState`/`defaultReadTail`/`setStateMode`) from `AiActivityWatchService` and the `sshLite.npcAiState` setting — superseded by hooks, and lighter (no transcript reads).
+- **Auto-setup (`sshLite.npcAutoSetupHooks`, default on).** The first time the Support view is opened, hooks are installed for the present tools, once (globalState flag → a later manual "Remove" is respected). Gated on panel-visibility, never at activation, so it never writes configs during tests.
+- **Idempotent buttons + cleaner artifacts.** Clicking "Set up AI hooks" / "Remove" repeatedly is a true no-op (no duplicate entries, and a second install no longer clobbers the original `.sshlite.bak`); `uninstallAll` deletes the staged script + beacon from globalStorage (the housekeeper never sweeps there).
+- **NPC polish.** The coder flies the **actual characters typed** in the editor (`onDidChangeTextDocument` carries the inserted text) and the panel's own non-character keys (Tab/Ctrl/Alt/arrows → labeled keycaps); random fallback is words only. It wakes when the window regains OS focus (`onDidChangeWindowState`) and occasionally does an idle side-glance.
+- **Known limitation (honest):** the Claude Code **VS Code extension** does not execute hooks (any scope) — an Anthropic-side limitation (claude-code #15021/#16114). Hooks fire for Claude Code in a terminal, Codex/Gemini CLIs, Cursor, and Copilot. For the Claude extension panel, the coder still reacts via the transcript watch when Claude writes output, but there is no signal during the model's "thinking" phase.
+
 ## v0.9.2 - Native-parity terminal: TERM=xterm-256color + locale/COLORTERM forwarding (fzf-tab and all remote shell plugins render correctly)
 
 ### Why

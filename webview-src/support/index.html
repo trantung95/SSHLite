@@ -10,7 +10,9 @@
   <link rel="stylesheet" href="__STYLES_URI__">
 </head>
 <body>
-  <div class="support-container">
+  <!-- tabindex makes the panel keyboard-focusable so it can receive keydown for
+       every key (incl. modifiers) once the user clicks into it. -->
+  <div class="support-container" tabindex="0">
     <!-- Promo: a pixel-art coder typing, drawn by index.ts on a <canvas>.
          Internal resolution stays 160x120; CSS upscales it crisply
          (image-rendering:pixelated). Width follows the section width by default,
@@ -25,8 +27,28 @@
       <button id="zoomOut" class="zoom-btn" title="Zoom out">&#8722;</button>
       <button id="zoomFit" class="zoom-btn" title="Fit to width">Fit</button>
       <button id="zoomIn" class="zoom-btn" title="Zoom in">&#43;</button>
-      <input id="rateInput" class="rate-input" type="number" min="0" step="1" inputmode="numeric"
-             title="Key popups per minute around the keyboard (0 = every key shows one). Saved automatically.">
+      <button id="settingsToggle" class="zoom-btn gear-btn" aria-expanded="false" aria-controls="npcSettings"
+              title="NPC settings">&#9881;</button>
+    </div>
+
+    <!-- NPC settings: collapsed by default; the gear button toggles it. -->
+    <div id="npcSettings" class="npc-settings collapsed" aria-label="NPC settings">
+      <label class="npc-set-row">
+        <input type="checkbox" id="setCrossWindow"> React to other VS Code windows
+      </label>
+
+      <div class="npc-hooks">
+        <div class="npc-hooks-head"
+             title="Installs a tiny prompt-submit hook into your AI tools so the coder can fly the words you actually type. Writes only to each tool's own hook config; safe to remove.">
+          AI input hooks
+        </div>
+        <div id="hookList" class="npc-hooks-list"></div>
+        <div class="npc-hooks-actions">
+          <button id="installHooks" class="npc-btn" title="Add prompt hooks to the AI tools you have">Set up AI hooks</button>
+          <button id="uninstallHooks" class="npc-btn npc-btn-secondary" title="Remove the hooks SSH Lite added">Remove</button>
+        </div>
+        <div id="hookMsg" class="npc-hooks-msg" role="status"></div>
+      </div>
     </div>
 
     <div class="links">
