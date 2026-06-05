@@ -100,7 +100,7 @@ src/
 3. **Self-improvement loop.** Record lessons to `.adn/lessons.md`
 4. **Prove it works.** Run tests, check logs — not done until verified
 5. **Self-fix bugs.** Check logs, find root cause, fix it
-6. **Repro on a real local SSH server (docker), not mocks**, whenever a bug touches ssh2 / sftp / event-loop / large-file paths. Start with `docker compose -f test-docker/docker-compose.yml up -d ssh-server-1`. Mocks confirm code shape, not crash behaviour under real crypto load.
+6. **Repro on a real local SSH server (docker), not mocks**, whenever a bug touches ssh2 / sftp / event-loop / large-file paths. Start with `docker compose -f test-docker/docker-compose.yml up -d web`. Mocks confirm code shape, not crash behaviour under real crypto load.
 7. **Codex will review your output once you are done** — self-verify rigorously before reporting complete
 8. **Auto code-review before claiming done.** After any TypeScript + test change set, dispatch the `superpowers:requesting-code-review` skill before reporting complete. Catches async/Promise issues, missing guards, untested edge cases before commit.
 9. **Auto-document after every prompt.** After every response, scan all data that entered context (user message, tool results, error output, file contents): does anything here have generalizable value for future work? If yes, add it to `.adn/lessons.md` (tactical one-offs) or `CLAUDE.md` (reusable patterns) in the SAME response. No confirmation needed, no waiting for the user to ask.

@@ -104,9 +104,9 @@ function startCompose(composeFile: string, label: string): void {
  * containers from other projects or compose stacks.
  */
 const CHAOS_CONTAINERS = [
-  'sshlite-test-server-1',
-  'sshlite-test-server-2',
-  'sshlite-test-server-3',
+  'hybr8-prod-web-01',
+  'hybr8-prod-api-01',
+  'hybr8-prod-db-01',
   'sshlite-os-alpine',
   'sshlite-os-ubuntu',
   'sshlite-os-debian',

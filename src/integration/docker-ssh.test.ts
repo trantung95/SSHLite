@@ -332,9 +332,9 @@ describe('Docker SSH Integration Tests', () => {
         exec(client3, 'hostname'),
       ]);
 
-      expect(h1).toBe('prod-server');
-      expect(h2).toBe('staging-server');
-      expect(h3).toBe('dev-server');
+      expect(h1).toBe('hybr8-prod-web-01');
+      expect(h2).toBe('hybr8-prod-api-01');
+      expect(h3).toBe('hybr8-prod-db-01');
     });
 
     it('should list files from all servers in parallel', async () => {
@@ -464,15 +464,15 @@ describe('Docker SSH Integration Tests', () => {
         exec(client2, 'hostname'),
         exec(client3, 'hostname'),
       ]);
-      expect(h2).toBe('staging-server');
-      expect(h3).toBe('dev-server');
+      expect(h2).toBe('hybr8-prod-api-01');
+      expect(h3).toBe('hybr8-prod-db-01');
 
       // Reconnect server 1
       client1 = await connectSSH(SERVER_1);
       sftp1 = await getSftp(client1);
 
       const h1 = await exec(client1, 'hostname');
-      expect(h1).toBe('prod-server');
+      expect(h1).toBe('hybr8-prod-web-01');
     });
 
     it('should execute commands on all servers simultaneously', async () => {
@@ -590,7 +590,7 @@ describe('Docker SSH Integration Tests', () => {
       expect(whoami).toBe('testuser');
 
       const hostname = await exec(client, 'hostname');
-      expect(hostname).toBe('prod-server');
+      expect(hostname).toBe('hybr8-prod-web-01');
     });
 
     it('step 2: browse existing files', async () => {
@@ -898,7 +898,7 @@ describe('Docker SSH Integration Tests', () => {
 
       // Simulate server monitor: hostname
       const hostname = await exec(client, 'hostname');
-      expect(hostname).toBe('prod-server');
+      expect(hostname).toBe('hybr8-prod-web-01');
     });
   });
 
@@ -937,9 +937,9 @@ describe('Docker SSH Integration Tests', () => {
       const hostnames = await Promise.all(
         clients.map(c => exec(c, 'hostname'))
       );
-      expect(hostnames[0]).toBe('prod-server');
-      expect(hostnames[1]).toBe('staging-server');
-      expect(hostnames[2]).toBe('dev-server');
+      expect(hostnames[0]).toBe('hybr8-prod-web-01');
+      expect(hostnames[1]).toBe('hybr8-prod-api-01');
+      expect(hostnames[2]).toBe('hybr8-prod-db-01');
     });
 
     it('step 2: create project on all servers simultaneously', async () => {
@@ -1058,7 +1058,7 @@ describe('Docker SSH Integration Tests', () => {
 
       // Verify reconnected
       const hostname = await exec(clients[1], 'hostname');
-      expect(hostname).toBe('staging-server');
+      expect(hostname).toBe('hybr8-prod-api-01');
 
       // Verify data persists after reconnect
       const config = JSON.parse(
@@ -1072,7 +1072,7 @@ describe('Docker SSH Integration Tests', () => {
       const hostnames = await Promise.all(
         clients.map(c => exec(c, 'hostname'))
       );
-      expect(hostnames).toEqual(['prod-server', 'staging-server', 'dev-server']);
+      expect(hostnames).toEqual(['hybr8-prod-web-01', 'hybr8-prod-api-01', 'hybr8-prod-db-01']);
 
       // All configs still intact
       const configs = await Promise.all(

@@ -41,6 +41,18 @@ RUN mkdir -p /home/admin/configs && \
     chmod +x /home/admin/scripts/deploy.sh && \
     chown -R admin:admin /home/admin
 
+# Layer a rich, diverse "showcase" file tree on top of the minimal fixtures
+# above. The fixtures above are kept verbatim for backward-compat with the
+# docker-ssh.test.ts / multios assertions; this only ADDS content (showcase/
+# + workspace/ + hidden dotfiles), it never removes the legacy files.
+# SERVER_FLAVOR (prod-web | prod-api | prod-db) decorates the workspace dir so
+# each server gets a distinct top-level project. Default prod-db for any image
+# (e.g. multios-alpine) that doesn't pass the arg.
+ARG SERVER_FLAVOR=prod-db
+COPY seed-showcase.sh /usr/local/bin/seed-showcase.sh
+RUN chmod +x /usr/local/bin/seed-showcase.sh && \
+    bash /usr/local/bin/seed-showcase.sh "$SERVER_FLAVOR"
+
 RUN mkdir -p /var/log/sshd
 
 EXPOSE 22

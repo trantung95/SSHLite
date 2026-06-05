@@ -1,0 +1,7 @@
+# Files executed inside Linux containers (bash scripts, Docker build files) must
+# keep LF endings even on Windows checkouts. Without this, core.autocrlf=true
+# rewrites them to CRLF on checkout, which breaks `bash` (`$'\r': command not
+# found`) and Dockerfile line-continuations at build time.
+*.sh text eol=lf
+Dockerfile* text eol=lf
+entrypoint* text eol=lf

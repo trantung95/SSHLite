@@ -24,9 +24,9 @@ export interface ChaosServerConfig {
 
 /** Basic Alpine servers (docker-compose.yml). */
 export const BASIC_SERVERS: ChaosServerConfig[] = [
-  { label: 'prod-server', os: 'Alpine', host: '127.0.0.1', port: 2201, username: 'testuser', password: 'testpass', hostname: 'prod-server', shell: 'ash', group: 'basic', container: 'sshlite-test-server-1' },
-  { label: 'staging-server', os: 'Alpine', host: '127.0.0.1', port: 2202, username: 'testuser', password: 'testpass', hostname: 'staging-server', shell: 'ash', group: 'basic', container: 'sshlite-test-server-2' },
-  { label: 'dev-server', os: 'Alpine', host: '127.0.0.1', port: 2203, username: 'admin', password: 'adminpass', hostname: 'dev-server', shell: 'ash', group: 'basic', container: 'sshlite-test-server-3' },
+  { label: 'hybr8-prod-web-01', os: 'Alpine', host: '127.0.0.1', port: 2201, username: 'testuser', password: 'testpass', hostname: 'hybr8-prod-web-01', shell: 'ash', group: 'basic', container: 'hybr8-prod-web-01' },
+  { label: 'hybr8-prod-api-01', os: 'Alpine', host: '127.0.0.1', port: 2202, username: 'testuser', password: 'testpass', hostname: 'hybr8-prod-api-01', shell: 'ash', group: 'basic', container: 'hybr8-prod-api-01' },
+  { label: 'hybr8-prod-db-01', os: 'Alpine', host: '127.0.0.1', port: 2203, username: 'admin', password: 'adminpass', hostname: 'hybr8-prod-db-01', shell: 'ash', group: 'basic', container: 'hybr8-prod-db-01' },
 ];
 
 /** Multi-OS servers (docker-compose.multios.yml). */

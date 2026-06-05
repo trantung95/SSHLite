@@ -46,9 +46,25 @@ beforeEach(() => {
 
 ## Docker Integration Tests
 
-Uses `linuxserver/openssh-server` Docker image. Setup: `cd test-docker && docker compose up -d`, generate keys, run tests.
+Alpine-based SSH servers built from `test-docker/Dockerfile.sshd`. Setup: `docker compose -f test-docker/docker-compose.yml up -d web api db`, then run tests. Credentials: `testuser`/`testpass` (web+api) and `admin`/`adminpass` (db); ports 2201/2202/2203. The compose project is named `hybr8-prod`, so the containers appear as a production fleet (`hybr8-prod-web-01` / `-api-01` / `-db-01`) rather than `test-docker_*`.
 
 Tests: real SSH connection, SFTP upload/download, cross-server grep search, cancellation, permissions, large files.
+
+### Server identities (hostnames)
+
+The three basic servers carry production-style hostnames, asserted in `docker-ssh.test.ts` and configured in `src/chaos/ChaosConfig.ts` + `ContainerHealthMonitor.ts` + `globalSetup.chaos.ts` / `globalTeardown.chaos.ts`. The compose **service key**, **`container_name`**, and **`hostname`** all match (see table). Change them together if renaming — the basic `globalSetup.ts` drives the file by port and `down`, but the chaos suite keys off `container_name`:
+
+| Service | container_name / hostname | Port | User | Build flavor |
+|---------|---------------------------|------|------|--------------|
+| `web` | `hybr8-prod-web-01` | 2201 | testuser | `prod-web` |
+| `api` | `hybr8-prod-api-01` | 2202 | testuser | `prod-api` |
+| `db` | `hybr8-prod-db-01` | 2203 | admin | `prod-db` |
+
+### Seeded file tree (`test-docker/seed-showcase.sh`)
+
+Every server built from `Dockerfile.sshd` is seeded at build time with a rich, diverse tree under `/home/testuser` so all SSH Lite features (browse, filter, search, preview, large-file download, symlinks, permissions, terminal prompt) exercise real content. The seed is **additive** — it never removes the minimal legacy fixtures (`projects/src/app.ts`, `projects/package.json`, `projects/src/todo.ts`, `logs/app.log`, `big/huge.log`, `admin/configs/*.conf`) that the assertions above depend on.
+
+The `SERVER_FLAVOR` build arg (`prod-web` | `prod-api` | `prod-db`, default `prod-db`) decorates `workspace/` with a distinct top-level project per server. `seed-showcase.sh` adds: `showcase/` (code in ~15 languages, every config format, docs incl. a valid PDF, data/logs, real PNG/GIF/SVG images, tar.gz/gz/zip archives, a 5-level-deep tree, 40 files for filter/search demos, tricky filenames with spaces/unicode/no-extension, binaries, read-only + executable files, a 30 MB + 10 MB large file, file/dir/broken symlinks) plus hidden dotfiles and a colored production-style shell prompt (`.bashrc`).
 
 ## Multi-OS Tests
 

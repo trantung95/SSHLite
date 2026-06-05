@@ -33,9 +33,9 @@ import { RemoteDiffService } from '../services/RemoteDiffService';
 
 // ─── Server configs (same Docker containers as docker-ssh.test.ts) ────────────
 
-const S1 = { id: 'e2e-s1', label: 'prod-server',    host: '127.0.0.1', port: 2201, username: 'testuser', password: 'testpass' };
-const S2 = { id: 'e2e-s2', label: 'staging-server', host: '127.0.0.1', port: 2202, username: 'testuser', password: 'testpass' };
-const S3 = { id: 'e2e-s3', label: 'dev-server',     host: '127.0.0.1', port: 2203, username: 'admin',    password: 'adminpass' };
+const S1 = { id: 'e2e-s1', label: 'hybr8-prod-web-01',    host: '127.0.0.1', port: 2201, username: 'testuser', password: 'testpass' };
+const S2 = { id: 'e2e-s2', label: 'hybr8-prod-api-01', host: '127.0.0.1', port: 2202, username: 'testuser', password: 'testpass' };
+const S3 = { id: 'e2e-s3', label: 'hybr8-prod-db-01',     host: '127.0.0.1', port: 2203, username: 'admin',    password: 'adminpass' };
 const ALL_SERVERS = [S1, S2, S3];
 
 // ─── Setup helpers ────────────────────────────────────────────────────────────

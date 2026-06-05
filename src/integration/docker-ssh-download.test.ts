@@ -22,7 +22,7 @@ import { IHostConfig, IRemoteFile } from '../types';
 import { SavedCredential, CredentialService } from '../services/CredentialService';
 import { FileService } from '../services/FileService';
 
-const S1 = { id: 'dl-s1', label: 'prod-server', host: '127.0.0.1', port: 2201, username: 'testuser', password: 'testpass' };
+const S1 = { id: 'dl-s1', label: 'hybr8-prod-web-01', host: '127.0.0.1', port: 2201, username: 'testuser', password: 'testpass' };
 
 const _knownHosts: Record<string, unknown> = {};
 

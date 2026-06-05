@@ -5,6 +5,22 @@ Add new entries as bugs are found, mistakes are made, or better approaches are d
 
 ---
 
+## 2026-06-05 - Docker test server identity is asserted in 3 files; `test:docker` removes containers on exit; verifying a remote shell prompt on Windows hits Git-Bash path mangling
+
+**Context**: renamed the 3 basic test-server hostnames to production-style (`hybr8-prod-web-01` / `-api-01` / `-db-01`) and layered a rich seed tree (`test-docker/seed-showcase.sh`, run from `Dockerfile.sshd` via a `SERVER_FLAVOR` build arg) for screenshots + richer tests. Reusable gotchas:
+
+- **A test server's hostname is coupled across 3+ files — rename them together or the suite goes red.** The container hostname (`docker-compose.yml` `hostname:`) is hard-asserted in `src/integration/docker-ssh.test.ts` (`expect(h).toBe('hybr8-prod-web-01')`, multiple sites + an `toEqual([...])` array), mirrored in `src/chaos/ChaosConfig.ts` (`BASIC_SERVERS[].hostname` **and** `.label`) and keyed in `src/chaos/ContainerHealthMonitor.ts` (`SERVER_CONTAINER_MAP` label→container). Cosmetic-only labels live in `docker-ssh-tools.test.ts` / `docker-ssh-download.test.ts`; `ServerMonitorService.test.ts` has a *parser fixture* string (not a live server). Grep the old name repo-wide before changing.
+
+- **`npm run test:docker` (jest.docker.config.js) has a globalTeardown that STOPS AND REMOVES the containers.** If you brought servers up for manual use / screenshots, running the docker suite deletes them — re-run `docker compose -f test-docker/docker-compose.yml up -d web api db` afterward. Images are pre-built so it's fast.
+
+- **Seed additively — never drop the legacy fixtures.** `docker-ssh.test.ts` / multios assertions depend on exact paths+content: `projects/src/app.ts` (contains `console.log`+`hello world`), `projects/src/todo.ts` (`TODO`+`fix bug`), `projects/package.json` (valid JSON, `name:"test"`), `logs/app.log`, `big/huge.log`, `admin/configs/server.conf` (`server.port`)+`db.conf`. The showcase seed only ADDS `showcase/`+`workspace/`+dotfiles; keep the Dockerfile's original RUN blocks.
+
+- **SSH Lite's terminal is a non-login interactive shell → it sources `~/.bashrc`, NOT `~/.profile`/`~/.bash_profile`.** `TerminalService` calls ssh2 `.shell({term},{env})` with no `bash -l` / leading-`-` argv (see `SSHConnection.shell()`). So a custom prompt/env/aliases for the remote box go in `~/.bashrc`. (sshd sets `HOME` from `/etc/passwd`, so `~` resolves to `/home/<user>`.)
+
+- **Windows verification trap: `docker exec -e HOME=/home/testuser ...` gets path-mangled by Git-Bash/MSYS** into `HOME=C:/Program Files/Git/home/testuser`, so the shell can't find `~/.bashrc` and you wrongly conclude the rcfile isn't sourced. Prefix the command with `MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'` (or run via the `Bash` tool / WSL) when passing absolute Unix paths as args to native `.exe`s. Also note `bash -i -c '...'` does NOT source `~/.bashrc` (PS1 resets under `-c`); to inspect a real interactive PS1, pipe commands to `bash -i` on **stdin** instead.
+
+---
+
 ## 2026-06-05 - `onDidChangeTextDocument` can't tell the user from another extension; attribute by change SHAPE + selection KIND, not timing. Popups over a zoomed canvas need a CSS scale var
 
 **Context**: the NPC showed the local user's name label when **Claude Code (or a formatter) edited a file** — `onDidChangeTextDocument` fires identically for user typing and another extension's programmatic edit. A timing guard ("AI active within 2s") was unreliable (the AI's transcript write and its file edit don't always overlap → name still leaked). Reusable gotchas:

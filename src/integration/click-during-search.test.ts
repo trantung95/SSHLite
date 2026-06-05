@@ -7,7 +7,7 @@
  * perf_hooks.monitorEventLoopDelay. Tests whether mid-search readFile
  * saturates the event loop or causes any runtime fault.
  *
- * Prereqs: docker compose -f test-docker/docker-compose.yml up -d ssh-server-1
+ * Prereqs: docker compose -f test-docker/docker-compose.yml up -d web
  *          container seeded with /home/testuser/big/huge.log + small files.
  *
  * Run: npx jest --no-coverage src/integration/click-during-search.test.ts

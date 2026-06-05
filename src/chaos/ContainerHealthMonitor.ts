@@ -18,9 +18,9 @@ const execAsync = promisify(exec);
 /** Maps server labels to their Docker container names */
 const SERVER_CONTAINER_MAP: Record<string, string> = {
   // Basic servers (docker-compose.yml)
-  'prod-server': 'sshlite-test-server-1',
-  'staging-server': 'sshlite-test-server-2',
-  'dev-server': 'sshlite-test-server-3',
+  'hybr8-prod-web-01': 'hybr8-prod-web-01',
+  'hybr8-prod-api-01': 'hybr8-prod-api-01',
+  'hybr8-prod-db-01': 'hybr8-prod-db-01',
   // Multi-OS servers (docker-compose.multios.yml)
   'alpine-server': 'sshlite-os-alpine',
   'ubuntu-server': 'sshlite-os-ubuntu',

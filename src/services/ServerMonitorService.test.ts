@@ -152,7 +152,7 @@ describe('ServerMonitorService', () => {
 
     it('should parse complete server output', () => {
       const output = [
-        '===HOSTNAME===', 'prod-server',
+        '===HOSTNAME===', 'hybr8-prod-web-01',
         '===UPTIME===', ' 10:00:00 up 30 days, load average: 2.50, 2.00, 1.50',
         '===LOADAVG===', '2.50 2.00 1.50 5/300 12345',
         '===MEMORY===', '              total        used        free\nMem:     16000000     12000000      4000000\nSwap:     4000000      1000000      3000000',
@@ -163,7 +163,7 @@ describe('ServerMonitorService', () => {
       ].join('\n');
 
       const status = parseServerStatus(output);
-      expect(status.hostname).toBe('prod-server');
+      expect(status.hostname).toBe('hybr8-prod-web-01');
       expect(status.memoryTotal).toBe(16000000);
       expect(status.memoryUsed).toBe(12000000);
       expect(status.memoryPercent).toBe(75);

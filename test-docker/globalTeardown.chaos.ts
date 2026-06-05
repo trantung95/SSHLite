@@ -11,9 +11,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const CONTAINERS = [
-  'sshlite-test-server-1',
-  'sshlite-test-server-2',
-  'sshlite-test-server-3',
+  'hybr8-prod-web-01',
+  'hybr8-prod-api-01',
+  'hybr8-prod-db-01',
   'sshlite-os-alpine',
   'sshlite-os-ubuntu',
   'sshlite-os-debian',
