@@ -160,8 +160,8 @@ describe('SupportViewProvider', () => {
     });
   });
 
-  describe('notifyTyped — editor typing pulse', () => {
-    it('posts {type:"typed"} to the webview when the view is visible', () => {
+  describe('notifyTyped — activity pulse', () => {
+    it('posts {type:"typed", src} to the webview when the view is visible', () => {
       const provider = makeProvider();
       const view = createMockWebviewView();
       provider.resolveWebviewView(view as any, {} as any, {} as any);
@@ -169,7 +169,39 @@ describe('SupportViewProvider', () => {
 
       provider.notifyTyped();
 
-      expect(view.webview.postMessage).toHaveBeenCalledWith({ type: 'typed' });
+      expect(view.webview.postMessage).toHaveBeenCalledWith({ type: 'typed', src: 'editor', user: 'You' });
+    });
+
+    it('forwards the source on the message', () => {
+      const provider = makeProvider();
+      const view = createMockWebviewView();
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      (view.webview.postMessage as jest.Mock).mockClear();
+
+      provider.notifyTyped('terminal-in');
+
+      expect(view.webview.postMessage).toHaveBeenCalledWith({ type: 'typed', src: 'terminal-in', user: 'You' });
+    });
+
+    it('throttles server output (terminal-out) harder than editor typing', () => {
+      const provider = makeProvider();
+      const view = createMockWebviewView();
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      (view.webview.postMessage as jest.Mock).mockClear();
+
+      let now = 1_000_000;
+      jest.spyOn(Date, 'now').mockImplementation(() => now);
+
+      provider.notifyTyped('terminal-out');
+      now += 60; // within the 150ms terminal-out gap
+      provider.notifyTyped('terminal-out');
+      expect(view.webview.postMessage).toHaveBeenCalledTimes(1);
+
+      now += 100; // total 160ms → past the gap
+      provider.notifyTyped('terminal-out');
+      expect(view.webview.postMessage).toHaveBeenCalledTimes(2);
+
+      jest.restoreAllMocks();
     });
 
     it('is a no-op when the view is collapsed (not visible)', () => {
@@ -187,6 +219,48 @@ describe('SupportViewProvider', () => {
     it('is a no-op before the view is resolved', () => {
       const provider = makeProvider();
       expect(() => provider.notifyTyped()).not.toThrow();
+    });
+  });
+
+  describe('notifyAiActive — AI assistant label', () => {
+    it('posts {type:"aiActive", id, name} when visible', () => {
+      const provider = makeProvider();
+      const view = createMockWebviewView();
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      (view.webview.postMessage as jest.Mock).mockClear();
+
+      provider.notifyAiActive('claude-code', 'Claude Code');
+
+      expect(view.webview.postMessage).toHaveBeenCalledWith({
+        type: 'aiActive',
+        id: 'claude-code',
+        name: 'Claude Code',
+      });
+    });
+
+    it('is a no-op when not visible', () => {
+      const provider = makeProvider();
+      const view = createMockWebviewView();
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      view.visible = false;
+      (view.webview.postMessage as jest.Mock).mockClear();
+
+      provider.notifyAiActive('codex', 'Codex');
+
+      expect(view.webview.postMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('onDidChangeVisible', () => {
+    it('fires with the initial visibility on resolve', () => {
+      const provider = makeProvider();
+      const view = createMockWebviewView();
+      const seen: boolean[] = [];
+      provider.onDidChangeVisible((v) => seen.push(v));
+
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+
+      expect(seen).toContain(true);
     });
   });
 });

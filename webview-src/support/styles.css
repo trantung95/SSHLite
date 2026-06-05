@@ -1,5 +1,7 @@
 /* webview-src/support/styles.css
  *
+ * @author hybr8
+ *
  * Fluid layout. The sidebar webview view resizes on both axes, but the promo
  * scales by WIDTH only (height:auto follows the canvas ratio) so a vertical drag
  * does not rescale it. The zoom control overrides the canvas width with an
@@ -67,6 +69,58 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .kpop { animation-duration: 0.4s; }
+}
+
+/* AI-assistant name labels: float around the NPC while a coding assistant is
+ * working, then fade out when it goes quiet (TTL handled in index.ts). Unlike
+ * .kpop these persist (no rise animation) — only a fade in/out. */
+.ailabel {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  z-index: 3;
+  pointer-events: none;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-family: var(--vscode-font-family);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: #10131f;
+  white-space: nowrap;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.35);
+  animation: ailabel-in 0.25s ease-out;
+}
+
+.ailabel.ailabel-out {
+  animation: ailabel-out 0.4s ease-in forwards;
+}
+
+/* The local-user label is visually distinct from AI tool labels and is tagged
+ * "(you)" so it reads as a presence indicator for the person at the keyboard. */
+.ailabel.userlabel {
+  font-style: italic;
+  box-shadow: 0 0 0 1px rgba(16, 19, 31, 0.5), 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+.ailabel.userlabel::after {
+  content: ' (you)';
+  opacity: 0.7;
+  font-style: normal;
+}
+
+@keyframes ailabel-in {
+  0% { opacity: 0; transform: translate(-50%, -35%) scale(0.85); }
+  100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+@keyframes ailabel-out {
+  0% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -65%) scale(0.9); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ailabel { animation-duration: 0.15s; }
+  .ailabel.ailabel-out { animation-duration: 0.2s; }
 }
 
 /* Width follows the section by default (width:100%); the zoom control sets an

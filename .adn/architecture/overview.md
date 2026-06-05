@@ -44,6 +44,8 @@ SSH Lite (SSH Tools) is a VS Code extension that provides SSH/SFTP file browsing
 │  PriorityQueueService  RemoteClipboardService     │
 │  SnippetService  SshKeyService                    │
 │  SystemToolsService  RemoteDiffService            │
+│  AiActivityWatchService  BeaconService            │
+│  HousekeepingService                             │
 ├─────────────────────────────────────────────────┤
 │         Connection Layer                          │
 │  SSHConnection (ssh2 Client + SFTPWrapper)        │
@@ -193,6 +195,16 @@ FileTreeProvider
   ├─ uses: ConnectionManager (get connections)
   ├─ uses: FileService (file mappings, upload state)
   └─ uses: CommandGuard (list files)
+
+HousekeepingService
+  ├─ uses: FileService (registerCleanupHook → rides hourly timer; cleanupOldTempFiles)
+  └─ removes: orphaned sshlite-diff-* temp dirs (safety net for RemoteDiffService)
+
+AiActivityWatchService
+  └─ feeds: SupportViewProvider (named AI-tool activity → {type:'aiActive'})
+
+BeaconService
+  └─ feeds: SupportViewProvider (cross-window activity pulse)
 ```
 
 ---
@@ -225,6 +237,10 @@ Centralizes activity tracking so the Activity panel shows a consistent, unified 
 
 ### Why event-driven instead of direct calls?
 Decouples services from UI. FileService doesn't know about FileTreeProvider — it just fires events. This allows multiple consumers to react (decoration provider, tree provider, status bar) without the service knowing about them.
+
+### Housekeeping rides an existing timer (no new polling loop)
+
+`HousekeepingService` (since v0.9.1) sweeps stale junk, that is orphaned `sshlite-diff-*` temp directories from the "Diff with Local" feature older than `sshLite.diffTempRetentionHours` (default 24), once at activation, then on every tick of FileService's existing hourly temp-file cleanup timer via a new `FileService.registerCleanupHook(cb)`. This adds a cleanup behaviour without adding a second `setInterval` (LITE: no new polling). The root cause is also fixed upstream: `RemoteDiffService` now tracks its temp directories and removes them when the diff tab closes (and all remaining ones on dispose); the housekeeping sweep is the safety net for any left behind by a crash or abrupt shutdown. See `.adn/CHANGELOG.md` v0.9.1.
 
 ### Webview build pipeline (since v0.8.1)
 

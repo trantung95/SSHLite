@@ -2,7 +2,7 @@
   "name": "ssh-lite",
   "displayName": "SSH Lite (SSH Tools)",
   "description": "A visual SSH client for VS Code. Browse, edit, monitor, manage services - by clicking, not typing vi/systemctl/crontab. Nothing installed on the remote server. Perfect for VPS, cloud servers (AWS/Azure/GCP), and Linux administration.",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "publisher": "hybr8",
   "engines": {
     "vscode": "^1.85.0"
@@ -1611,6 +1611,30 @@
           "type": "boolean",
           "default": false,
           "description": "Emit verbose diagnostic logs to the 'SSH Lite' Output channel (channel semaphore acquire/release/timeout, exec retry attempts, SSH handshake details, auth method selection). Off by default — enable only when reproducing a bug or filing an issue."
+        },
+        "sshLite.npcAiActivity": {
+          "type": "boolean",
+          "default": true,
+          "description": "Let the Support view's pixel-art coder react when a popular AI coding assistant (Claude Code, Codex, Gemini, Copilot Chat, Cursor, Cline, Roo Code, Continue, Aider, ...) is actively working, showing the tool's name floating around the character. Detected by watching the transcript/history files those tools write — only file-change events are observed, never their contents. Watchers run only while the Support view is open."
+        },
+        "sshLite.npcAiActivityTools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Limit which AI assistants the Support view reacts to. Empty = all known tools. Otherwise list tool ids: claude-code, codex, gemini, cursor, aider, cline, roo, kilo, continue, github-copilot."
+        },
+        "sshLite.npcCrossWindowBeacon": {
+          "type": "boolean",
+          "default": true,
+          "description": "Let the Support view's coder react when ANOTHER VS Code window on this machine is active. Writes a tiny activity beacon (timestamp + coarse category 'editor'/'terminal', never any typed content) to SSH Lite's global storage and watches it from other windows. No data leaves your machine. Turn off to disable."
+        },
+        "sshLite.diffTempRetentionHours": {
+          "type": "number",
+          "default": 24,
+          "minimum": 0,
+          "description": "Auto-delete orphaned 'Diff with Local' temp directories older than this many hours (housekeeping runs at startup and hourly). 0 to disable."
         }
       }
     },

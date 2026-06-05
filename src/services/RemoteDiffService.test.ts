@@ -9,6 +9,7 @@ jest.mock('fs', () => {
     existsSync: jest.fn(),
     mkdtempSync: jest.fn(),
     writeFileSync: jest.fn(),
+    rmSync: jest.fn(),
   };
 });
 
@@ -30,6 +31,7 @@ describe('RemoteDiffService', () => {
     (fs.existsSync as jest.Mock).mockReset();
     (fs.mkdtempSync as jest.Mock).mockReset().mockReturnValue('/tmp/sshlite-diff-abc');
     (fs.writeFileSync as jest.Mock).mockReset();
+    (fs.rmSync as jest.Mock).mockReset();
     executeCommand = jest.spyOn(vscode.commands, 'executeCommand').mockResolvedValue(undefined as any);
   });
 
@@ -67,6 +69,19 @@ describe('RemoteDiffService', () => {
       expect.anything(),
       expect.anything(),
       expect.stringContaining('dev-box')
+    );
+  });
+
+  it('dispose() removes tracked temp directories', async () => {
+    (fs.existsSync as jest.Mock).mockReturnValue(true);
+    const conn = { host: { name: 'dev-box' }, readFile: jest.fn().mockResolvedValue(Buffer.from('x')) } as any;
+
+    await service.diffRemoteWithLocal(conn, '/etc/motd', '/local/motd');
+    service.dispose();
+
+    expect(fs.rmSync).toHaveBeenCalledWith(
+      '/tmp/sshlite-diff-abc',
+      expect.objectContaining({ recursive: true, force: true })
     );
   });
 });

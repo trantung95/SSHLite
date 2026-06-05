@@ -4,12 +4,15 @@
 // coder animation (canvas) plus link buttons that ask the extension to run the
 // matching sshLite.* command.
 //
+// @author hybr8
+//
 // Contract with the extension (SupportViewProvider.handleMessage):
 //   { type: 'action', cmd }            -> sshLite.<cmd>
 //   { type: 'log', level, scope, ... }  -> infoLog/diagLog (via log.ts)
 //   { type: 'webviewError', message }   -> infoLog('support-view','webview-error')
 // Extension -> webview:
-//   { type: 'typed' }                   -> the coder taps a hand (user typed)
+//   { type: 'typed', src }              -> the coder taps a hand (activity)
+//   { type: 'aiActive', id, name }      -> float an AI assistant's name label
 //
 // Clicking the coder recolours a part (shirt / coffee mug / glasses), handled
 // locally here (no link, no message). A zoom control sets an independent pixel
@@ -176,10 +179,108 @@ function registerKey(key?: string): void {
   spawnPopup(text);
 }
 
+// ----------------------------------------------------------------------------
+// AI-assistant name labels: when the extension reports an AI coding assistant is
+// active (it watches the tools' transcript files), float the tool's NAME around
+// the NPC. Multiple tools => multiple labels at scattered positions. A label is
+// removed once no further activity arrives for AI_LABEL_TTL (the watcher can't
+// tell us when a tool stops, so we infer "stopped" from silence).
+// ----------------------------------------------------------------------------
+const AI_LABEL_TTL = 2000;
+interface AiLabel {
+  el: HTMLDivElement;
+  lastSeen: number;
+}
+const aiLabels = new Map<string, AiLabel>();
+let aiLabelSeq = 0;
+
+function placeAiLabel(el: HTMLDivElement, canvas: HTMLCanvasElement, index: number): void {
+  // Scatter around an arc over the head / upper body, with a little jitter.
+  const angles = [-90, -45, -135, 0, 180, -25, -160, 45, -70];
+  const deg = angles[index % angles.length] + (Math.random() * 24 - 12);
+  const ang = (deg * Math.PI) / 180;
+  const cx = canvas.offsetLeft + canvas.offsetWidth * 0.5;
+  const cy = canvas.offsetTop + canvas.offsetHeight * 0.3;
+  const r = canvas.offsetWidth * (0.3 + Math.random() * 0.12);
+  el.style.left = `${cx + Math.cos(ang) * r}px`;
+  el.style.top = `${cy + Math.sin(ang) * r * 0.8}px`;
+}
+
+// Create a floating label (or refresh its TTL if it already exists). Returns
+// true when a new element was created. Used for both AI tools and the local user.
+function upsertLabel(key: string, text: string, bg: string, extraClass?: string): boolean {
+  const canvas = promoCanvasEl;
+  const parent = canvas && canvas.parentElement;
+  if (!canvas || !parent) {
+    return false;
+  }
+  const now = performance.now();
+  const existing = aiLabels.get(key);
+  if (existing) {
+    existing.lastSeen = now;
+    return false;
+  }
+  const el = document.createElement('div');
+  el.className = extraClass ? `ailabel ${extraClass}` : 'ailabel';
+  el.textContent = text;
+  el.style.background = bg;
+  placeAiLabel(el, canvas, aiLabelSeq++);
+  parent.appendChild(el);
+  aiLabels.set(key, { el, lastSeen: now });
+  return true;
+}
+
+function showAiLabel(id: string, name: string): void {
+  if (upsertLabel(`ai:${id}`, name, hslToHex(Math.floor(Math.random() * 360), 70, 50))) {
+    info('support-webview', 'ai-label-add', { id });
+  }
+}
+
+// The LOCAL user working: a single label keyed '__user__', refreshed on each
+// editor / own-terminal pulse, expiring via the same TTL sweep as AI labels.
+function showUserLabel(name: string): void {
+  if (upsertLabel('__user__', name, '#ffd479', 'userlabel')) {
+    info('support-webview', 'user-label-add', {});
+  }
+}
+
+function sweepAiLabels(): void {
+  if (aiLabels.size === 0) {
+    return;
+  }
+  const now = performance.now();
+  for (const [id, entry] of [...aiLabels]) {
+    if (now - entry.lastSeen > AI_LABEL_TTL) {
+      const el = entry.el;
+      el.classList.add('ailabel-out');
+      window.setTimeout(() => {
+        if (el.parentElement) {
+          el.parentElement.removeChild(el);
+        }
+      }, 400);
+      aiLabels.delete(id);
+      info('support-webview', 'ai-label-expire', { id });
+    }
+  }
+}
+// Always-on (cheap) sweep so labels expire even under prefers-reduced-motion.
+window.setInterval(sweepAiLabels, 1000);
+
 window.addEventListener('message', (ev: MessageEvent) => {
-  const m = ev.data as { type?: string } | undefined;
-  if (m && m.type === 'typed') {
-    registerKey(); // editor/terminal activity: key unknown, use a random key or word
+  const m = ev.data as { type?: string; src?: string; id?: string; name?: string; user?: string } | undefined;
+  if (!m) {
+    return;
+  }
+  if (m.type === 'typed') {
+    registerKey(); // editor/terminal/window activity: key unknown, use a random key or word
+    // Local-user activity (editing or typing in our own terminal) floats a
+    // "you" label, mirroring the AI name labels.
+    if ((m.src === 'editor' || m.src === 'terminal-in') && typeof m.user === 'string' && m.user) {
+      showUserLabel(m.user);
+    }
+  } else if (m.type === 'aiActive' && typeof m.id === 'string' && typeof m.name === 'string') {
+    showAiLabel(m.id, m.name);
+    lastTypeAt = performance.now(); // an active AI keeps the NPC awake
   }
 });
 window.addEventListener('keydown', (ev: KeyboardEvent) => {
@@ -293,6 +394,33 @@ function startPromo(): void {
   const W = canvas.width;
   const H = canvas.height;
 
+  // Eyes-follow-cursor (panel only): pupils nudge toward the mouse while it is
+  // over the canvas, clamped to the small slack inside the eye-whites.
+  let pupilDX = 0;
+  let pupilDY = 0;
+  let lastMoveAt = -10000;
+  canvas.addEventListener('mousemove', (ev: MouseEvent) => {
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) {
+      return;
+    }
+    const cx = ((ev.clientX - rect.left) / rect.width) * W;
+    const cy = ((ev.clientY - rect.top) / rect.height) * H;
+    const clamp = (v: number, m: number): number => Math.max(-m, Math.min(m, v));
+    pupilDX = clamp((cx - 80) / 18, 2);
+    pupilDY = clamp((cy - 37) / 28, 1);
+    lastMoveAt = performance.now();
+  });
+  canvas.addEventListener('mouseleave', () => {
+    pupilDX = 0;
+    pupilDY = 0;
+  });
+
+  // Idle drowsiness: after a stretch with no activity the coder dozes off,
+  // closing its eyes in a slow "breathing" rhythm until something wakes it.
+  const SLEEP_AFTER = 15000;
+  let sleepLogged = false;
+
   // Recolourable parts (start near the original teal / red / cyan).
   let hood = makeHoodie(180);
   let mug = makeMug(6);
@@ -383,10 +511,21 @@ function startPromo(): void {
     px(83, 33 + hy, 8, 1, C.hairLine);
     px(69, 35 + hy, 8, 4, C.white);
     px(83, 35 + hy, 8, 4, C.white);
-    px(72, 35 + hy, 3, 4, C.pupil);
-    px(85, 35 + hy, 3, 4, C.pupil);
+    // Pupils track the cursor (clamped) while the mouse is over the panel.
+    const pdx = Math.round(pupilDX);
+    const pdy = Math.round(pupilDY);
+    px(72 + pdx, 35 + hy + pdy, 3, 4, C.pupil);
+    px(85 + pdx, 35 + hy + pdy, 3, 4, C.pupil);
 
-    if (animate && now < blinkUntil) {
+    // Eyes shut on a normal blink, or while dozing (slow breathing rhythm).
+    const idleMs = now - lastTypeAt;
+    const sleeping = animate && idleMs > SLEEP_AFTER;
+    const sleepShut = sleeping && (now / 3900) % 1 < 0.9;
+    if (sleeping !== sleepLogged) {
+      sleepLogged = sleeping;
+      info('support-webview', sleeping ? 'sleep-enter' : 'sleep-wake', {});
+    }
+    if ((animate && now < blinkUntil) || sleepShut) {
       px(69, 35 + hy, 8, 4, C.skin);
       px(83, 35 + hy, 8, 4, C.skin);
     }
@@ -500,8 +639,9 @@ function startPromo(): void {
   info('support-webview', 'promo-animate', {});
   let last = 0;
   const tick = (t: number): void => {
-    // Adaptive throttle: ~30fps while typing (snappy), ~11fps idle (LITE).
-    const interval = t - lastTypeAt < 900 ? 33 : 90;
+    // Adaptive throttle: ~30fps while typing or moving the mouse (snappy),
+    // ~11fps idle (LITE).
+    const interval = t - lastTypeAt < 900 || t - lastMoveAt < 900 ? 33 : 90;
     if (t - last >= interval) {
       last = t;
       if (t >= nextBlinkAt) {

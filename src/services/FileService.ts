@@ -142,6 +142,11 @@ export class FileService {
   // Track upload spinner disposables to dismiss them on completion
   private uploadSpinners: Map<string, vscode.Disposable> = new Map();
 
+  // Extra cleanup callbacks invoked alongside the hourly temp-file cleanup so
+  // other features (e.g. HousekeepingService) can ride the existing timer
+  // instead of starting a new polling loop.
+  private readonly cleanupHooks: Array<() => void> = [];
+
   private constructor() {
     // Normalize temp dir path so Map<localPath> lookups match document.uri.fsPath.
     // On Windows, os.tmpdir() returns uppercase drive letter (C:\...) but VS Code
@@ -625,10 +630,30 @@ export class FileService {
     // Run cleanup every hour
     this.autoCleanupTimer = setInterval(() => {
       this.cleanupOldTempFiles();
+      this.runCleanupHooks();
     }, 60 * 60 * 1000); // 1 hour
 
     // Also run immediately on startup
     this.cleanupOldTempFiles();
+    this.runCleanupHooks();
+  }
+
+  /**
+   * Register a callback invoked alongside the hourly temp-file cleanup. Lets
+   * other features piggy-back on this timer rather than start their own.
+   */
+  registerCleanupHook(cb: () => void): void {
+    this.cleanupHooks.push(cb);
+  }
+
+  private runCleanupHooks(): void {
+    for (const hook of this.cleanupHooks) {
+      try {
+        hook();
+      } catch {
+        /* a failing hook must not break temp-file cleanup */
+      }
+    }
   }
 
   /**

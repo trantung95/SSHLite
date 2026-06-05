@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.9.1 - Support coder "liveliness" upgrade: AI / terminal / cross-window reactions, name labels, cursor-follow, idle drowsiness, and temp-dir housekeeping
+
+### Why
+
+The "Support SSH Lite" coder (added in v0.9.0) only reacted to editing in VS Code's own editors. It stayed still while the user worked in an SSH Lite terminal, while an AI coding assistant was running, or while a second VS Code window was active, and it never showed *which* assistant was busy. v0.9.1 widens the activity signals the coder reacts to (without ever reading content), makes it follow the cursor and doze off when idle, and adds a small housekeeping service that fixes a real leak: orphaned `sshlite-diff-*` temp directories from the "Diff with Local" feature were never cleaned.
+
+**Hard constraint that shaped the design**: a sandboxed VS Code extension cannot observe keystrokes in other VS Code windows, in terminals it did not create, or anywhere in the operating system, without a native global keyboard hook (a keylogger), which is a privacy / Marketplace / LITE problem and was intentionally not built. So every new activity signal is an event-driven on-disk file-change watch (a coarse "something happened" signal, never the file contents), gated to when the Support view is visible.
+
+### Changes
+
+- **Terminal-driven typing** - `TerminalService` now exposes a public event `onActivity: vscode.Event<'input'|'output'>`, a coarse signal that never carries the keystroke or data content. `extension.ts` forwards it to `SupportViewProvider.notifyTyped('terminal-in'|'terminal-out')`, so the coder reacts to typing and output in SSH Lite's own terminals.
+- **AI assistant activity watcher + name labels** - new service `src/services/AiActivityWatchService.ts` watches the transcript / history files that popular AI coding assistants write on disk, using `vscode.createFileSystemWatcher` (event-driven, no polling). On a file change it tells the webview, which floats the tool's NAME as a label at a random position around the coder; multiple active tools show multiple labels; a label disappears about 2 seconds after the tool goes quiet (a time-to-live). It only reads file-change events, never file contents. Watchers attach only while the Support view is visible AND `sshLite.npcAiActivity` is on, skip non-existent directories, and are disposed on hide / disable / deactivate. Tool registry (id -> display name -> watched path):
+
+  | id | display name | watched path |
+  |----|--------------|--------------|
+  | `claude-code` | Claude Code | `~/.claude/projects/**/*.jsonl` |
+  | `codex` | Codex | `~/.codex/sessions/**/*.jsonl` |
+  | `gemini` | Gemini | `~/.gemini/tmp/**/*.json` |
+  | `cursor` | Cursor | `~/.cursor/projects/**/agent-transcripts/*.jsonl` |
+  | `aider` | Aider | `<workspace>/.aider.chat.history.md` |
+  | `cline` | Cline | `globalStorage/saoudrizwan.claude-dev/tasks/**/ui_messages.json` |
+  | `roo` | Roo Code | `globalStorage/rooveterinaryinc.roo-cline/tasks/**/ui_messages.json` |
+  | `kilo` | Kilo Code | `globalStorage/kilocode.kilo-code/tasks/**/ui_messages.json` |
+  | `continue` | Continue | `~/.continue/sessions` + `dev_data` |
+  | `github-copilot` | Copilot | `workspaceStorage/**/chatSessions/*.json` (Copilot Chat only) |
+
+  Granularity is per turn / per tool-call, not per keystroke: the chat input is itself a webview, so typed characters are not written to disk until submit. Inline Copilot completions are not written to disk and cannot be detected.
+- **User presence label** - the same label mechanism now shows the local user working. When the user edits or types in an SSH Lite terminal, the coder floats a single label (keyed `__user__`, styled distinctly and tagged "(you)") with the user's display name from `os.userInfo().username` (resolved in `extension.ts`, default "You"; local, no git or network lookup), expiring with the same ~2 second time-to-live. So the coder shows who is working: the person and any busy AI assistants.
+- **Cross VS Code window beacon** - new service `src/services/BeaconService.ts`. When another VS Code window on the same machine is active, the coder reacts. Mechanism: a tiny beacon file `npc-beacon.json` in `context.globalStorageUri` (shared by all windows of the same VS Code install). The writer (debounced to at most one write per 250ms) writes only `{ v, ts, kind:'editor'|'terminal', from:<instanceId> }`, that is a timestamp, a coarse category, and the window's instance id. No keystrokes, paths, or host names. Other windows watch the file (event-driven), ignore their own writes (self-echo suppression by instance id), ignore malformed or stale (older than 10 seconds) beacons, and pulse the coder. The reader watcher runs only while the Support view is visible; the file is deleted on deactivate.
+- **Idle drowsiness** (webview only) - after about 15 seconds with no activity the coder closes its eyes in a slow breathing rhythm (sleeps); any activity (typing, terminal, AI, cross-window) wakes it instantly. Pure canvas effect, respects `prefers-reduced-motion`.
+- **Eyes follow the cursor** (webview only) - while the mouse is over the Support panel, the coder's pupils track the cursor (clamped to a small range) and recentre when the mouse leaves. Panel-only: no other-window or operating-system tracking is possible for a sandboxed extension.
+- **Housekeeping service + diff temp-dir leak fix** - new service `src/services/HousekeepingService.ts` sweeps stale junk once at activation and then rides FileService's existing hourly cleanup timer via a new `FileService.registerCleanupHook(cb)` (no new polling loop). It removes orphaned `sshlite-diff-*` temp directories (from the "Diff with Local" feature) older than `sshLite.diffTempRetentionHours` (default 24) and delegates to `FileService.cleanupOldTempFiles()`. Root cause also fixed: `RemoteDiffService` now tracks its temp directories and removes them when the diff tab closes (and all remaining ones on dispose); previously these were never cleaned.
+- **New settings** - `sshLite.npcAiActivity` (boolean, default `true`), `sshLite.npcAiActivityTools` (string array, default `[]` = all known tools), `sshLite.npcCrossWindowBeacon` (boolean, default `true`), `sshLite.diffTempRetentionHours` (number, default `24`).
+- **Message contract** - extension -> webview gains `{type:'typed', src, user}` (the source tag of the pulse: editor / selection / terminal-in / terminal-out / beacon, plus the local user display name for the "you" label) and `{type:'aiActive', id, name}` (a named AI tool went active, used to float its label).
+- **No new commands** - the command count stays **108**.
+
+### Backward compatibility
+
+- Existing installs: no command, keybinding, or host-config changes. The new reactions are additive and the two reaction settings (`npcAiActivity`, `npcCrossWindowBeacon`) default ON but are pure cosmetic webview signals; turning them off removes only the coder's reactions, nothing functional.
+- All new file watches are read-only (file-change events, never content), event-driven (no polling), gated to when the Support view is visible, and disposed on hide / disable / deactivate.
+
 ## v0.9.0 — "Support SSH Lite" section: collapsed promo/links WebviewView at the top of the container
 
 ### Why

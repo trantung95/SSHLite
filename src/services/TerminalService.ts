@@ -20,6 +20,15 @@ export class TerminalService {
   private terminals: Map<string, TerminalInfo> = new Map();
   private terminalCounters: Map<string, number> = new Map(); // connectionId -> counter
 
+  /**
+   * Fires on terminal activity so consumers (e.g. the Support view NPC) can react.
+   * Carries only a coarse kind ('input' = user keystroke into the SSH terminal,
+   * 'output' = data streamed back from the server) — never the keystroke/content
+   * itself, so this leaks nothing about what the user typed.
+   */
+  private readonly _onActivity = new vscode.EventEmitter<'input' | 'output'>();
+  public readonly onActivity: vscode.Event<'input' | 'output'> = this._onActivity.event;
+
   private constructor() {}
 
   /**
@@ -128,6 +137,8 @@ export class TerminalService {
 
         // Handle data from remote
         shell.on('data', (data: Buffer | string) => {
+          // Coarse activity signal only — never the data itself.
+          this._onActivity.fire('output');
           const str = typeof data === 'string' ? data : data.toString('utf-8');
           writeEmitter.fire(str);
         });
@@ -156,6 +167,8 @@ export class TerminalService {
       },
 
       handleInput: (data: string) => {
+        // Coarse activity signal only — never the keystroke content.
+        this._onActivity.fire('input');
         // Send input to remote shell
         shell.write(data);
       },
@@ -217,5 +230,6 @@ export class TerminalService {
    */
   dispose(): void {
     this.closeAllTerminals();
+    this._onActivity.dispose();
   }
 }

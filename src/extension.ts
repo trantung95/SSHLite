@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import { ConnectionManager } from './connection/ConnectionManager';
 import { SSHConnection, setGlobalState } from './connection/SSHConnection';
 import { HostService } from './services/HostService';
@@ -17,6 +18,10 @@ import { CommandGuard } from './services/CommandGuard';
 import { RemoteEnvDocumentProvider, RemoteCronDocumentProvider, ENV_SCHEME, CRON_SCHEME } from './providers/VirtualDocProviders';
 import { registerSshToolsCommands } from './commands/sshToolsCommands';
 import { ProgressiveDownloadManager } from './services/ProgressiveDownloadManager';
+import { BeaconService } from './services/BeaconService';
+import { AiActivityWatchService } from './services/AiActivityWatchService';
+import { HousekeepingService } from './services/HousekeepingService';
+import { RemoteDiffService, DIFF_TMP_PREFIX } from './services/RemoteDiffService';
 import { HostTreeProvider, ServerTreeItem, UserCredentialTreeItem, CredentialTreeItem, PinnedFolderTreeItem, setExtensionPath } from './providers/HostTreeProvider';
 import { SavedCredential, PinnedFolder } from './services/CredentialService';
 import { IHostConfig, ConnectionState } from './types';
@@ -270,7 +275,16 @@ export function activate(context: vscode.ExtensionContext): void {
   // retainContextWhenHidden:false keeps it LITE — VS Code tears the webview down
   // when collapsed and may re-resolve it on re-show (the provider clears its
   // disposables at the top of resolveWebviewView to stay leak-safe).
-  const supportViewProvider = new SupportViewProvider(context.extensionUri, context.extensionPath);
+  // Resolve a display name for the "you are working" label (mirrors the AI name
+  // labels). The OS login name is always available and local; default to 'You'.
+  const npcUserName = (() => {
+    try {
+      return os.userInfo().username || 'You';
+    } catch {
+      return 'You';
+    }
+  })();
+  const supportViewProvider = new SupportViewProvider(context.extensionUri, context.extensionPath, npcUserName);
   safeStep('support-webview-view', () =>
     context.subscriptions.push(
       vscode.window.registerWebviewViewProvider(SupportViewProvider.viewType, supportViewProvider, {
@@ -278,21 +292,82 @@ export function activate(context: vscode.ExtensionContext): void {
       })
     )
   );
+  context.subscriptions.push({ dispose: () => supportViewProvider.dispose() });
 
-  // Make the promo coder "type" when the user is active. The webview can't see
-  // raw keystrokes (sandboxed — and there is no VS Code API for keys in other
-  // extensions' webviews or the terminal; that would need an OS keylogger), so
-  // we forward a pulse on the broadest *supported* signals: editing a document,
-  // moving the cursor / navigating in an editor, and running a terminal command
-  // (shell integration). notifyTyped() is a no-op unless the Support view is
-  // expanded + visible, and it self-throttles, so this is cheap.
+  // ── NPC liveliness: external activity sources ────────────────────────────
+  // Cross-window beacon (nudge the NPC when another VS Code window is active)
+  // and AI-assistant activity watcher (show a name label when a coding
+  // assistant is working). Both only do work while the Support view is visible
+  // (gated via onDidChangeVisible below), so the NPC costs nothing while collapsed.
+  const beaconUri = vscode.Uri.joinPath(context.globalStorageUri, 'npc-beacon.json');
+  const beaconService = new BeaconService(beaconUri, () => supportViewProvider.notifyTyped('beacon'));
+  const aiActivityService = new AiActivityWatchService(
+    {
+      home: os.homedir(),
+      workspaceFolders: vscode.workspace.workspaceFolders ?? [],
+      globalStorageParent: vscode.Uri.joinPath(context.globalStorageUri, '..'),
+    },
+    (id, name) => supportViewProvider.notifyAiActive(id, name)
+  );
+
+  const applyNpcSettings = (): void => {
+    const cfg = vscode.workspace.getConfiguration('sshLite');
+    beaconService.setEnabled(cfg.get<boolean>('npcCrossWindowBeacon', true));
+    aiActivityService.setEnabled(cfg.get<boolean>('npcAiActivity', true));
+    aiActivityService.setToolFilter(cfg.get<string[]>('npcAiActivityTools', []) ?? []);
+  };
+  safeStep('npc-external-sources', applyNpcSettings);
+
+  // Boundary rate-limit for the terminal-driven beacon write (server output can
+  // fire per data chunk).
+  let lastTerminalBeaconAt = 0;
+
+  // Make the promo coder "type" when the user is active, and (if enabled) write
+  // a cross-window beacon so other VS Code windows' NPCs react too. The webview
+  // can't see raw keystrokes (sandboxed — no VS Code API for keys in other
+  // windows/extensions/terminals; that would need an OS keylogger), so we use
+  // the broadest *supported* signals: editing a document, moving the cursor,
+  // running a terminal command, and SSH Lite's own terminal I/O. notifyTyped()
+  // is a no-op unless the Support view is visible, and it self-throttles.
   context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument((e) => {
       if (e.contentChanges.length > 0) {
-        supportViewProvider.notifyTyped();
+        supportViewProvider.notifyTyped('editor');
+        void beaconService.writeActivity('editor');
       }
     }),
-    vscode.window.onDidChangeTextEditorSelection(() => supportViewProvider.notifyTyped())
+    vscode.window.onDidChangeTextEditorSelection(() => {
+      supportViewProvider.notifyTyped('editor');
+      void beaconService.writeActivity('editor');
+    }),
+    // SSH Lite's own terminal keystrokes / server output (coarse, no content).
+    // notifyTyped self-throttles per source; rate-limit the beacon write at the
+    // boundary so high-throughput server output doesn't schedule a microtask per
+    // data chunk.
+    terminalService.onActivity((kind) => {
+      supportViewProvider.notifyTyped(kind === 'input' ? 'terminal-in' : 'terminal-out');
+      const now = Date.now();
+      if (now - lastTerminalBeaconAt >= 250) {
+        lastTerminalBeaconAt = now;
+        void beaconService.writeActivity('terminal');
+      }
+    }),
+    // External-source lifecycle: only watch while the NPC is on screen.
+    supportViewProvider.onDidChangeVisible((visible) => {
+      beaconService.setVisible(visible);
+      aiActivityService.setVisible(visible);
+    }),
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (
+        e.affectsConfiguration('sshLite.npcCrossWindowBeacon') ||
+        e.affectsConfiguration('sshLite.npcAiActivity') ||
+        e.affectsConfiguration('sshLite.npcAiActivityTools')
+      ) {
+        applyNpcSettings();
+      }
+    }),
+    { dispose: () => beaconService.dispose() },
+    { dispose: () => aiActivityService.dispose() }
   );
   // Terminal shell-execution events are stable only on newer VS Code; feature-detect
   // so we keep working on engines down to ^1.85 without an activation error.
@@ -300,8 +375,32 @@ export function activate(context: vscode.ExtensionContext): void {
     onDidStartTerminalShellExecution?: (cb: () => void) => vscode.Disposable;
   }).onDidStartTerminalShellExecution;
   if (typeof onTerminalExec === 'function') {
-    context.subscriptions.push(onTerminalExec(() => supportViewProvider.notifyTyped()));
+    context.subscriptions.push(onTerminalExec(() => {
+      supportViewProvider.notifyTyped('terminal-out');
+      void beaconService.writeActivity('terminal');
+    }));
   }
+
+  // ── Housekeeping ─────────────────────────────────────────────────────────
+  // Sweep stale junk (orphaned `sshlite-diff-*` temp dirs from crashed sessions,
+  // plus FileService temp/backups past retention) once at activation, then ride
+  // FileService's existing hourly cleanup timer — no new polling loop.
+  // RemoteDiffService cleans its own temp dirs when a diff tab closes; this is
+  // the safety net for leftovers.
+  const housekeepingService = new HousekeepingService({
+    rules: [
+      {
+        dir: os.tmpdir(),
+        prefix: DIFF_TMP_PREFIX,
+        maxAgeMs:
+          vscode.workspace.getConfiguration('sshLite').get<number>('diffTempRetentionHours', 24) * 60 * 60 * 1000,
+        kind: 'dir',
+      },
+    ],
+    delegates: [() => { fileService.cleanupOldTempFiles(); }],
+  });
+  safeStep('housekeeping', () => { void housekeepingService.sweep(); });
+  fileService.registerCleanupHook(() => { void housekeepingService.sweep(); });
 
   // Register tree views (showCollapseAll: false - we provide custom toggle buttons).
   // Each createTreeView is wrapped in safeStep so a single VS Code-level
@@ -4024,6 +4123,7 @@ export function deactivate(): void {
   activityService.dispose();
   portForwardService.dispose();
   connectionManager.dispose();
+  RemoteDiffService.getInstance().dispose(); // remove any leftover diff temp dirs
 
   log('SSH Lite extension deactivated');
   infoLog('lifecycle', 'extension deactivated');

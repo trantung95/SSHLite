@@ -1,3 +1,4 @@
+// @author hybr8
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -11,6 +12,12 @@ type SupportMessage =
   | { type: 'action'; cmd?: unknown }
   | { type: 'log'; level?: unknown; scope?: unknown; event?: unknown; payload?: unknown }
   | { type: 'webviewError'; message?: unknown; stack?: unknown };
+
+/**
+ * Source of a typing pulse, forwarded to the webview so it can flavour the
+ * popup. `ai:<id>` is used for AI-assistant file activity.
+ */
+export type TypedSource = 'editor' | 'terminal-in' | 'terminal-out' | 'beacon' | `ai:${string}`;
 
 /**
  * SupportViewProvider — the extension's first WebviewView (note: View, not
@@ -47,9 +54,27 @@ export class SupportViewProvider implements vscode.WebviewViewProvider {
   /** Throttle for typing pulses (coalesces paste / programmatic bursts). */
   private lastTypeNotify = 0;
 
+  /** Per-source throttle for activity pulses (keyed by `src`). */
+  private readonly lastNotifyBySrc = new Map<string, number>();
+
+  /**
+   * Fires when the view becomes visible (true) or hidden/disposed (false).
+   * External activity watchers (AI activity, cross-window beacon) gate their
+   * file watchers on this so they do no work while the NPC is not on screen.
+   */
+  private readonly _onDidChangeVisible = new vscode.EventEmitter<boolean>();
+  public readonly onDidChangeVisible: vscode.Event<boolean> = this._onDidChangeVisible.event;
+
+  /** Whether the view is currently resolved and visible. */
+  public get isVisible(): boolean {
+    return !!this.view && this.view.visible;
+  }
+
   constructor(
     private readonly extensionUri: vscode.Uri,
-    private readonly extensionPath: string
+    private readonly extensionPath: string,
+    /** Display name shown on the "you are working" label (OS/git user name). */
+    private readonly userName: string = 'You'
   ) {}
 
   public resolveWebviewView(
@@ -60,8 +85,10 @@ export class SupportViewProvider implements vscode.WebviewViewProvider {
     infoLog('support-view', 'resolve', { visible: webviewView.visible });
 
     // Defensive: VS Code may re-resolve this view (e.g. after it was hidden with
-    // retainContextWhenHidden:false). Tear down any prior subscriptions first so
-    // listeners don't accumulate across show/hide cycles.
+    // retainContextWhenHidden:false). Signal "not visible" so any watchers tied
+    // to the previous view stop before we re-wire, then tear down prior
+    // subscriptions so listeners don't accumulate across show/hide cycles.
+    this._onDidChangeVisible.fire(false);
     this.disposables.forEach((d) => d.dispose());
     this.disposables.length = 0;
     this.view = webviewView;
@@ -80,7 +107,10 @@ export class SupportViewProvider implements vscode.WebviewViewProvider {
     );
 
     webviewView.onDidChangeVisibility(
-      () => infoLog('support-view', 'visibility', { visible: webviewView.visible }),
+      () => {
+        infoLog('support-view', 'visibility', { visible: webviewView.visible });
+        this._onDidChangeVisible.fire(webviewView.visible);
+      },
       undefined,
       this.disposables
     );
@@ -93,10 +123,14 @@ export class SupportViewProvider implements vscode.WebviewViewProvider {
         }
         this.disposables.forEach((d) => d.dispose());
         this.disposables.length = 0;
+        this._onDidChangeVisible.fire(false);
       },
       undefined,
       this.disposables
     );
+
+    // Announce the initial visibility so gated watchers can attach on first resolve.
+    this._onDidChangeVisible.fire(webviewView.visible);
   }
 
   /**
@@ -105,17 +139,56 @@ export class SupportViewProvider implements vscode.WebviewViewProvider {
    * only posts when the view is actually visible (collapsed → no work), and
    * coalesces bursts so a paste / multi-cursor edit is one tap, not hundreds.
    */
-  public notifyTyped(): void {
+  public notifyTyped(src: TypedSource = 'editor'): void {
     const view = this.view;
     if (!view || !view.visible) {
       return;
     }
     const now = Date.now();
-    if (now - this.lastTypeNotify < 30) {
+    // Server output (and AI file churn) is high-volume, so throttle it harder
+    // than real user typing. Throttle per-source so a noisy source can't starve
+    // a quiet one.
+    const minGap = src === 'terminal-out' || src.startsWith('ai:') ? 150 : 30;
+    const last = this.lastNotifyBySrc.get(src) ?? 0;
+    if (now - last < minGap) {
       return;
     }
+    this.lastNotifyBySrc.set(src, now);
     this.lastTypeNotify = now;
-    void view.webview.postMessage({ type: 'typed' });
+    // `user` lets the webview show a "you are working" label (mirrors the AI
+    // name labels) when the source is the local user (editor / own terminal).
+    void view.webview.postMessage({ type: 'typed', src, user: this.userName });
+    diagLog('support-view', 'typed', { src });
+  }
+
+  /**
+   * Tell the webview an AI coding assistant is currently active so it can show a
+   * floating name label around the NPC. The label is removed by the webview once
+   * no further activity arrives for a few seconds (TTL). Carries only the tool's
+   * id + display name — never any transcript content.
+   */
+  public notifyAiActive(id: string, name: string): void {
+    const view = this.view;
+    if (!view || !view.visible) {
+      return;
+    }
+    const now = Date.now();
+    const key = `ai:${id}`;
+    const last = this.lastNotifyBySrc.get(key) ?? 0;
+    if (now - last < 150) {
+      return;
+    }
+    this.lastNotifyBySrc.set(key, now);
+    this.lastTypeNotify = now;
+    void view.webview.postMessage({ type: 'aiActive', id, name });
+    diagLog('support-view', 'ai-active', { id });
+  }
+
+  /** Dispose provider-level resources (the visibility event emitter). */
+  public dispose(): void {
+    this._onDidChangeVisible.dispose();
+    this.disposables.forEach((d) => d.dispose());
+    this.disposables.length = 0;
   }
 
   /** Generate a CSP nonce per webview load. */

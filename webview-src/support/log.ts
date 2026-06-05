@@ -1,5 +1,7 @@
 // webview-src/support/log.ts
 //
+// @author hybr8
+//
 // Webview-side logger. Cannot write to the extension's Output channel
 // directly, so it posts {type:'log', level, scope, event, payload} messages
 // back to the extension which forwards via infoLog/diagLog.

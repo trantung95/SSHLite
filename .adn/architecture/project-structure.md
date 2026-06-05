@@ -58,8 +58,14 @@ SSHLite/
       SshKeyService.test.ts               # Key service tests
       SystemToolsService.ts               # Interactive process kill + systemctl actions
       SystemToolsService.test.ts          # System tools parsers + input validation tests
-      RemoteDiffService.ts                # Remote file ↔ local file diff
+      RemoteDiffService.ts                # Remote file ↔ local file diff (tracks + cleans its sshlite-diff-* temp dirs)
       RemoteDiffService.test.ts           # Diff service tests
+      AiActivityWatchService.ts           # Watches AI-assistant transcript files → Support coder name labels
+      AiActivityWatchService.test.ts      # AI activity watcher tests
+      BeaconService.ts                    # Cross-window activity beacon via globalStorageUri file
+      BeaconService.test.ts               # Beacon service tests
+      HousekeepingService.ts              # Stale temp-dir sweep (rides FileService hourly timer)
+      HousekeepingService.test.ts         # Housekeeping tests
     commands/
       sshToolsCommands.ts                 # Entry point + helpers for SSH Tools commands
       processAndServiceCommands.ts        # showRemoteProcesses + manageRemoteService handlers
@@ -124,7 +130,7 @@ SSHLite/
 | Category | Files | Test Files |
 |----------|-------|------------|
 | Connection | 2 | 2 |
-| Services | 12 | 14 |
+| Services | 15 | 17 |
 | Providers | 6 | 6 |
 | Webviews | 1 | 1 |
 | Types | 2 | 1 |
@@ -132,7 +138,7 @@ SSHLite/
 | Mocks | 2 | -- |
 | Integration | -- | 8 |
 | Entry point | 1 | 1 |
-| **Total** | **29** | **34** |
+| **Total** | **32** | **37** |
 
 ---
 

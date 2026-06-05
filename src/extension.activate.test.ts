@@ -51,6 +51,8 @@ function makeMockContext(
     subscriptions: [] as { dispose(): unknown }[],
     extension: { packageJSON: { version: '0.8.11-test' }, extensionKind },
     extensionPath: '/fake/extension/path',
+    extensionUri: vscode.Uri.file('/fake/extension/path'),
+    globalStorageUri: vscode.Uri.file('/fake/globalStorage/hybr8.ssh-lite'),
     globalState: {
       get: jest.fn().mockReturnValue(undefined),
       update: jest.fn().mockResolvedValue(undefined),

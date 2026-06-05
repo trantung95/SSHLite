@@ -11,6 +11,8 @@
  * are too tightly coupled to VS Code to unit test meaningfully.
  */
 
+import { EventEmitter } from 'events';
+import * as vscode from 'vscode';
 import { TerminalService } from './TerminalService';
 
 function resetService(): TerminalService {
@@ -83,6 +85,55 @@ describe('TerminalService', () => {
       const prodId = '10.0.0.1:22:admin-1';
       const customPortId = '10.0.0.1:2222:admin-1';
       expect(prodId).not.toBe(customPortId);
+    });
+  });
+
+  describe('onActivity', () => {
+    afterEach(() => {
+      (vscode.window.createTerminal as jest.Mock).mockReset().mockReturnValue({
+        show: jest.fn(),
+        dispose: jest.fn(),
+      });
+    });
+
+    it('fires "input" on pty keystrokes and "output" on server data — no content', async () => {
+      let pty: any;
+      (vscode.window.createTerminal as jest.Mock).mockImplementation((opts: { pty: unknown }) => {
+        pty = opts.pty;
+        return { show: jest.fn(), dispose: jest.fn() };
+      });
+
+      const shell: any = new EventEmitter();
+      shell.write = jest.fn();
+      shell.setWindow = jest.fn();
+      shell.end = jest.fn();
+      const connection: any = {
+        id: 'c1',
+        host: { name: 'host' },
+        shell: jest.fn().mockResolvedValue(shell),
+      };
+
+      const events: Array<'input' | 'output'> = [];
+      service.onActivity((k) => events.push(k));
+
+      await service.createTerminal(connection);
+      pty.open({ rows: 24, columns: 80 }); // registers shell.on('data')
+
+      pty.handleInput('secret-keystrokes');
+      expect(events).toContain('input');
+      expect(shell.write).toHaveBeenCalledWith('secret-keystrokes');
+
+      shell.emit('data', Buffer.from('server output'));
+      expect(events).toContain('output');
+    });
+
+    it('dispose() disposes the activity emitter (no events after)', async () => {
+      const events: string[] = [];
+      service.onActivity((k) => events.push(k));
+      service.dispose();
+      // After dispose the emitter has no listeners; firing internally is a no-op.
+      expect(() => service.dispose()).not.toThrow();
+      expect(events).toHaveLength(0);
     });
   });
 });

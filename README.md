@@ -70,16 +70,19 @@ Two edge cases worth knowing:
 
 ## Release Notes
 
+**0.9.1** - **The Support coder comes alive**: the pixel-art coder in the "Support SSH Lite" panel now reacts when your AI assistants, terminals, and other VS Code windows are busy, shows who is working (you and your AI assistants by name), follows your cursor, and dozes off when idle; plus automatic cleanup of leftover diff temp files.
+
+- **Reacts to your AI assistants** - when Claude Code, Codex, Gemini, Cursor, Aider, Cline, Roo Code, Kilo Code, Continue, or Copilot Chat is working, the coder reacts and floats that tool's name as a label; several busy tools show several labels, each fading about two seconds after it goes quiet. It only watches the on-disk transcript files those tools write (activity signal, never the content), and only while the panel is open.
+- **Reacts to terminals and other windows** - typing or output in an SSH Lite terminal makes the coder type along, and when another VS Code window on the same machine is active the coder pulses too (via a tiny shared timestamp file, no keystrokes or paths).
+- **Eyes follow your cursor, dozes when idle** - the coder's eyes track your mouse over the panel and recentre when it leaves; after about 15 seconds of no activity it closes its eyes and breathes slowly, waking instantly on any activity. Pure canvas effect, respects reduced-motion.
+- **Automatic temp cleanup** - leftover `sshlite-diff-*` folders from "Diff with Local" are now removed when the diff tab closes, with a safety-net sweep for anything older than `sshLite.diffTempRetentionHours` (default 24).
+- **Privacy by design** - a sandboxed extension cannot see keystrokes in other windows, terminals it did not open, or the OS without a native keylogger, which SSH Lite will never ship. All new signals are event-driven file-change watches with no content, gated to when the panel is visible, and toggleable via `sshLite.npcAiActivity` and `sshLite.npcCrossWindowBeacon`.
+
 **0.9.0** - **New "Support SSH Lite" section**: a collapsed-by-default panel at the top of the SSH Lite sidebar with an animated pixel-art banner and quick links. None of it gets in the way of the main views.
 
 - **One-click links** - Report a bug or suggest a feature (GitHub Issues), Donate (opens a "Send me a Banh Mi" page with QR codes + copy-able Solana / TON addresses), Star on GitHub, Rate on Marketplace, and Share. Also available from the Command Palette.
 - **A coder who types when you type** - the pixel-art coder presses keys in sync with your editing (and terminal commands). Little keycaps of the keys (and the odd word) pop up around the keyboard; click one to dismiss it, or set how many appear per minute. Click the coder's **shirt**, **coffee mug**, or **glasses** to recolour them, and zoom the animation independently of the sidebar width.
 - **Lightweight by design** - drawn on a canvas (no network calls, nothing phoned home, pauses when hidden); the donate QR images are bundled, not fetched.
-
-**0.8.18** — **Remote-SSH upload fix**: in a Remote-SSH window, **Upload File** opened a picker showing the *remote server's* files instead of your own machine — even with SSH Lite installed locally (Download already worked). Cause: the upload dialog wasn't told where to open, so it fell back to the remote workspace folder; Download didn't have this because it already opened at your local home.
-
-- **Upload now opens on your machine** — the file picker opens at your local home directory (same as Download), so it browses your own filesystem. Just update to 0.8.18 — no reinstall or host change needed.
-- **Hardening** — the selected file is read through `vscode.workspace.fs`, so any URI scheme (`file:`, `vscode-remote:`, custom providers) is handled and bytes are preserved end to end. If SSH Lite is genuinely installed *on* a remote host, the upload command now points you to **Install in Local** (dismiss via `sshLite.suppressLocalInstallHint`).
 
 [Full changelog](https://github.com/trantung95/SSHLite/blob/master/.adn/CHANGELOG.md)
 

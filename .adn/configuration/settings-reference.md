@@ -137,7 +137,22 @@ File opened → size > progressiveDownloadThreshold (1MB)?
 | Setting | Type | Default | Min | Description |
 |---------|------|---------|-----|-------------|
 | `sshLite.tempFileRetentionHours` | `number` | `504` | `0` | Auto-delete temp files older than N hours. Default: 504 = 21 days. **0 = disabled** |
+| `sshLite.diffTempRetentionHours` | `number` | `24` | -- | Auto-delete orphaned `sshlite-diff-*` temp directories (from "Diff with Local") older than N hours. Swept by `HousekeepingService` at activation and on FileService's hourly cleanup timer. The "Diff with Local" feature already removes its own temp dir when the diff tab closes; this is the safety net for any left behind |
 | `sshLite.auditLogPath` | `string` | `""` | — | Custom audit log path. Empty = default location |
+
+---
+
+## Support View NPC (animated coder)
+
+The "Support SSH Lite" panel's pixel-art coder reacts to activity. These settings control the two reaction sources that look outside the current VS Code window. Both default **ON** and both are cosmetic: turning either off removes only the coder's reactions, nothing functional.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `sshLite.npcAiActivity` | `boolean` | `true` | React (and float a name label) when a known AI coding assistant is working. Watches the transcript / history files those tools write on disk via `vscode.createFileSystemWatcher`: file-change events only, never the file contents. Watchers attach only while the Support view is visible and are disposed on hide / disable / deactivate |
+| `sshLite.npcAiActivityTools` | `string[]` | `[]` | Which AI tools to watch. **Empty = all known tools** (`claude-code`, `codex`, `gemini`, `cursor`, `aider`, `cline`, `roo`, `kilo`, `continue`, `github-copilot`). List specific ids to limit the set |
+| `sshLite.npcCrossWindowBeacon` | `boolean` | `true` | React when another VS Code window of the same install is active. Uses a tiny shared beacon file in `globalStorageUri` carrying only a timestamp, a coarse `editor`/`terminal` category, and the window's instance id; no keystrokes, paths, or host names. Event-driven (no polling); the reader runs only while the Support view is visible; the file is deleted on deactivate |
+
+**Privacy posture (LITE)**: a sandboxed extension cannot observe keystrokes in other VS Code windows, in terminals it did not create, or anywhere in the operating system, without a native global keyboard hook (a keylogger), which SSH Lite will not ship. So both signals above are coarse, content-free, event-driven file watches, gated to when the Support view is visible. See `.adn/features/support-view.md`.
 
 ---
 

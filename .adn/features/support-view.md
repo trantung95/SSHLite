@@ -3,7 +3,10 @@
 The **"Support SSH Lite"** section is the first entry in the `sshLite` activity-bar
 container — above SSH Hosts — and is **collapsed by default**. It holds SSH Lite's
 *secondary* purposes (not its core function): an animated promo banner plus quick
-links to report a bug, donate, star/rate/share. Added in **v0.9.0**.
+links to report a bug, donate, star/rate/share. Added in **v0.9.0**. The coder's
+"liveliness" was widened in **v0.9.1** (reacts to SSH Lite terminals, AI
+assistants, and other VS Code windows; floats AI tool name labels; follows the
+cursor; dozes off when idle - see the sections below).
 
 ## Why a WebviewView (not a TreeDataProvider)
 
@@ -134,34 +137,135 @@ derives the shades, then redraws immediately.
 
 | message | trigger / effect |
 |---------|------------------|
-| `{type:'typed'}` | sent by `notifyTyped()` on every editor text change → the coder taps a hand |
+| `{type:'typed', src}` | sent by `notifyTyped(src)` on any activity pulse → wakes the coder and taps a hand. `src` tags the source: editor / selection / terminal-in / terminal-out / beacon (cross-window) |
+| `{type:'aiActive', id, name}` | a known AI coding assistant went active (a watched transcript file changed) → float that tool's `name` as a label around the coder. `id` keys the per-tool label so repeats refresh the same label's time-to-live |
 
 ## Typing reaction
 
 The coder reacts to the user's activity. A webview is sandboxed and **cannot see
 keystrokes**, so the extension bridges activity to it. `extension.ts` calls
-`supportViewProvider.notifyTyped()` on the **broadest supported signals**:
+`supportViewProvider.notifyTyped(src)` on the **broadest supported signals**:
 
-- `vscode.workspace.onDidChangeTextDocument` — editing a document.
-- `vscode.window.onDidChangeTextEditorSelection` — moving the cursor / navigating
-  in an editor.
-- `vscode.window.onDidStartTerminalShellExecution` — running a terminal command
+- `vscode.workspace.onDidChangeTextDocument`, editing a document (`src='editor'`).
+- `vscode.window.onDidChangeTextEditorSelection`, moving the cursor / navigating
+  in an editor (`src='selection'`).
+- `vscode.window.onDidStartTerminalShellExecution`, running a terminal command
   (feature-detected; stable only on newer VS Code, so guarded for engines ^1.85).
+- `TerminalService.onActivity`, typing or output in an **SSH Lite terminal**
+  (`src='terminal-in'` / `'terminal-out'`; a coarse direction signal, never the
+  keystroke or data content; see `.adn/features/terminal-port-forwarding.md`).
+- `BeaconService`, another VS Code window of the same install is active
+  (`src='beacon'`; see "Cross-window beacon" below).
 
-`notifyTyped()` posts `{type:'typed'}` to the webview — but only when the view is
-**visible** (collapsed → no-op, zero cost) and **throttled** to ~30ms. In the
-webview, while typing is recent both hands **bob** up/down (alternating); they
+`notifyTyped(src)` posts `{type:'typed', src}` to the webview, but only when the
+view is **visible** (collapsed -> no-op, zero cost) and **throttled** to ~30ms. In
+the webview, while typing is recent both hands **bob** up/down (alternating); they
 rest when idle. The webview also reacts to its own `keydown` (for when the panel
-itself has focus).
+itself has focus). Any pulse also **wakes** the coder out of idle drowsiness (see
+below).
 
 **Hard limit (why it can't be truly global):** there is **no VS Code API** for an
 extension to observe keystrokes in **another extension's webview** (e.g. the
-Claude Code chat box), the **integrated terminal** (per-key), or
-`InputBox`/QuickPick — those are sandboxed. The only way to capture global
+Claude Code chat box), the **integrated terminal** of another window (per-key), or
+`InputBox`/QuickPick; those are sandboxed. The only way to capture global
 keystrokes is an **OS-level keylogger** (native key hook), which we will **not**
 ship: it is a privacy violation, needs OS accessibility permissions, would be
-rejected/removed from the Marketplace, and is against LITE. So coverage is "the
-broadest VS Code allows", not literally everywhere.
+rejected/removed from the Marketplace, and is against LITE. This is exactly why the
+AI-activity and cross-window signals below use **on-disk file-change watching** (a
+coarse "something happened" signal, never the content) rather than trying to read
+another window's input. So coverage is "the broadest VS Code allows", not literally
+everywhere.
+
+## AI assistant activity + name labels (`AiActivityWatchService`)
+
+`src/services/AiActivityWatchService.ts` makes the coder react when a popular AI
+coding assistant is working, and floats that tool's **name** as a label around the
+coder. It watches the transcript / history files those tools write on disk using
+`vscode.createFileSystemWatcher` (event-driven, **no polling**). On a file-change
+event it calls `supportViewProvider.notifyAiActive(id, name)`, which posts
+`{type:'aiActive', id, name}`; the webview floats the name at a random position.
+Multiple active tools show multiple labels; a label disappears about **2 seconds**
+after the tool goes quiet (a time-to-live keyed by `id`).
+
+**Reads file-change events only, never file contents.** Watchers attach only while
+the Support view is **visible** AND `sshLite.npcAiActivity` is on, **skip
+non-existent directories**, and are disposed on hide / disable / deactivate.
+
+**Watching paths outside the workspace** requires
+`new vscode.RelativePattern(vscode.Uri.file(base), glob)`; a plain string glob only
+watches inside the open workspace folder (needs `engines.vscode >= 1.64`; we are
+`^1.85`).
+
+Tool registry (id → display name → watched path):
+
+| id | display name | watched path |
+|----|--------------|--------------|
+| `claude-code` | Claude Code | `~/.claude/projects/**/*.jsonl` |
+| `codex` | Codex | `~/.codex/sessions/**/*.jsonl` |
+| `gemini` | Gemini | `~/.gemini/tmp/**/*.json` |
+| `cursor` | Cursor | `~/.cursor/projects/**/agent-transcripts/*.jsonl` |
+| `aider` | Aider | `<workspace>/.aider.chat.history.md` |
+| `cline` | Cline | `globalStorage/saoudrizwan.claude-dev/tasks/**/ui_messages.json` |
+| `roo` | Roo Code | `globalStorage/rooveterinaryinc.roo-cline/tasks/**/ui_messages.json` |
+| `kilo` | Kilo Code | `globalStorage/kilocode.kilo-code/tasks/**/ui_messages.json` |
+| `continue` | Continue | `~/.continue/sessions` + `dev_data` |
+| `github-copilot` | Copilot | `workspaceStorage/**/chatSessions/*.json` (Copilot Chat only) |
+
+`sshLite.npcAiActivityTools` (default `[]`) limits the set: empty means **all known
+tools**; otherwise only the listed ids are watched.
+
+**Granularity is per turn / per tool-call, not per keystroke.** The chat input of
+each tool is itself a webview, so typed characters are not written to disk until
+submit. Inline Copilot completions are never written to disk, so they cannot be
+detected (Copilot Chat sessions are).
+
+## User presence label
+
+The same floating-label mechanism shows **the local user** working, mirroring the
+AI labels. When the user is active in an editor or in an SSH Lite terminal, the
+`{type:'typed', src, user}` message carries a display name and the webview floats a
+single label keyed `__user__` (styled distinctly and tagged "(you)"), refreshed on
+each pulse and expiring with the same ~2 second time-to-live. The name comes from
+`os.userInfo().username` (resolved in `extension.ts`, defaulting to "You") - always
+available and local, no git or network lookup. Net effect: the coder shows *who* is
+working - the person and any busy AI assistants - at a glance.
+
+## Cross-window beacon (`BeaconService`)
+
+`src/services/BeaconService.ts` makes the coder react when **another VS Code window
+on the same machine** is active. There is no VS Code API to observe other windows,
+so it uses a tiny shared file as a one-way activity channel:
+`context.globalStorageUri` is shared by **all windows of the same VS Code install**,
+so a small file there plus `createFileSystemWatcher` is a no-polling cross-window
+activity signal.
+
+- **Writer**: debounced to at most one write per **250ms**; writes only
+  `{ v, ts, kind:'editor'|'terminal', from:<instanceId> }`, that is a schema
+  version, a timestamp, a coarse category, and the window's instance id. **No
+  keystrokes, paths, or host names.**
+- **Reader**: watches `npc-beacon.json`, **ignores its own writes** (self-echo
+  suppression by `from === instanceId`), **ignores malformed or stale** beacons
+  (older than 10 seconds), and on a valid foreign beacon calls
+  `notifyTyped('beacon')` to pulse the coder.
+- **Lifecycle**: the reader watcher runs **only while the Support view is
+  visible**; gated by `sshLite.npcCrossWindowBeacon` (default on); the beacon file
+  is **deleted on deactivate**.
+
+## Idle drowsiness (webview only)
+
+After about **15 seconds** with no activity the coder closes its eyes in a slow
+breathing rhythm (sleeps). **Any** activity (typing, terminal, AI, or
+cross-window) wakes it instantly (every pulse resets the idle timer). Pure canvas
+effect, no message round-trip; respects `prefers-reduced-motion` (no breathing
+animation, just the static closed-eye frame).
+
+## Eyes follow the cursor (webview only)
+
+While the mouse is over the Support panel, the coder's **pupils track the cursor**
+(clamped to a small range so the eyes never leave the sockets); they **recentre**
+when the mouse leaves the panel. This is **panel-only**: a sandboxed extension
+cannot track the cursor in other windows or anywhere in the operating system, so no
+attempt is made. Pure canvas effect.
 
 ## Key popups, zoom, and the rate input
 
@@ -235,6 +339,13 @@ The sidebar view resizes on **both axes** — width (drag the sidebar) and heigh
 - **No remote fetch** (`default-src 'none'`; canvas-drawn promo; donate/share via
   clipboard; links via user-initiated `openExternal`), **no SSH / server commands**
   (no `CommandGuard` needed).
+- **Activity signals are event-driven and visible-gated**: the AI-activity watcher
+  (`AiActivityWatchService`) and cross-window beacon (`BeaconService`) use
+  `createFileSystemWatcher` (no polling), attach **only while the Support view is
+  visible** AND the setting is on (`sshLite.npcAiActivity` /
+  `sshLite.npcCrossWindowBeacon`, both default on), read **file-change events only,
+  never contents**, and are disposed on hide / disable / deactivate. The cursor-
+  follow and idle-drowsiness effects are pure webview canvas (no extension traffic).
 
 ## Tests
 

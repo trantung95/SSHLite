@@ -28,6 +28,10 @@ sshLite.openTerminalHere command:
 
 **LITE principle**: Terminals reuse the existing SSH connection. No new SSH session is created — `connection.shell()` opens a new channel on the existing multiplexed connection.
 
+### Activity event (`onActivity`)
+
+`TerminalService` exposes a public event `onActivity: vscode.Event<'input'|'output'>`, a coarse signal that fires on terminal input (user typing) or output (data from the shell), carrying only the direction tag, never the keystroke or data content. `extension.ts` forwards it to the Support view coder via `SupportViewProvider.notifyTyped('terminal-in'|'terminal-out')`, so the animated coder reacts to activity in SSH Lite's own terminals. See `.adn/features/support-view.md`.
+
 ### Terminal Lifecycle
 
 ```

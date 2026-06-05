@@ -76,6 +76,44 @@ export class Uri {
   }
 }
 
+// RelativePattern mock
+export class RelativePattern {
+  public readonly baseUri: Uri;
+  constructor(public readonly base: Uri | string, public readonly pattern: string) {
+    this.baseUri = typeof base === 'string' ? Uri.file(base) : base;
+  }
+}
+
+// FileSystemWatcher mock factory. Tests can drive events via _fireCreate/_fireChange/_fireDelete.
+export function createMockFileSystemWatcher(): {
+  onDidChange: (listener: (e: Uri) => void) => { dispose: () => void };
+  onDidCreate: (listener: (e: Uri) => void) => { dispose: () => void };
+  onDidDelete: (listener: (e: Uri) => void) => { dispose: () => void };
+  dispose: jest.Mock;
+  ignoreChangeEvents: boolean;
+  ignoreCreateEvents: boolean;
+  ignoreDeleteEvents: boolean;
+  _fireChange: (u?: Uri) => void;
+  _fireCreate: (u?: Uri) => void;
+  _fireDelete: (u?: Uri) => void;
+} {
+  const change = new EventEmitter<Uri>();
+  const create = new EventEmitter<Uri>();
+  const del = new EventEmitter<Uri>();
+  return {
+    onDidChange: change.event,
+    onDidCreate: create.event,
+    onDidDelete: del.event,
+    dispose: jest.fn(),
+    ignoreChangeEvents: false,
+    ignoreCreateEvents: false,
+    ignoreDeleteEvents: false,
+    _fireChange: (u?: Uri) => change.fire((u ?? Uri.file('/mock')) as Uri),
+    _fireCreate: (u?: Uri) => create.fire((u ?? Uri.file('/mock')) as Uri),
+    _fireDelete: (u?: Uri) => del.fire((u ?? Uri.file('/mock')) as Uri),
+  };
+}
+
 // Range mock
 export class Range {
   constructor(
@@ -253,6 +291,7 @@ export const workspace = {
   onDidChangeConfiguration: new EventEmitter<unknown>().event,
   registerTextDocumentContentProvider: jest.fn().mockReturnValue({ dispose: jest.fn() }),
   registerFileSystemProvider: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+  createFileSystemWatcher: jest.fn().mockImplementation(() => createMockFileSystemWatcher()),
   fs: {
     readFile: jest.fn(),
     writeFile: jest.fn().mockResolvedValue(undefined),
@@ -427,6 +466,7 @@ export function createMockExtensionContext(): {
   extensionPath: string;
   storagePath: string;
   globalStoragePath: string;
+  globalStorageUri: Uri;
   logPath: string;
   asAbsolutePath: (relativePath: string) => string;
 } {
@@ -448,6 +488,7 @@ export function createMockExtensionContext(): {
     extensionPath: '/extension',
     storagePath: '/storage',
     globalStoragePath: '/globalStorage',
+    globalStorageUri: Uri.file('/globalStorage/hybr8.ssh-lite'),
     logPath: '/logs',
     asAbsolutePath: (relativePath: string) => `/extension/${relativePath}`,
   };
