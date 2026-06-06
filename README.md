@@ -33,11 +33,34 @@ SSH Lite sits in the middle: as light as raw SSH, as friendly as Remote-SSH.
 
 📖 **[Full feature reference →](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md)** - every feature, with what you click vs. what you would otherwise type. Highlights:
 
-| | |
-|---|---|
-| [<img src="docs/images/feat-search.png" width="380" alt="Multi-server search">](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#multi-server-search)<br>**[Multi-server search](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#multi-server-search)** - one webview instead of per-host `grep -r` | [<img src="docs/images/feat-server-monitor.png" width="380" alt="Server monitor">](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#server-monitor)<br>**[Server monitor](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#server-monitor)** - CPU / memory / disk + top processes, no `htop` |
-| [<img src="docs/images/feat-remote-diff.png" width="380" alt="Side-by-side diff of changes">](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#remote-diff)<br>**[Side-by-side diff of changes](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#remote-diff)** - review edits before saving, no `scp` then `diff` | [<img src="docs/images/feat-filter.png" width="380" alt="Filter files and folders by name">](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#filter-by-name)<br>**[Filter files/folders](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#filter-by-name)** - gray out non-matches in any folder, no `find . -name` |
-| [<img src="docs/images/feat-npc-coder.png" width="380" alt="Pixel coder in the Support view">](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#animated-coder-and-cheering-banner)<br>**[The pixel coder](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#animated-coder-and-cheering-banner)** - reacts to your typing and your AI assistant | |
+<table>
+<tr>
+<td rowspan="2" align="center" valign="top">
+<a href="https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#filter-by-name"><img src="docs/images/feat-filter.png" height="430" alt="Filter files and folders by name"></a><br>
+<b><a href="https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#filter-by-name">Filter files/folders</a></b><br><sub>gray out non-matches, no <code>find . -name</code></sub>
+</td>
+<td align="center" valign="top">
+<a href="https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#multi-server-search"><img src="docs/images/feat-search.png" height="200" alt="Multi-server search"></a><br>
+<b><a href="https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#multi-server-search">Multi-server search</a></b><br><sub>one webview, not per-host <code>grep -r</code></sub>
+</td>
+</tr>
+<tr>
+<td align="center" valign="top">
+<a href="https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#server-monitor"><img src="docs/images/feat-server-monitor.png" height="200" alt="Server monitor"></a><br>
+<b><a href="https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#server-monitor">Server monitor</a></b><br><sub>CPU / memory / disk + top processes</sub>
+</td>
+</tr>
+<tr>
+<td align="center" valign="top">
+<a href="https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#animated-coder-and-cheering-banner"><img src="docs/images/feat-npc-coder.png" height="220" alt="Pixel coder in the Support view"></a><br>
+<b><a href="https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#animated-coder-and-cheering-banner">The pixel coder</a></b><br><sub>reacts to your typing and your AI</sub>
+</td>
+<td align="center" valign="top">
+<a href="https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#remote-diff"><img src="docs/images/feat-remote-diff.png" height="200" alt="Side-by-side diff of changes"></a><br>
+<b><a href="https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#remote-diff">Side-by-side diff of changes</a></b><br><sub>review edits, no <code>scp</code> then <code>diff</code></sub>
+</td>
+</tr>
+</table>
 
 **Also:** [file browser](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#browse-and-edit-over-sftp) · [terminals](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#integrated-terminals) · [cron editor](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#cron-editor) · [port forwarding](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#set-up-a-port-forward) · [process viewer](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#process-viewer) · [service manager](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#service-manager) · [env inspector](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#environment-inspector) · [snippets](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#snippet-library) · [batch runner](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#batch-command-runner) · [key gen + push](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#ssh-key-generator-and-push) · [auto-backup + restore](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#auto-backup-and-restore) · [sudo fallback](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#sudo-fallback) · [copy / paste across hosts](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#copy-cut-and-paste-across-hosts) · [activity + audit](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#activity-panel) · [pinned folders](https://github.com/trantung95/SSHLite/blob/master/docs/FEATURES.md#pinned-and-recent-folders)
 
