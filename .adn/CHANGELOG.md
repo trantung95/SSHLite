@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.9.7 - Marketplace listing: comic-style highlights gallery (README layout fix)
+
+### Why
+
+On the Marketplace the README highlights gallery broke: a 2-column markdown table forces both cells in a row to the same height, so the tall "filter" screenshot (574x1268) blew up its row and left large empty cells beside it.
+
+### Changes
+
+- **Comic-panel (masonry) gallery.** Replaced the markdown table with an HTML `<table>` + `rowspan`: the tall filter image spans two rows on the left, beside two stacked wide screenshots (search, server monitor) on the right; the pixel coder and the side-by-side diff fill the bottom row. Every image is height-normalized so all cells are uniform. README-only; no code or behaviour change.
+
+### Notes
+
+Re-published only to refresh the Marketplace listing (the README markup is baked into the VSIX, while the images themselves load from GitHub). Still 108 commands.
+
 ## v0.9.6 - Right-click SSH Tools: fixed the context-menu crash + parity across both trees
 
 ### Why

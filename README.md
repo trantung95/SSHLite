@@ -91,17 +91,12 @@ Two edge cases worth knowing:
 
 ## Release Notes
 
+**0.9.7** - **Marketplace listing polish**: the README highlights now use a comic-panel gallery so the screenshots line up cleanly with no broken empty cells. No functional change.
+
 **0.9.6** - **Right-click tools fix + menu parity**: the SSH Tools no longer error from a host's right-click menu, and now appear on the server row in **both** the SSH Hosts and Remote Files views.
 
 - **Fixed** - "Edit Remote Crontab" (and Show Processes / Manage Service / Show Environment / Run Snippet / Run Local Script / Push Public Key) threw "Cannot read properties of undefined" when launched from a host's context menu. They now resolve the connection from any tree row.
 - **Menu parity** - those seven tools are now also on the connection row in the Remote Files view, matching the SSH Hosts menu, so the same server offers the same actions in either tree.
-
-**0.9.5** - **A cheering headband for the coder**: now and then a tilted Vietnam-flag headband with a short text of your choice appears across the pixel coder's forehead, then fades.
-
-- **Băng cổ động** - every so often a thin headband (about the glasses' height, at least as wide as the head) zooms in across the coder's forehead, like a sports fan's cheering band (a Vietnam flag off to one side + a short label), lingers a few minutes, then zooms out. Each time it picks a random tilt, random colours (always readable, never clashing with the flag), and a random side for the flag - and it scales and bobs along with the coder. Editing the label never changes the band's width.
-- **Your text (`sshLite.npcBannerText`)** - set the banner label (up to 5 characters, "VN" by default) from the Support view's ⚙ → NPC settings, or in VS Code Settings. Leave it empty to show just the flag.
-- **Sometimes / Always / Never** - one dropdown in the ⚙ → NPC settings controls when it shows. **Off by default** - flip it to "Sometimes" or "Always" to enable.
-- **Tooltips on every NPC setting** - each row in the NPC settings panel now explains itself on hover.
 
 [Full changelog](https://github.com/trantung95/SSHLite/blob/master/.adn/CHANGELOG.md)
 
