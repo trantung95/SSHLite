@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.9.8 - Same-name file collision fix (issue #6) across all file operations
+
+### Why
+
+Reported in issue #6: with two domains (folders) on one server, opening `domainA/index.php` and then `domainB/index.php` would open the wrong content for the second file, and saving could write back to the wrong remote file. Root cause: the local temp file path was built from the connection plus the file's **basename** only, so two files that share a name but live in different folders (or the same path on two different servers) mapped to the **same** local temp file. The in-memory file mapping, the on-disk recovery metadata, and the "already open" check all then collapsed both files together.
+
+### Changes
+
+- **Per-folder temp path.** `getLocalFilePath` now builds `…/ssh-lite/{connHash}/{dirLabel}_{dirHash}/[user@host] {basename}`, where `dirHash` is a hash of the remote folder (`path.posix.dirname`). Two same-named files in different folders now get distinct local files. The logic lives in one shared helper, `buildLocalTempPath()` in `src/utils/connectionPrefix.ts`, used by **both** `FileService` and `ProgressiveDownloadManager` (large files) so the two never disagree; both also normalize the path identically.
+- **Recovery metadata moved alongside the file.** `.sshLite-metadata.json` now lives inside the per-folder subdirectory, so its basename key is unique per folder (it previously shared one file per connection and collided the same way).
+- **Swept every other temp-file operation.** Seven auxiliary temp paths (read-only file view, large-file preview, server-backup diff, local-backup diff, upload diff, remote diff, backup view) were flat files in the temp root built from the basename only, so they collided across folders **and** across servers. They now use `buildAuxTempFileName(kind, connectionId, remotePath)` = `{kind}-{hash(connId:remotePath)}-{basename}`. CRUD operations (rename / move via SFTP, delete, same- and cross-host copy / paste) are remote-to-remote or in-memory and never stage through a basename temp file, so they were already safe; `RemoteDiffService` already uses `fs.mkdtempSync` (a unique directory per call).
+- **Orphan temp cleanup recurses** the new deeper directory tree and prunes empty folders.
+
+### Tests
+
+- Unit: `src/utils/connectionPrefix.test.ts` (covers `buildLocalTempPath` and `buildAuxTempFileName` - same basename in different folders, same path on different servers, determinism, root-folder fallback) and two regression cases in `FileService.crud.test.ts`.
+- Docker integration: `src/integration/docker-ssh-collision.test.ts` proves the fix end-to-end against a real SSH server (distinct temp paths, no content cross-contamination, distinct recovery metadata).
+
+### Notes
+
+Temp files are regenerated on demand, so no migration is needed; old flat temp files and metadata are ignored and aged out by the cleanup sweep. Still 108 commands.
+
 ## v0.9.7 - Marketplace listing: comic-style highlights gallery (README layout fix)
 
 ### Why

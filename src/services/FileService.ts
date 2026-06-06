@@ -15,7 +15,7 @@ import { CommandGuard } from './CommandGuard';
 import { CredentialService } from './CredentialService';
 import { formatFileSize, normalizeLocalPath, decodeUriComponentSafe } from '../utils/helpers';
 import { isLikelyBinary, DEFAULT_PROGRESSIVE_CONFIG } from '../types/progressive';
-import { registerTabLabel, getConnectionPrefix } from '../utils/connectionPrefix';
+import { registerTabLabel, buildLocalTempPath, buildAuxTempFileName } from '../utils/connectionPrefix';
 import { infoLog } from '../utils/diagnosticLog';
 
 /**
@@ -728,40 +728,16 @@ export class FileService {
         const entryPath = path.join(this.tempDir, entry.name);
 
         if (entry.isDirectory() && entry.name !== 'backups') {
-          // Connection subdirectory - check files inside
+          // Connection subdirectory. It now contains per-remote-folder
+          // subdirectories (connHash/dirHash/file), so recurse to clean stale
+          // files at any depth and prune directories that become empty.
+          cleanedCount += this.cleanupOrphansRecursive(entryPath, now, maxAge);
           try {
-            const subFiles = fs.readdirSync(entryPath);
-            for (const subFile of subFiles) {
-              const filePath = path.join(entryPath, subFile);
-
-              // Skip if this file is in our active mappings
-              if (this.fileMappings.has(filePath)) {
-                continue;
-              }
-
-              try {
-                const stats = fs.statSync(filePath);
-                const fileAge = now - stats.mtimeMs;
-                if (fileAge > maxAge) {
-                  fs.unlinkSync(filePath);
-                  cleanedCount++;
-                }
-              } catch {
-                // Ignore errors for individual files
-              }
-            }
-
-            // Remove empty subdirectory
-            try {
-              const remainingFiles = fs.readdirSync(entryPath);
-              if (remainingFiles.length === 0) {
-                fs.rmdirSync(entryPath);
-              }
-            } catch {
-              // Ignore errors
+            if (fs.readdirSync(entryPath).length === 0) {
+              fs.rmdirSync(entryPath);
             }
           } catch {
-            // Ignore errors reading subdirectory
+            // Ignore errors
           }
         } else if (entry.isFile()) {
           // Legacy flat file (from old structure)
@@ -786,6 +762,53 @@ export class FileService {
     }
 
     return cleanedCount;
+  }
+
+  /**
+   * Recursively delete orphaned temp files (not tracked in fileMappings) older
+   * than maxAge and prune directories that become empty. Best-effort: every
+   * filesystem call is guarded so cleanup never throws. Returns files deleted.
+   */
+  private cleanupOrphansRecursive(dir: string, now: number, maxAge: number): number {
+    let removed = 0;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return removed;
+    }
+
+    for (const entry of entries) {
+      const entryPath = path.join(dir, entry.name);
+
+      if (entry.isDirectory()) {
+        removed += this.cleanupOrphansRecursive(entryPath, now, maxAge);
+        // Prune the subdirectory if recursion emptied it
+        try {
+          if (fs.readdirSync(entryPath).length === 0) {
+            fs.rmdirSync(entryPath);
+          }
+        } catch {
+          // Ignore errors
+        }
+      } else if (entry.isFile()) {
+        // Never touch files we are actively tracking
+        if (this.fileMappings.has(entryPath)) {
+          continue;
+        }
+        try {
+          const fileAge = now - fs.statSync(entryPath).mtimeMs;
+          if (fileAge > maxAge) {
+            fs.unlinkSync(entryPath);
+            removed++;
+          }
+        } catch {
+          // Ignore errors for individual files
+        }
+      }
+    }
+
+    return removed;
   }
 
   /**
@@ -1026,32 +1049,26 @@ export class FileService {
    * Filename prefix: [tabLabel] if set, otherwise [user@host] for server identification.
    */
   public getLocalFilePath(connectionId: string, remotePath: string): string {
-    // Create a short hash of connection ID for subdirectory
-    const connHash = crypto
-      .createHash('md5')
-      .update(connectionId)
-      .digest('hex')
-      .substring(0, 8);
+    // Subdirectory layout includes a per-remote-folder hash so two files with
+    // the same basename in different folders (e.g. domainA/index.php and
+    // domainB/index.php) never collide on the same local temp file.
+    const { dir, filePath } = buildLocalTempPath(this.tempDir, connectionId, remotePath);
 
-    const connDir = path.join(this.tempDir, connHash);
-
-    // Ensure connection subdirectory exists
-    if (!fs.existsSync(connDir)) {
-      fs.mkdirSync(connDir, { recursive: true });
+    // Ensure the destination subdirectory exists
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
     }
 
-    // Use [tabLabel] or [user@host] prefix for server identification in tabs
-    const prefix = getConnectionPrefix(connectionId);
-    const fileName = path.basename(remotePath);
-    const prefixedFileName = `[${prefix}] ${fileName}`;
-    return normalizeLocalPath(path.join(connDir, prefixedFileName));
+    return normalizeLocalPath(filePath);
   }
 
   /**
-   * Get metadata file path for a connection's temp directory
+   * Get the metadata file path for a temp directory.
+   * Metadata lives alongside the temp file (in the same per-folder subdirectory)
+   * so its basename-keyed entries can't collide across remote folders.
    */
-  private getMetadataFilePath(connHash: string): string {
-    return path.join(this.tempDir, connHash, '.sshLite-metadata.json');
+  private getMetadataFilePath(dir: string): string {
+    return path.join(dir, '.sshLite-metadata.json');
   }
 
   /**
@@ -1060,13 +1077,7 @@ export class FileService {
    */
   private saveFileMetadata(localPath: string, remotePath: string, connectionId: string): void {
     try {
-      const connHash = crypto
-        .createHash('md5')
-        .update(connectionId)
-        .digest('hex')
-        .substring(0, 8);
-
-      const metadataPath = this.getMetadataFilePath(connHash);
+      const metadataPath = this.getMetadataFilePath(path.dirname(localPath));
       let metadata: Record<string, { remotePath: string; connectionId: string; lastAccess: number }> = {};
 
       // Load existing metadata
@@ -1100,9 +1111,8 @@ export class FileService {
    */
   getRemotePathFromMetadata(localPath: string): { remotePath: string; connectionId: string } | undefined {
     try {
-      // Find metadata in the parent directory (the connection hash directory)
-      const connDirName = path.basename(path.dirname(localPath));
-      const metadataPath = this.getMetadataFilePath(connDirName);
+      // Metadata lives in the same per-folder subdirectory as the temp file
+      const metadataPath = this.getMetadataFilePath(path.dirname(localPath));
 
       if (!fs.existsSync(metadataPath)) return undefined;
 
@@ -1425,7 +1435,7 @@ export class FileService {
   private async viewBackupContent(connection: SSHConnection, backupPath: string): Promise<void> {
     try {
       const content = await connection.readFile(backupPath);
-      const tempPath = path.join(this.tempDir, `backup-view-${path.basename(backupPath)}`);
+      const tempPath = path.join(this.tempDir, buildAuxTempFileName('backup-view', connection.id, backupPath));
       fs.writeFileSync(tempPath, content);
 
       const document = await vscode.workspace.openTextDocument(tempPath);
@@ -1553,8 +1563,8 @@ export class FileService {
       const currentContent = await connection.readFile(remotePath);
       const backupContent = await connection.readFile(backupPath);
 
-      const currentTempPath = path.join(this.tempDir, `current-${path.basename(remotePath)}`);
-      const backupTempPath = path.join(this.tempDir, `backup-${path.basename(backupPath)}`);
+      const currentTempPath = path.join(this.tempDir, buildAuxTempFileName('current', connection.id, remotePath));
+      const backupTempPath = path.join(this.tempDir, buildAuxTempFileName('backup', connection.id, backupPath));
 
       fs.writeFileSync(currentTempPath, currentContent);
       fs.writeFileSync(backupTempPath, backupContent);
@@ -1801,8 +1811,8 @@ export class FileService {
       // Get current content from server
       const currentContent = await connection.readFile(remotePath);
 
-      const currentTempPath = path.join(this.tempDir, `current-${path.basename(remotePath)}`);
-      const backupTempPath = path.join(this.tempDir, `local-backup-${path.basename(remotePath)}`);
+      const currentTempPath = path.join(this.tempDir, buildAuxTempFileName('current', connection.id, remotePath));
+      const backupTempPath = path.join(this.tempDir, buildAuxTempFileName('local-backup', connection.id, remotePath));
 
       fs.writeFileSync(currentTempPath, currentContent);
       fs.writeFileSync(backupTempPath, backup.content);
@@ -2263,8 +2273,8 @@ export class FileService {
       const oldContent = mapping.originalContent || '';
 
       // Create temp files for diff
-      const oldTempPath = path.join(this.tempDir, `diff-old-${path.basename(mapping.remotePath)}`);
-      const newTempPath = path.join(this.tempDir, `diff-new-${path.basename(mapping.remotePath)}`);
+      const oldTempPath = path.join(this.tempDir, buildAuxTempFileName('diff-old', mapping.connectionId, mapping.remotePath));
+      const newTempPath = path.join(this.tempDir, buildAuxTempFileName('diff-new', mapping.connectionId, mapping.remotePath));
 
       fs.writeFileSync(oldTempPath, oldContent);
       fs.writeFileSync(newTempPath, newContent);
@@ -2718,7 +2728,7 @@ export class FileService {
       const remoteContent = await connection.readFile(mapping.remotePath);
       const remoteTempPath = path.join(
         this.tempDir,
-        `remote-${path.basename(mapping.remotePath)}`
+        buildAuxTempFileName('remote', mapping.connectionId, mapping.remotePath)
       );
       fs.writeFileSync(remoteTempPath, remoteContent);
 
@@ -3407,7 +3417,7 @@ export class FileService {
       // Create a preview document
       const previewPath = path.join(
         this.tempDir,
-        `preview-${path.basename(remoteFile.name)}`
+        buildAuxTempFileName('preview', connection.id, remoteFile.path)
       );
 
       const previewContent =
@@ -3479,7 +3489,7 @@ export class FileService {
     try {
       const result = await connection.exec(cmd);
 
-      const viewPath = path.join(this.tempDir, `view-${path.basename(remoteFile.name)}`);
+      const viewPath = path.join(this.tempDir, buildAuxTempFileName('view', connection.id, remoteFile.path));
       fs.writeFileSync(viewPath, result);
 
       const document = await vscode.workspace.openTextDocument(viewPath);

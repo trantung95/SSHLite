@@ -2,7 +2,6 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import * as crypto from 'crypto';
 import { SSHConnection } from '../connection/SSHConnection';
 import { IRemoteFile } from '../types';
 import { ProgressiveFileContentProvider } from '../providers/ProgressiveFileContentProvider';
@@ -14,7 +13,7 @@ import {
   loadProgressiveConfig,
 } from '../types/progressive';
 import { formatFileSize, normalizeLocalPath } from '../utils/helpers';
-import { getConnectionPrefix } from '../utils/connectionPrefix';
+import { buildLocalTempPath } from '../utils/connectionPrefix';
 
 /**
  * Manages progressive file downloads with real progress tracking
@@ -101,18 +100,18 @@ export class ProgressiveDownloadManager {
    * Uses [tabLabel] or [user@host] prefix for server identification in tabs
    */
   private getLocalFilePath(connectionId: string, remotePath: string): string {
-    // Create subdirectory for each connection using hash
-    const connectionHash = crypto.createHash('md5').update(connectionId).digest('hex').substring(0, 8);
-    const connectionDir = path.join(this.tempDir, connectionHash);
-
-    if (!fs.existsSync(connectionDir)) {
-      fs.mkdirSync(connectionDir, { recursive: true });
+    // Shared layout with FileService.getLocalFilePath: a per-remote-folder
+    // subdirectory keeps same-named files in different folders from colliding
+    // on one temp file (large files go through this path).
+    const { dir, filePath } = buildLocalTempPath(this.tempDir, connectionId, remotePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
     }
-
-    const prefix = getConnectionPrefix(connectionId);
-    const fileName = path.basename(remotePath);
-    const prefixedFileName = `[${prefix}] ${fileName}`;
-    return path.join(connectionDir, prefixedFileName);
+    // Normalize so this exactly matches FileService.getLocalFilePath (which also
+    // normalizes). Without this, a Windows uppercase drive letter here would not
+    // match VS Code's lowercased URI fsPath in cancelDownloadByUri, and the
+    // reopen/"already open" detection across the two services would miss.
+    return normalizeLocalPath(filePath);
   }
 
   /**

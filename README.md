@@ -91,12 +91,12 @@ Two edge cases worth knowing:
 
 ## Release Notes
 
+**0.9.8** - **Same-name file fix (issue #6)**: opening two files with the same name in different folders (for example `domainA/index.php` and `domainB/index.php`) no longer shows the wrong content or risks saving your edits to the wrong file. Each remote file now gets its own local copy, keyed by its full folder path.
+
+- **Fixed** - same-named files in different folders (or on different servers) collided on a single local temp file, so the second file opened the first one's content and a save could upload to the wrong path.
+- **Every operation covered** - open, edit, read-only view, large-file preview, and all the diff / backup-compare views, not just the editor.
+
 **0.9.7** - **Marketplace listing polish**: the README highlights now use a comic-panel gallery so the screenshots line up cleanly with no broken empty cells. No functional change.
-
-**0.9.6** - **Right-click tools fix + menu parity**: the SSH Tools no longer error from a host's right-click menu, and now appear on the server row in **both** the SSH Hosts and Remote Files views.
-
-- **Fixed** - "Edit Remote Crontab" (and Show Processes / Manage Service / Show Environment / Run Snippet / Run Local Script / Push Public Key) threw "Cannot read properties of undefined" when launched from a host's context menu. They now resolve the connection from any tree row.
-- **Menu parity** - those seven tools are now also on the connection row in the Remote Files view, matching the SSH Hosts menu, so the same server offers the same actions in either tree.
 
 [Full changelog](https://github.com/trantung95/SSHLite/blob/master/.adn/CHANGELOG.md)
 

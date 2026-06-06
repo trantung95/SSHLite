@@ -310,6 +310,24 @@ describe('FileService - CRUD Operations (Actual)', () => {
       expect(path1).not.toBe(path2);
     });
 
+    it('should produce different paths for same basename in different folders (issue #6)', () => {
+      // Regression: /var/www/domainA/index.php and /var/www/domainB/index.php
+      // used to collide on one temp file, so opening one showed the other's
+      // content and saving could upload to the wrong remote file.
+      const pathA = service.getLocalFilePath('conn-1', '/var/www/domainA/index.php');
+      const pathB = service.getLocalFilePath('conn-1', '/var/www/domainB/index.php');
+
+      expect(pathA).not.toBe(pathB);
+    });
+
+    it('should still produce the same path when the same remote file is reopened', () => {
+      // Determinism is required for "already open" detection and reuse.
+      const first = service.getLocalFilePath('conn-1', '/var/www/domainA/index.php');
+      const second = service.getLocalFilePath('conn-1', '/var/www/domainA/index.php');
+
+      expect(first).toBe(second);
+    });
+
     it('should use [user@host] prefix when connectionId has host:port:user format', () => {
       const localPath = service.getLocalFilePath('10.0.1.5:22:admin', '/var/log/app.log');
       expect(localPath).toContain('[admin@10.0.1.5]');

@@ -36,12 +36,33 @@ private fileMappings: Map<string, FileMapping>;
 ```
 1. User clicks file in tree → sshLite.openFile command
 2. FileService.openRemoteFile(connection, remoteFile)
-3. Create temp dir: os.tmpdir()/ssh-lite/{connectionId}/
+3. Build temp path: os.tmpdir()/ssh-lite/{connHash}/{dirLabel}_{dirHash}/[prefix] {basename}
 4. Download file: CommandGuard.readFile(connection, remotePath)
 5. Write to local temp: fs.writeFile(localPath, content)
 6. Create file mapping: localPath → { remotePath, connection }
 7. Open in editor: vscode.window.showTextDocument(uri)
 ```
+
+**Temp path layout (issue #6)**: the path includes a per-remote-folder subdirectory
+`{dirLabel}_{dirHash}` (hash of `path.posix.dirname(remotePath)`), not just the basename.
+Without it, two files sharing a basename in different folders (e.g. `domainA/index.php`
+and `domainB/index.php`) collapsed onto ONE temp file — opening one showed the other's
+content and saving could upload to the wrong remote file. The single source of truth is
+`buildLocalTempPath()` in `src/utils/connectionPrefix.ts`, used by **both** `FileService`
+and `ProgressiveDownloadManager` (large files), and the recovery metadata
+(`.sshLite-metadata.json`) lives inside that same subdirectory so its basename key is
+unique per folder.
+
+The same collision class existed in every **auxiliary** temp file: read-only file view,
+large-file preview, and the four diff/backup-compare flows (server-backup diff, local-backup
+diff, upload diff, remote diff). Those are transient flat files in `tempDir`; they now use
+`buildAuxTempFileName(kind, connectionId, remotePath)` which produces
+`<kind>-<hash(connId:remotePath)>-<basename>`, unique per connection + remote path, so
+viewing or diffing two same-named files in different folders (or the same path on two
+servers) no longer reuses one temp file. CRUD operations (rename/move via SFTP, delete,
+same/cross-host copy/paste) are remote-to-remote or in-memory and never stage through a
+basename temp file, so they are not affected. `RemoteDiffService` already uses
+`fs.mkdtempSync` (a unique dir per call) and is safe.
 
 ---
 

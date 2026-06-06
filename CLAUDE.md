@@ -139,6 +139,7 @@ src/
 ## Testing
 
 - Run `npx jest --no-coverage` before committing; add tests for new functionality
+- **Bug-fix regression policy (CRITICAL)**: every bug fix ships with tests that would have caught it, at every level the bug can live: **unit** (the pure logic — e.g. `connectionPrefix.test.ts`), **integration/docker** (real SSH server — add to `src/integration/docker-ssh-*.test.ts` + the `testMatch` list in `jest.docker.config.js`), and a **chaos** scenario when the bug touches connection/file/event-loop paths. Seed a real repro on the docker server (`docker compose -f test-docker/docker-compose.yml up -d web`, then `docker exec` to create fixtures) and prove the fix end-to-end, not just with mocks. Name the test after the issue (e.g. `docker-ssh-collision.test.ts`, "issue #6"). Goal: the same bug can never silently return.
 - Shared mocks: `src/__mocks__/testHelpers.ts`; reset singletons: `(Service as any)._instance = undefined`
 - **Transpiler**: `@swc/jest` (not `ts-jest`) — 3-5x faster
 - **Mock hoisting**: `@swc/jest` does NOT hoist `const`/`let` into `jest.mock()` factories. Use `var` for mock variables, **getters** for properties referencing them. Singleton mock instances via `mockReturnValue`, NOT `mockImplementation(() => ({...}))`
