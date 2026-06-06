@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.9.6 - Right-click SSH Tools: fixed the context-menu crash + parity across both trees
+
+### Why
+
+Launching an SSH Tool (Edit Remote Crontab, Show Processes, Manage Service, Show Environment, Run Snippet, Run Local Script, Push Public Key) from a host's right-click menu in the **SSH Hosts** view threw "Cannot read properties of undefined". The same tools were also missing from the server (connection) row in the **Remote Files** view, so the two trees offered inconsistent menus for the same connection.
+
+### Changes
+
+- **Fixed the context-menu crash.** A `view/item/context` command receives the **tree item** (a `ServerTreeItem` with a `.hosts` array, or a `ConnectionTreeItem` with `.connection`), not an `SSHConnection`. The shared `pickConnection()` helper trusted the argument blindly (`if (preselect) return preselect`) and later read `connection.host.name` off the tree item, which is undefined. It now normalises the argument (duck-typed: real connection / `ConnectionTreeItem.connection` / `ServerTreeItem.hosts[].id` resolved via `ConnectionManager.getConnection`), fixing all seven tools at once. Regression-tested in `sshToolsCommands.test.ts`.
+- **Menu parity across both trees.** Show Processes, Manage Service, Show Environment, Edit Crontab, Run Snippet, Run Local Script, and Push Public Key are now also on the connection row in **Remote Files** (a `5_tools` group), mirroring the **SSH Hosts** menu, so the same server offers the same actions in either tree. (The Sudo Mode toggle is still pending; it needs a `connection.sudo` contextValue variant in `FileTreeProvider`.)
+- **Docs and Marketplace listing.** New `docs/FEATURES.md` full feature reference; the README now leads with a visual highlights gallery (real screenshots) that deep-links into each feature section; the overview image is a real capture.
+- **Test infrastructure.** The docker test fleet gained a "hero" web-app fixture (`workspace/web-storefront` with an express `app.ts`, `config/`, `Dockerfile`) and a `pm2` shim so the README screenshots use real, reproducible content (`test-docker/seed-showcase.sh`).
+
+### Notes
+
+No command was added or removed (still 108); the change is menu placement plus the connection-picker fix. Backward compatible.
+
 ## v0.9.5 - Cheering headband on the NPC: a tilted Vietnam flag + text, with a user-set label
 
 ### Why

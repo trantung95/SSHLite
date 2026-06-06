@@ -1,7 +1,7 @@
 # SSH Lite (SSH Tools) — Command Reference
 
 > Auto-generated from `package.json`. Run `npm run docs:commands` to regenerate.
-> Last updated: 2026-06-05 · Version: 0.9.5
+> Last updated: 2026-06-06 · Version: 0.9.6
 
 This document lists every command registered by SSH Lite (SSH Tools), organized by category.
 Open the Command Palette (**Ctrl+Shift+P** / **Cmd+Shift+P**) and type the command title to find it.
@@ -19,24 +19,24 @@ Open the Command Palette (**Ctrl+Shift+P** / **Cmd+Shift+P**) and type the comma
 
 | Command | ID | Keybinding | Where |
 |---------|-----|-----------|-------|
-| Connect to Host | `sshLite.connect` | `ctrl+shift+c / cmd+shift+c (Mac)` | Keybinding: ctrl+shift+c / cmd+shift+c (Mac) |
+| Connect to Host | `sshLite.connect` | `ctrl+alt+d c / cmd+alt+d c (Mac)`<br>`ctrl+alt+k c / cmd+alt+k c (Mac)` | Keybinding: ctrl+alt+d c / cmd+alt+d c (Mac), ctrl+alt+k c / cmd+alt+k c (Mac) |
 | Disconnect | `sshLite.disconnect` | — | Tree context menu |
 | Enable Sudo Mode | `sshLite.enableSudoMode` | — | Tree context menu |
 | Disable Sudo Mode | `sshLite.disableSudoMode` | — | Tree context menu |
-| Add SSH Host | `sshLite.addHost` | — | View toolbar |
+| Add SSH Host | `sshLite.addHost` | `ctrl+alt+d a / cmd+alt+d a (Mac)`<br>`ctrl+alt+k a / cmd+alt+k a (Mac)` | Keybinding: ctrl+alt+d a / cmd+alt+d a (Mac), ctrl+alt+k a / cmd+alt+k a (Mac), View toolbar |
 | Edit Host | `sshLite.editHost` | — | Tree context menu |
 | Remove Host | `sshLite.removeHost` | — | Tree context menu |
 | Rename Host | `sshLite.renameHost` | — | Tree context menu |
 | Set Tab Label | `sshLite.setTabLabel` | — | Tree context menu |
 | Refresh Hosts | `sshLite.refreshHosts` | — | View toolbar |
-| Go to Path... | `sshLite.goToPath` | `ctrl+shift+g / cmd+shift+g (Mac)` | Keybinding: ctrl+shift+g / cmd+shift+g (Mac), View toolbar |
-| Go to Parent Folder | `sshLite.goToParent` | — | View toolbar |
-| Go to Home (~) | `sshLite.goToHome` | — | View toolbar |
+| Go to Path... | `sshLite.goToPath` | `ctrl+alt+d g / cmd+alt+d g (Mac)`<br>`ctrl+alt+k g / cmd+alt+k g (Mac)` | Keybinding: ctrl+alt+d g / cmd+alt+d g (Mac), ctrl+alt+k g / cmd+alt+k g (Mac), View toolbar |
+| Go to Parent Folder | `sshLite.goToParent` | `ctrl+alt+d u / cmd+alt+d u (Mac)`<br>`ctrl+alt+k u / cmd+alt+k u (Mac)` | Keybinding: ctrl+alt+d u / cmd+alt+d u (Mac), ctrl+alt+k u / cmd+alt+k u (Mac), View toolbar |
+| Go to Home (~) | `sshLite.goToHome` | `ctrl+alt+d h / cmd+alt+d h (Mac)`<br>`ctrl+alt+k h / cmd+alt+k h (Mac)` | Keybinding: ctrl+alt+d h / cmd+alt+d h (Mac), ctrl+alt+k h / cmd+alt+k h (Mac), View toolbar |
 | Go to Root (/) | `sshLite.goToRoot` | — | View toolbar |
 | Open File | `sshLite.openFile` | — | Tree context menu |
 | Download File | `sshLite.downloadFile` | — | Tree context menu |
 | Upload File | `sshLite.uploadFile` | — | Tree context menu |
-| Delete | `sshLite.deleteRemote` | — | Tree context menu |
+| Delete | `sshLite.deleteRemote` | `delete` | Keybinding: delete, Tree context menu |
 | Rename | `sshLite.renameRemote` | `f2` | Keybinding: f2, Tree context menu |
 | Move To... | `sshLite.moveRemote` | — | Tree context menu |
 | New Folder | `sshLite.createFolder` | — | Tree context menu |
@@ -45,18 +45,18 @@ Open the Command Palette (**Ctrl+Shift+P** / **Cmd+Shift+P**) and type the comma
 | Save File as User… | `sshLite.saveAsUser` | — | Command Palette only |
 | New File as Root… | `sshLite.newFileAsRoot` | — | Tree context menu |
 | Properties | `sshLite.showProperties` | — | Tree context menu |
-| Refresh Files | `sshLite.refreshFiles` | `ctrl+shift+r / cmd+shift+r (Mac)` | Keybinding: ctrl+shift+r / cmd+shift+r (Mac), View toolbar |
-| Open Terminal | `sshLite.openTerminal` | `ctrl+shift+t / cmd+shift+t (Mac)` | Keybinding: ctrl+shift+t / cmd+shift+t (Mac), Tree context menu |
-| Forward Port | `sshLite.forwardPort` | — | View toolbar |
+| Refresh Files | `sshLite.refreshFiles` | `ctrl+alt+d r / cmd+alt+d r (Mac)`<br>`ctrl+alt+k r / cmd+alt+k r (Mac)` | Keybinding: ctrl+alt+d r / cmd+alt+d r (Mac), ctrl+alt+k r / cmd+alt+k r (Mac), View toolbar |
+| Open Terminal | `sshLite.openTerminal` | `ctrl+alt+d t / cmd+alt+d t (Mac)`<br>`ctrl+alt+k t / cmd+alt+k t (Mac)` | Keybinding: ctrl+alt+d t / cmd+alt+d t (Mac), ctrl+alt+k t / cmd+alt+k t (Mac), Tree context menu |
+| Forward Port | `sshLite.forwardPort` | `ctrl+alt+d p / cmd+alt+d p (Mac)`<br>`ctrl+alt+k p / cmd+alt+k p (Mac)` | Keybinding: ctrl+alt+d p / cmd+alt+d p (Mac), ctrl+alt+k p / cmd+alt+k p (Mac), View toolbar |
 | Stop Forward | `sshLite.stopForward` | — | Tree context menu |
 | Start Saved Forward | `sshLite.activateSavedForward` | — | Tree context menu |
 | Delete Saved Forward | `sshLite.deleteSavedForward` | — | Tree context menu |
 | Show Audit Log | `sshLite.showAuditLog` | — | Command Palette only |
 | Export Audit Log | `sshLite.exportAuditLog` | — | Command Palette only |
 | Clear Audit Log | `sshLite.clearAuditLog` | — | Command Palette only |
-| Monitor Server | `sshLite.monitor` | — | Tree context menu |
+| Monitor Server | `sshLite.monitor` | `ctrl+alt+d m / cmd+alt+d m (Mac)`<br>`ctrl+alt+k m / cmd+alt+k m (Mac)` | Keybinding: ctrl+alt+d m / cmd+alt+d m (Mac), ctrl+alt+k m / cmd+alt+k m (Mac), Tree context menu |
 | Reconnect to Server | `sshLite.reconnectOrphanedFile` | — | Command Palette only |
-| Quick Status (runs 10+ server commands) | `sshLite.quickStatus` | — | Command Palette only |
+| Quick Status (runs 10+ server commands) | `sshLite.quickStatus` | `ctrl+alt+d q / cmd+alt+d q (Mac)`<br>`ctrl+alt+k q / cmd+alt+k q (Mac)` | Keybinding: ctrl+alt+d q / cmd+alt+d q (Mac), ctrl+alt+k q / cmd+alt+k q (Mac) |
 | Diagnose Slowness | `sshLite.diagnoseSlowness` | — | Command Palette only |
 | Clear Saved Credentials | `sshLite.clearCredentials` | — | Tree context menu |
 | Add Credential | `sshLite.addCredential` | — | Command Palette only |
@@ -82,10 +82,10 @@ Open the Command Palette (**Ctrl+Shift+P** / **Cmd+Shift+P**) and type the comma
 | Clear Cache (Factory Reset) | `sshLite.clearCache` | — | View toolbar |
 | Filter Hosts | `sshLite.filterHosts` | — | View toolbar |
 | Clear Host Filter | `sshLite.clearHostFilter` | — | View toolbar |
-| Filter Files | `sshLite.filterFiles` | `ctrl+shift+f / cmd+shift+f (Mac)` | Keybinding: ctrl+shift+f / cmd+shift+f (Mac), View toolbar |
+| Filter Files | `sshLite.filterFiles` | `ctrl+alt+d f / cmd+alt+d f (Mac)`<br>`ctrl+alt+k f / cmd+alt+k f (Mac)` | Keybinding: ctrl+alt+d f / cmd+alt+d f (Mac), ctrl+alt+k f / cmd+alt+k f (Mac), View toolbar |
 | Clear Filter | `sshLite.clearFilter` | — | Command Palette only |
 | Search Server for Filter | `sshLite.searchServerForFilter` | — | View toolbar |
-| Show Search | `sshLite.showSearch` | `ctrl+shift+s / cmd+shift+s (Mac)` | Keybinding: ctrl+shift+s / cmd+shift+s (Mac), View toolbar |
+| Show Search | `sshLite.showSearch` | `ctrl+alt+d s / cmd+alt+d s (Mac)`<br>`ctrl+alt+k s / cmd+alt+k s (Mac)` | Keybinding: ctrl+alt+d s / cmd+alt+d s (Mac), ctrl+alt+k s / cmd+alt+k s (Mac), View toolbar |
 | Search Here | `sshLite.searchInScope` | — | Tree context menu |
 | Filter by Name | `sshLite.filterFileNames` | — | Tree context menu |
 | Clear Filename Filter | `sshLite.clearFilenameFilter` | — | View toolbar, Tree context menu |
@@ -121,15 +121,15 @@ Open the Command Palette (**Ctrl+Shift+P** / **Cmd+Shift+P**) and type the comma
 |---------|-----|-----------|-------|
 | Show Remote Processes | `sshLite.showRemoteProcesses` | — | Tree context menu |
 | Manage Remote Service | `sshLite.manageRemoteService` | — | Tree context menu |
-| Show Remote Environment | `sshLite.showRemoteEnv` | — | Tree context menu |
+| Show Remote Environment | `sshLite.showRemoteEnv` | `ctrl+alt+d e / cmd+alt+d e (Mac)`<br>`ctrl+alt+k e / cmd+alt+k e (Mac)` | Keybinding: ctrl+alt+d e / cmd+alt+d e (Mac), ctrl+alt+k e / cmd+alt+k e (Mac), Tree context menu |
 | Edit Remote Crontab | `sshLite.editRemoteCron` | — | Tree context menu |
 | Save Remote Crontab | `sshLite.saveRemoteCron` | — | Command Palette only |
 | Run Snippet | `sshLite.runSnippet` | — | Tree context menu |
 | Add Snippet | `sshLite.addSnippet` | — | Command Palette only |
 | Manage Snippets | `sshLite.manageSnippets` | — | Command Palette only |
-| Batch Command on Hosts | `sshLite.batchRun` | — | Command Palette only |
+| Batch Command on Hosts | `sshLite.batchRun` | `ctrl+alt+d b / cmd+alt+d b (Mac)`<br>`ctrl+alt+k b / cmd+alt+k b (Mac)` | Keybinding: ctrl+alt+d b / cmd+alt+d b (Mac), ctrl+alt+k b / cmd+alt+k b (Mac) |
 | Run Local Script on Remote | `sshLite.runLocalScriptRemote` | — | Tree context menu |
-| Generate SSH Key | `sshLite.generateSshKey` | — | Command Palette only |
+| Generate SSH Key | `sshLite.generateSshKey` | `ctrl+alt+d k / cmd+alt+d k (Mac)`<br>`ctrl+alt+k k / cmd+alt+k k (Mac)` | Keybinding: ctrl+alt+d k / cmd+alt+d k (Mac), ctrl+alt+k k / cmd+alt+k k (Mac) |
 | Push Public Key to Host | `sshLite.pushPubKeyToHost` | — | Tree context menu |
 | Diff with Local File | `sshLite.diffWithLocal` | — | Tree context menu |
 
@@ -171,8 +171,8 @@ Open the Command Palette (**Ctrl+Shift+P** / **Cmd+Shift+P**) and type the comma
 | Action | How |
 |--------|-----|
 | Add a host | Click **+** in the SSH Hosts panel or run **Add SSH Host** |
-| Connect | Click the host or run **Connect to Host** (**Ctrl+Shift+C**) |
-| Open terminal | Click the terminal icon or **Ctrl+Shift+T** |
+| Connect | Click the host or run **Connect to Host** (**Ctrl+Alt+D C** or **Ctrl+Alt+K C**) |
+| Open terminal | Click the terminal icon or **Ctrl+Alt+D T** / **Ctrl+Alt+K T** |
 | Port forward | Run **Forward Port** |
 | Monitor server | Right-click connected host → **Monitor Server** |
 

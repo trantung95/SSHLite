@@ -298,6 +298,57 @@ WORKDIR /app
 CMD ["node","server.js"]'
     w "$P/.env.production" 'STRIPE_KEY=demo-not-a-real-secret
 CDN_URL=https://cdn.hybr8.io'
+    # --- hero set: matches the README overview image (open this folder to shoot it) ---
+    w "$P/app.ts" 'import express from "express";
+import { Router } from "./routes";
+
+const app = express();
+const port = 3000;
+
+// TODO: Add rate limiting
+app.use("/api", Router);
+
+app.listen(port, () => {
+  console.log(`Server on :${port}`);
+});'
+    w "$P/src/routes.ts" 'import { Router } from "express";
+
+export const router = Router();
+router.get("/health", (_req, res) => res.json({ ok: true }));'
+    w "$P/config/config.json" '{
+  "port": 3000,
+  "db": "postgres://localhost:5432/app",
+  "rateLimit": null
+}'
+    w "$P/config/nginx.conf" 'server {
+  listen 80;
+  location / { proxy_pass http://localhost:3000; }
+}'
+    w "$P/Dockerfile" 'FROM node:20-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev
+COPY . .
+EXPOSE 3000
+CMD ["node", "app.js"]'
+    w "$P/package.json" '{
+  "name": "production-web",
+  "version": "3.4.0",
+  "scripts": { "start": "node app.js" },
+  "dependencies": { "express": "^4.19.0" }
+}'
+    # pm2 shim so the hero terminal shot (`pm2 status`) matches the mockup. Root-only
+    # (writes /usr/local/bin); ignored when the seed runs as a non-root user.
+    if [ "$(id -u)" = "0" ]; then
+      w "/usr/local/bin/pm2" '#!/bin/sh
+printf "%s\n" "┌─────┬──────────────┬─────────┬─────────┬───────┬────────┐"
+printf "%s\n" "│ id  │ name         │ mode    │ status  │ cpu   │ mem    │"
+printf "%s\n" "├─────┼──────────────┼─────────┼─────────┼───────┼────────┤"
+printf "%s\n" "│ 0   │ app-web      │ cluster │ online  │ 12.3% │ 64 MB  │"
+printf "%s\n" "│ 1   │ app-worker   │ fork    │ online  │ 5.1%  │ 48 MB  │"
+printf "%s\n" "└─────┴──────────────┴─────────┴─────────┴───────┴────────┘"'
+      chmod +x /usr/local/bin/pm2
+    fi
     ;;
   prod-api)
     P="$WS/payments-api"

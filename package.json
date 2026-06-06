@@ -2,7 +2,7 @@
   "name": "ssh-lite",
   "displayName": "SSH Lite (SSH Tools)",
   "description": "A visual SSH client for VS Code. Browse, edit, monitor, manage services - by clicking, not typing vi/systemctl/crontab. Nothing installed on the remote server. Perfect for VPS, cloud servers (AWS/Azure/GCP), and Linux administration.",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "publisher": "hybr8",
   "engines": {
     "vscode": "^1.85.0"
@@ -1189,6 +1189,41 @@
           "group": "1_cleanup@3"
         },
         {
+          "command": "sshLite.showRemoteProcesses",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "group": "5_tools@1"
+        },
+        {
+          "command": "sshLite.manageRemoteService",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "group": "5_tools@2"
+        },
+        {
+          "command": "sshLite.showRemoteEnv",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "group": "5_tools@3"
+        },
+        {
+          "command": "sshLite.editRemoteCron",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "group": "5_tools@4"
+        },
+        {
+          "command": "sshLite.runSnippet",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "group": "5_tools@5"
+        },
+        {
+          "command": "sshLite.runLocalScriptRemote",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "group": "5_tools@6"
+        },
+        {
+          "command": "sshLite.pushPubKeyToHost",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "group": "5_tools@7"
+        },
+        {
           "command": "sshLite.openFile",
           "when": "view == sshLite.fileExplorer && viewItem =~ /^file/",
           "group": "inline@2"
@@ -1694,39 +1729,177 @@
     "keybindings": [
       {
         "command": "sshLite.connect",
-        "key": "ctrl+shift+c",
-        "mac": "cmd+shift+c",
-        "when": "view == sshLite.hosts"
+        "key": "ctrl+alt+d c",
+        "mac": "cmd+alt+d c"
+      },
+      {
+        "command": "sshLite.connect",
+        "key": "ctrl+alt+k c",
+        "mac": "cmd+alt+k c"
       },
       {
         "command": "sshLite.openTerminal",
-        "key": "ctrl+shift+t",
-        "mac": "cmd+shift+t",
+        "key": "ctrl+alt+d t",
+        "mac": "cmd+alt+d t",
+        "when": "sshLite.hasConnections"
+      },
+      {
+        "command": "sshLite.openTerminal",
+        "key": "ctrl+alt+k t",
+        "mac": "cmd+alt+k t",
         "when": "sshLite.hasConnections"
       },
       {
         "command": "sshLite.refreshFiles",
-        "key": "ctrl+shift+r",
-        "mac": "cmd+shift+r",
-        "when": "view == sshLite.fileExplorer"
+        "key": "ctrl+alt+d r",
+        "mac": "cmd+alt+d r",
+        "when": "sshLite.hasConnections"
+      },
+      {
+        "command": "sshLite.refreshFiles",
+        "key": "ctrl+alt+k r",
+        "mac": "cmd+alt+k r",
+        "when": "sshLite.hasConnections"
       },
       {
         "command": "sshLite.goToPath",
-        "key": "ctrl+shift+g",
-        "mac": "cmd+shift+g",
-        "when": "view == sshLite.fileExplorer && sshLite.hasConnections"
+        "key": "ctrl+alt+d g",
+        "mac": "cmd+alt+d g",
+        "when": "sshLite.hasConnections"
+      },
+      {
+        "command": "sshLite.goToPath",
+        "key": "ctrl+alt+k g",
+        "mac": "cmd+alt+k g",
+        "when": "sshLite.hasConnections"
       },
       {
         "command": "sshLite.filterFiles",
-        "key": "ctrl+shift+f",
-        "mac": "cmd+shift+f",
-        "when": "view == sshLite.fileExplorer && sshLite.hasConnections"
+        "key": "ctrl+alt+d f",
+        "mac": "cmd+alt+d f",
+        "when": "sshLite.hasConnections"
+      },
+      {
+        "command": "sshLite.filterFiles",
+        "key": "ctrl+alt+k f",
+        "mac": "cmd+alt+k f",
+        "when": "sshLite.hasConnections"
       },
       {
         "command": "sshLite.showSearch",
-        "key": "ctrl+shift+s",
-        "mac": "cmd+shift+s",
-        "when": "view == sshLite.fileExplorer && sshLite.hasConnections"
+        "key": "ctrl+alt+d s",
+        "mac": "cmd+alt+d s",
+        "when": "sshLite.hasConnections"
+      },
+      {
+        "command": "sshLite.showSearch",
+        "key": "ctrl+alt+k s",
+        "mac": "cmd+alt+k s",
+        "when": "sshLite.hasConnections"
+      },
+      {
+        "command": "sshLite.addHost",
+        "key": "ctrl+alt+d a",
+        "mac": "cmd+alt+d a"
+      },
+      {
+        "command": "sshLite.addHost",
+        "key": "ctrl+alt+k a",
+        "mac": "cmd+alt+k a"
+      },
+      {
+        "command": "sshLite.goToHome",
+        "key": "ctrl+alt+d h",
+        "mac": "cmd+alt+d h",
+        "when": "sshLite.hasConnections"
+      },
+      {
+        "command": "sshLite.goToHome",
+        "key": "ctrl+alt+k h",
+        "mac": "cmd+alt+k h",
+        "when": "sshLite.hasConnections"
+      },
+      {
+        "command": "sshLite.goToParent",
+        "key": "ctrl+alt+d u",
+        "mac": "cmd+alt+d u",
+        "when": "sshLite.hasConnections"
+      },
+      {
+        "command": "sshLite.goToParent",
+        "key": "ctrl+alt+k u",
+        "mac": "cmd+alt+k u",
+        "when": "sshLite.hasConnections"
+      },
+      {
+        "command": "sshLite.forwardPort",
+        "key": "ctrl+alt+d p",
+        "mac": "cmd+alt+d p",
+        "when": "sshLite.hasConnections"
+      },
+      {
+        "command": "sshLite.forwardPort",
+        "key": "ctrl+alt+k p",
+        "mac": "cmd+alt+k p",
+        "when": "sshLite.hasConnections"
+      },
+      {
+        "command": "sshLite.monitor",
+        "key": "ctrl+alt+d m",
+        "mac": "cmd+alt+d m",
+        "when": "sshLite.hasConnections"
+      },
+      {
+        "command": "sshLite.monitor",
+        "key": "ctrl+alt+k m",
+        "mac": "cmd+alt+k m",
+        "when": "sshLite.hasConnections"
+      },
+      {
+        "command": "sshLite.showRemoteEnv",
+        "key": "ctrl+alt+d e",
+        "mac": "cmd+alt+d e",
+        "when": "sshLite.hasConnections"
+      },
+      {
+        "command": "sshLite.showRemoteEnv",
+        "key": "ctrl+alt+k e",
+        "mac": "cmd+alt+k e",
+        "when": "sshLite.hasConnections"
+      },
+      {
+        "command": "sshLite.batchRun",
+        "key": "ctrl+alt+d b",
+        "mac": "cmd+alt+d b",
+        "when": "sshLite.hasConnections"
+      },
+      {
+        "command": "sshLite.batchRun",
+        "key": "ctrl+alt+k b",
+        "mac": "cmd+alt+k b",
+        "when": "sshLite.hasConnections"
+      },
+      {
+        "command": "sshLite.quickStatus",
+        "key": "ctrl+alt+d q",
+        "mac": "cmd+alt+d q",
+        "when": "sshLite.hasConnections"
+      },
+      {
+        "command": "sshLite.quickStatus",
+        "key": "ctrl+alt+k q",
+        "mac": "cmd+alt+k q",
+        "when": "sshLite.hasConnections"
+      },
+      {
+        "command": "sshLite.generateSshKey",
+        "key": "ctrl+alt+d k",
+        "mac": "cmd+alt+d k"
+      },
+      {
+        "command": "sshLite.generateSshKey",
+        "key": "ctrl+alt+k k",
+        "mac": "cmd+alt+k k"
       },
       {
         "command": "sshLite.renameRemote",
@@ -1750,6 +1923,11 @@
         "key": "ctrl+v",
         "mac": "cmd+v",
         "when": "focusedView == sshLite.fileExplorer && listFocus && sshLite.hasClipboard"
+      },
+      {
+        "command": "sshLite.deleteRemote",
+        "key": "delete",
+        "when": "focusedView == sshLite.fileExplorer && listFocus"
       }
     ]
   },

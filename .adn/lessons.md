@@ -5,6 +5,18 @@ Add new entries as bugs are found, mistakes are made, or better approaches are d
 
 ---
 
+## 2026-06-06 - A context-menu command receives the TREE ITEM, not your domain object - normalize the arg
+
+**Context**: `sshLite.editRemoteCron` (and its siblings env / processes / service / run-snippet / push-key) threw "Cannot read properties of undefined (reading 'name')" when launched from a host's right-click menu. Root cause + rule:
+
+- **VS Code passes the tree element as the first command argument for a `view/item/context` menu.** For `view == sshLite.hosts` a connected host row is a **`ServerTreeItem`** (has `.hosts`: an array of host configs, each with `.id` - NOT a singular `.host`, and NO `.exec`); a credential/file-explorer connection row is a **`ConnectionTreeItem`** (has `.connection`: the live `SSHConnection`); file rows are `FileTreeItem`. A handler that assumes the arg is an `SSHConnection` and does `conn.host.name` reads `.name` off `undefined` and the command crashes with the generic "Error running command ...".
+
+- **The shared `pickConnection(prompt, preselect)` helper had `if (preselect) return preselect`** - it trusted the menu arg blindly, so every SSH-Tools command on a `connectedServer` row was broken. Fix (one choke point, `src/commands/sshToolsCommands.ts`): a `resolvePreselect()` that duck-types the arg - real `SSHConnection` (`typeof a.exec === 'function' && a.host`), `ConnectionTreeItem` (`a.connection.exec` is a function), or `ServerTreeItem` (`Array.isArray(a.hosts)` → `ConnectionManager.getConnection(host.id)`); anything else falls back to the quick-pick. Duck-typed on purpose so the commands module does not import the tree-provider classes (avoids a cycle). The alternative pattern (used by `sshLite.monitor` / `quickStatus` in `extension.ts`) is an explicit `instanceof ServerTreeItem | ConnectionTreeItem` check then read `.hosts`/`.connection`.
+
+- **Audit rule**: when adding a command to a `view/item/context` menu, never treat the first arg as your service object. Route host/connection commands through `pickConnection` (now safe) or copy the `instanceof` extraction. Regression covered in `sshToolsCommands.test.ts` ("pickConnection - tree item arguments").
+
+---
+
 ## 2026-06-05 - Webview NPC cheering banner: CSS @keyframes overwrite the base transform; `npm run lint` has no config (use `tsc`)
 
 **Context**: added the Vietnam-flag cheering banner above the Support-view NPC (`webview-src/support/`). Reusable gotchas:
@@ -269,3 +281,53 @@ Compounding factor: my generator script then *encoded* my mistranscribed string 
 - When lifting any JS body out of a template literal into a real source file, the unescape pass must include **all** template-literal escape sequences, not just backticks and `${`. At minimum: `` \` ``, `\${`, `\\u`, `\\u{`, `\\xHH`, `\\n`, `\\r`, `\\t`, `\\\\` (literal backslash). Run a grep for `\\\\` in the source after the lift; every hit is a candidate for the same regression.
 - Per-task code reviewers can miss UI-rendering bugs because they don't run the UI. The **manual smoke test** is the only reliable gate for this class of bug. If the user opts to skip manual smoke, flag the unicode/escape-sequence risk explicitly in the report so they can run a targeted check (e.g. open the panel and verify icons render).
 - Add a one-liner check to any future webview-lift plan: `grep -nE '\\\\[a-zA-Z0-9{]' webview-src/<dir>/index.ts` should return zero hits after the unescape; any hit is a regression risk.
+
+## 2026-06-06 — Keyboard-shortcut hints in tooltips: read keybindings from package.json at runtime, not a second copy
+
+**What happened**: Added keyboard shortcuts to tree-item hover tooltips (file rows, connection root, host/credential items). Built `src/utils/keybindingHints.ts` that reads `contributes.keybindings` once from this extension's own manifest via `vscode.extensions.getExtension('hybr8.ssh-lite')?.packageJSON`, prettifies keys (`ctrl+shift+r` → `Ctrl+Shift+R`, platform-aware mac vs win/linux), and caches the result.
+
+**Lesson**:
+- Do NOT hardcode a `command → shortcut` map in code — it drifts from `package.json`. Reading the live manifest via the extensions API is zero-drift and needs no sync test.
+- Importing `package.json` directly fails compile: `tsconfig` has `rootDir: "src"`, so `import '../../package.json'` is "not under rootDir" (TS6059). The extensions-API read sidesteps this entirely.
+- In unit tests the vscode mock's `extensions.getExtension` is `jest.fn()` returning `undefined` by default, so the helper yields empty footers — existing exact-string/`toContain` tooltip assertions keep passing unchanged. New tests mock `getExtension` to return a fake `{ packageJSON: { contributes: { keybindings } } }` and call `resetKeybindingHintsCache()` in `beforeEach`.
+- Provide both `buildShortcutFooter()` (markdown `\n\n---\n⌨ Rename \`F2\` · …` for MarkdownString tooltips) and `buildShortcutTextSuffix()` (`\n⌨ Connect: Ctrl+Shift+C` for plain-string tooltips). Both skip unbound commands and return `''` when nothing applies, so call sites concatenate unconditionally without `if` guards.
+- The keyboard glyph is `⌨` (U+2328) and the separator is `·` (U+00B7) — neither is the banned em-dash (U+2014); the markdown rule uses plain hyphens `---`.
+
+## 2026-06-06 — Keyboard-invoked tree commands DON'T receive the selection as an arg (the "shortcut does nothing" bug)
+
+**What happened**: After adding keyboard-shortcut hints to tooltips, the user reported the file-row shortcuts (Ctrl+C / Ctrl+X / F2 / Ctrl+V → copyRemoteItem / cutRemoteItem / renameRemote / pasteRemoteItem) "don't work — I press the key and nothing happens." Root cause: those handlers were written for context-menu invocation, where VS Code passes the right-clicked tree item as the first argument. When the SAME command is invoked via a **keyboard shortcut**, VS Code passes **no arguments** — it does NOT auto-pass the tree view's selection. So every handler hit its `if (!item) return;` guard and silently no-op'd. The keybindings existed in package.json and the `when`/context keys were correct; the handlers just had no target.
+
+**Lesson**:
+- A `view/item/context` command handler that only reads its `item` argument is BROKEN when the same command is given a keybinding. Keyboard invocation passes nothing.
+- Fix pattern: fall back to the tree view's live selection. Capture the `vscode.TreeView` from `createTreeView` and, when no arg is passed, read `treeView?.selection`:
+  ```ts
+  const fromArgs = (items?.length ? items : (item ? [item] : []));
+  const source = fromArgs.length ? fromArgs : (fileTreeView?.selection ?? []);
+  const fileItems = source.filter((i): i is FileTreeItem => i instanceof FileTreeItem);
+  ```
+  For single-target commands (rename/paste): `const target = item ?? (fileTreeView?.selection ?? []).find(i => i instanceof FileTreeItem)`.
+- The view must have `canSelectMany`/focus for `.selection` to be populated; the keybinding `when` (`focusedView == sshLite.fileExplorer && listFocus`) already guarantees the tree is focused when the key fires.
+- **Focus-steal caveat**: `FileTreeItem` sets `command: openFile`, so single-clicking a FILE opens it and moves focus to the editor — then `focusedView == sshLite.fileExplorer` is false and Ctrl+C/F2 act on the editor, not the tree. The reliable gesture is to keep focus in the tree (arrow-key navigation does NOT trigger the open-on-click), or use a folder row. Worth knowing before claiming "the shortcut works" — it works only while the file explorer has keyboard focus.
+- **Verification gotcha (the real miss)**: I originally shipped the tooltips and claimed done after testing only that the tooltip STRING rendered — never that the shortcut FIRES. You cannot prove a keybinding works from a string-render test. Prove it by invoking the REAL registered handler with no arg through `executeCommand(id)` (the vscode mock's `executeCommand` dispatches to the real registry) with a controlled `treeView.selection`, and assert the operation happened. See `src/extension.keyboardShortcuts.test.ts`.
+- The 6 view-level shortcuts (connect, openTerminal, refreshFiles, goToPath, filterFiles, showSearch) were already fine: they either need no target or fall back to a quick-pick when invoked with no arg.
+
+## 2026-06-06 — SSH Lite shortcut scheme: global two-key chord with dual leaders + first-letter keys
+
+**Final design** (after iterating through several rejected forms — record the destination AND the dead-ends):
+- The **view-level** commands use a **two-key chord** with **two interchangeable leaders**: `Ctrl+Alt+D` (left-hand, home row) and `Ctrl+Alt+K` (right-hand) — mac `Cmd+Alt+D` / `Cmd+Alt+K`. The second key is the command's **first letter**. So Connect = `Ctrl+Alt+D C` *or* `Ctrl+Alt+K C`, etc. Each command has 2 keybinding entries (one per leader). The covered set grew over the session to 15 global view-level commands (C connect, T terminal, R refresh, G go-to-path, F filter, S search, A add-host, H home, U up/parent, P port, M monitor, E env, B batch, Q quick-status, K gen-key) → 30 chord entries + 5 file-row (F2/Ctrl+C/Ctrl+X/Ctrl+V/Delete) = 35 total.
+- **Leader must not be a global OS hotkey**: `Ctrl+Alt+S` was rejected as a leader because a common screenshot tool registers it as a system-wide hotkey, and the OS intercepts global hotkeys *before* VS Code sees them — so VS Code can never override it and the chord would never start. Any `Ctrl+Alt+<letter>` can be grabbed by an installed app; the user is the authority on which letter is free on their machine. `Ctrl+Alt+D` was the chosen free left leader.
+- These are **global** (`when: sshLite.hasConnections`, except `connect` which has no `when`). They are NOT scoped to panel focus — that was the key correction.
+- File-row ops (F2 / Ctrl+C / Ctrl+X / Ctrl+V) stay tree-scoped (`focusedView == sshLite.fileExplorer && listFocus`) because they act on a selected remote row; there is no such target while the editor is focused.
+
+**The journey (each step was rejected for a concrete reason — don't repeat them)**:
+1. `Ctrl+Shift+<letter>` (original): collided with VS Code defaults (Find in Files, Save As, Reopen Closed Editor, Source Control).
+2. Single `Ctrl+Alt+<letter>`, scoped to view focus: **wrong because not global** — the user is usually in the editor when they want to refresh/search/connect, and a focus-scoped binding does nothing there. *The scoping that makes a binding "safe" also makes it useless for global actions.*
+3. `Alt+<letter>` (single): **bad on Windows** — bare `Alt+<letter>` triggers menu-bar mnemonics (Alt+S=Selection, Alt+T=Terminal, Alt+R=Run, Alt+G=Go, Alt+F=File...).
+4. Two-key chord (final): a chord prefix never shadows any single common shortcut, so it can be global AND conflict-free. Two leaders give both-hand ergonomics; the right-side `Ctrl+Alt+K` leader keeps the left-side first-letter keys comfortable (hands alternate).
+
+**Conflict reality to remember**: no combo is "reserved" on the Marketplace. VS Code resolves by `when` + load order; a view-scoped binding wins in-context and doesn't break other extensions' global bindings. So cross-extension conflict is rarely the real constraint — *focus scope* (does it fire where the user is?) and *menu mnemonics / AltGr* are.
+
+**Mechanics**:
+- Only `package.json` `contributes.keybindings` changed. Tooltips update automatically because `src/utils/keybindingHints.ts` reads the shortcut live from the manifest and `prettifyKey` renders chords (`ctrl+alt+d c` → `Ctrl+Alt+D C`); `getShortcut` returns the first binding, so tooltips show the `Ctrl+Alt+D` leader. No tooltip code touched.
+- `docs/COMMANDS.md` is generated; its hardcoded shortcut mentions live in `scripts/generate-commands-doc.js` (not the .md). Update the generator, then `npm run docs:commands`.
+- swc/jest does NOT type-check, so a test that violates a required interface field (e.g. `IRemoteFile.connectionId`) passes under jest but fails `tsc`/`npm run compile`. Always run `npx tsc -p ./ --noEmit` after adding test fixtures, not just jest.

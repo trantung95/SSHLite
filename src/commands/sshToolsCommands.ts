@@ -25,8 +25,42 @@ export function getConnectedConnections(): SSHConnection[] {
   return ConnectionManager.getInstance().getAllConnections().filter((c) => c.state === 'connected');
 }
 
-export async function pickConnection(prompt: string, preselect?: SSHConnection): Promise<SSHConnection | undefined> {
-  if (preselect) { return preselect; }
+/**
+ * Coerce a command argument into a live SSHConnection. VS Code passes whatever
+ * the invocation context provides: an SSHConnection (rare), or - when the
+ * command runs from a context menu - a tree item. A host row is a
+ * `ServerTreeItem` (has `.hosts`: host configs with `.id`); a credential row is
+ * a `ConnectionTreeItem` (has `.connection`). Duck-typed so this module does not
+ * depend on the tree-provider classes (avoids an import cycle).
+ */
+function resolvePreselect(arg: unknown): SSHConnection | undefined {
+  if (!arg || typeof arg !== 'object') { return undefined; }
+  const a = arg as Record<string, unknown>;
+
+  // Already an SSHConnection (has exec() + a host config).
+  if (typeof a.exec === 'function' && a.host) { return arg as unknown as SSHConnection; }
+
+  // ConnectionTreeItem: carries the live connection directly.
+  const conn = a.connection as Record<string, unknown> | undefined;
+  if (conn && typeof conn.exec === 'function') { return conn as unknown as SSHConnection; }
+
+  // ServerTreeItem: resolve the first connected user under this host.
+  if (Array.isArray(a.hosts)) {
+    const mgr = ConnectionManager.getInstance();
+    for (const h of a.hosts) {
+      const id = (h as Record<string, unknown> | null)?.id;
+      if (typeof id === 'string') {
+        const c = mgr.getConnection(id);
+        if (c) { return c; }
+      }
+    }
+  }
+  return undefined;
+}
+
+export async function pickConnection(prompt: string, preselect?: unknown): Promise<SSHConnection | undefined> {
+  const resolved = resolvePreselect(preselect);
+  if (resolved) { return resolved; }
   const conns = getConnectedConnections();
   if (conns.length === 0) {
     vscode.window.showInformationMessage('No active SSH connections.');

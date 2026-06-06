@@ -168,6 +168,50 @@ describe('pickConnection', () => {
   });
 });
 
+// ─── pickConnection: tree-item normalization (regression for editRemoteCron crash) ──
+// Context menus pass a tree item, NOT an SSHConnection: a host row is a
+// ServerTreeItem (has `.hosts`), a credential row a ConnectionTreeItem (has
+// `.connection`). The old `if (preselect) return preselect` returned the tree
+// item, so `connection.host.name` later threw "Cannot read properties of
+// undefined". pickConnection must coerce these to a real SSHConnection.
+
+describe('pickConnection - tree item arguments', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('resolves a ServerTreeItem (.hosts) to its live connection', async () => {
+    const conn = connectedConn('h1', 'Web');
+    mockGetConnection.mockImplementation((id: string) => (id === 'h1' ? conn : undefined));
+    const serverItem = { hosts: [{ id: 'h1' }], label: 'Web' } as any; // not an SSHConnection
+    const result = await pickConnection('pick', serverItem);
+    expect(result).toBe(conn);
+    expect(vscode.window.showQuickPick).not.toHaveBeenCalled();
+  });
+
+  it('picks the first connected host under a ServerTreeItem with multiple hosts', async () => {
+    const conn = connectedConn('h2', 'Api');
+    mockGetConnection.mockImplementation((id: string) => (id === 'h2' ? conn : undefined));
+    const serverItem = { hosts: [{ id: 'h1' }, { id: 'h2' }] } as any;
+    const result = await pickConnection('pick', serverItem);
+    expect(result).toBe(conn);
+  });
+
+  it('resolves a ConnectionTreeItem (.connection)', async () => {
+    const conn = connectedConn('c9', 'Db');
+    const item = { connection: conn, label: 'Db' } as any;
+    const result = await pickConnection('pick', item);
+    expect(result).toBe(conn);
+  });
+
+  it('falls back to the picker when a ServerTreeItem has no live connection', async () => {
+    mockGetConnection.mockReturnValue(undefined);
+    mockGetAllConnections.mockReturnValue([]);
+    const serverItem = { hosts: [{ id: 'gone' }] } as any;
+    const result = await pickConnection('pick', serverItem);
+    expect(result).toBeUndefined();
+    expect(vscode.window.showInformationMessage).toHaveBeenCalled();
+  });
+});
+
 // ─── pickMultiConnection ─────────────────────────────────────────────────────
 
 describe('pickMultiConnection', () => {
