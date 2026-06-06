@@ -312,22 +312,27 @@ the pixelated canvas, so the flag and text stay crisp.
 
 Each appearance randomises:
 
-- **Tilt** — a random rotation (±11°), carried by an inline `--tilt` CSS var that
-  each `@keyframes` step restates, so the zoom in/out animates `scale()` while the
-  tilt and centring survive.
+- **Tilt** — a small random rotation (±4°), carried by an inline `--tilt` CSS var
+  that each `@keyframes` step restates, so the zoom in/out animates `scale()` while
+  the tilt and centring survive.
 - **Colours** — `pickBannerColours()`: the background hue is chosen from the arcs
   `(15..40)∪(70..345)` so it **never matches the flag's red `#da251d` / yellow
   `#ffff00`**, with a random dark or light lightness band; the text is a
   near-complementary hue with the **opposite** lightness band (and a vivid
   saturation), so it always contrasts and is **never the same colour as the
-  background**. Applied via inline `--bg` / `--txt` vars.
+  background**. The background is kept **pale** (low saturation, ~30–46%) and
+  **slightly translucent** — it is emitted as an `hsla()` with `VN_BANNER_BG_ALPHA`
+  (0.8), so only the band's fill is see-through; the flag SVG and text are separate
+  child elements painted on top and stay fully opaque. Applied via inline `--bg` /
+  `--txt` vars.
 - **Band width** — a **fixed headband** whose straight middle spans the head width
-  (`canvas.offsetWidth * 34/160`); it is widened by **2× the corner radius**
-  (`VN_BANNER_RADIUS`, must match the CSS) so the **rounded corners sit outside the
-  head**, plus **0–4 internal px** more at random (`VN_BANNER_EXTRA_MAX`). The width
-  is set once per appearance and is **independent of the text** — editing the label
-  swaps the content in place (`refreshBannerInner`) and never resizes the band.
-  `overflow:hidden` clips content to the rounded ends.
+  (`canvas.offsetWidth * 34/160`); it overhangs by a small fixed margin
+  (`VN_BANNER_MIN_OVERHANG`, **1 internal px** split across both ends) so it **hugs
+  the head**, plus **0–4 internal px** more at random (`VN_BANNER_EXTRA_MAX`). The
+  corner radius (`VN_BANNER_RADIUS`, must match the CSS) is kept separate from the
+  width margin. The width is set once per appearance and is **independent of the
+  text** — editing the label swaps the content in place (`refreshBannerInner`) and
+  never resizes the band. `overflow:hidden` clips content to the rounded ends.
 - **Flag position** — the flag is **always off to one side** (`bannerFlagSide`,
   random left/right), never mid-forehead: it is the outermost element on that side
   with the text trailing toward the centre a short gap away, and

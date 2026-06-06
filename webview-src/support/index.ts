@@ -330,8 +330,9 @@ const VN_BANNER_HOLD_MIN = 3 * 60 * 1000; // ≥3 min visible
 const VN_BANNER_HOLD_RAND = 2 * 60 * 1000; // +0..2 min → 3–5 min visible
 const VN_BANNER_IN_MS = 450; // zoom-in (matches the CSS keyframe)
 const VN_BANNER_OUT_MS = 450; // zoom-out
-const VN_BANNER_MAX_TILT = 11; // ± degrees of random tilt
+const VN_BANNER_MAX_TILT = 4; // ± degrees of random tilt
 const VN_BANNER_RADIUS = 2; // band corner radius in internal px — MUST match styles.css .vnbanner
+const VN_BANNER_MIN_OVERHANG = 1; // band's minimum width beyond the head (internal px, split both ends) — keep small so it hugs the head
 const VN_BANNER_EXTRA_MAX = 4; // extra random width on top of the minimum (internal px)
 // Internal-y (of the 160×120 art) where the headband sits: high on the forehead /
 // at the hairline (hairline ~y27, glasses/brows ~y34) — like a sports fan's
@@ -359,15 +360,21 @@ function pickBannerBgHue(): number {
   return r < 25 ? 15 + r : 70 + (r - 25);
 }
 
+// How see-through the band's BACKGROUND is. Applied only to --bg (an hsla fill),
+// so the flag SVG and the text — separate child elements painted on top — stay
+// fully opaque. A drop, not a wash: the band still reads as a solid headband.
+const VN_BANNER_BG_ALPHA = 0.8;
+
 // Background + text colours: background avoids red/yellow; text is a near-complement
 // with the OPPOSITE lightness band, so it always contrasts and is never the same as
-// the background.
+// the background. The background is kept paler (lower saturation) and slightly
+// translucent (alpha) — the text keeps its lightness-based contrast pairing.
 function pickBannerColours(): { bg: string; txt: string } {
   const bgHue = pickBannerBgHue();
   const dark = Math.random() < 0.5;
   const bgL = dark ? 22 + Math.random() * 14 : 64 + Math.random() * 14; // 22–36 or 64–78
-  const bgS = 55 + Math.random() * 20; // 55–75
-  const bg = hslToHex(bgHue, bgS, bgL);
+  const bgS = 30 + Math.random() * 16; // 30–46 — paler ("nhạt hơn") than before
+  const bg = `hsla(${Math.round(bgHue)}, ${Math.round(bgS)}%, ${Math.round(bgL)}%, ${VN_BANNER_BG_ALPHA})`;
   const txtHue = (bgHue + 150 + Math.random() * 60) % 360; // near-complement → "đối màu"
   const txtL = dark ? 80 + Math.random() * 12 : 16 + Math.random() * 12; // light on dark / dark on light
   const txtS = 70 + Math.random() * 20; // vivid → stands out
@@ -491,10 +498,10 @@ function spawnVnBanner(persistent = false): void {
     return;
   }
   // The band is a fixed-width headband. Its straight middle spans the head width;
-  // it is widened by 2× the corner radius so the ROUNDED CORNERS sit OUTSIDE the
-  // head's width, plus a few random px. Width does NOT depend on the text, so
-  // editing the label never resizes it.
-  const bandW = headW + (2 * VN_BANNER_RADIUS + Math.random() * VN_BANNER_EXTRA_MAX) * scale;
+  // it overhangs by a small fixed margin (VN_BANNER_MIN_OVERHANG, split both ends)
+  // so it hugs the head, plus a few random px. Width does NOT depend on the text,
+  // so editing the label never resizes it.
+  const bandW = headW + (VN_BANNER_MIN_OVERHANG + Math.random() * VN_BANNER_EXTRA_MAX) * scale;
   const txt = bannerText;
   bannerFlagSide = Math.random() < 0.5 ? 'left' : 'right'; // flag off to a random side
 

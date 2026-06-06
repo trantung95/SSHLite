@@ -145,7 +145,7 @@ body {
   padding: calc(0.4px * var(--npc-scale, 1.5)) 0;
   border-radius: calc(2px * var(--npc-scale, 1.5));
   overflow: hidden; /* clip the content to the band's rounded ends */
-  background: var(--bg, rgba(16, 19, 31, 0.92));
+  background: var(--bg, rgba(16, 19, 31, 0.8)); /* --bg is an hsla() set per appearance; alpha keeps the band slightly translucent */
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
   white-space: nowrap;
   animation: vnbanner-in var(--in-ms, 450ms) cubic-bezier(0.2, 1.4, 0.4, 1) both;
