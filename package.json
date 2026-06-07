@@ -2,7 +2,7 @@
   "name": "ssh-lite",
   "displayName": "SSH Lite (SSH Tools)",
   "description": "A visual SSH client for VS Code. Browse, edit, monitor, manage services - by clicking, not typing vi/systemctl/crontab. Nothing installed on the remote server. Perfect for VPS, cloud servers (AWS/Azure/GCP), and Linux administration.",
-  "version": "0.9.10",
+  "version": "0.9.11",
   "publisher": "hybr8",
   "engines": {
     "vscode": "^1.85.0"
@@ -1781,25 +1781,25 @@
       {
         "command": "sshLite.renameRemote",
         "key": "f2",
-        "when": "focusedView == sshLite.fileExplorer && listFocus"
+        "when": "focusedView == sshLite.fileExplorer"
       },
       {
         "command": "sshLite.copyRemoteItem",
         "key": "ctrl+c",
         "mac": "cmd+c",
-        "when": "focusedView == sshLite.fileExplorer && listFocus"
+        "when": "focusedView == sshLite.fileExplorer"
       },
       {
         "command": "sshLite.cutRemoteItem",
         "key": "ctrl+x",
         "mac": "cmd+x",
-        "when": "focusedView == sshLite.fileExplorer && listFocus"
+        "when": "focusedView == sshLite.fileExplorer"
       },
       {
         "command": "sshLite.pasteRemoteItem",
         "key": "ctrl+v",
         "mac": "cmd+v",
-        "when": "focusedView == sshLite.fileExplorer && listFocus && sshLite.hasClipboard"
+        "when": "focusedView == sshLite.fileExplorer && sshLite.hasClipboard"
       }
     ]
   },

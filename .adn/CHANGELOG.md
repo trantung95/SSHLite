@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.9.11 - Hotkey focus requirement relaxed (issue #10)
+
+F2 (rename), Ctrl/Cmd+C (copy), Ctrl/Cmd+X (cut), and Ctrl/Cmd+V (paste) in the SSH Lite file explorer now fire whenever the panel has focus (`focusedView == sshLite.fileExplorer`). The previous `listFocus` condition required keyboard-navigating into the list, which made the hotkeys appear broken on macOS when using a mouse.
+
 ## v0.9.10 - Configurable editor tab prefix for compact tabs (issue #8)
 
 ### Why
