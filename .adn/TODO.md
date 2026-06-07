@@ -11,3 +11,4 @@
 - Log all parameters and return values at entry/exit points of key functions
 - Covers: connection lifecycle, file operations, command execution, tree provider updates
 - Use `diagLog` (gated by `sshLite.diagnosticLogging`) for high-frequency paths; `infoLog` for state transitions
+- Include timing (duration ms) for async operations: connect, file read/write, command exec
