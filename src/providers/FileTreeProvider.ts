@@ -415,6 +415,20 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   // Used by "Show tree from root" and reveal to auto-expand folders after navigation
   private pendingAutoExpandPaths: Map<string, Set<string>> = new Map(); // connectionId -> paths to auto-expand
 
+  // Event-driven reveal synchronization: resolvers keyed by "connectionId:filePath".
+  // revealFile() registers a resolver here before triggering refreshConnection(), then
+  // awaits it. notifyVisible() fires when getChildren() returns that file in its list,
+  // meaning VS Code has the item in its tree model and reveal() will succeed.
+  private revealReadyCallbacks: Map<string, Array<() => void>> = new Map();
+
+  // Resolved absolute home directory per connection (SFTP realpath of '~').
+  // getParent() needs this SYNCHRONOUSLY to compare an always-absolute file.path
+  // against a currentPath that may be the literal '~'. Without it, reveal() walks a
+  // chain of phantom /home, /home/user nodes that aren't rendered and fails to select
+  // the file (issue #7). Populated lazily from `echo ~` (revealFile) or derived from
+  // the cached '~' listing, which carries absolute child paths.
+  private resolvedHomePaths: Map<string, string> = new Map();
+
   // Debounce timer for connection change events to prevent multiple rapid refreshes
   // This fixes tree state reset issues when disconnect fires multiple events
   private connectionChangeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -602,9 +616,12 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
         }
       }
       this.deepFilterResults.delete(connectionId);
+      // Re-derived cheaply on next reveal; clear for consistency with the cache.
+      this.resolvedHomePaths.delete(connectionId);
     } else {
       this.directoryCache.clear();
       this.deepFilterResults.clear();
+      this.resolvedHomePaths.clear();
     }
   }
 
@@ -806,6 +823,47 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
    */
   getCurrentPath(connectionId: string): string {
     return this.currentPaths.get(connectionId) || '~';
+  }
+
+  /**
+   * Record the absolute home directory for a connection (issue #7).
+   * Source is `echo ~` or SFTP realpath; ignored unless it looks absolute.
+   */
+  private setResolvedHome(connectionId: string, homePath: string): void {
+    const trimmed = (homePath || '').trim();
+    if (trimmed.startsWith('/')) {
+      this.resolvedHomePaths.set(connectionId, trimmed);
+    }
+  }
+
+  /**
+   * Resolve currentPath to an absolute path SYNCHRONOUSLY, expanding a leading '~'
+   * using the cached home (or deriving it from the cached '~' listing, whose child
+   * paths are absolute). Returns the input unchanged if it is already absolute or the
+   * home is not yet known. getParent() relies on this so its ancestor chain matches
+   * what the tree actually renders (issue #7).
+   */
+  private resolveCurrentPathSync(connectionId: string): string {
+    const cp = this.getCurrentPath(connectionId);
+    if (cp !== '~' && !cp.startsWith('~/')) {
+      return cp;
+    }
+    let home = this.resolvedHomePaths.get(connectionId);
+    if (!home) {
+      // Derive from the cached '~' listing — SFTP returns absolute child paths.
+      const homeFiles = this.getCached(connectionId, '~');
+      if (homeFiles && homeFiles.length > 0) {
+        const derived = path.posix.dirname(homeFiles[0].path);
+        if (derived.startsWith('/') && derived !== '/' && derived !== '.') {
+          home = derived;
+          this.resolvedHomePaths.set(connectionId, home);
+        }
+      }
+    }
+    if (!home) {
+      return cp;
+    }
+    return cp === '~' ? home : home + cp.substring(1);
   }
 
   /**
@@ -1269,6 +1327,8 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
             activeFilter?.maxResults || 0
           );
         });
+        // Notify any pending reveal() waits that these files are now visible in the tree
+        this.notifyVisible(element.connection.id, cached);
         // Preload subdirectories in background (throttled per connection+path)
         this.preloadSubdirectories(element.connection, cached);
         return items;
@@ -1349,6 +1409,10 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
         items.push(new FilterResultsHeaderItem(connection, deepResults.length, isSearching, filterLimit));
       }
     }
+
+    // Notify pending reveals for files that are direct children of the current root
+    // (handles the case where parentPath === currentPath so getChildren(FileTreeItem) is not called)
+    this.notifyVisible(connection.id, filteredFiles);
 
     return items;
   }
@@ -1515,9 +1579,14 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     if (element instanceof FileTreeItem) {
       const parentPath = path.posix.dirname(element.file.path);
       const currentPath = this.getCurrentPath(element.connection.id);
+      // file.path is always absolute, but currentPath may be the literal '~'.
+      // Resolve it so the comparison terminates at the tree root instead of
+      // emitting phantom ancestor nodes that reveal() can't find (issue #7).
+      const rootAbs = this.resolveCurrentPathSync(element.connection.id);
 
       // If parent path is the current root path, return the connection
-      if (parentPath === currentPath || parentPath === element.file.path || parentPath === '.') {
+      if (parentPath === currentPath || parentPath === rootAbs ||
+          parentPath === element.file.path || parentPath === '.') {
         return new ConnectionTreeItem(element.connection, currentPath);
       }
 
@@ -1841,6 +1910,61 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   }
 
   /**
+   * Register a promise that resolves once getChildren() returns a list that contains
+   * remotePath. The caller awaits this before calling fileTreeView.reveal(), so reveal()
+   * is only issued after VS Code has the item in its tree model.
+   * Safety: resolves unconditionally after 5 s so the caller never hangs.
+   */
+  private waitUntilVisible(connectionId: string, remotePath: string): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const key = `${connectionId}:${remotePath}`;
+      const existing = this.revealReadyCallbacks.get(key) ?? [];
+      existing.push(resolve);
+      this.revealReadyCallbacks.set(key, existing);
+      const timer = setTimeout(() => {
+        const cbs = this.revealReadyCallbacks.get(key);
+        if (cbs) {
+          const idx = cbs.indexOf(resolve);
+          if (idx !== -1) { cbs.splice(idx, 1); }
+          if (cbs.length === 0) { this.revealReadyCallbacks.delete(key); }
+        }
+        resolve();
+      }, 5000);
+      // Don't prevent Node.js from exiting if only this timer remains (e.g. in tests).
+      if (typeof timer === 'object' && timer !== null && 'unref' in timer) {
+        (timer as NodeJS.Timeout).unref();
+      }
+    });
+  }
+
+  /**
+   * Called from getChildren() after it returns a folder's file list.
+   * Resolves any pending waitUntilVisible() promises for files that are now visible.
+   * Defers via Promise.resolve() so getChildren() returns before reveal() is triggered.
+   */
+  private notifyVisible(connectionId: string, files: IRemoteFile[]): void {
+    for (const file of files) {
+      this.resolveRevealReady(connectionId, file.path);
+    }
+  }
+
+  /**
+   * Directly resolve the reveal-ready callback for a specific path.
+   * Used both by notifyVisible() (getChildren() path) and by revealFile() after refreshConnection().
+   * Defers via Promise.resolve() so the IPC from refreshConnection() is sent first,
+   * guaranteeing the renderer processes the tree update before reveal() arrives.
+   */
+  private resolveRevealReady(connectionId: string, remotePath: string): void {
+    const key = `${connectionId}:${remotePath}`;
+    const cbs = this.revealReadyCallbacks.get(key);
+    if (cbs && cbs.length > 0) {
+      this.revealReadyCallbacks.delete(key);
+      const toCall = [...cbs];
+      Promise.resolve().then(() => toCall.forEach(cb => cb()));
+    }
+  }
+
+  /**
    * Smart reveal: expand tree from current view to the file without resetting/collapsing.
    * Case A: File is under currentPath → load intermediate dirs, use VS Code reveal()
    * Case B: File is outside currentPath → switch to tree-from-root with both paths expanded
@@ -1864,6 +1988,23 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     }
 
     const parentPath = path.posix.dirname(remotePath);
+    const currentPath = this.getCurrentPath(connectionId);
+
+    // Ensure the absolute home is known BEFORE any early return, so getParent()
+    // can resolve a '~' currentPath synchronously when VS Code walks the reveal
+    // ancestor chain — including on the already-visible fast path below (issue #7).
+    // Cheap first: resolveCurrentPathSync() derives it from the cached '~' listing
+    // and only then do we shell out with `echo ~` if it is still unknown.
+    if (currentPath === '~' || currentPath.startsWith('~/')) {
+      this.resolveCurrentPathSync(connectionId);
+      if (!this.resolvedHomePaths.has(connectionId)) {
+        try {
+          this.setResolvedHome(connectionId, (await connection.exec('echo ~')).trim());
+        } catch {
+          // Non-fatal: getParent() falls back to the literal currentPath.
+        }
+      }
+    }
 
     // Check if file is already visible (parent cached and file exists in it)
     const cachedFiles = this.getCached(connectionId, parentPath);
@@ -1874,27 +2015,55 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       }
     }
 
-    // Resolve ~ to absolute path for comparison
-    const currentPath = this.getCurrentPath(connectionId);
+    // Resolve ~ to absolute path for case routing (home now cached above).
     let resolvedCurrentPath = currentPath;
     if (currentPath === '~' || currentPath.startsWith('~/')) {
-      try {
-        const homePath = (await connection.exec('echo ~')).trim();
-        resolvedCurrentPath = currentPath === '~' ? homePath : homePath + currentPath.substring(1);
-      } catch {
-        resolvedCurrentPath = currentPath;
+      const home = this.resolvedHomePaths.get(connectionId);
+      if (home) {
+        resolvedCurrentPath = currentPath === '~' ? home : home + currentPath.substring(1);
       }
     }
 
     // Case A: File is under current path → expand tree down to file
     if (remotePath.startsWith(resolvedCurrentPath + '/') || resolvedCurrentPath === '/') {
+      // Register before triggering refresh so the callback is in place.
+      const visiblePromise = this.waitUntilVisible(connectionId, remotePath);
+
       await this.loadIntermediateDirs(connection, resolvedCurrentPath, parentPath);
+
+      // Build pendingAutoExpandPaths for all dirs between currentPath and parentPath.
+      // This causes getChildren() to traverse down the chain and fire notifyVisible().
+      const expandPaths = new Set<string>();
+      let p = parentPath;
+      while (p && p !== '/' && p !== resolvedCurrentPath && p !== '.') {
+        expandPaths.add(p);
+        const parent = path.posix.dirname(p);
+        if (parent === p) { break; }
+        p = parent;
+      }
+      if (expandPaths.size > 0) {
+        this.setAutoExpandPaths(connectionId, expandPaths);
+      }
+
       this.refreshConnection(connectionId);
+
+      // Directly resolve the reveal-ready promise for this file. IPC from refreshConnection()
+      // was already dispatched; reveal() will be sent after this deferred microtask, so the
+      // renderer always sees the tree update before the reveal — regardless of cache state.
+      this.resolveRevealReady(connectionId, remotePath);
+
+      await visiblePromise;
       return this.createFileTreeItem(connectionId, remotePath);
     }
 
     // Case B: File is outside current path → navigate to root with auto-expand
+    const visiblePromise = this.waitUntilVisible(connectionId, remotePath);
     await this.navigateToRootWithExpand(connection, resolvedCurrentPath, remotePath);
+
+    // Same IPC-ordering guarantee as Case A.
+    this.resolveRevealReady(connectionId, remotePath);
+
+    await visiblePromise;
     return this.createFileTreeItem(connectionId, remotePath);
   }
 
@@ -2354,6 +2523,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     this.loadingItems.clear();
     this.expandedFolders.clear();
     this.connectionTreeItemRefs.clear();
+    this.resolvedHomePaths.clear();
 
     // Clear debounce timer
     if (this.connectionChangeDebounceTimer) {

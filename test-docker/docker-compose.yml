@@ -85,3 +85,73 @@ services:
     hostname: manual-smoke
     volumes:
       - ./logs/sshlite-manual:/var/log/sshd
+
+  # =========================================================================
+  # SLOW / LAGGY servers — for reproducing timing-sensitive bugs (high ping,
+  # jitter, packet loss, periodic disconnects). Two interchangeable approaches.
+  # Full docs: test-docker/SLOW-SERVERS.md
+  # =========================================================================
+
+  # Server 6 (APPROACH 1): in-container tc/netem - port 2205
+  # Same image as the base sshd (testuser/testpass, admin/adminpass, rich
+  # seed-showcase tree) but the entrypoint applies Linux netem latency on eth0
+  # and runs a periodic "blackout" loop to simulate intermittent disconnects.
+  # Latency is tuned live via the env vars below (no rebuild). Requires the
+  # NET_ADMIN capability for `tc` — without it the entrypoint logs a warning and
+  # runs sshd with no impairment rather than crashing. Port 2205 chosen to sit
+  # just above the base fleet (2201-2204) and below ssh-manual (2215).
+  slow:
+    build:
+      context: .
+      dockerfile: Dockerfile.sshd-slow
+      args:
+        SERVER_FLAVOR: prod-web
+    container_name: hybr8-prod-slow-01
+    hostname: hybr8-prod-slow-01
+    ports:
+      - "2205:22"
+    cap_add:
+      - NET_ADMIN
+    environment:
+      # Steady-state impairment (applied on startup).
+      NETEM_DELAY: "300"      # base one-way delay, ms
+      NETEM_JITTER: "80"      # delay jitter, ms (normal distribution)
+      NETEM_LOSS: "3"         # steady-state packet loss, %
+      # Periodic blackout loop (simulates intermittent disconnects).
+      FLAKY_INTERVAL: "45"    # seconds between blackouts
+      FLAKY_DOWN: "5"         # blackout duration, seconds (link -> 100% loss)
+      FLAKY_ENABLED: "1"      # 1 = run the blackout loop, 0 = steady-state only
+    volumes:
+      - ./logs/hybr8-prod-slow-01:/var/log/sshd
+
+  # Server 7 (APPROACH 2, backend): clean sshd, internal only - no host port.
+  # This is a plain base-image server (prod-api flavor) that ONLY the toxiproxy
+  # sidecar reaches over the compose network at slow-backend:22. No host port is
+  # published — clients connect through toxiproxy on 2206 instead.
+  slow-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.sshd
+      args:
+        SERVER_FLAVOR: prod-api
+    container_name: hybr8-prod-slow-backend
+    hostname: slow-backend
+    volumes:
+      - ./logs/hybr8-prod-slow-backend:/var/log/sshd
+
+  # Server 7 (APPROACH 2, proxy): Toxiproxy sidecar in front of slow-backend.
+  # Forwards host port 2206 -> slow-backend:22. The proxy starts CLEAN (no
+  # impairment, see toxiproxy.json); add latency/timeout/down "toxics" live via
+  # the HTTP API on 8474 (run test-docker/toxiproxy-seed.sh). Toxics are runtime
+  # state, so you can tune the impairment without a rebuild or restart.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    container_name: hybr8-prod-toxiproxy
+    command: ["-host=0.0.0.0", "-config=/config.json"]
+    ports:
+      - "2206:2206"   # proxied SSH (-> slow-backend:22)
+      - "8474:8474"   # Toxiproxy HTTP API (add/remove toxics)
+    volumes:
+      - ./toxiproxy.json:/config.json:ro
+    depends_on:
+      - slow-backend

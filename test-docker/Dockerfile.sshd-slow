@@ -1,0 +1,79 @@
+# SSH test server with INTENTIONAL network impairment (high latency, jitter,
+# packet loss, periodic blackouts) for reproducing timing-sensitive bugs.
+#
+# APPROACH 1 of 2 ("in-container tc/netem"). This image is identical to the base
+# Dockerfile.sshd (same users testuser/testpass + admin/adminpass, same sshd
+# config, same seed-showcase.sh rich file tree, same /var/log/sshd) PLUS:
+#   - iproute2 (provides `tc`) for Linux traffic control
+#   - slow-entrypoint.sh, which applies netem latency on startup and runs a
+#     background "blackout" loop to simulate intermittent disconnects.
+#
+# Latency is tunable at RUN time via env vars (NETEM_* / FLAKY_*), so the same
+# image covers everything from mild lag to a frequently-dropping link without a
+# rebuild. See test-docker/SLOW-SERVERS.md.
+#
+# REQUIRES the NET_ADMIN capability at run time (cap_add: [NET_ADMIN]). Without
+# it the entrypoint degrades gracefully (logs a warning, runs sshd with no
+# latency) rather than crashing — but you won't get any impairment.
+
+FROM alpine:3.19
+
+# Base packages match Dockerfile.sshd, plus iproute2 for `tc` (netem).
+RUN apk add --no-cache openssh-server bash coreutils findutils grep sudo iproute2
+
+# Create test users (same credentials as the base image)
+RUN adduser -D -s /bin/bash testuser && echo "testuser:testpass" | chpasswd
+RUN adduser -D -s /bin/bash admin && echo "admin:adminpass" | chpasswd
+
+# NOPASSWD sudo for testuser, matching the base image so the slow server can run
+# the same chaos / sudo primitives. Test-container only.
+RUN mkdir -p /etc/sudoers.d && chmod 750 /etc/sudoers.d && \
+    echo 'testuser ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/testuser && \
+    chmod 0440 /etc/sudoers.d/testuser
+
+# Generate host keys
+RUN ssh-keygen -A
+
+# Configure sshd: allow password auth, no PAM (same as base image)
+RUN sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && \
+    echo "UsePAM no" >> /etc/ssh/sshd_config && \
+    echo "Subsystem sftp /usr/lib/ssh/sftp-server" >> /etc/ssh/sshd_config
+
+# Minimal legacy fixtures (kept verbatim from the base image for parity with the
+# docker-ssh.test.ts assertions; seed-showcase.sh layers the rich tree on top).
+RUN mkdir -p /home/testuser/projects/src && \
+    echo 'console.log("hello world");' > /home/testuser/projects/src/app.ts && \
+    echo '{"name":"test"}' > /home/testuser/projects/package.json && \
+    echo 'TODO: fix bug' > /home/testuser/projects/src/todo.ts && \
+    mkdir -p /home/testuser/logs && \
+    echo '[2024-01-01] Server started' > /home/testuser/logs/app.log && \
+    mkdir -p /home/testuser/big && \
+    dd if=/dev/zero of=/home/testuser/big/huge.log bs=1M count=10 2>/dev/null && \
+    chown -R testuser:testuser /home/testuser
+
+RUN mkdir -p /home/admin/configs && \
+    echo 'server.port=8080' > /home/admin/configs/server.conf && \
+    echo 'db.host=localhost' > /home/admin/configs/db.conf && \
+    mkdir -p /home/admin/scripts && \
+    echo '#!/bin/bash\necho "deploy complete"' > /home/admin/scripts/deploy.sh && \
+    chmod +x /home/admin/scripts/deploy.sh && \
+    chown -R admin:admin /home/admin
+
+# Rich showcase file tree (same as the base image). Defaults to prod-web so the
+# slow server presents the storefront workspace; override with --build-arg.
+ARG SERVER_FLAVOR=prod-web
+COPY seed-showcase.sh /usr/local/bin/seed-showcase.sh
+RUN chmod +x /usr/local/bin/seed-showcase.sh && \
+    bash /usr/local/bin/seed-showcase.sh "$SERVER_FLAVOR"
+
+RUN mkdir -p /var/log/sshd
+
+# netem entrypoint (applies latency + blackout loop, then execs sshd).
+COPY slow-entrypoint.sh /usr/local/bin/slow-entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/slow-entrypoint.sh && \
+    chmod +x /usr/local/bin/slow-entrypoint.sh
+
+EXPOSE 22
+
+CMD ["/usr/local/bin/slow-entrypoint.sh"]

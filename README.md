@@ -91,12 +91,16 @@ Two edge cases worth knowing:
 
 ## Release Notes
 
+**0.9.9** - **Reveal in File Tree fix (issue #7)**: "Reveal in File Tree" now actually selects and highlights the file inside the folder structure, including over a slow connection. Before, on the default home view it would jump to the folder but leave the file unselected.
+
+- **Fixed** - the tree matched the server's absolute paths against the home shown as `~`, so the editor could not place the file in the tree and never selected it. The home is now resolved to its absolute path first.
+- **Fixed** - selection used a fixed timing delay that missed on slower or higher-latency connections; it now waits until the folder has loaded before selecting.
+- **Tested** - covered by unit tests plus an automated test that reveals files over a deliberately laggy SSH server, so the same bug cannot return silently.
+
 **0.9.8** - **Same-name file fix (issue #6)**: opening two files with the same name in different folders (for example `domainA/index.php` and `domainB/index.php`) no longer shows the wrong content or risks saving your edits to the wrong file. Each remote file now gets its own local copy, keyed by its full folder path.
 
 - **Fixed** - same-named files in different folders (or on different servers) collided on a single local temp file, so the second file opened the first one's content and a save could upload to the wrong path.
 - **Every operation covered** - open, edit, read-only view, large-file preview, and all the diff / backup-compare views, not just the editor.
-
-**0.9.7** - **Marketplace listing polish**: the README highlights now use a comic-panel gallery so the screenshots line up cleanly with no broken empty cells. No functional change.
 
 [Full changelog](https://github.com/trantung95/SSHLite/blob/master/.adn/CHANGELOG.md)
 

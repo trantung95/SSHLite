@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.9.9 - Reveal in File Tree now selects the file (issue #7), incl. over a laggy link
+
+### Why
+
+Reported in issue #7 (with a video): "Reveal in File Tree" navigated to the correct folder but did not select / highlight the target file inside the folder structure. It reproduced on the default home (`~`) tree view, which is where most reveals happen.
+
+Two independent root causes:
+
+1. **`getParent()` compared absolute paths against the literal `~` (main cause).** SFTP resolves `~` via `realpath('.')`, so `listFiles('~')` returns **absolute** child paths and the tree renders the home's children directly under the connection with absolute ids (`file:<conn>:/home/user/...`). But the stored `currentPath` stayed the literal `'~'`. `getParent()` compared an absolute `dirname(file.path)` against `'~'`, never matched the root, and emitted phantom `/home`, `/home/user` ancestor nodes that are **not** rendered. VS Code's `TreeView.reveal()` walks `getParent()` and matches each ancestor by `TreeItem.id`; a phantom node it cannot find aborts the walk, so the file is never selected. With an absolute `currentPath` (e.g. `/`, or after navigating into a folder) the comparison matched and reveal worked, so the bug was specific to the `~` default.
+2. **Fixed-delay timing race.** Selection fired after a fixed `setTimeout(300)`; on a slow / high-latency link the folder had not been listed yet, so `reveal()` ran against an item not yet in the tree model and silently no-oped.
+
+### Changes
+
+- **Resolve `~` synchronously before comparing.** New `resolveCurrentPathSync()` + a `resolvedHomePaths` cache in `FileTreeProvider`. The absolute home is learned from `echo ~` (in `revealFile`) or derived from the cached `~` listing (whose child paths are absolute), and `getParent()` now compares `parentPath === rootAbs`, so the ancestor chain matches the rendered tree (no phantom nodes). Home is resolved eagerly so even the already-visible fast-path return is correct; the cache is cleared in `clearCache()` / `dispose()`.
+- **Event-driven reveal (timing).** `waitUntilVisible()` / `notifyVisible()` make `revealFile()` resolve only after the folder's children are in the tree model, replacing the fixed 300 ms delay. `reveal()` failures now surface a warning + activity entry instead of being swallowed. (This part was in progress from the original issue #7 work; shipped together.)
+- **New `reveal` activity type** for the Activity view.
+
+### Tests
+
+- Unit: `src/providers/FileTreeProvider.test.ts` "issue #7" - the `getParent` ancestor chain has no phantom `/home` nodes at the `~` root, the already-visible fast path still resolves home, and absolute `currentPath` is unaffected.
+- Docker integration: `src/integration/docker-ssh-reveal.test.ts` - exercises `revealFile()` / `getParent()` against a **deliberately laggy** SSH link (Toxiproxy latency toxic, ~250 ms) and asserts the home `~` listing is absolute + complete under lag and the chain is phantom-free.
+
+### Test infrastructure (kept for future timing-bug work)
+
+- Two reusable slow / laggy SSH servers in `test-docker/` (docs: `SLOW-SERVERS.md`): in-container `tc`/netem on port 2205, and a Toxiproxy sidecar on port 2206 (API 8474). **netem needs a kernel with `sch_netem`** - Docker Desktop's WSL2 kernel lacks it (`tc` errors "qdisc kind is unknown" even with `NET_ADMIN`), so on Windows/macOS use the Toxiproxy server; it impairs in userspace and works everywhere.
+
 ## v0.9.8 - Same-name file collision fix (issue #6) across all file operations
 
 ### Why

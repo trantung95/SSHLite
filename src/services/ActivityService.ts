@@ -29,7 +29,8 @@ export type ActivityType =
   | 'monitor'
   | 'terminal'
   | 'connect'
-  | 'disconnect';
+  | 'disconnect'
+  | 'reveal';
 
 /**
  * Status of an activity

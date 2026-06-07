@@ -313,6 +313,7 @@ function getTypeLabel(type: ActivityType): string {
     terminal: 'Terminal',
     connect: 'Connect',
     disconnect: 'Disconnect',
+    reveal: 'Reveal',
   };
   return labels[type] || type;
 }
@@ -329,6 +330,7 @@ function getTypeIcon(type: ActivityType): string {
     terminal: 'terminal',
     connect: 'plug',
     disconnect: 'debug-disconnect',
+    reveal: 'target',
   };
   return icons[type] || 'circle-outline';
 }

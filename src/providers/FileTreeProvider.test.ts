@@ -1246,6 +1246,128 @@ describe('FileTreeProvider - Change 8: Smart Reveal', () => {
       expect(provider.getCurrentPath('conn-1')).toBe('/');
     });
   });
+
+  // ==========================================================================
+  // Issue #7: getParent() ancestor chain must match the rendered tree so VS
+  // Code's TreeView.reveal() can actually SELECT the file. When the tree root
+  // is the default '~' (home), SFTP returns ABSOLUTE child paths, but
+  // currentPath stays the literal '~'. getParent() must resolve '~' before
+  // comparing, otherwise it emits phantom /home, /home/user nodes that are not
+  // rendered and reveal() fails to select the file.
+  // ==========================================================================
+  describe('getParent() - reveal ancestor chain at default ~ root (issue #7)', () => {
+    // Walk getParent() from `element` up to the root, collecting node ids.
+    async function parentChain(provider: FileTreeProvider, element: any): Promise<string[]> {
+      const chain: string[] = [element.id];
+      let node: any = element;
+      for (let i = 0; i < 12; i++) {
+        const parent = await provider.getParent(node);
+        if (!parent) { break; }
+        chain.push((parent as any).id);
+        node = parent;
+      }
+      return chain;
+    }
+
+    async function setupHomeTree(provider: FileTreeProvider, conn: any) {
+      mockGetConnection.mockReturnValue(conn);
+      mockGetAllConnections.mockReturnValue([conn]);
+      mockGetAllConnectionsWithReconnecting.mockReturnValue({ active: [conn], reconnecting: [] });
+      // SFTP resolves '~' -> /home/user, so the home listing carries ABSOLUTE paths.
+      conn.listFiles.mockImplementation(async (p: string) => {
+        if (p === '~') {
+          return [createMockRemoteFile('projects', { path: '/home/user/projects', isDirectory: true, connectionId: 'conn-1' })];
+        }
+        return [];
+      });
+      // Populate the '~' cache exactly as the connection node would when rendered.
+      await provider.getChildren(new ConnectionTreeItem(conn as any, '~'));
+    }
+
+    it('returns the connection as the immediate parent of a direct-child folder (no phantom dirs)', async () => {
+      const conn = createMockConnection({ id: 'conn-1' });
+      await setupHomeTree(provider, conn);
+      expect(provider.getCurrentPath('conn-1')).toBe('~');
+
+      const projects: IRemoteFile = { name: 'projects', path: '/home/user/projects', isDirectory: true, size: 0, modifiedTime: 0, connectionId: 'conn-1' };
+      const projectsItem = new FileTreeItem(projects, conn as any, false, false, false, false);
+
+      const parent = await provider.getParent(projectsItem);
+      expect(parent).toBeInstanceOf(ConnectionTreeItem);
+      expect((parent as any).id).toBe('connection:conn-1');
+    });
+
+    it('produces a chain free of phantom /home and /home/user nodes for a nested file', async () => {
+      const conn = createMockConnection({ id: 'conn-1' });
+      await setupHomeTree(provider, conn);
+
+      const appFile: IRemoteFile = { name: 'app.ts', path: '/home/user/projects/app.ts', isDirectory: false, size: 0, modifiedTime: 0, connectionId: 'conn-1' };
+      const appItem = new FileTreeItem(appFile, conn as any, false, false, false, false);
+
+      const chain = await parentChain(provider, appItem);
+
+      // Correct chain: app.ts -> /home/user/projects -> connection
+      expect(chain).toEqual([
+        'file:conn-1:/home/user/projects/app.ts',
+        'file:conn-1:/home/user/projects',
+        'connection:conn-1',
+      ]);
+      expect(chain).not.toContain('file:conn-1:/home/user');
+      expect(chain).not.toContain('file:conn-1:/home');
+    });
+
+    it('still works when currentPath is an absolute path', async () => {
+      const conn = createMockConnection({ id: 'conn-1' });
+      mockGetConnection.mockReturnValue(conn);
+      provider.setCurrentPath('conn-1', '/home/user');
+
+      const appFile: IRemoteFile = { name: 'app.ts', path: '/home/user/projects/app.ts', isDirectory: false, size: 0, modifiedTime: 0, connectionId: 'conn-1' };
+      const appItem = new FileTreeItem(appFile, conn as any, false, false, false, false);
+
+      const chain = await parentChain(provider, appItem);
+      expect(chain).toEqual([
+        'file:conn-1:/home/user/projects/app.ts',
+        'file:conn-1:/home/user/projects',
+        'connection:conn-1',
+      ]);
+    });
+
+    // Regression for the already-visible fast path: when the parent dir is cached
+    // under its ABSOLUTE key (e.g. preloaded) but the '~' listing is NOT cached,
+    // revealFile() must still resolve the absolute home (via `echo ~`) so the later
+    // getParent() walk has no phantom nodes.
+    it('resolves home on the already-visible fast path so getParent has no phantoms', async () => {
+      const conn = createMockConnection({ id: 'conn-1' });
+      conn.exec.mockResolvedValue('/home/user\n');
+      mockGetConnection.mockReturnValue(conn);
+      mockGetAllConnections.mockReturnValue([conn]);
+      mockGetAllConnectionsWithReconnecting.mockReturnValue({ active: [conn], reconnecting: [] });
+      provider.setCurrentPath('conn-1', '~');
+
+      // Parent cached under ABSOLUTE path only — '~' listing is NOT cached.
+      conn.listFiles.mockImplementation(async (p: string) => {
+        if (p === '/home/user/projects') {
+          return [createMockRemoteFile('app.ts', { path: '/home/user/projects/app.ts', connectionId: 'conn-1' })];
+        }
+        return [];
+      });
+      await provider.getChildren(new FileTreeItem(
+        { name: 'projects', path: '/home/user/projects', isDirectory: true, size: 0, modifiedTime: 0, connectionId: 'conn-1' } as IRemoteFile,
+        conn as any, false, false, false, false,
+      ));
+
+      // Fast path: parent is cached, so revealFile returns immediately — but it must
+      // have shelled out `echo ~` first to learn the absolute home.
+      const item = await provider.revealFile('conn-1', '/home/user/projects/app.ts');
+      expect(item).toBeDefined();
+      expect(conn.exec).toHaveBeenCalled();
+
+      const chain = await parentChain(provider, item);
+      expect(chain[chain.length - 1]).toBe('connection:conn-1');
+      expect(chain).not.toContain('file:conn-1:/home/user');
+      expect(chain).not.toContain('file:conn-1:/home');
+    });
+  });
 });
 
 

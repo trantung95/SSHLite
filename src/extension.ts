@@ -1218,17 +1218,28 @@ export function activate(context: vscode.ExtensionContext): void {
           vscode.commands.executeCommand('setContext', 'sshLite.hasOrphanedFiles', false);
         }
 
-        // Reveal in file tree - navigate to parent folder and highlight the file
+        // Reveal in file tree - navigate to parent folder and highlight the file.
+        // revealFile() awaits internally until VS Code has the item in its tree model.
+        const revealActivityId1 = activityService.startActivity(
+          'reveal', connection.id, connection.host.name, `Revealing ${remotePath}`
+        );
         const treeItem = await fileTreeProvider.revealFile(connection.id, remotePath);
         if (treeItem && fileTreeView) {
-          // Wait a bit for tree to render, then reveal with focus
-          setTimeout(async () => {
-            try {
-              await fileTreeView.reveal(treeItem, { select: true, focus: true, expand: true });
-            } catch {
-              // Silently ignore reveal errors (item might not be rendered yet)
-            }
-          }, 300);
+          try {
+            await fileTreeView.reveal(treeItem, { select: true, focus: true, expand: true });
+            activityService.completeActivity(revealActivityId1, treeItem.file.name);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            activityService.failActivity(revealActivityId1, msg);
+            vscode.window.showWarningMessage(
+              `Could not reveal file in tree: ${msg}`
+            );
+          }
+        } else {
+          activityService.failActivity(revealActivityId1, 'File not found in tree');
+          vscode.window.showWarningMessage(
+            `Could not reveal ${remotePath} — file may have been removed or the directory is not accessible.`
+          );
         }
 
         logResult('reconnectOrphanedFile', true, `${matchingHost.name}: ${remotePath}`);
@@ -2600,14 +2611,30 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
-      // Navigate to parent folder and reveal the file
+      // Navigate to parent folder and reveal the file.
+      // revealFile() awaits internally until VS Code has the item in its tree model,
+      // so reveal() can be called immediately after without a fixed-delay workaround.
+      const revealActivityId2 = activityService.startActivity(
+        'reveal', result.connectionId, connection.host.name, `Revealing ${result.path}`
+      );
       const treeItem = await fileTreeProvider.revealFile(result.connectionId, result.path);
       if (treeItem && fileTreeView) {
-        // Reveal in tree view with focus
-        await fileTreeView.reveal(treeItem, { select: true, focus: true, expand: true });
-        vscode.window.setStatusBarMessage(`$(target) Revealed ${treeItem.file.name} in tree`, 3000);
+        try {
+          await fileTreeView.reveal(treeItem, { select: true, focus: true, expand: true });
+          activityService.completeActivity(revealActivityId2, treeItem.file.name);
+          vscode.window.setStatusBarMessage(`$(target) Revealed ${treeItem.file.name} in tree`, 3000);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          activityService.failActivity(revealActivityId2, msg);
+          vscode.window.showWarningMessage(
+            `Could not reveal ${result.path} in tree: ${msg}`
+          );
+        }
       } else {
-        vscode.window.showWarningMessage('Could not reveal file in tree');
+        activityService.failActivity(revealActivityId2, 'File not found in tree');
+        vscode.window.showWarningMessage(
+          `Could not reveal ${result.path} — file may have been removed or the directory is not accessible.`
+        );
       }
     }),
 
@@ -2691,12 +2718,32 @@ export function activate(context: vscode.ExtensionContext): void {
 
       log(`revealInTree: Found mapping - connectionId=${mapping.connectionId}, remotePath=${mapping.remotePath}`);
 
-      // Navigate to parent folder and reveal the file
+      const revealConn = connectionManager.getConnection(mapping.connectionId);
+      const revealServerName = revealConn?.host.name ?? mapping.connectionId;
+
+      // Navigate to parent folder and reveal the file.
+      // revealFile() awaits internally until VS Code has the item in its tree model.
+      const revealActivityId3 = activityService.startActivity(
+        'reveal', mapping.connectionId, revealServerName, `Revealing ${mapping.remotePath}`
+      );
       const treeItem = await fileTreeProvider.revealFile(mapping.connectionId, mapping.remotePath);
       if (treeItem && fileTreeView) {
-        // Reveal in tree view with focus
-        await fileTreeView.reveal(treeItem, { select: true, focus: true, expand: true });
-        vscode.window.setStatusBarMessage(`$(target) Revealed ${treeItem.file.name} in tree`, 3000);
+        try {
+          await fileTreeView.reveal(treeItem, { select: true, focus: true, expand: true });
+          activityService.completeActivity(revealActivityId3, treeItem.file.name);
+          vscode.window.setStatusBarMessage(`$(target) Revealed ${treeItem.file.name} in tree`, 3000);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          activityService.failActivity(revealActivityId3, msg);
+          vscode.window.showWarningMessage(
+            `Could not reveal ${mapping.remotePath} in tree: ${msg}`
+          );
+        }
+      } else {
+        activityService.failActivity(revealActivityId3, 'File not found in tree');
+        vscode.window.showWarningMessage(
+          `Could not reveal ${mapping.remotePath} — file may have been removed or the directory is not accessible.`
+        );
       }
     }),
 

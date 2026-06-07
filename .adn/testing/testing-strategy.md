@@ -66,6 +66,17 @@ Every server built from `Dockerfile.sshd` is seeded at build time with a rich, d
 
 The `SERVER_FLAVOR` build arg (`prod-web` | `prod-api` | `prod-db`, default `prod-db`) decorates `workspace/` with a distinct top-level project per server. `seed-showcase.sh` adds: `showcase/` (code in ~15 languages, every config format, docs incl. a valid PDF, data/logs, real PNG/GIF/SVG images, tar.gz/gz/zip archives, a 5-level-deep tree, 40 files for filter/search demos, tricky filenames with spaces/unicode/no-extension, binaries, read-only + executable files, a 30 MB + 10 MB large file, file/dir/broken symlinks) plus hidden dotfiles and a colored production-style shell prompt (`.bashrc`).
 
+### Slow / laggy servers (timing-bug repro)
+
+`test-docker/docker-compose.yml` also carries two deliberately impaired SSH servers for reproducing timing-sensitive bugs (high ping, jitter, loss, periodic disconnect). Full docs: `test-docker/SLOW-SERVERS.md`.
+
+| Approach | Service(s) | Port | Mechanism |
+|----------|------------|------|-----------|
+| In-container `tc`/netem | `slow` | 2205 | Linux netem on `eth0` + blackout loop (env-tunable) |
+| Toxiproxy sidecar | `toxiproxy` + `slow-backend` | 2206 (API 8474) | runtime "toxics" via HTTP API |
+
+**netem only works on a kernel with `sch_netem`** — Docker Desktop's WSL2 kernel lacks it (`tc` errors with "qdisc kind is unknown" even with `NET_ADMIN`), so on Windows/macOS use the Toxiproxy server (2206). `src/integration/docker-ssh-reveal.test.ts` (issue #7) exercises `revealFile()`/`getParent()` against the laggy Toxiproxy link, seeding a latency toxic via the API in `beforeAll`.
+
 ## Multi-OS Tests
 
 5 containers: Alpine, Ubuntu 22.04, Debian 12, Fedora 39, Rocky 9. Test files: `multios-auth`, `multios-connection`, `multios-fileops`, `multios-monitor`, `multios-commandguard`, `multios-helpers`.
