@@ -7,6 +7,12 @@
 - New: FTPConnection class parallel to SSHConnection, FTP host config type, auth (user/password, anonymous)
 - No VS Code server required on remote -- fits the server-lite philosophy
 
+## Import / Export / Sync Connections (issue #11)
+- Export all connection configs to a JSON file (right-click on Hosts panel or via Command Palette)
+- Import connections from a JSON file (merge or replace)
+- Optional: sync via Google Drive / Dropbox by pointing to a file path the user manages
+- Credentials are excluded from export (stored separately in VS Code secret storage); only host metadata (host, port, username, label, paths) is exported
+
 ## Improve Diagnostic Logging
 - Log all parameters and return values at entry/exit points of key functions
 - Covers: connection lifecycle, file operations, command execution, tree provider updates
