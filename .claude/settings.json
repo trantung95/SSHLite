@@ -21,6 +21,12 @@
             "command": "powershell.exe",
             "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "& \"$env:CLAUDE_PROJECT_DIR\\.claude\\hooks\\prompt-context-injector.ps1\"; exit $LASTEXITCODE"],
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "if (Test-Path \"$env:CLAUDE_PROJECT_DIR\\.adn\\TODO.md\") { Write-Output ''; Write-Output '--- TODO ---'; Get-Content \"$env:CLAUDE_PROJECT_DIR\\.adn\\TODO.md\" }"],
+            "timeout": 5
           }
         ]
       }
