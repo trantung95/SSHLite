@@ -2,7 +2,7 @@
   "name": "ssh-lite",
   "displayName": "SSH Lite (SSH Tools)",
   "description": "A visual SSH client for VS Code. Browse, edit, monitor, manage services - by clicking, not typing vi/systemctl/crontab. Nothing installed on the remote server. Perfect for VPS, cloud servers (AWS/Azure/GCP), and Linux administration.",
-  "version": "0.9.9",
+  "version": "0.9.10",
   "publisher": "hybr8",
   "engines": {
     "vscode": "^1.85.0"
@@ -1498,6 +1498,21 @@
           "type": "string",
           "default": "~",
           "description": "Default remote path when connecting"
+        },
+        "sshLite.editorTabPrefix": {
+          "type": "string",
+          "enum": [
+            "userAndHost",
+            "label",
+            "none"
+          ],
+          "enumDescriptions": [
+            "Show [user@host] (or the per-host tab label, if set) before the filename.",
+            "Show only the per-host tab label (e.g. [PRD]) when one is set; otherwise show just the filename.",
+            "Show only the filename with no prefix, for the most compact tabs."
+          ],
+          "default": "userAndHost",
+          "markdownDescription": "What to show before the filename in editor tabs for remote files. SSH Lite opens a remote file as a local temp file, so this prefix is part of the tab title. Choose `none` for compact tabs that show only the filename. Set a per-host label with **SSH Lite: Set Tab Label** and use `label` to show only those. Applies to files opened after the change (re-open a file to update its tab)."
         },
         "sshLite.autoUploadOnSave": {
           "type": "boolean",

@@ -2759,10 +2759,57 @@ export class FileService {
    * Downloads content first, then opens editor to avoid corruption issues
    * Uses progressive download for large text files (>threshold)
    */
+  /**
+   * Find the local temp path of an already-OPEN document mirroring this remote
+   * file, matched by connectionId + remotePath (NOT by the filename, which now
+   * varies with the tab-prefix mode). Only counts files that have a live mapping
+   * and are still open in an editor. Returns undefined if none.
+   *
+   * This is what lets a tab-prefix change (the `sshLite.editorTabPrefix` setting
+   * or a per-host tabLabel) avoid producing two editable copies of one remote
+   * file: the prefix is baked into the temp filename, so after a change the
+   * recomputed local path differs and the path-keyed "already open" check below
+   * would miss the existing tab. Two tabs mapped to one remote path could
+   * silently overwrite each other on save, so we focus the existing one instead.
+   */
+  private findOpenLocalPathForRemote(connectionId: string, remotePath: string): string | undefined {
+    for (const [localPath, mapping] of this.fileMappings) {
+      if (mapping.connectionId === connectionId && mapping.remotePath === remotePath) {
+        const isOpen = vscode.workspace.textDocuments.some(
+          (d) => normalizeLocalPath(d.uri.fsPath) === localPath
+        );
+        if (isOpen) {
+          return localPath;
+        }
+      }
+    }
+    return undefined;
+  }
+
   async openRemoteFile(connection: SSHConnection, remoteFile: IRemoteFile): Promise<void> {
     // Register tab label for this connection (used in filename prefix)
     if (connection.host.tabLabel) {
       this.registerConnectionTabLabel(connection.id, connection.host.tabLabel);
+    }
+
+    // Local temp path under the CURRENT tab-prefix mode (computed once, reused below).
+    const localPath = this.getLocalFilePath(connection.id, remoteFile.path);
+
+    // If this exact remote file is already open under a DIFFERENT local name
+    // (the tab prefix changed via sshLite.editorTabPrefix or a host tabLabel
+    // since it was opened), focus that existing tab rather than creating a
+    // duplicate editable copy that could overwrite it on save. The same-name
+    // reopen case is intentionally left to the path-keyed block below, which
+    // also handles placeholder / downloading / stale-mapping states.
+    const alreadyOpenLocalPath = this.findOpenLocalPathForRemote(connection.id, remoteFile.path);
+    if (alreadyOpenLocalPath && alreadyOpenLocalPath !== localPath) {
+      const openDoc = vscode.workspace.textDocuments.find(
+        (d) => normalizeLocalPath(d.uri.fsPath) === alreadyOpenLocalPath
+      );
+      if (openDoc) {
+        await vscode.window.showTextDocument(openDoc, { preview: false });
+        return;
+      }
     }
 
     const activityService = ActivityService.getInstance();
@@ -2809,8 +2856,7 @@ export class FileService {
       return;
     }
 
-    // Get local file path (uses connection subdirectory with original filename)
-    const localPath = this.getLocalFilePath(connection.id, remoteFile.path);
+    // (localPath was computed above, under the current tab-prefix mode.)
 
     // Check if document is already open in VS Code editor (quick check before acquiring lock)
     const existingDoc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === localPath);

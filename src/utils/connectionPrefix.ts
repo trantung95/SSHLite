@@ -11,6 +11,32 @@ import * as crypto from 'crypto';
 const connectionTabLabels = new Map<string, string>();
 
 /**
+ * How the editor-tab filename prefix is rendered (issue #8). SSH Lite opens a
+ * remote file as a local temp file and VS Code shows that filename as the tab
+ * title, so the prefix is baked into the filename here:
+ *   - 'userAndHost' (default): `[user@host] file` (or `[tabLabel] file` when a
+ *     per-host label is set). The original, backward-compatible behavior.
+ *   - 'label': `[tabLabel] file` only when a per-host label is set; otherwise
+ *     just `file` (drops the verbose user@host).
+ *   - 'none': `file` with no prefix at all, for the most compact tabs.
+ */
+export type TabPrefixMode = 'userAndHost' | 'label' | 'none';
+
+// Module-level so the pure path builders stay decoupled from vscode settings;
+// extension.ts pushes the current setting in via setTabPrefixMode (mirrors the
+// registerTabLabel pattern). Defaults to the original behavior.
+let tabPrefixMode: TabPrefixMode = 'userAndHost';
+
+/**
+ * Set how the editor-tab filename prefix is rendered. Called on activation and
+ * whenever the `sshLite.editorTabPrefix` setting changes. Only affects files
+ * opened after the change (already-open tabs keep their current name).
+ */
+export function setTabPrefixMode(mode: TabPrefixMode): void {
+  tabPrefixMode = mode;
+}
+
+/**
  * Register a tab label for a connection (from IHostConfig.tabLabel).
  */
 export function registerTabLabel(connectionId: string, tabLabel: string): void {
@@ -32,6 +58,28 @@ export function getConnectionPrefix(connectionId: string): string {
     return `${parts[2]}@${parts[0]}`;
   }
   return 'SSH';
+}
+
+/**
+ * Decide the bracketed tab prefix to bake into a temp filename, honoring the
+ * current TabPrefixMode (issue #8). Returns the prefix string (without brackets)
+ * or null when no prefix should be shown; the caller renders `[prefix] base`
+ * vs just `base` accordingly.
+ */
+export function buildTabPrefix(connectionId: string): string | null {
+  if (tabPrefixMode === 'none') {
+    return null;
+  }
+  const tabLabel = connectionTabLabels.get(connectionId);
+  if (tabLabel) {
+    return tabLabel;
+  }
+  // 'label' mode shows only an explicit per-host label, never the verbose
+  // user@host fallback.
+  if (tabPrefixMode === 'label') {
+    return null;
+  }
+  return getConnectionPrefix(connectionId);
 }
 
 /** Short, stable hex digest used for collision-free temp subdirectories. */
@@ -86,8 +134,9 @@ export function buildLocalTempPath(
   const subDir = `${sanitizeFolderSegment(path.posix.basename(remoteDir))}_${dirHash}`;
   const dir = path.join(tempDir, connHash, subDir);
 
-  const prefix = getConnectionPrefix(connectionId);
-  const fileName = `[${prefix}] ${path.posix.basename(remotePath)}`;
+  const base = path.posix.basename(remotePath);
+  const prefix = buildTabPrefix(connectionId);
+  const fileName = prefix ? `[${prefix}] ${base}` : base;
   return { dir, filePath: path.join(dir, fileName) };
 }
 

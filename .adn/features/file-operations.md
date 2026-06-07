@@ -53,6 +53,25 @@ and `ProgressiveDownloadManager` (large files), and the recovery metadata
 (`.sshLite-metadata.json`) lives inside that same subdirectory so its basename key is
 unique per folder.
 
+**Tab title prefix (issue #8)**: the `[prefix] ` part of the temp filename is what
+VS Code renders as the editor tab title (SSH Lite opens remote files as local temp
+files, so the filename *is* the tab label, and there is no API to set a custom label for a
+plain text editor). `buildTabPrefix(connectionId)` in `connectionPrefix.ts` decides it
+from the `sshLite.editorTabPrefix` setting: `userAndHost` (default) gives `[user@host]` or a
+per-host `[tabLabel]`; `label` gives `[tabLabel]` only when set, else no prefix; `none` gives no
+prefix at all (filename only, for compact tabs). The prefix is purely cosmetic: the
+save-to-upload mapping keys on `normalizeLocalPath(localPath)` via `getFileMapping()`, and
+the save listener fires on `isInSshTempDir()` (path-based), so dropping the prefix never
+affects which remote file an edit uploads to. The per-folder `{dirHash}` subdirectory
+still disambiguates same-named files regardless of mode.
+
+Because the prefix is part of the temp filename, changing it (via `editorTabPrefix` or a
+host `tabLabel`) changes the local path of a file that is already open. To stop that from
+opening a second editable copy of the same remote file, `openRemoteFile()` calls
+`findOpenLocalPathForRemote(connectionId, remotePath)` first: it matches an already-open
+document by connection + remote path (not by filename) and focuses that tab. Identity is
+the stable `(connectionId, remotePath)`, never the prefix-bearing filename.
+
 The same collision class existed in every **auxiliary** temp file: read-only file view,
 large-file preview, and the four diff/backup-compare flows (server-backup diff, local-backup
 diff, upload diff, remote diff). Those are transient flat files in `tempDir`; they now use

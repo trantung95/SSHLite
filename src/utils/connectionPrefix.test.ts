@@ -1,8 +1,14 @@
 import * as path from 'path';
-import { buildAuxTempFileName, buildLocalTempPath, getConnectionPrefix, registerTabLabel } from './connectionPrefix';
+import { buildAuxTempFileName, buildLocalTempPath, getConnectionPrefix, registerTabLabel, setTabPrefixMode } from './connectionPrefix';
 
 describe('buildLocalTempPath', () => {
   const tempDir = path.join('/tmp', 'ssh-lite');
+
+  // The default mode is 'userAndHost'. Other tests switch it, so always restore
+  // the default afterwards to keep this module-level state from leaking.
+  afterEach(() => {
+    setTabPrefixMode('userAndHost');
+  });
 
   it('gives different paths to same-named files in different folders (issue #6)', () => {
     // Regression for the temp-file collision: two index.php files on the same
@@ -59,6 +65,60 @@ describe('buildLocalTempPath', () => {
     const { dir } = buildLocalTempPath(tempDir, 'conn-1', '/weird name/file.txt');
 
     expect(path.basename(dir)).toMatch(/^weird_name_[0-9a-f]{8}$/);
+  });
+});
+
+describe('editor tab prefix modes (issue #8)', () => {
+  const tempDir = path.join('/tmp', 'ssh-lite');
+
+  afterEach(() => {
+    setTabPrefixMode('userAndHost');
+  });
+
+  it("'userAndHost' (default) keeps the [user@host] prefix", () => {
+    setTabPrefixMode('userAndHost');
+    const { filePath } = buildLocalTempPath(tempDir, '10.0.0.1:22:admin', '/var/www/index.php');
+
+    expect(path.basename(filePath)).toBe('[admin@10.0.0.1] index.php');
+  });
+
+  it("'none' drops the prefix entirely, leaving only the filename", () => {
+    setTabPrefixMode('none');
+    const { filePath } = buildLocalTempPath(tempDir, '10.0.0.1:22:admin', '/var/www/index.php');
+
+    expect(path.basename(filePath)).toBe('index.php');
+  });
+
+  it("'none' drops the prefix even when a tab label is registered", () => {
+    registerTabLabel('label-none-host:22:deploy', 'PRD');
+    setTabPrefixMode('none');
+    const { filePath } = buildLocalTempPath(tempDir, 'label-none-host:22:deploy', '/app/index.php');
+
+    expect(path.basename(filePath)).toBe('index.php');
+  });
+
+  it("'label' shows only a registered tab label", () => {
+    registerTabLabel('label-host:22:deploy', 'STG');
+    setTabPrefixMode('label');
+    const { filePath } = buildLocalTempPath(tempDir, 'label-host:22:deploy', '/app/index.php');
+
+    expect(path.basename(filePath)).toBe('[STG] index.php');
+  });
+
+  it("'label' drops the verbose user@host when no label is set", () => {
+    setTabPrefixMode('label');
+    const { filePath } = buildLocalTempPath(tempDir, '10.0.0.2:22:admin', '/var/www/index.php');
+
+    expect(path.basename(filePath)).toBe('index.php');
+  });
+
+  it('keeps temp paths collision-free across folders regardless of prefix mode (issue #6 invariant)', () => {
+    setTabPrefixMode('none');
+    const a = buildLocalTempPath(tempDir, 'conn-1', '/var/www/domainA/index.php');
+    const b = buildLocalTempPath(tempDir, 'conn-1', '/var/www/domainB/index.php');
+
+    expect(a.filePath).not.toBe(b.filePath);
+    expect(a.dir).not.toBe(b.dir);
   });
 });
 

@@ -40,6 +40,7 @@ import { PROGRESSIVE_PREVIEW_SCHEME, parsePreviewUri } from './types/progressive
 import { formatFileSize, formatRelativeTime, normalizeLocalPath, expandPath } from './utils/helpers';
 import { parseHostInfoFromPath as parseHostInfo, isInSshTempDir, hasSshPrefix } from './utils/extensionHelpers';
 import { setDiagOutputChannel, refreshDiagEnabled, infoLog } from './utils/diagnosticLog';
+import { setTabPrefixMode, TabPrefixMode } from './utils/connectionPrefix';
 
 let outputChannel: vscode.OutputChannel;
 
@@ -193,12 +194,36 @@ export function activate(context: vscode.ExtensionContext): void {
 
   outputChannel = vscode.window.createOutputChannel('SSH Lite');
   setDiagOutputChannel(outputChannel);
+
+  // Apply the editor-tab prefix setting (issue #8) so remote files open with the
+  // chosen tab style. Read once on activation, then keep in sync on change.
+  // `get<T>` is an unchecked cast, so validate against the known modes: a
+  // hand-edited settings.json value falls back to the default instead of
+  // silently becoming an unhandled mode string.
+  const validTabPrefixModes: readonly TabPrefixMode[] = ['userAndHost', 'label', 'none'];
+  const applyEditorTabPrefix = (): void => {
+    const raw = vscode.workspace
+      .getConfiguration('sshLite')
+      .get<string>('editorTabPrefix', 'userAndHost');
+    const mode: TabPrefixMode = validTabPrefixModes.includes(raw as TabPrefixMode)
+      ? (raw as TabPrefixMode)
+      : 'userAndHost';
+    setTabPrefixMode(mode);
+  };
+  applyEditorTabPrefix();
+
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('sshLite.diagnosticLogging')) {
         refreshDiagEnabled();
         infoLog('config', 'diagnosticLogging changed', {
           enabled: vscode.workspace.getConfiguration('sshLite').get<boolean>('diagnosticLogging', false),
+        });
+      }
+      if (e.affectsConfiguration('sshLite.editorTabPrefix')) {
+        applyEditorTabPrefix();
+        infoLog('config', 'editorTabPrefix changed', {
+          mode: vscode.workspace.getConfiguration('sshLite').get<string>('editorTabPrefix', 'userAndHost'),
         });
       }
     })

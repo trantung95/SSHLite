@@ -65,6 +65,7 @@ await config.update('hosts', updatedHosts, vscode.ConfigurationTarget.Global);
 | `sshLite.uploadDebounceMs` | `number` | `1000` | `300` | Debounce delay before upload (ms). LITE: min 300ms prevents server spam |
 | `sshLite.confirmUpload` | `boolean` | `true` | — | Show confirmation before uploading |
 | `sshLite.maxBackupsPerFile` | `number` | `10` | `1` (max: `50`) | Backup history per file for revert |
+| `sshLite.editorTabPrefix` | `enum` | `"userAndHost"` | — | Tab title prefix for remote files (issue #8). `userAndHost` = `[user@host] file` (or `[tabLabel]` if set); `label` = `[tabLabel]` only when set, else just `file`; `none` = filename only (compact tabs). Applied by `buildTabPrefix()` in `connectionPrefix.ts`; affects files opened after the change. |
 
 ---
 

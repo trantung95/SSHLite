@@ -89,6 +89,7 @@ import * as vscode from 'vscode';
 import { FileService } from './FileService';
 import { createMockRemoteFile } from '../__mocks__/testHelpers';
 import { IRemoteFile } from '../types';
+import { setTabPrefixMode } from '../utils/connectionPrefix';
 
 function resetFileService(): FileService {
   try { FileService.getInstance().dispose(); } catch { /* ignore */ }
@@ -278,6 +279,11 @@ describe('FileService - CRUD Operations (Actual)', () => {
   });
 
   describe('getLocalFilePath (public method)', () => {
+    // These assertions expect the default [user@host]/[SSH] prefix, so pin the
+    // mode explicitly (issue #8 made it configurable via setTabPrefixMode).
+    beforeEach(() => setTabPrefixMode('userAndHost'));
+    afterEach(() => setTabPrefixMode('userAndHost'));
+
     it('should generate consistent local path for connection + remote path', () => {
       const path1 = service.getLocalFilePath('conn-1', '/src/test.ts');
       const path2 = service.getLocalFilePath('conn-1', '/src/test.ts');
@@ -641,6 +647,70 @@ describe('FileService - CRUD Operations (Actual)', () => {
       // And the command never has an unbalanced bare-' that would break out of the quoting.
       // Sanity check: no raw "it's" sequence (where the quote breaks out).
       expect(execCmd).not.toMatch(/[^\\]it's/);
+    });
+  });
+
+  describe('openRemoteFile - same remote file under a changed tab prefix (issue #8)', () => {
+    const connId = mockConnection.id; // 'test-host:22:testuser'
+    const remotePath = '/var/www/site/index.php';
+
+    beforeEach(() => {
+      setTabPrefixMode('userAndHost');
+      (vscode.workspace as any).textDocuments = [];
+    });
+    afterEach(() => {
+      setTabPrefixMode('userAndHost');
+      (vscode.workspace as any).textDocuments = [];
+    });
+
+    it('findOpenLocalPathForRemote finds the open file no matter which local name it was opened under', () => {
+      const oldLocalPath = service.getLocalFilePath(connId, remotePath);
+      (service as any).fileMappings.set(oldLocalPath, { connectionId: connId, remotePath, localPath: oldLocalPath });
+      (vscode.workspace as any).textDocuments = [{ uri: { fsPath: oldLocalPath, scheme: 'file' }, isUntitled: false }];
+
+      expect((service as any).findOpenLocalPathForRemote(connId, remotePath)).toBe(oldLocalPath);
+    });
+
+    it('findOpenLocalPathForRemote returns undefined when the mapped file is not actually open', () => {
+      const lp = service.getLocalFilePath(connId, remotePath);
+      (service as any).fileMappings.set(lp, { connectionId: connId, remotePath, localPath: lp });
+      (vscode.workspace as any).textDocuments = []; // closed
+
+      expect((service as any).findOpenLocalPathForRemote(connId, remotePath)).toBeUndefined();
+    });
+
+    it('focuses the already-open tab instead of opening a duplicate when the prefix changed', async () => {
+      // File was opened earlier under the default [user@host] prefix.
+      const oldLocalPath = service.getLocalFilePath(connId, remotePath);
+      (service as any).fileMappings.set(oldLocalPath, {
+        connectionId: connId,
+        remotePath,
+        localPath: oldLocalPath,
+        lastSyncTime: Date.now(),
+      });
+      (vscode.workspace as any).textDocuments = [
+        { uri: { fsPath: oldLocalPath, scheme: 'file' }, isUntitled: false, getText: () => 'x' },
+      ];
+
+      // User switched the tab prefix to 'none' -> the same file now maps to a NEW name.
+      setTabPrefixMode('none');
+      const newLocalPath = service.getLocalFilePath(connId, remotePath);
+      expect(newLocalPath).not.toBe(oldLocalPath); // sanity: the prefix really changed the filename
+
+      const fs = require('fs');
+      (fs.writeFileSync as jest.Mock).mockClear();
+      mockReadFile.mockClear();
+      (vscode.window.showTextDocument as jest.Mock).mockClear();
+
+      const remoteFile = createMockRemoteFile('index.php', { path: remotePath, size: 100 });
+      await service.openRemoteFile(mockConnection as any, remoteFile);
+
+      // Focused the existing tab; did NOT create a second temp file or re-download,
+      // and did NOT register a second mapping for the same remote file.
+      expect(vscode.window.showTextDocument).toHaveBeenCalled();
+      expect(fs.writeFileSync).not.toHaveBeenCalled();
+      expect(mockReadFile).not.toHaveBeenCalled();
+      expect((service as any).fileMappings.has(newLocalPath)).toBe(false);
     });
   });
 });

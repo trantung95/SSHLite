@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.9.10 - Configurable editor tab prefix for compact tabs (issue #8)
+
+### Why
+
+Reported in issue #8 (with a screenshot): editor tabs for remote files were very wide because each tab title began with a `[user@host]` prefix (e.g. `[dimuchio_dql@dimuchio.beget.tech] index.php`). The reporter asked to "get rid of these wide tabs by removing the host and login in the title at the beginning, to make it more compact".
+
+Root cause is by design, not a bug: SSH Lite opens a remote file as a **local temp file**, and VS Code renders that filename as the editor tab title. There is no API to set a custom label for a plain text editor, so the prefix was baked into the temp filename (`[prefix] basename`) by `buildLocalTempPath()`. The prefix disambiguates files from different servers, but for users on a single host it is just noise.
+
+### Changes
+
+- **New setting `sshLite.editorTabPrefix`** (enum, default `userAndHost` → fully backward-compatible):
+  - `userAndHost`: `[user@host] file`, or `[tabLabel] file` when a per-host label is set. The original behavior.
+  - `label`: `[tabLabel] file` only when a per-host label is set; otherwise just `file` (drops the verbose user@host).
+  - `none`: `file` only, no prefix, for the most compact tabs.
+- **`connectionPrefix.ts`**: new `TabPrefixMode` type, module-level `tabPrefixMode` state with a `setTabPrefixMode()` setter (mirrors the existing `registerTabLabel()` pattern, keeps the path builders decoupled from vscode settings), and a `buildTabPrefix(connectionId)` helper that returns the prefix string or `null`. `buildLocalTempPath()` now renders `[prefix] base` vs just `base` accordingly.
+- **`extension.ts`**: reads the setting on activation (validated against the known modes; a hand-edited invalid value falls back to `userAndHost`) and re-applies it on `onDidChangeConfiguration`. Applies to files opened after the change (already-open tabs keep their name until re-opened).
+- **Duplicate-tab fix (latent data-correctness bug, also pre-existing via `tabLabel`)**: the prefix is part of the temp filename, so changing it while a file is open and then re-opening that file used to create a SECOND editable tab for the same remote file (the path-keyed "already open" check looked for the new name and missed the old tab). Two tabs mapped to one remote path can silently overwrite each other on save. `openRemoteFile()` now calls `findOpenLocalPathForRemote(connectionId, remotePath)` first and focuses the existing tab regardless of the name it was opened under. This also fixes the same duplicate that the older per-host `tabLabel` feature could already produce.
+
+### Safety
+
+The prefix is purely cosmetic. The save-to-upload mapping keys on `normalizeLocalPath(localPath)` via `getFileMapping()`, and the save listener fires on `isInSshTempDir()` (path-based), not on the filename prefix, so removing the prefix never changes which remote file an edit uploads to. The per-folder `{dirHash}` subdirectory still keeps same-named files (issue #6) collision-free in every mode.
+
+### Tests
+
+- Unit: `src/utils/connectionPrefix.test.ts` "editor tab prefix modes (issue #8)" covers all three modes, the `label`-with/without-registered-label split, `none` overriding a registered label, and the issue #6 collision-free invariant holding under `none`.
+- Unit: `src/services/FileService.crud.test.ts` "openRemoteFile - same remote file under a changed tab prefix (issue #8)" proves `findOpenLocalPathForRemote` matches by connection+remote path (not filename) and that re-opening after a prefix change focuses the existing tab instead of creating a duplicate (no second temp file, no re-download, no second mapping). This bug lives only in in-memory mapping + editor state (no SSH/SFTP path), so unit is the right level.
+
 ## v0.9.9 - Reveal in File Tree now selects the file (issue #7), incl. over a laggy link
 
 ### Why
