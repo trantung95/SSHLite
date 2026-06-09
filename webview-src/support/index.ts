@@ -213,6 +213,20 @@ function registerKey(key?: string): void {
   spawnPopup(text);
 }
 
+// When an AI event fires without a prompt (transcript-watcher pulse, no hooks),
+// spawn 2–4 random-word popups at independent random delays within 0–3 s so the
+// NPC looks genuinely busy rather than blipping once and going quiet.
+function burstAiPopups(): void {
+  const count = 7 + Math.floor(Math.random() * 11); // 7–17 popups
+  for (let i = 0; i < count; i++) {
+    const delay = 700 + Math.floor(Math.random() * 1300);
+    window.setTimeout(() => {
+      lastTypeAt = performance.now();
+      spawnPopup(POPUP_WORDS[Math.floor(Math.random() * POPUP_WORDS.length)]);
+    }, delay);
+  }
+}
+
 // Fly the user's ACTUAL prompt text (pushed by an installed AI hook): a short
 // staggered burst of the real characters, capped so a long prompt isn't a flood.
 function flyPromptText(text: string): void {
@@ -635,11 +649,11 @@ window.addEventListener('message', (ev: MessageEvent) => {
   } else if (m.type === 'aiActive' && typeof m.id === 'string' && typeof m.name === 'string') {
     showAiLabel(m.id, m.name);
     // Hooks installed: the AI tool pushed the actual prompt — fly the real text.
-    // Otherwise just a pulse from the transcript watcher → a random word.
+    // Otherwise a transcript-watcher pulse → burst of random words over 0–3 s.
     if (typeof m.prompt === 'string' && m.prompt) {
       flyPromptText(m.prompt);
     } else {
-      registerKey();
+      burstAiPopups();
     }
     lastTypeAt = performance.now(); // an active AI keeps the NPC awake
   }

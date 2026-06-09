@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.9.12 - NPC burst popups on AI activity
+
+When the Support view detects an AI coding assistant working (via transcript file watcher), the pixel-coder NPC now spawns 7-17 random word popups at independent random delays of 0.7-2 seconds, instead of a single popup. The NPC feels more alive and reactive during active AI sessions.
+
 ## v0.9.11 - Hotkey focus requirement relaxed (issue #10)
 
 F2 (rename), Ctrl/Cmd+C (copy), Ctrl/Cmd+X (cut), and Ctrl/Cmd+V (paste) in the SSH Lite file explorer now fire whenever the panel has focus (`focusedView == sshLite.fileExplorer`). The previous `listFocus` condition required keyboard-navigating into the list, which made the hotkeys appear broken on macOS when using a mouse.

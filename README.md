@@ -91,13 +91,9 @@ Two edge cases worth knowing:
 
 ## Release Notes
 
+**0.9.12** - **NPC reacts more to AI activity**: when an AI coding assistant is detected working, the pixel-coder NPC now bursts 7-17 random word popups spread over 0.7-2 seconds instead of a single popup.
+
 **0.9.11** - **Hotkeys work with panel focus (issue #10)**: F2 (rename), Ctrl/Cmd+C (copy), Ctrl/Cmd+X (cut), and Ctrl/Cmd+V (paste) now activate whenever the SSH Lite file explorer panel is focused — just click the panel. Previously they also required keyboard-navigating into the list.
-
-**0.9.10** - **Compact editor tabs (issue #8)**: a new setting lets you shorten the editor tab titles for remote files. Before, every tab started with a wide `[user@host]` prefix; you can now show just the filename instead.
-
-- **New setting** `sshLite.editorTabPrefix`: `userAndHost` (default, unchanged) keeps `[user@host] file`; `label` shows only a per-host label you set (otherwise just the filename); `none` shows only the filename for the most compact tabs.
-- **Safe** - the prefix is purely cosmetic; which remote file your edits upload to is unchanged.
-- **Also fixed** - re-opening a file after changing the tab prefix (or a host's tab label) now focuses the existing tab instead of opening a second copy of the same file.
 
 [Full changelog](https://github.com/trantung95/SSHLite/blob/master/.adn/CHANGELOG.md)
 
