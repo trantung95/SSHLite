@@ -13,13 +13,6 @@
 - Optional: sync via Google Drive / Dropbox by pointing to a file path the user manages
 - Credentials are excluded from export (stored separately in VS Code secret storage); only host metadata (host, port, username, label, paths) is exported
 
-## Fix Image File Opening (issue #12)
-- When opening an image file from the server, do NOT use progressive/partial download — download the full file first, then open
-- Partial binary causes VS Code's image viewer to show garbage (the "strange page" reported in issue #12)
-- Detection: check file extension against a known image list (`.jpg`, `.jpeg`, `.png`, `.gif`, `.svg`, `.webp`, `.bmp`, `.ico`, `.tiff`) in `openRemoteFile()`
-- For image files: skip the placeholder-then-background-download path; wait for full download, then call `vscode.commands.executeCommand('vscode.open', uri)` so VS Code uses the built-in image viewer (not `showTextDocument`)
-- For large images (>1MB): show a progress notification during download
-
 ## Improve Diagnostic Logging
 - Log all parameters and return values at entry/exit points of key functions
 - Covers: connection lifecycle, file operations, command execution, tree provider updates

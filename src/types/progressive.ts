@@ -162,3 +162,20 @@ export function isLikelyBinary(filename: string): boolean {
   const ext = filename.toLowerCase().substring(filename.lastIndexOf('.'));
   return BINARY_EXTENSIONS.has(ext);
 }
+
+/**
+ * Image extensions that must be downloaded in FULL and opened with VS Code's
+ * built-in image viewer instead of the text editor (issue #12). A partial or
+ * text-rendered image shows as garbage.
+ */
+export const IMAGE_EXTENSIONS = new Set([
+  '.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.bmp', '.ico', '.tiff', '.tif',
+]);
+
+/**
+ * Check if a file is an image based on extension
+ */
+export function isImageFile(filename: string): boolean {
+  const ext = filename.toLowerCase().substring(filename.lastIndexOf('.'));
+  return IMAGE_EXTENSIONS.has(ext);
+}

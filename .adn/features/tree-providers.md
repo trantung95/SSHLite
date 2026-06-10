@@ -59,6 +59,12 @@ sshLite.fileExplorer → ConnectionTreeItem → ParentFolderTreeItem (..)
 
 `fileCache: Map<string, CacheEntry>` — key: `${connectionId}:${remotePath}`, TTL: `treeRefreshIntervalSeconds` (default 10s). Cleared on disconnect/refresh/filter change.
 
+### Failed Load Handling (issue #13)
+
+`failedLoads: Map<string, string>` — key: `${connectionId}:${remotePath}`, value: error message. When a background directory listing fails, `loadDirectoryAndRefresh()` records the failure **before** firing the tree refresh. The re-entered `getChildren()` renders a `LoadErrorTreeItem` (contextValue `loadError`, id `loadError:${key}`) instead of starting the load again. Without this, a failing directory caused an infinite load → fail → notify → refresh → load loop that froze VS Code and spammed "Failed to list directory" notifications.
+
+Failures are cleared (allowing a retry) only on explicit user actions: `refresh()`, `refreshItem()`, `refreshFolder()`, `setCurrentPath()` (navigation), `clearCache()` (reconnect), and `dispose()`. A successful reload also clears the entry. Regression tests: `FileTreeProvider.issue13.test.ts`.
+
 ### Filter System
 
 **Content Filter** (`sshLite.filterFiles`): grep file contents on server, flat list, limit `filterMaxResults`.

@@ -41,6 +41,7 @@ import { formatFileSize, formatRelativeTime, normalizeLocalPath, expandPath } fr
 import { parseHostInfoFromPath as parseHostInfo, isInSshTempDir, hasSshPrefix } from './utils/extensionHelpers';
 import { setDiagOutputChannel, refreshDiagEnabled, infoLog } from './utils/diagnosticLog';
 import { setTabPrefixMode, TabPrefixMode } from './utils/connectionPrefix';
+import { resolveTreeSelection } from './utils/treeSelection';
 
 let outputChannel: vscode.OutputChannel;
 
@@ -1610,9 +1611,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Copy a remote file/folder into the in-memory SSH clipboard
     vscode.commands.registerCommand('sshLite.copyRemoteItem', async (item?: FileTreeItem, items?: FileTreeItem[]) => {
-      const selected = (items && items.length > 0) ? items : (item ? [item] : []);
+      // Keybinding invocations pass no args — fall back to the tree selection (issue #10)
+      const selected = resolveTreeSelection<unknown>(item, items, fileTreeView?.selection);
       const fileItems = selected.filter((i) => i instanceof FileTreeItem) as FileTreeItem[];
       if (fileItems.length === 0) {
+        vscode.window.setStatusBarMessage('$(info) Select a file or folder in the SSH Lite explorer to copy', 3000);
         return;
       }
       const entries = fileItems.map((f) => ({
@@ -1629,9 +1632,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Cut a remote file/folder into the in-memory SSH clipboard
     vscode.commands.registerCommand('sshLite.cutRemoteItem', async (item?: FileTreeItem, items?: FileTreeItem[]) => {
-      const selected = (items && items.length > 0) ? items : (item ? [item] : []);
+      // Keybinding invocations pass no args — fall back to the tree selection (issue #10)
+      const selected = resolveTreeSelection<unknown>(item, items, fileTreeView?.selection);
       const fileItems = selected.filter((i) => i instanceof FileTreeItem) as FileTreeItem[];
       if (fileItems.length === 0) {
+        vscode.window.setStatusBarMessage('$(info) Select a file or folder in the SSH Lite explorer to cut', 3000);
         return;
       }
       const entries = fileItems.map((f) => ({
@@ -1660,6 +1665,13 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       if (!item) {
+        // Keybinding invocations pass no args — fall back to the tree selection (issue #10)
+        item = resolveTreeSelection<unknown>(undefined, undefined, fileTreeView?.selection)
+          .find((i) => i instanceof FileTreeItem || i instanceof ConnectionTreeItem) as
+          FileTreeItem | ConnectionTreeItem | undefined;
+      }
+      if (!item) {
+        vscode.window.setStatusBarMessage('$(info) Select a destination in the SSH Lite explorer to paste into', 3000);
         return;
       }
 
@@ -1672,6 +1684,12 @@ export function activate(context: vscode.ExtensionContext): void {
       } else if (item instanceof FileTreeItem && item.file.isDirectory) {
         destConnection = item.connection;
         destFolder = item.file.path;
+      } else if (item instanceof FileTreeItem) {
+        // A file is selected (hotkey paste): paste into its containing folder.
+        // Remote paths are POSIX — use path.posix so a Windows host doesn't
+        // produce backslash paths the SSH server can't resolve.
+        destConnection = item.connection;
+        destFolder = path.posix.dirname(item.file.path) || '/';
       } else {
         return;
       }
@@ -2006,6 +2024,12 @@ export function activate(context: vscode.ExtensionContext): void {
 
     vscode.commands.registerCommand('sshLite.renameRemote', async (item?: FileTreeItem) => {
       if (!item) {
+        // Keybinding invocations (F2) pass no args — fall back to the tree selection (issue #10)
+        item = resolveTreeSelection<unknown>(undefined, undefined, fileTreeView?.selection)
+          .find((i) => i instanceof FileTreeItem) as FileTreeItem | undefined;
+      }
+      if (!item) {
+        vscode.window.setStatusBarMessage('$(info) Select a file or folder in the SSH Lite explorer to rename', 3000);
         return;
       }
 

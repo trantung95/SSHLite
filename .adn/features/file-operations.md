@@ -43,6 +43,16 @@ private fileMappings: Map<string, FileMapping>;
 7. Open in editor: vscode.window.showTextDocument(uri)
 ```
 
+**Image files (issue #12)**: `isImageFile()` (`src/types/progressive.ts`, `IMAGE_EXTENSIONS`:
+jpg/jpeg/png/gif/svg/webp/bmp/ico/tiff/tif) branches `openRemoteFile()` into
+`openImageFile()` BEFORE the progressive-download check: the image is downloaded in
+FULL (progress notification at ≥1MB via `IMAGE_PROGRESS_THRESHOLD`), written to the same
+temp path, then opened with `vscode.commands.executeCommand('vscode.open', uri)` so
+VS Code routes it to its built-in image viewer. The text-editor path rendered image
+bytes as garbage, and a placeholder/partial download corrupts the image even in the
+viewer. Images are read-only here: no file mapping, no watcher, no upload-on-save.
+Regression tests: `FileService.image.test.ts`.
+
 **Temp path layout (issue #6)**: the path includes a per-remote-folder subdirectory
 `{dirLabel}_{dirHash}` (hash of `path.posix.dirname(remotePath)`), not just the basename.
 Without it, two files sharing a basename in different folders (e.g. `domainA/index.php`

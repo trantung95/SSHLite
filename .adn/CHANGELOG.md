@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.9.13 - Three bug fixes: infinite loop on failed listing (issue #13), hotkey clipboard (issue #10), image viewer (issue #12)
+
+### Infinite loop / freeze when a directory listing fails (issue #13)
+
+Clicking the root icon (or expanding any directory) while the server could not list that path caused an infinite loop: the failed load fired a tree refresh, the refresh re-entered `getChildren()`, which saw "not cached, not loading" and retried the load, which failed again — freezing VS Code and endlessly spamming "Failed to list directory" notifications.
+
+Fix in `FileTreeProvider`: failed loads are recorded in a `failedLoads` map BEFORE the refresh fires; `getChildren()` now renders a `LoadErrorTreeItem` (error icon + message + "use refresh to retry" tooltip) instead of retrying. The error notification appears exactly once. Retry happens only on explicit user actions: refresh button, navigation (`setCurrentPath`), full refresh, or reconnect (`clearCache`). Matches LITE: no automatic server commands.
+
+Tests: `src/providers/FileTreeProvider.issue13.test.ts` (error item rendered, no reload on repeated `getChildren`, single notification, retry after refreshFolder/navigation/clearCache, connection-level refresh clears every failed subfolder, folder-level variant). Docker: `src/integration/docker-ssh-listing-failure.test.ts` proves against a real `chmod 000` directory that `listFiles()` truly rejects, the real provider renders the error item with zero re-listing (verified via a `listFiles` spy), the notification fires once, and it recovers after `chmod 755` + refresh.
+
+### Copy/cut/paste/rename hotkeys actually act on the selected item (issue #10 follow-up)
+
+v0.9.11 made F2 / Ctrl(Cmd)+C / X / V fire with panel focus, but VS Code passes NO tree-item argument for keybinding invocations (only context menus pass arguments), so the handlers silently did nothing and paste reported "SSH clipboard is empty".
+
+Fix: new `resolveTreeSelection()` helper (`src/utils/treeSelection.ts`) — priority `items[]` (context-menu multi-select) > `item` (context-menu single) > `fileTreeView.selection` (keybinding). Copy, cut, paste, and rename now fall back to the file explorer's current selection. Pasting with a FILE selected pastes into that file's containing folder. When nothing is selected, a status-bar hint appears instead of silent failure.
+
+Tests: `src/utils/treeSelection.test.ts`.
+
+### Images open in VS Code's image viewer, not as garbage text (issue #12)
+
+Selecting a photo on the server opened "a strange page" — raw binary rendered by the text editor.
+
+Fix: `openRemoteFile()` detects images by extension (`isImageFile()` in `src/types/progressive.ts`: jpg, jpeg, png, gif, svg, webp, bmp, ico, tiff, tif), downloads the FULL file (no placeholder, no progressive/partial download — partial bytes corrupt the image), shows a progress notification for images ≥1MB, then opens via `vscode.open` so VS Code uses its built-in image viewer. Images are read-only: no watcher or upload-on-save is registered. Downloads are audit-logged like other file opens.
+
+Tests: `src/services/FileService.image.test.ts` (routing, size threshold, uppercase extensions, audit log, concurrent double-open guard, download failure). Docker: `src/integration/docker-ssh-image-open.test.ts` writes a real PNG and a 1.5MB binary, opens through the real `FileService`, and SHA256-compares the on-disk temp file to prove the full bytes survived the SFTP round-trip while `vscode.open` (not `showTextDocument`) was used.
+
 ## v0.9.12 - NPC burst popups on AI activity
 
 When the Support view detects an AI coding assistant working (via transcript file watcher), the pixel-coder NPC now spawns 7-17 random word popups at independent random delays of 0.7-2 seconds, instead of a single popup. The NPC feels more alive and reactive during active AI sessions.

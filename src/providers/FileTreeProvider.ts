@@ -250,6 +250,22 @@ export class LoadingTreeItem extends vscode.TreeItem {
 }
 
 /**
+ * Tree item shown when a directory listing failed (issue #13).
+ * Rendered instead of retrying the load, so a failing directory cannot
+ * trigger an infinite load → fail → refresh → load loop. The user retries
+ * explicitly via refresh or by navigating again.
+ */
+export class LoadErrorTreeItem extends vscode.TreeItem {
+  constructor(message: string, uniqueKey: string) {
+    super(`Failed to load: ${message}`, vscode.TreeItemCollapsibleState.None);
+    this.id = `loadError:${uniqueKey}`;
+    this.iconPath = new vscode.ThemeIcon('error');
+    this.contextValue = 'loadError';
+    this.tooltip = `${message}\n\nUse the refresh button to retry.`;
+  }
+}
+
+/**
  * Tree item for filter results header
  */
 export class FilterResultsHeaderItem extends vscode.TreeItem {
@@ -391,6 +407,12 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
   // Track items currently being loaded (for showing loading spinner)
   private loadingItems: Set<string> = new Set(); // Set of "connectionId:path" keys
+
+  // Directories whose last load FAILED (issue #13): "connectionId:path" -> error message.
+  // getChildren() must NOT auto-retry these — the failure itself fires a tree refresh,
+  // so retrying from getChildren() creates an infinite load/fail/notify loop.
+  // Cleared on explicit refresh, navigation, or cache clear (reconnect).
+  private failedLoads: Map<string, string> = new Map();
 
   // Filename filters for tree highlighting (multiple simultaneous filters supported)
   // Key: "connectionId:basePath"
@@ -563,12 +585,16 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
         activityService.completeActivity(activityId, `${files.length} items`);
         // Loading complete, remove from loading set and refresh
         this.loadingItems.delete(loadingKey);
+        this.failedLoads.delete(loadingKey);
         this._onDidChangeTreeData.fire(element);
       })
       .catch((error) => {
         // Fail activity tracking
         activityService.failActivity(activityId, (error as Error).message);
-        // Loading failed, remove from loading set
+        // Record the failure BEFORE firing the refresh: the refresh re-enters
+        // getChildren(), which must see the failure and render an error item
+        // instead of starting the load again (issue #13 infinite loop).
+        this.failedLoads.set(loadingKey, (error as Error).message);
         this.loadingItems.delete(loadingKey);
         this._onDidChangeTreeData.fire(element);
         vscode.window.showErrorMessage(`Failed to list directory: ${(error as Error).message}`);
@@ -615,11 +641,17 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
           this.directoryCache.delete(key);
         }
       }
+      for (const key of this.failedLoads.keys()) {
+        if (key.startsWith(prefix)) {
+          this.failedLoads.delete(key);
+        }
+      }
       this.deepFilterResults.delete(connectionId);
       // Re-derived cheaply on next reveal; clear for consistency with the cache.
       this.resolvedHomePaths.delete(connectionId);
     } else {
       this.directoryCache.clear();
+      this.failedLoads.clear();
       this.deepFilterResults.clear();
       this.resolvedHomePaths.clear();
     }
@@ -890,6 +922,10 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   setCurrentPath(connectionId: string, newPath: string): void {
     this.currentPaths.set(connectionId, newPath);
 
+    // Navigating is an explicit user action: allow a previously failed
+    // directory to be retried (issue #13).
+    this.failedLoads.delete(this.getCacheKey(connectionId, newPath));
+
     // Record folder visit for smart preloading
     this.folderHistoryService.recordVisit(connectionId, newPath);
 
@@ -1020,6 +1056,8 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     if (clearCache) {
       this.directoryCache.clear();
     }
+    // Full refresh is an explicit user action: retry all failed loads (issue #13).
+    this.failedLoads.clear();
     this._onDidChangeTreeData.fire();
   }
 
@@ -1073,6 +1111,19 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
         this.directoryCache.delete(key);
       }
     }
+    // Explicit refresh: allow a previously failed directory to be retried (issue #13).
+    // For a connection, clear EVERY failed subfolder (not just the current path),
+    // otherwise a previously-failed expanded folder would stay stuck on its error item.
+    if (item instanceof ConnectionTreeItem) {
+      const prefix = `${item.connection.id}:`;
+      for (const key of this.failedLoads.keys()) {
+        if (key.startsWith(prefix)) {
+          this.failedLoads.delete(key);
+        }
+      }
+    } else if (item instanceof FileTreeItem) {
+      this.failedLoads.delete(this.getCacheKey(item.connection.id, item.file.path));
+    }
     this._onDidChangeTreeData.fire(item);
   }
 
@@ -1084,6 +1135,8 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     // Clear cache for this folder
     const key = this.getCacheKey(connectionId, folderPath);
     this.directoryCache.delete(key);
+    // Explicit refresh: allow a previously failed directory to be retried (issue #13).
+    this.failedLoads.delete(key);
 
     // Use targeted refresh to preserve other connections' tree state
     this.refreshConnection(connectionId);
@@ -1264,6 +1317,12 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
         return [new LoadingTreeItem('Loading...', loadingKey)];
       }
 
+      // Last load failed: show error item, do NOT auto-retry (issue #13).
+      const failedMessage = this.failedLoads.get(loadingKey);
+      if (failedMessage !== undefined) {
+        return [new LoadErrorTreeItem(failedMessage, loadingKey)];
+      }
+
       // Start loading in background and return loading placeholder immediately
       this.loadingItems.add(loadingKey);
       this.loadDirectoryAndRefresh(element.connection, currentPath, element);
@@ -1337,6 +1396,12 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       // If already loading, show loading placeholder
       if (this.loadingItems.has(loadingKey)) {
         return [new LoadingTreeItem('Loading...', loadingKey)];
+      }
+
+      // Last load failed: show error item, do NOT auto-retry (issue #13).
+      const failedMessage = this.failedLoads.get(loadingKey);
+      if (failedMessage !== undefined) {
+        return [new LoadErrorTreeItem(failedMessage, loadingKey)];
       }
 
       // Start loading in background and return loading placeholder immediately
@@ -2521,6 +2586,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     this.activeLoads.clear();
     this.preloadQueue.clear();
     this.loadingItems.clear();
+    this.failedLoads.clear();
     this.expandedFolders.clear();
     this.connectionTreeItemRefs.clear();
     this.resolvedHomePaths.clear();

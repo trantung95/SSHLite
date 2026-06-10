@@ -91,9 +91,9 @@ Two edge cases worth knowing:
 
 ## Release Notes
 
-**0.9.12** - **NPC reacts more to AI activity**: when an AI coding assistant is detected working, the pixel-coder NPC now bursts 7-17 random word popups spread over 0.7-2 seconds instead of a single popup.
+**0.9.13** - **Three bug fixes**: no more infinite loop / frozen window when a directory fails to list — the tree shows an error row and retries only when you hit refresh (issue #13); copy/cut/paste/rename hotkeys now act on the selected file instead of silently doing nothing ("SSH clipboard is empty", issue #10); images now open in VS Code's image viewer after a full download instead of as garbage text (issue #12).
 
-**0.9.11** - **Hotkeys work with panel focus (issue #10)**: F2 (rename), Ctrl/Cmd+C (copy), Ctrl/Cmd+X (cut), and Ctrl/Cmd+V (paste) now activate whenever the SSH Lite file explorer panel is focused — just click the panel. Previously they also required keyboard-navigating into the list.
+**0.9.12** - **NPC reacts more to AI activity**: when an AI coding assistant is detected working, the pixel-coder NPC now bursts 7-17 random word popups spread over 0.7-2 seconds instead of a single popup.
 
 [Full changelog](https://github.com/trantung95/SSHLite/blob/master/.adn/CHANGELOG.md)
 

@@ -14,7 +14,7 @@ import { ActivityService } from './ActivityService';
 import { CommandGuard } from './CommandGuard';
 import { CredentialService } from './CredentialService';
 import { formatFileSize, normalizeLocalPath, decodeUriComponentSafe } from '../utils/helpers';
-import { isLikelyBinary, DEFAULT_PROGRESSIVE_CONFIG } from '../types/progressive';
+import { isLikelyBinary, isImageFile, DEFAULT_PROGRESSIVE_CONFIG } from '../types/progressive';
 import { registerTabLabel, buildLocalTempPath, buildAuxTempFileName } from '../utils/connectionPrefix';
 import { infoLog } from '../utils/diagnosticLog';
 
@@ -22,6 +22,12 @@ import { infoLog } from '../utils/diagnosticLog';
  * Large file size threshold (100MB default)
  */
 const LARGE_FILE_THRESHOLD = 100 * 1024 * 1024;
+
+/**
+ * Images at or above this size show a progress notification while
+ * downloading (issue #12). Below it the download is silent.
+ */
+const IMAGE_PROGRESS_THRESHOLD = 1 * 1024 * 1024;
 
 /**
  * Default smart refresh threshold (500KB)
@@ -2786,6 +2792,52 @@ export class FileService {
     return undefined;
   }
 
+  /**
+   * Download an image in FULL and open it with VS Code's built-in image
+   * viewer (issue #12). No placeholder, no progressive download, no text
+   * editor: partial or text-rendered image bytes show as garbage. Images are
+   * not editable here, so no file mapping / watcher / upload-on-save is set up.
+   */
+  private async openImageFile(
+    connection: SSHConnection,
+    remoteFile: IRemoteFile,
+    localPath: string
+  ): Promise<void> {
+    const download = async (): Promise<void> => {
+      const content = await connection.readFile(remoteFile.path);
+      fs.writeFileSync(localPath, content);
+    };
+
+    if (remoteFile.size >= IMAGE_PROGRESS_THRESHOLD) {
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `Downloading ${remoteFile.name} (${formatFileSize(remoteFile.size)})...`,
+        },
+        download
+      );
+    } else {
+      await download();
+    }
+
+    this.auditService.log({
+      action: 'download',
+      connectionId: connection.id,
+      hostName: connection.host.name,
+      username: connection.host.username,
+      remotePath: remoteFile.path,
+      localPath,
+      fileSize: remoteFile.size,
+      success: true,
+    });
+
+    // Record file open for preloading (same as the text-editor path)
+    this.folderHistoryService.recordFileOpen(connection.id, remoteFile.path);
+
+    // `vscode.open` routes to the built-in image preview instead of the text editor
+    await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(localPath));
+  }
+
   async openRemoteFile(connection: SSHConnection, remoteFile: IRemoteFile): Promise<void> {
     // Register tab label for this connection (used in filename prefix)
     if (connection.host.tabLabel) {
@@ -2829,6 +2881,38 @@ export class FileService {
       } catch (error) {
         activityService.failActivity(activityId, (error as Error).message);
         throw error;
+      }
+      return;
+    }
+
+    // Image files (issue #12): download in FULL, then open with VS Code's
+    // built-in image viewer via `vscode.open`. The default path below opens
+    // files through the text editor, which renders image bytes as garbage,
+    // and a placeholder/partial download corrupts the image even in the viewer.
+    if (isImageFile(remoteFile.name)) {
+      // Guard against a double-click opening the image twice: a second call
+      // while the first is still downloading would race on writeFileSync (torn
+      // write) and open the viewer twice. Images skip the text path's file lock,
+      // so reuse activeDownloads (same map the text path uses) as the guard.
+      if (this.activeDownloads.has(localPath)) {
+        return;
+      }
+      this.activeDownloads.set(localPath, { connectionId: connection.id, remotePath: remoteFile.path });
+      const activityId = activityService.startActivity(
+        'download',
+        connection.id,
+        connection.host.name,
+        `Open: ${remoteFile.name}`,
+        { detail: `Image (${formatFileSize(remoteFile.size)})` }
+      );
+      try {
+        await this.openImageFile(connection, remoteFile, localPath);
+        activityService.completeActivity(activityId, 'Opened');
+      } catch (error) {
+        activityService.failActivity(activityId, (error as Error).message);
+        throw error;
+      } finally {
+        this.activeDownloads.delete(localPath);
       }
       return;
     }
