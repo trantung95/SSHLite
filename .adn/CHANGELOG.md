@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.9.14 - Delete key, plus the issue #13 / #10 / #12 fixes (first published release of this batch)
+
+0.9.13 was developed but never published to the Marketplace; 0.9.14 is the release that ships everything from that batch. New since the 0.9.13 work:
+
+### Delete / Cmd+Backspace key deletes the selected item
+
+The file explorer now binds `Delete` (Windows/Linux) and `Cmd+Backspace` (macOS) to `sshLite.deleteRemote`, gated `when: focusedView == sshLite.fileExplorer`, matching VS Code's native Explorer. Like the other file-explorer hotkeys it falls back to the tree selection via `resolveTreeSelection()` when invoked by key (filtered to `FileTreeItem`); an empty selection shows a status-bar hint instead of a silent no-op. Deletion still routes through the existing per-item / bulk confirm dialog (with backup), so a stray keypress cannot delete without confirmation — LITE data-correctness preserved. Keybinding only; command count stays 108.
+
+Everything below shipped as part of this release too (carried over from the unreleased 0.9.13):
+
 ## v0.9.13 - Three bug fixes: infinite loop on failed listing (issue #13), hotkey clipboard (issue #10), image viewer (issue #12)
 
 ### Infinite loop / freeze when a directory listing fails (issue #13)

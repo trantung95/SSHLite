@@ -91,7 +91,7 @@ Two edge cases worth knowing:
 
 ## Release Notes
 
-**0.9.13** - **Three bug fixes**: no more infinite loop / frozen window when a directory fails to list — the tree shows an error row and retries only when you hit refresh (issue #13); copy/cut/paste/rename hotkeys now act on the selected file instead of silently doing nothing ("SSH clipboard is empty", issue #10); images now open in VS Code's image viewer after a full download instead of as garbage text (issue #12).
+**0.9.14** - **Bug-fix + UX batch**: no more infinite loop / frozen window when a folder fails to list — the tree shows an error row and retries only on refresh (issue #13); copy/cut/paste/rename hotkeys now work right after clicking a file, since opening keeps focus in the tree like the native Explorer ("SSH clipboard is empty", issue #10); images open in VS Code's image viewer after a full download instead of as garbage text, with a zoom-out hint (issue #12); and the **Delete** / **Cmd+Backspace** key deletes the selected item (with the usual confirm).
 
 **0.9.12** - **NPC reacts more to AI activity**: when an AI coding assistant is detected working, the pixel-coder NPC now bursts 7-17 random word popups spread over 0.7-2 seconds instead of a single popup.
 
