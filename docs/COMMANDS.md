@@ -36,7 +36,7 @@ Open the Command Palette (**Ctrl+Shift+P** / **Cmd+Shift+P**) and type the comma
 | Open File | `sshLite.openFile` | — | Tree context menu |
 | Download File | `sshLite.downloadFile` | — | Tree context menu |
 | Upload File | `sshLite.uploadFile` | — | Tree context menu |
-| Delete | `sshLite.deleteRemote` | — | Tree context menu |
+| Delete | `sshLite.deleteRemote` | `delete / cmd+backspace (Mac)` | Keybinding: delete / cmd+backspace (Mac), Tree context menu |
 | Rename | `sshLite.renameRemote` | `f2` | Keybinding: f2, Tree context menu |
 | Move To... | `sshLite.moveRemote` | — | Tree context menu |
 | New Folder | `sshLite.createFolder` | — | Tree context menu |

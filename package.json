@@ -1801,6 +1801,12 @@
         "key": "ctrl+v",
         "mac": "cmd+v",
         "when": "focusedView == sshLite.fileExplorer && sshLite.hasClipboard"
+      },
+      {
+        "command": "sshLite.deleteRemote",
+        "key": "delete",
+        "mac": "cmd+backspace",
+        "when": "focusedView == sshLite.fileExplorer"
       }
     ]
   },

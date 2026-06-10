@@ -1842,8 +1842,13 @@ export function activate(context: vscode.ExtensionContext): void {
       item?: FileTreeItem,
       items?: FileTreeItem[]
     ) => {
-      const targets = (items && items.length > 0) ? items : (item ? [item] : []);
+      // Keybinding invocations (Delete / Cmd+Backspace) pass no args — fall back
+      // to the tree selection (issue #10 pattern). Deletion still goes through
+      // the per-item / bulk confirm dialog below, so this cannot delete silently.
+      const targets = resolveTreeSelection<unknown>(item, items, fileTreeView?.selection)
+        .filter((i) => i instanceof FileTreeItem) as FileTreeItem[];
       if (targets.length === 0) {
+        vscode.window.setStatusBarMessage('$(info) Select a file or folder in the SSH Lite explorer to delete', 3000);
         return;
       }
 

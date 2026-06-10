@@ -46,11 +46,19 @@ private fileMappings: Map<string, FileMapping>;
 **Focus on tree-click open (issue #10)**: `openRemoteFile()` takes an optional
 `{ preserveFocus }`. The tree single-click path (`sshLite.openFile`) passes
 `preserveFocus: true` so the file opens without stealing focus from the file
-explorer — the tree keeps focus and selection, so the copy/cut/rename hotkeys
-(gated `when: focusedView == sshLite.fileExplorer`) still target the tree right
-after a click, like VS Code's native Explorer. Tabs stay permanent
+explorer — the tree keeps focus and selection, so the copy/cut/rename/delete
+hotkeys (gated `when: focusedView == sshLite.fileExplorer`) still target the tree
+right after a click, like VS Code's native Explorer. Tabs stay permanent
 (`preview: false`). Callers that should land in the editor (create-file,
 new-file-as-root, search go-to-line) omit the option (default focus-the-editor).
+
+**File-explorer hotkeys** (all gated `when: focusedView == sshLite.fileExplorer`,
+all fall back to the tree selection via `resolveTreeSelection()` when invoked by
+key with no argument): `F2` rename, `Ctrl/Cmd+C` copy, `Ctrl/Cmd+X` cut,
+`Ctrl/Cmd+V` paste (also `&& sshLite.hasClipboard`), and `Delete` /
+`Cmd+Backspace` delete. Delete still routes through the per-item / bulk confirm
+dialog (with backup), so a stray keypress cannot delete without confirmation —
+LITE data-correctness holds.
 
 **Image files (issue #12)**: `isImageFile()` (`src/types/progressive.ts`, `IMAGE_EXTENSIONS`:
 jpg/jpeg/png/gif/svg/webp/bmp/ico/tiff/tif) branches `openRemoteFile()` into

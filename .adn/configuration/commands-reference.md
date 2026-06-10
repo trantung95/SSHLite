@@ -54,7 +54,7 @@ All 108 commands registered by SSH Lite (SSH Tools), organized by category.
 | `sshLite.openFile` | Open File | Tree context |
 | `sshLite.downloadFile` | Download File | Tree context |
 | `sshLite.uploadFile` | Upload File | Tree context |
-| `sshLite.deleteRemote` | Delete | Tree context |
+| `sshLite.deleteRemote` | Delete | Tree context / Keybinding (`Delete`, mac `Cmd+Backspace`) |
 | `sshLite.renameRemote` | Rename | Tree context / Keybinding |
 | `sshLite.moveRemote` | Move | Tree context |
 | `sshLite.createFolder` | Create Folder | Tree context |
