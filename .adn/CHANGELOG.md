@@ -14,9 +14,13 @@ Tests: `src/providers/FileTreeProvider.issue13.test.ts` (error item rendered, no
 
 v0.9.11 made F2 / Ctrl(Cmd)+C / X / V fire with panel focus, but VS Code passes NO tree-item argument for keybinding invocations (only context menus pass arguments), so the handlers silently did nothing and paste reported "SSH clipboard is empty".
 
-Fix: new `resolveTreeSelection()` helper (`src/utils/treeSelection.ts`) — priority `items[]` (context-menu multi-select) > `item` (context-menu single) > `fileTreeView.selection` (keybinding). Copy, cut, paste, and rename now fall back to the file explorer's current selection. Pasting with a FILE selected pastes into that file's containing folder. When nothing is selected, a status-bar hint appears instead of silent failure.
+There were two layers to this:
 
-Tests: `src/utils/treeSelection.test.ts`.
+1. **Command can't find the item.** New `resolveTreeSelection()` helper (`src/utils/treeSelection.ts`) — priority `items[]` (context-menu multi-select) > `item` (context-menu single) > `fileTreeView.selection` (keybinding). Copy, cut, paste, and rename now fall back to the file explorer's current selection. Pasting with a FILE selected pastes into that file's containing folder. When nothing is selected, a status-bar hint appears instead of silent failure.
+
+2. **Clicking a file stole focus (design flaw).** Single-clicking a file in the tree opens it, and the open used to move focus to the editor — so the tree lost focus, the copy keybinding (gated `when: focusedView == sshLite.fileExplorer`) never fired, and the selection fallback had nothing to act on. `openRemoteFile()` now takes a `preserveFocus` option and the tree-click open path passes `preserveFocus: true`, so the file opens (permanent tab, `preview: false` unchanged) without stealing focus from the tree — exactly like VS Code's native Explorer. Ctrl/Cmd+C/X and F2 now work right after a single click. Create-file, new-file-as-root, and search go-to-line keep the old focus-the-editor behavior (they omit the option).
+
+Tests: `src/utils/treeSelection.test.ts`, plus `FileService.crud.test.ts` "preserveFocus when opened from the tree (issue #10)".
 
 ### Images open in VS Code's image viewer, not as garbage text (issue #12)
 
@@ -24,7 +28,9 @@ Selecting a photo on the server opened "a strange page" — raw binary rendered 
 
 Fix: `openRemoteFile()` detects images by extension (`isImageFile()` in `src/types/progressive.ts`: jpg, jpeg, png, gif, svg, webp, bmp, ico, tiff, tif), downloads the FULL file (no placeholder, no progressive/partial download — partial bytes corrupt the image), shows a progress notification for images ≥1MB, then opens via `vscode.open` so VS Code uses its built-in image viewer. Images are read-only: no watcher or upload-on-save is registered. Downloads are audit-logged like other file opens.
 
-Tests: `src/services/FileService.image.test.ts` (routing, size threshold, uppercase extensions, audit log, concurrent double-open guard, download failure). Docker: `src/integration/docker-ssh-image-open.test.ts` writes a real PNG and a 1.5MB binary, opens through the real `FileService`, and SHA256-compares the on-disk temp file to prove the full bytes survived the SFTP round-trip while `vscode.open` (not `showTextDocument`) was used.
+VS Code's image viewer has no visible zoom-out button (a click zooms in; zoom-out is Alt+click / Ctrl+scroll / the status-bar zoom control). SSH Lite cannot add buttons to that viewer, so on the first image open per session it shows a transient status-bar hint pointing out the zoom-out gesture.
+
+Tests: `src/services/FileService.image.test.ts` (routing, size threshold, uppercase extensions, audit log, once-per-session zoom hint, concurrent double-open guard, download failure). Docker: `src/integration/docker-ssh-image-open.test.ts` writes a real PNG and a 1.5MB binary, opens through the real `FileService`, and SHA256-compares the on-disk temp file to prove the full bytes survived the SFTP round-trip while `vscode.open` (not `showTextDocument`) was used.
 
 ## v0.9.12 - NPC burst popups on AI activity
 

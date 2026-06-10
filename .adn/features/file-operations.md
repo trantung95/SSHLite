@@ -43,6 +43,15 @@ private fileMappings: Map<string, FileMapping>;
 7. Open in editor: vscode.window.showTextDocument(uri)
 ```
 
+**Focus on tree-click open (issue #10)**: `openRemoteFile()` takes an optional
+`{ preserveFocus }`. The tree single-click path (`sshLite.openFile`) passes
+`preserveFocus: true` so the file opens without stealing focus from the file
+explorer — the tree keeps focus and selection, so the copy/cut/rename hotkeys
+(gated `when: focusedView == sshLite.fileExplorer`) still target the tree right
+after a click, like VS Code's native Explorer. Tabs stay permanent
+(`preview: false`). Callers that should land in the editor (create-file,
+new-file-as-root, search go-to-line) omit the option (default focus-the-editor).
+
 **Image files (issue #12)**: `isImageFile()` (`src/types/progressive.ts`, `IMAGE_EXTENSIONS`:
 jpg/jpeg/png/gif/svg/webp/bmp/ico/tiff/tif) branches `openRemoteFile()` into
 `openImageFile()` BEFORE the progressive-download check: the image is downloaded in

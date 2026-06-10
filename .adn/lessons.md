@@ -21,6 +21,21 @@ Add new entries as bugs are found, mistakes are made, or better approaches are d
 
 ---
 
+## 2026-06-10 - Verify a fix against the real INTERACTION/DESIGN model, not just the code path (issue #10, design flaw caught by user)
+
+**Context**: the issue #10 fix made copy/cut/paste/rename fall back to `fileTreeView.selection` when a keybinding passes no tree-item argument. Unit tests passed, the code was correct — but it does NOT fix the reporter's actual scenario. The reporter copies a file by **mouse single-click then Ctrl/Cmd+C**. In VS Code a `FileTreeItem` with `this.command = { command: 'sshLite.openFile' }` (FileTreeProvider.ts ~342) means a single click OPENS the file, and `openRemoteFile()` calls `showTextDocument(doc, { preview: false })` with no `preserveFocus`, so focus moves to the **editor**. The copy keybinding is gated `when: focusedView == sshLite.fileExplorer`, which is now false, so Ctrl+C never reaches the SSH command at all — and even if it did, the tree is no longer focused. The selection-fallback only helps the cases where focus STAYS in the tree: clicking a folder (no editor opens) or arrow-key navigation (preview opens but tree keeps focus).
+
+**Lesson — when fixing a UI bug, model the real user interaction end to end before declaring the root cause, and check for DESIGN flaws, not just code bugs:**
+
+1. **A passing unit test that calls the command with synthetic args proves the handler logic, NOT that the feature is reachable in the real UI.** The keybinding `when` context, focus ownership, and what a click/keypress actually does to focus are part of the bug. Trace: input event → does the `when` clause hold? → which view has focus? → does the command even fire? Only then the handler logic.
+2. **Enumerate the input modalities** (mouse single-click, double-click, arrow-key navigation, context menu, command palette, keybinding) and check the fix under EACH. They differ in focus behavior. A fix that works for keyboard navigation can be dead for mouse click.
+3. **Distinguish a code bug from a design flaw.** Here the real issue is an interaction-design conflict: "single-click opens + steals focus" vs "Ctrl+C needs the tree focused + an item selected." No amount of handler-side patching fixes that; it needs a design decision (e.g. open with `preserveFocus: true` so the tree keeps focus like VS Code's native Explorer preview, vs. accepting that keyboard-copy requires arrow-key selection or right-click). Surface the design tension to the user instead of shipping a code patch that can't reach the bug.
+4. **Reproduce in the real product, not just tests, for any UI/UX bug** — the docker manual-test setup (real server + the actual extension build) would have exposed this immediately. Manual repro is part of "prove it works," especially for focus/keybinding/WebView behavior that mocks cannot capture.
+
+**Resolution (v0.9.13)**: closed by giving `openRemoteFile()` a `preserveFocus` option and passing `preserveFocus: true` from the tree-click `openFile` command — the file opens (permanent tab unchanged) without stealing focus, so the tree keeps focus + selection and Ctrl/Cmd+C/X/F2 work right after a click (matches VS Code's native Explorer). Callers that should land in the editor (create-file, new-file-as-root, search go-to-line) omit the option and keep focus-the-editor. The selection-fallback from layer 1 still does the actual copy off `fileTreeView.selection`. Two layers, both needed: the command must (a) be reachable with the tree focused AND (b) find the item — fixing only one leaves the bug.
+
+---
+
 ## 2026-06-07 - Changing code that backs a past fix: re-prove the old invariant (issue #8)
 
 **Context**: GitHub issue #8 asked for compact editor tabs (drop the `[user@host]` prefix). The fix edits `buildLocalTempPath()` in `src/utils/connectionPrefix.ts` - the SAME function that carries the issue #6 collision-free-temp-path fix. The user's standing instruction: *when fixing a bug, do not let previously-fixed bugs recur; verify carefully.*

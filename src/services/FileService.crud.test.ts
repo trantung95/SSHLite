@@ -713,4 +713,51 @@ describe('FileService - CRUD Operations (Actual)', () => {
       expect((service as any).fileMappings.has(newLocalPath)).toBe(false);
     });
   });
+
+  describe('openRemoteFile - preserveFocus when opened from the tree (issue #10)', () => {
+    const connId = mockConnection.id;
+    const remotePath = '/var/www/site/keepfocus.php';
+
+    beforeEach(() => { setTabPrefixMode('userAndHost'); (vscode.workspace as any).textDocuments = []; });
+    afterEach(() => { setTabPrefixMode('userAndHost'); (vscode.workspace as any).textDocuments = []; });
+
+    // Seed an already-open tab under the OLD prefix so openRemoteFile takes the
+    // focus-existing-tab early return — the simplest path to assert show options.
+    function seedAlreadyOpenUnderOldPrefix(): void {
+      const oldLocalPath = service.getLocalFilePath(connId, remotePath);
+      (service as any).fileMappings.set(oldLocalPath, {
+        connectionId: connId, remotePath, localPath: oldLocalPath, lastSyncTime: Date.now(),
+      });
+      (vscode.workspace as any).textDocuments = [
+        { uri: { fsPath: oldLocalPath, scheme: 'file' }, isUntitled: false, getText: () => 'x' },
+      ];
+      setTabPrefixMode('none'); // recomputed name now differs -> focus-existing-tab path
+    }
+
+    function lastShowOptions(): any {
+      const calls = (vscode.window.showTextDocument as jest.Mock).mock.calls;
+      return calls[calls.length - 1][1];
+    }
+
+    it('passes preserveFocus:true through to showTextDocument when requested (tree click)', async () => {
+      seedAlreadyOpenUnderOldPrefix();
+      (vscode.window.showTextDocument as jest.Mock).mockClear();
+
+      const remoteFile = createMockRemoteFile('keepfocus.php', { path: remotePath, size: 100 });
+      await service.openRemoteFile(mockConnection as any, remoteFile, { preserveFocus: true });
+
+      expect(vscode.window.showTextDocument).toHaveBeenCalled();
+      expect(lastShowOptions()).toMatchObject({ preview: false, preserveFocus: true });
+    });
+
+    it('defaults to preserveFocus:false (editor takes focus) when no option is given', async () => {
+      seedAlreadyOpenUnderOldPrefix();
+      (vscode.window.showTextDocument as jest.Mock).mockClear();
+
+      const remoteFile = createMockRemoteFile('keepfocus.php', { path: remotePath, size: 100 });
+      await service.openRemoteFile(mockConnection as any, remoteFile);
+
+      expect(lastShowOptions()).toMatchObject({ preview: false, preserveFocus: false });
+    });
+  });
 });

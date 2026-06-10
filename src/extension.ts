@@ -1574,7 +1574,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
       logCommand('openFile', item.file.path);
       try {
-        await fileService.openRemoteFile(item.connection, item.file);
+        // Issue #10: opening from the tree keeps focus in the file explorer so
+        // Ctrl/Cmd+C/X and F2 keep targeting the tree right after a click.
+        await fileService.openRemoteFile(item.connection, item.file, { preserveFocus: true });
         logResult('openFile', true, item.file.name);
       } catch (error) {
         logResult('openFile', false, (error as Error).message);

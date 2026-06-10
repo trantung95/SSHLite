@@ -202,6 +202,19 @@ describe('FileService.openRemoteFile — images (issue #12)', () => {
     }));
   });
 
+  it('shows the zoom-out hint once per session, not on every image open (issue #12)', async () => {
+    const f1 = createMockRemoteFile('a.png', { path: '/srv/a.png', size: 2048 });
+    const f2 = createMockRemoteFile('b.png', { path: '/srv/b.png', size: 2048 });
+    (vscode.window.setStatusBarMessage as jest.Mock).mockClear();
+
+    await service.openRemoteFile(mockConnection as any, f1);
+    await service.openRemoteFile(mockConnection as any, f2);
+
+    const hintCalls = (vscode.window.setStatusBarMessage as jest.Mock).mock.calls
+      .filter((c) => String(c[0]).toLowerCase().includes('zoom out'));
+    expect(hintCalls).toHaveLength(1);
+  });
+
   it('guards against a concurrent double-open (no torn write, opens once)', async () => {
     const file = createMockRemoteFile('photo.png', { path: '/srv/photo.png', size: 2048 });
     // Make readFile slow so the two opens overlap

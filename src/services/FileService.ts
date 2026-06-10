@@ -85,6 +85,7 @@ export class FileService {
   private auditService: AuditService;
   private folderHistoryService: FolderHistoryService;
   private skipNextSave: Set<string> = new Set(); // Paths to skip upload on next save
+  private imageZoomHintShown = false; // Issue #12: show the zoom-out hint once per session
   private activeDownloads: Map<string, { connectionId: string; remotePath: string }> = new Map(); // Track paths currently being downloaded
   private pendingUploads: Map<string, { timer: NodeJS.Timeout; uploadFn: () => Promise<void> }> = new Map(); // Pending debounced uploads
   private pendingUploadPromises: Map<string, Promise<void>> = new Map(); // In-flight upload promises
@@ -2836,13 +2837,41 @@ export class FileService {
 
     // `vscode.open` routes to the built-in image preview instead of the text editor
     await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(localPath));
+
+    // Discoverability hint (issue #12 follow-up): VS Code's image viewer has no
+    // visible zoom-out button — a click zooms IN, and zoom-out is Alt+click /
+    // Ctrl(Cmd)+scroll, with the zoom level in the status bar. We can't add a
+    // button to VS Code's viewer, so surface the gesture once per session via a
+    // transient status-bar message (no modal popup, auto-dismisses).
+    if (!this.imageZoomHintShown) {
+      this.imageZoomHintShown = true;
+      vscode.window.setStatusBarMessage(
+        '$(info) Image viewer: click zooms in — Alt+click or Ctrl/Cmd+scroll to zoom out',
+        7000
+      );
+    }
   }
 
-  async openRemoteFile(connection: SSHConnection, remoteFile: IRemoteFile): Promise<void> {
+  async openRemoteFile(
+    connection: SSHConnection,
+    remoteFile: IRemoteFile,
+    options?: { preserveFocus?: boolean }
+  ): Promise<void> {
     // Register tab label for this connection (used in filename prefix)
     if (connection.host.tabLabel) {
       this.registerConnectionTabLabel(connection.id, connection.host.tabLabel);
     }
+
+    // Issue #10: when opened by a single click in the tree, keep focus in the
+    // file explorer (preserveFocus) so Ctrl/Cmd+C/X/F2 still target the tree —
+    // otherwise the open steals focus to the editor and the hotkeys, gated on
+    // `focusedView == sshLite.fileExplorer`, never reach the SSH command. Tabs
+    // stay permanent (preview:false). Callers that genuinely want the editor
+    // focused (create-file, search go-to-line) omit the option (default false).
+    const showOpts: vscode.TextDocumentShowOptions = {
+      preview: false,
+      preserveFocus: options?.preserveFocus ?? false,
+    };
 
     // Local temp path under the CURRENT tab-prefix mode (computed once, reused below).
     const localPath = this.getLocalFilePath(connection.id, remoteFile.path);
@@ -2859,7 +2888,7 @@ export class FileService {
         (d) => normalizeLocalPath(d.uri.fsPath) === alreadyOpenLocalPath
       );
       if (openDoc) {
-        await vscode.window.showTextDocument(openDoc, { preview: false });
+        await vscode.window.showTextDocument(openDoc, showOpts);
         return;
       }
     }
@@ -2951,13 +2980,13 @@ export class FileService {
 
       if (hasMapping) {
         // Content is loaded - just show the document
-        await vscode.window.showTextDocument(existingDoc, { preview: false });
+        await vscode.window.showTextDocument(existingDoc, showOpts);
         return;
       }
 
       if (isDownloading) {
         // Download still in progress - show the document and notify user
-        await vscode.window.showTextDocument(existingDoc, { preview: false });
+        await vscode.window.showTextDocument(existingDoc, showOpts);
         vscode.window.setStatusBarMessage(`$(sync~spin) Download in progress: ${remoteFile.name}...`, 5000);
         return;
       }
@@ -3004,7 +3033,7 @@ export class FileService {
       if (existingMapping && fs.existsSync(localPath)) {
         const existingDocAfterLock = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === localPath);
         if (existingDocAfterLock) {
-          await vscode.window.showTextDocument(existingDocAfterLock, { preview: false });
+          await vscode.window.showTextDocument(existingDocAfterLock, showOpts);
           return;
         }
         // Document was closed - remove stale mapping and re-download fresh from server
@@ -3020,7 +3049,7 @@ export class FileService {
 
       // Open tab immediately - user sees instant feedback
       const document = await vscode.workspace.openTextDocument(localPath);
-      await vscode.window.showTextDocument(document, { preview: false });
+      await vscode.window.showTextDocument(document, showOpts);
 
       // Download content in background with status bar indicator
       const fileSizeStr = formatFileSize(remoteFile.size);
