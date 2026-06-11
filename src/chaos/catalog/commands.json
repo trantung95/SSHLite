@@ -1,5 +1,29 @@
 [
   {
+    "id": "sshLite.exportConnections",
+    "title": "Export Connections..."
+  },
+  {
+    "id": "sshLite.importConnections",
+    "title": "Import Connections..."
+  },
+  {
+    "id": "sshLite.connectGoogleDrive",
+    "title": "Connect Google Drive (coming soon)"
+  },
+  {
+    "id": "sshLite.disconnectGoogleDrive",
+    "title": "Disconnect Google Drive (coming soon)"
+  },
+  {
+    "id": "sshLite.syncPushToDrive",
+    "title": "Sync: Push Connections to Google Drive (coming soon)"
+  },
+  {
+    "id": "sshLite.syncPullFromDrive",
+    "title": "Sync: Pull Connections from Google Drive (coming soon)"
+  },
+  {
     "id": "sshLite.connect",
     "title": "Connect to Host"
   },

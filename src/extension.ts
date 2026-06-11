@@ -9,6 +9,7 @@ import { FileService } from './services/FileService';
 import { TerminalService } from './services/TerminalService';
 import { PortForwardService } from './services/PortForwardService';
 import { CredentialService } from './services/CredentialService';
+import { GoogleDriveSyncService } from './services/GoogleDriveSyncService';
 import { AuditService } from './services/AuditService';
 import { ServerMonitorService, showMonitorQuickPick } from './services/ServerMonitorService';
 import { FolderHistoryService } from './services/FolderHistoryService';
@@ -17,6 +18,7 @@ import { SnippetService } from './services/SnippetService';
 import { CommandGuard } from './services/CommandGuard';
 import { RemoteEnvDocumentProvider, RemoteCronDocumentProvider, ENV_SCHEME, CRON_SCHEME } from './providers/VirtualDocProviders';
 import { registerSshToolsCommands } from './commands/sshToolsCommands';
+import { registerConnectionSyncCommands } from './commands/connectionSyncCommands';
 import { ProgressiveDownloadManager } from './services/ProgressiveDownloadManager';
 import { BeaconService } from './services/BeaconService';
 import { AiActivityWatchService } from './services/AiActivityWatchService';
@@ -259,6 +261,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const folderHistoryService = FolderHistoryService.getInstance();
   safeStep('folder-history-svc', () => folderHistoryService.initialize(context));
   safeStep('snippet-svc',        () => SnippetService.getInstance().initialize(context));
+  safeStep('drive-sync-svc',     () => GoogleDriveSyncService.getInstance().initialize(context.secrets));
 
   // Register virtual-doc providers for env + cron viewers (SSH Tools)
   const envProvider = new RemoteEnvDocumentProvider();
@@ -3972,6 +3975,13 @@ export function activate(context: vscode.ExtensionContext): void {
       envProvider,
       cronProvider,
       outputChannel,
+    })
+  );
+
+  // Register connection import / export / sync commands (issue #11)
+  context.subscriptions.push(
+    ...registerConnectionSyncCommands({
+      extensionVersion: context.extension?.packageJSON?.version ?? '0.0.0',
     })
   );
 

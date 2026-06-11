@@ -1,7 +1,7 @@
 # SSH Lite (SSH Tools) — Command Reference
 
 > Auto-generated from `package.json`. Run `npm run docs:commands` to regenerate.
-> Last updated: 2026-06-10 · Version: 0.9.14
+> Last updated: 2026-06-11 · Version: 0.10.0
 
 This document lists every command registered by SSH Lite (SSH Tools), organized by category.
 Open the Command Palette (**Ctrl+Shift+P** / **Cmd+Shift+P**) and type the command title to find it.
@@ -19,6 +19,12 @@ Open the Command Palette (**Ctrl+Shift+P** / **Cmd+Shift+P**) and type the comma
 
 | Command | ID | Keybinding | Where |
 |---------|-----|-----------|-------|
+| Export Connections... | `sshLite.exportConnections` | — | Command Palette only |
+| Import Connections... | `sshLite.importConnections` | — | Command Palette only |
+| Connect Google Drive (coming soon) | `sshLite.connectGoogleDrive` | — | Command Palette only |
+| Disconnect Google Drive (coming soon) | `sshLite.disconnectGoogleDrive` | — | Command Palette only |
+| Sync: Push Connections to Google Drive (coming soon) | `sshLite.syncPushToDrive` | — | Command Palette only |
+| Sync: Pull Connections from Google Drive (coming soon) | `sshLite.syncPullFromDrive` | — | Command Palette only |
 | Connect to Host | `sshLite.connect` | `ctrl+shift+c / cmd+shift+c (Mac)` | Keybinding: ctrl+shift+c / cmd+shift+c (Mac) |
 | Disconnect | `sshLite.disconnect` | — | Tree context menu |
 | Enable Sudo Mode | `sshLite.enableSudoMode` | — | Tree context menu |

@@ -21,6 +21,7 @@ await config.update('hosts', updatedHosts, vscode.ConfigurationTarget.Global);
 | `sshLite.hosts` | `array` | `[]` | Saved SSH hosts. Each entry: `{ name, host, port?, username, privateKeyPath? }` |
 | `sshLite.sshConfigPath` | `string` | `""` | Custom path to SSH config file. Empty = `~/.ssh/config` |
 | `sshLite.defaultRemotePath` | `string` | `"~"` | Default remote path when connecting |
+| `sshLite.googleDrive.fileName` | `string` | `"sshlite-connections.json"` | Name of the file SSH Lite creates in Google Drive when syncing connections (issue #11). Only files created by SSH Lite are accessible (`drive.file` scope). See [connection-portability.md](../features/connection-portability.md) |
 
 ### Host Object Schema
 

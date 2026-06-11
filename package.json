@@ -2,7 +2,7 @@
   "name": "ssh-lite",
   "displayName": "SSH Lite (SSH Tools)",
   "description": "A visual SSH client for VS Code. Browse, edit, monitor, manage services - by clicking, not typing vi/systemctl/crontab. Nothing installed on the remote server. Perfect for VPS, cloud servers (AWS/Azure/GCP), and Linux administration.",
-  "version": "0.9.14",
+  "version": "0.10.0",
   "publisher": "hybr8",
   "engines": {
     "vscode": "^1.85.0"
@@ -168,6 +168,46 @@
       ]
     },
     "commands": [
+      {
+        "command": "sshLite.exportConnections",
+        "title": "Export Connections...",
+        "category": "SSH Lite",
+        "icon": "$(export)"
+      },
+      {
+        "command": "sshLite.importConnections",
+        "title": "Import Connections...",
+        "category": "SSH Lite",
+        "icon": "$(import)"
+      },
+      {
+        "command": "sshLite.connectGoogleDrive",
+        "title": "Connect Google Drive (coming soon)",
+        "category": "SSH Lite",
+        "icon": "$(sign-in)",
+        "enablement": "false"
+      },
+      {
+        "command": "sshLite.disconnectGoogleDrive",
+        "title": "Disconnect Google Drive (coming soon)",
+        "category": "SSH Lite",
+        "icon": "$(sign-out)",
+        "enablement": "false"
+      },
+      {
+        "command": "sshLite.syncPushToDrive",
+        "title": "Sync: Push Connections to Google Drive (coming soon)",
+        "category": "SSH Lite",
+        "icon": "$(cloud-upload)",
+        "enablement": "false"
+      },
+      {
+        "command": "sshLite.syncPullFromDrive",
+        "title": "Sync: Pull Connections from Google Drive (coming soon)",
+        "category": "SSH Lite",
+        "icon": "$(cloud-download)",
+        "enablement": "false"
+      },
       {
         "command": "sshLite.connect",
         "title": "Connect to Host",
@@ -817,7 +857,40 @@
         "icon": "$(link)"
       }
     ],
+    "submenus": [
+      {
+        "id": "sshLite.connectionsSyncMenu",
+        "label": "Import / Export / Sync",
+        "icon": "$(sync)"
+      }
+    ],
     "menus": {
+      "sshLite.connectionsSyncMenu": [
+        {
+          "command": "sshLite.exportConnections",
+          "group": "1_file@1"
+        },
+        {
+          "command": "sshLite.importConnections",
+          "group": "1_file@2"
+        },
+        {
+          "command": "sshLite.connectGoogleDrive",
+          "group": "2_drive@1"
+        },
+        {
+          "command": "sshLite.syncPushToDrive",
+          "group": "2_drive@2"
+        },
+        {
+          "command": "sshLite.syncPullFromDrive",
+          "group": "2_drive@3"
+        },
+        {
+          "command": "sshLite.disconnectGoogleDrive",
+          "group": "2_drive@4"
+        }
+      ],
       "editor/title": [
         {
           "command": "sshLite.reconnectOrphanedFile",
@@ -855,6 +928,11 @@
           "command": "sshLite.refreshHosts",
           "when": "view == sshLite.hosts",
           "group": "navigation@2"
+        },
+        {
+          "submenu": "sshLite.connectionsSyncMenu",
+          "when": "view == sshLite.hosts",
+          "group": "navigation@4"
         },
         {
           "command": "sshLite.filterHosts",
@@ -1449,6 +1527,11 @@
     "configuration": {
       "title": "SSH Lite",
       "properties": {
+        "sshLite.googleDrive.fileName": {
+          "type": "string",
+          "default": "sshlite-connections.json",
+          "description": "Name of the file SSH Lite creates in your Google Drive when syncing connections. Only files created by SSH Lite are accessible (drive.file scope)."
+        },
         "sshLite.suppressLocalInstallHint": {
           "type": "boolean",
           "default": false,

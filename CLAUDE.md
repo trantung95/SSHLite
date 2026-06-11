@@ -18,14 +18,14 @@ npm run docs:commands                    # Regenerate docs/COMMANDS.md from pack
 
 ## Commands Count — All Locations (CRITICAL)
 
-When adding or removing a command, update the count in **all 5 places** (currently **108**):
+When adding or removing a command, update the count in **all 5 places** (currently **114**):
 
 | File | Location |
 |------|----------|
-| `README.md` | line ~54: `**108 commands**` (Quick Start section) |
-| `.adn/configuration/commands-reference.md` | line 3: `All 108 commands` |
-| `.adn/flow/extension-activation.md` | line ~101: `All 108 commands` |
-| `.adn/README.md` | line ~43: `All 108 commands` |
+| `README.md` | line ~54: `**114 commands**` (Quick Start section) |
+| `.adn/configuration/commands-reference.md` | line 3: `All 114 commands` |
+| `.adn/flow/extension-activation.md` | line ~101: `All 114 commands` |
+| `.adn/README.md` | line ~43: `All 114 commands` |
 | `docs/COMMANDS.md` | **AUTO** — run `npm run docs:commands` |
 
 Get current count: `node -e "const p=require('./package.json'); console.log(p.contributes.commands.length)"`
@@ -76,7 +76,7 @@ src/
                         # batchAndScript, key, diff (registered via registerSshToolsCommands())
   providers/            # HostTreeProvider, FileTreeProvider, FileDecorationProvider,
                         # ActivityTreeProvider, PortForwardTreeProvider
-  webviews/             # SearchPanel (cross-server search), SupportViewProvider (promo/links WebviewView), DonatePanel (Bánh Mì donate webview)
+  webviews/             # SearchPanel (cross-server search), SupportViewProvider (promo/links WebviewView), DonatePanel (Bánh Mì donate webview), ConnectionImportPanel (import review UI, issue #11)
   donate/               # donateInfo.ts — single source of truth for donate data (README mirrors it; donateInfo.test.ts enforces sync)
 .adn/                   # Deep documentation (project DNA)
 ```

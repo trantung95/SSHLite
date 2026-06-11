@@ -1,6 +1,6 @@
 # Commands Reference
 
-All 108 commands registered by SSH Lite (SSH Tools), organized by category.
+All 114 commands registered by SSH Lite (SSH Tools), organized by category.
 
 ---
 
@@ -14,6 +14,19 @@ All 108 commands registered by SSH Lite (SSH Tools), organized by category.
 | `sshLite.disconnect` | Disconnect | Tree / Palette |
 | `sshLite.connectWithCredential` | Connect with Credential | Tree context |
 | `sshLite.reconnectOrphanedFile` | Reconnect Orphaned File | Editor title / context |
+
+### Connection Portability — Import / Export / Sync (issue #11)
+
+All grouped under the **Import / Export / Sync** submenu (`$(sync)`) on the SSH Hosts toolbar, and in the Palette. See [connection-portability.md](../features/connection-portability.md).
+
+| Command | Title | Source |
+|---------|-------|--------|
+| `sshLite.exportConnections` | Export Connections... | Submenu / Palette |
+| `sshLite.importConnections` | Import Connections... | Submenu / Palette |
+| `sshLite.connectGoogleDrive` | Connect Google Drive | Submenu / Palette |
+| `sshLite.disconnectGoogleDrive` | Disconnect Google Drive | Submenu / Palette |
+| `sshLite.syncPushToDrive` | Sync: Push Connections to Google Drive | Submenu / Palette |
+| `sshLite.syncPullFromDrive` | Sync: Pull Connections from Google Drive | Submenu / Palette |
 
 ### Host Management
 

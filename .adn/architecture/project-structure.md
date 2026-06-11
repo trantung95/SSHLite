@@ -28,9 +28,12 @@ SSHLite/
       FileService.uploadstate.test.ts     # Upload state machine tests
       HostService.ts                      # SSH config parsing, host management
       HostService.test.ts                 # Host service tests
-      CredentialService.ts                # SecretStorage credentials, pinned folders
+      CredentialService.ts                # SecretStorage credentials, pinned folders, import/export metadata
       CredentialService.test.ts           # Credential tests
       CredentialService.pinned.test.ts    # Pinned folder tests
+      CredentialService.import.test.ts    # importCredentialMetadata (never writes secrets)
+      ConnectionPortabilityService.ts     # Import/Export/Sync JSON format authority (issue #11)
+      GoogleDriveSyncService.ts           # Native Google Drive OAuth + Drive REST sync (issue #11)
       TerminalService.ts                  # SSH terminal creation
       TerminalService.test.ts             # Terminal tests
       PortForwardService.ts               # Local/remote port forwarding

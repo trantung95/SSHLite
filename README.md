@@ -72,7 +72,7 @@ SSH Lite sits in the middle: as light as raw SSH, as friendly as Remote-SSH.
 
 Reads `~/.ssh/config`. Supports SSH keys (RSA / Ed25519 / ECDSA, encrypted), agent, and password.
 
-**108 commands** — full reference at [docs/COMMANDS.md](https://github.com/trantung95/SSHLite/blob/master/docs/COMMANDS.md).
+**114 commands** — full reference at [docs/COMMANDS.md](https://github.com/trantung95/SSHLite/blob/master/docs/COMMANDS.md).
 
 ## Remote-SSH compatibility
 
@@ -91,9 +91,9 @@ Two edge cases worth knowing:
 
 ## Release Notes
 
-**0.9.14** - **Bug-fix + UX batch**: no more infinite loop / frozen window when a folder fails to list — the tree shows an error row and retries only on refresh (issue #13); copy/cut/paste/rename hotkeys now work right after clicking a file, since opening keeps focus in the tree like the native Explorer ("SSH clipboard is empty", issue #10); images open in VS Code's image viewer after a full download instead of as garbage text, with a zoom-out hint (issue #12); and the **Delete** / **Cmd+Backspace** key deletes the selected item (with the usual confirm).
+**0.10.0** - **Import / Export / Sync your connections** (issue #11): back up every saved server — and its pinned folders — to a JSON file, then restore them on another machine with a click. Use the new **Import / Export / Sync** button on the SSH Hosts toolbar; on import you choose **Merge** (add and update) or **Replace all**. Native **Google Drive sync** (sign in once, then **Push** / **Pull**) is **coming soon** — the commands are present but grayed out until the cloud client is provisioned. Passwords are never put in the export: they stay in VS Code's secret storage, so you're simply prompted on the first connect after an import.
 
-**0.9.12** - **NPC reacts more to AI activity**: when an AI coding assistant is detected working, the pixel-coder NPC now bursts 7-17 random word popups spread over 0.7-2 seconds instead of a single popup.
+**0.9.14** - **Bug-fix + UX batch**: no more infinite loop / frozen window when a folder fails to list — the tree shows an error row and retries only on refresh (issue #13); copy/cut/paste/rename hotkeys now work right after clicking a file, since opening keeps focus in the tree like the native Explorer ("SSH clipboard is empty", issue #10); images open in VS Code's image viewer after a full download instead of as garbage text, with a zoom-out hint (issue #12); and the **Delete** / **Cmd+Backspace** key deletes the selected item (with the usual confirm).
 
 [Full changelog](https://github.com/trantung95/SSHLite/blob/master/.adn/CHANGELOG.md)
 

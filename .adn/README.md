@@ -33,6 +33,7 @@ The `.adn/` folder allows any AI assistant (or new developer) to fully understan
     terminal-port-forwarding.md          # TerminalService, PortForwardService
     tree-providers.md                    # HostTreeProvider, FileTreeProvider, decorations
     activity-audit.md                    # ActivityService, AuditService, CommandGuard
+    connection-portability.md            # Import / Export / Sync connections + Google Drive (issue #11)
     support-view.md                      # SupportViewProvider WebviewView (promo + links + NPC)
     ai-hooks.md                          # AI input hooks: NPC flies your prompt (HookInstaller/HookBeacon)
   flow/
@@ -42,7 +43,7 @@ The `.adn/` folder allows any AI assistant (or new developer) to fully understan
     search-flow.md                       # Search webview -> grep/find -> results
   configuration/
     settings-reference.md                # All sshLite.* settings with defaults
-    commands-reference.md                # All 108 commands, context values, when clauses
+    commands-reference.md                # All 114 commands, context values, when clauses
   testing/
     testing-strategy.md                  # Unit/Docker/MultiOS, mock architecture
     chaos-testing.md                     # Chaos bug discovery module + AI review checklist

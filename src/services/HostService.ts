@@ -226,6 +226,227 @@ export class HostService {
   }
 
   /**
+   * Return saved hosts in their stored (UNEXPANDED) form for export (issue #11).
+   *
+   * Unlike {@link getAllHosts}, this reads only the user's saved hosts (not
+   * `~/.ssh/config` entries, which live in that file) and preserves the raw
+   * `privateKeyPath` (e.g. `~/.ssh/id_rsa`) so the export stays portable across
+   * machines and operating systems. Invalid entries are skipped.
+   */
+  getSavedHostsForExport(): Array<{
+    name: string;
+    host: string;
+    port: number;
+    username: string;
+    privateKeyPath?: string;
+    tabLabel?: string;
+  }> {
+    const config = vscode.workspace.getConfiguration('sshLite');
+    const saved = config.get<Array<{
+      name?: string;
+      host?: string;
+      port?: number;
+      username?: string;
+      privateKeyPath?: string;
+      tabLabel?: string;
+    }>>('hosts', []);
+
+    const out = [];
+    for (const h of saved) {
+      if (!h || !h.name || !h.host || !h.username) {
+        continue;
+      }
+      const entry: {
+        name: string;
+        host: string;
+        port: number;
+        username: string;
+        privateKeyPath?: string;
+        tabLabel?: string;
+      } = {
+        name: h.name,
+        host: h.host,
+        port: h.port || 22,
+        username: h.username,
+      };
+      if (h.privateKeyPath) {
+        entry.privateKeyPath = h.privateKeyPath;
+      }
+      if (h.tabLabel) {
+        entry.tabLabel = h.tabLabel;
+      }
+      out.push(entry);
+    }
+    return out;
+  }
+
+  /**
+   * Return EVERY connection the user sees in the Hosts panel for export
+   * (issue #11). This is the union of `~/.ssh/config` hosts and saved hosts —
+   * the same set {@link getAllHosts} shows — deduped by `host:port:username`.
+   *
+   * Saved hosts keep their raw (unexpanded `~`) key path; `~/.ssh/config` hosts
+   * have their expanded key path collapsed back to `~` so the export is portable
+   * to another machine/OS. A saved host takes priority over an ssh-config host
+   * with the same id (matching {@link getAllHosts}).
+   */
+  getAllHostsForExport(): Array<{
+    name: string;
+    host: string;
+    port: number;
+    username: string;
+    privateKeyPath?: string;
+    tabLabel?: string;
+  }> {
+    type ExportHost = {
+      name: string;
+      host: string;
+      port: number;
+      username: string;
+      privateKeyPath?: string;
+      tabLabel?: string;
+    };
+
+    const home = os.homedir();
+    const collapse = (p?: string): string | undefined => {
+      if (!p) {
+        return undefined;
+      }
+      if (p === home) {
+        return '~';
+      }
+      if (p.startsWith(home + path.sep) || p.startsWith(home + '/')) {
+        return '~' + p.slice(home.length);
+      }
+      return p;
+    };
+
+    // Raw saved hosts (unexpanded paths), keyed by id for fidelity + priority.
+    const savedRaw = new Map<string, ExportHost>();
+    for (const h of this.getSavedHostsForExport()) {
+      savedRaw.set(`${h.host}:${h.port}:${h.username}`, h);
+    }
+
+    const out: ExportHost[] = [];
+    const seen = new Set<string>();
+    // getAllHosts() already merges both sources and dedupes by id (saved wins).
+    for (const h of this.getAllHosts()) {
+      const id = h.id;
+      if (seen.has(id)) {
+        continue;
+      }
+      seen.add(id);
+
+      const saved = savedRaw.get(id);
+      if (saved) {
+        out.push(saved); // raw, portable, includes tabLabel
+        continue;
+      }
+      const entry: ExportHost = {
+        name: h.name,
+        host: h.host,
+        port: h.port,
+        username: h.username,
+      };
+      const collapsed = collapse(h.privateKeyPath);
+      if (collapsed) {
+        entry.privateKeyPath = collapsed;
+      }
+      if (h.tabLabel) {
+        entry.tabLabel = h.tabLabel;
+      }
+      out.push(entry);
+    }
+    return out;
+  }
+
+  /**
+   * Import saved hosts from an exported list (issue #11).
+   *
+   * - `replace`: overwrite the saved-hosts list entirely with the imported set.
+   * - `merge`: upsert each imported host by the `host:port:username` key (the
+   *   same key {@link saveHost}/{@link removeHost} use), keeping every existing
+   *   host that is not overwritten.
+   *
+   * Only the whitelisted host fields are persisted (no secrets, no stray keys),
+   * and entries missing required fields (name/host/username) are skipped.
+   * Returns how many entries were added vs updated.
+   */
+  async importSavedHosts(
+    hosts: Array<{
+      name: string;
+      host: string;
+      port?: number;
+      username: string;
+      privateKeyPath?: string;
+      tabLabel?: string;
+    }>,
+    mode: 'merge' | 'replace'
+  ): Promise<{ added: number; updated: number }> {
+    type SavedHostEntry = {
+      name: string;
+      host: string;
+      port: number;
+      username: string;
+      privateKeyPath?: string;
+      tabLabel?: string;
+    };
+
+    // Whitelist + validate incoming entries (mirror loadSavedHosts' guard).
+    const sanitized: SavedHostEntry[] = [];
+    for (const h of hosts || []) {
+      if (!h || !h.name || !h.host || !h.username) {
+        continue;
+      }
+      const entry: SavedHostEntry = {
+        name: h.name,
+        host: h.host,
+        port: h.port || 22,
+        username: h.username,
+      };
+      if (h.privateKeyPath) {
+        entry.privateKeyPath = h.privateKeyPath;
+      }
+      if (h.tabLabel) {
+        entry.tabLabel = h.tabLabel;
+      }
+      sanitized.push(entry);
+    }
+
+    const config = vscode.workspace.getConfiguration('sshLite');
+
+    if (mode === 'replace') {
+      await config.update('hosts', sanitized, vscode.ConfigurationTarget.Global);
+      return { added: sanitized.length, updated: 0 };
+    }
+
+    // merge: upsert by host:port:username, preserve everything else.
+    const merged = config.get<Array<Record<string, unknown>>>('hosts', []).slice();
+    const keyOf = (h: { host: unknown; port?: unknown; username: unknown }): string =>
+      `${h.host}:${(h.port as number) || 22}:${h.username}`;
+    const indexByKey = new Map<string, number>();
+    merged.forEach((h, i) => indexByKey.set(keyOf(h as any), i));
+
+    let added = 0;
+    let updated = 0;
+    for (const entry of sanitized) {
+      const k = keyOf(entry);
+      const at = indexByKey.get(k);
+      if (at !== undefined) {
+        merged[at] = entry;
+        updated++;
+      } else {
+        indexByKey.set(k, merged.length);
+        merged.push(entry);
+        added++;
+      }
+    }
+
+    await config.update('hosts', merged, vscode.ConfigurationTarget.Global);
+    return { added, updated };
+  }
+
+  /**
    * Remove a host from VS Code settings
    */
   async removeHost(hostId: string): Promise<void> {

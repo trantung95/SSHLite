@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.10.0 - Import / Export / Sync connections, incl. native Google Drive (issue #11)
+
+Adds connection portability: back up saved hosts and restore them on another machine, plus optional native Google Drive sync. **Six new commands** (count 108 -> 114).
+
+### Export / Import (local JSON file)
+
+- **Export Connections...** writes a versioned JSON envelope (`schema: "sshlite-connections"`, `version: 1`) containing **every connection shown in the Hosts panel** — both saved hosts and `~/.ssh/config` hosts, deduped by `host:port:username` (`getAllHostsForExport()`) with portable unexpanded `~` key paths — plus **non-secret** credential metadata (label, type, key path) and **pinned folders**, keyed by `host:port:username`. (Exporting saved-hosts-only was fixed in this release: it silently dropped ssh-config hosts.)
+- **Import Connections...** reads a file, validates the schema/version, and merges it in (additive: add new + update matching `host:port:username`, keep the rest). The Hosts tree refreshes afterward.
+- **Import review UI on conflicts**: if any connection in the file already exists, an import review webview (`ConnectionImportPanel`) opens **immediately** — no Merge/Replace prompt in between. Two labelled columns split by a vertical divider — **Current (this extension)** vs **From file: &lt;filename&gt;** (or the Drive file name for a pull). One row per connection; conflicts sort to the top alphabetically. For each conflict a radio per side chooses the file or the current version (default file); non-conflicting connections show a locked, dimmed, always-on radio. Changed fields are highlighted. Toolbar: Use all from file / Keep all current + counter; Import selected / Cancel. With no conflicts the file imports directly. Applies to both file import and Drive pull.
+- **Passwords/passphrases are never exported.** They remain in VS Code SecretStorage; an imported password credential simply prompts on the next connect (proven end-to-end in `docker-ssh-import.test.ts`).
+- All file I/O goes through `vscode.workspace.fs` (URI-scheme-safe across `file:` / `vscode-remote:` / virtual schemes) — never raw `fs` on a dialog URI.
+
+### Native Google Drive sync — COMING SOON (commands grayed out)
+
+The full implementation ships in this release but the four Drive commands are **disabled** (`enablement: false`, "(coming soon)" titles) until a Google Cloud OAuth Desktop client is provisioned and pasted into `src/sync/googleClient.ts` (the placeholders make `isDriveConfigured()` false). See `.adn/TODO.md` → "Google Drive sync (part 2)" for the steps to enable it.
+
+- **Connect Google Drive** runs the loopback + PKCE (S256) OAuth flow for a Google **Desktop** client; tokens are stored in SecretStorage and refreshed on demand / on HTTP 401. Scope is `drive.file` (non-sensitive — no Google CASA assessment; the synced file is visible in the user's Drive).
+- **Sync: Push to Google Drive** uploads the export; **Sync: Pull from Google Drive** downloads it, validates, and applies it via the same Merge/Replace prompt. **Disconnect Google Drive** revokes and clears the tokens.
+- Implemented with raw Drive REST over global `fetch` (no `googleapis` dependency). Requires a one-time Google Cloud OAuth client to be provisioned (see `.adn/features/connection-portability.md`); until then the Drive commands explain that sync is unconfigured and point to local Export/Import.
+
+### UI
+
+- A single **Import / Export / Sync** overflow submenu (icon `$(sync)`) on the SSH Hosts panel toolbar (`navigation@4`) groups all six commands; every command is also in the Command Palette.
+- New setting `sshLite.googleDrive.fileName` (default `sshlite-connections.json`) names the Drive file.
+
+### New code
+
+`ConnectionPortabilityService` (format authority: build/validate/apply), `GoogleDriveSyncService` (OAuth + Drive REST), `src/sync/googleOAuth.ts` (PKCE + loopback) and `src/sync/googleClient.ts` (client constants), `src/commands/connectionSyncCommands.ts`. `HostService.importSavedHosts` / `getSavedHostsForExport` and `CredentialService.importCredentialMetadata` / `exportMetadata` added for storage. Full unit coverage plus the docker integration test.
+
 ## v0.9.14 - Delete key, plus the issue #13 / #10 / #12 fixes (first published release of this batch)
 
 0.9.13 was developed but never published to the Marketplace; 0.9.14 is the release that ships everything from that batch. New since the 0.9.13 work:

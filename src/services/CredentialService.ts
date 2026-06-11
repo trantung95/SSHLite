@@ -212,6 +212,126 @@ export class CredentialService {
   }
 
   /**
+   * Return the full credential index as NON-SECRET metadata for export (issue #11).
+   *
+   * Deep-clones the index and whitelists fields per credential and pinned
+   * folder so no stray data (and certainly no secret) can leak into an export.
+   * Secret values live only in SecretStorage and are never part of the index.
+   */
+  exportMetadata(): { [hostId: string]: SavedCredential[] } {
+    const index = this.getCredentialIndex();
+    const out: { [hostId: string]: SavedCredential[] } = {};
+    for (const hostId of Object.keys(index)) {
+      const creds = (index[hostId] || [])
+        .filter((c) => c && c.label && c.type)
+        .map((c) => {
+          const cred: SavedCredential = { id: c.id, label: c.label, type: c.type };
+          if (c.privateKeyPath) {
+            cred.privateKeyPath = c.privateKeyPath;
+          }
+          const pins = (c.pinnedFolders || [])
+            .filter((p) => p && p.remotePath)
+            .map((p) => ({ id: p.id, name: p.name, remotePath: p.remotePath }));
+          if (pins.length) {
+            cred.pinnedFolders = pins;
+          }
+          return cred;
+        });
+      if (creds.length) {
+        out[hostId] = creds;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Bulk-import NON-SECRET credential metadata for a host (issue #11).
+   *
+   * Restores credential labels, type, private-key paths, and pinned folders
+   * from an exported connections file. This NEVER writes to SecretStorage:
+   * passwords/passphrases are not part of the export, so an imported
+   * password credential simply prompts on the next connect.
+   *
+   * - `replace`: overwrite all credentials for this host with the imported set.
+   * - `merge`: upsert each imported credential by `id`; for a match, update the
+   *   label/type/key path and merge pinned folders by `remotePath` (no dupes).
+   *
+   * Credentials/pinned folders without an `id` get a fresh generated one.
+   */
+  async importCredentialMetadata(
+    hostId: string,
+    creds: SavedCredential[],
+    mode: 'merge' | 'replace'
+  ): Promise<void> {
+    const genId = (prefix: string): string =>
+      `${prefix}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+    const sanitize = (c: SavedCredential): SavedCredential => {
+      const cred: SavedCredential = {
+        id: c.id || genId('cred'),
+        label: c.label,
+        type: c.type,
+      };
+      if (c.privateKeyPath) {
+        cred.privateKeyPath = c.privateKeyPath;
+      }
+      const pins = (c.pinnedFolders || [])
+        .filter((p) => p && p.remotePath)
+        .map((p) => ({ id: p.id || genId('pin'), name: p.name, remotePath: p.remotePath }));
+      if (pins.length) {
+        cred.pinnedFolders = pins;
+      }
+      return cred;
+    };
+
+    const ALLOWED_TYPES: ReadonlySet<CredentialType> = new Set(['password', 'privateKey']);
+    const incoming = (creds || [])
+      .filter((c) => c && c.label && ALLOWED_TYPES.has(c.type))
+      .map(sanitize);
+    const index = this.getCredentialIndex();
+
+    if (mode === 'replace') {
+      if (incoming.length) {
+        index[hostId] = incoming;
+      } else {
+        delete index[hostId];
+      }
+      await this.saveCredentialIndex(index);
+      return;
+    }
+
+    // merge: upsert by credential id; merge pinned folders by remotePath.
+    const existing = index[hostId] || [];
+    const byId = new Map(existing.map((c) => [c.id, c]));
+    for (const c of incoming) {
+      const prior = byId.get(c.id);
+      if (prior) {
+        prior.label = c.label;
+        prior.type = c.type;
+        if (c.privateKeyPath) {
+          prior.privateKeyPath = c.privateKeyPath;
+        }
+        const pins = prior.pinnedFolders || [];
+        const seen = new Set(pins.map((p) => p.remotePath));
+        for (const p of c.pinnedFolders || []) {
+          if (!seen.has(p.remotePath)) {
+            pins.push(p);
+            seen.add(p.remotePath);
+          }
+        }
+        if (pins.length) {
+          prior.pinnedFolders = pins;
+        }
+      } else {
+        existing.push(c);
+        byId.set(c.id, c);
+      }
+    }
+    index[hostId] = existing;
+    await this.saveCredentialIndex(index);
+  }
+
+  /**
    * Get saved credential (legacy - returns first password credential)
    * For backward compatibility with existing auth flow
    */

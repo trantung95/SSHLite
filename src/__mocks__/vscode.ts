@@ -309,6 +309,7 @@ export const window = {
   showErrorMessage: jest.fn().mockResolvedValue(undefined),
   showInputBox: jest.fn().mockResolvedValue(undefined),
   showQuickPick: jest.fn().mockResolvedValue(undefined),
+  createQuickPick: jest.fn(() => createMockQuickPick()),
   showOpenDialog: jest.fn().mockResolvedValue(undefined),
   showSaveDialog: jest.fn().mockResolvedValue(undefined),
   createOutputChannel: jest.fn().mockReturnValue({
@@ -357,18 +358,7 @@ export const window = {
     const token = { isCancellationRequested: false, onCancellationRequested: new EventEmitter<void>().event };
     return task(progress, token);
   }),
-  createWebviewPanel: jest.fn().mockReturnValue({
-    webview: {
-      html: '',
-      cspSource: 'vscode-webview://test',
-      onDidReceiveMessage: new EventEmitter<unknown>().event,
-      postMessage: jest.fn().mockResolvedValue(true),
-      asWebviewUri: (uri: Uri) => uri,
-    },
-    onDidDispose: new EventEmitter<void>().event,
-    reveal: jest.fn(),
-    dispose: jest.fn(),
-  }),
+  createWebviewPanel: jest.fn(() => createMockWebviewPanel()),
   registerWebviewViewProvider: jest.fn(),
   tabGroups: {
     all: [],
@@ -524,6 +514,68 @@ export function createMockWebviewView(): {
     onDidChangeVisibility: new EventEmitter<void>().event,
     onDidDispose: new EventEmitter<void>().event,
     _fireMessage: (msg: unknown) => messageEmitter.fire(msg),
+  };
+}
+
+// QuickPick mock factory (for window.createQuickPick — multi-select pickers).
+// Drive interactions in tests via _accept(), _hide(), _triggerButton(btn).
+export function createMockQuickPick<T = any>(): any {
+  const accept = new EventEmitter<void>();
+  const hide = new EventEmitter<void>();
+  const button = new EventEmitter<unknown>();
+  const selection = new EventEmitter<T[]>();
+  return {
+    items: [] as T[],
+    selectedItems: [] as T[],
+    activeItems: [] as T[],
+    canSelectMany: false,
+    title: undefined as string | undefined,
+    placeholder: undefined as string | undefined,
+    value: '',
+    busy: false,
+    ignoreFocusOut: false,
+    buttons: [] as unknown[],
+    onDidAccept: accept.event,
+    onDidHide: hide.event,
+    onDidTriggerButton: button.event,
+    onDidChangeSelection: selection.event,
+    onDidChangeActive: new EventEmitter<T[]>().event,
+    onDidChangeValue: new EventEmitter<string>().event,
+    onDidTriggerItemButton: new EventEmitter<unknown>().event,
+    show: jest.fn(),
+    hide: jest.fn(function (this: { _hadAccept?: boolean }) { hide.fire(); }),
+    dispose: jest.fn(),
+    // Test drivers:
+    _accept: () => accept.fire(),
+    _hide: () => hide.fire(),
+    _triggerButton: (b: unknown) => button.fire(b),
+  };
+}
+
+// WebviewPanel mock factory (for window.createWebviewPanel). Drive the
+// webview->extension message channel with _fireMessage(msg) and simulate the
+// user closing the tab with _fireDispose().
+export function createMockWebviewPanel(): any {
+  const messageEmitter = new EventEmitter<unknown>();
+  const disposeEmitter = new EventEmitter<void>();
+  return {
+    viewType: 'mock',
+    title: 'mock',
+    visible: true,
+    webview: {
+      html: '',
+      options: {},
+      cspSource: 'vscode-webview://test',
+      asWebviewUri: (uri: Uri) => uri,
+      onDidReceiveMessage: messageEmitter.event,
+      postMessage: jest.fn().mockResolvedValue(true),
+    },
+    onDidDispose: disposeEmitter.event,
+    onDidChangeViewState: new EventEmitter<unknown>().event,
+    reveal: jest.fn(),
+    dispose: jest.fn(() => disposeEmitter.fire()),
+    _fireMessage: (msg: unknown) => messageEmitter.fire(msg),
+    _fireDispose: () => disposeEmitter.fire(),
   };
 }
 
