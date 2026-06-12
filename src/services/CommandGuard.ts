@@ -419,6 +419,7 @@ export class CommandGuard {
       caseSensitive?: boolean;
       filePattern?: string;
       maxResults?: number;
+      nativeTools?: 'auto' | 'off';
     },
     trackOptions?: TrackingOptions
   ): Promise<Array<{ path: string; line?: number; preview?: string }>> {

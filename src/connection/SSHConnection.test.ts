@@ -643,14 +643,16 @@ describe('SSHConnection - Actual Class', () => {
         expect(capturedCommand).toContain("--exclude-dir='node_modules'");
       });
 
-      it('should apply find excludes for filename search with glob patterns', async () => {
+      it('should apply find excludes for filename search via -prune', async () => {
         await connection.searchFiles('/home', 'test', {
           searchContent: false,
           excludePattern: '*uat*',
         });
-        // find uses ! -name for file exclusion and ! -path for directory exclusion
-        expect(capturedCommand).toContain("! -name '*uat*'");
-        expect(capturedCommand).toContain("! -path '*/*uat*/*'");
+        // find now -prunes excluded dirs (stops descent) instead of the old
+        // `! -path`/`! -name` (which still walked them). Explicit -print is
+        // mandatory once -prune is present.
+        expect(capturedCommand).toContain("\\( -name '*uat*' \\) -prune -o");
+        expect(capturedCommand).toContain('-print');
         // Should be a find command, not grep
         expect(capturedCommand).toMatch(/^find /);
       });
@@ -1228,6 +1230,155 @@ describe('SSHConnection - Actual Class', () => {
         const escape = (connection as any).escapePath.bind(connection);
         expect(escape('/etc/hosts')).toBe('/etc/hosts');
       });
+    });
+  });
+});
+
+describe('SSHConnection - native search tool detection + runtime fallback', () => {
+  let connection: SSHConnection;
+  let execCalls: string[];
+  // Per-command canned response: a function of the command string.
+  let responder: (cmd: string) => { stdout?: string; stderr?: string; code?: number };
+
+  beforeEach(() => {
+    const host = createMockHostConfig({ host: '10.0.0.2', port: 22, username: 'testuser' });
+    connection = new SSHConnection(host);
+    (connection as any).state = ConnectionState.Connected;
+    (connection as any)._remoteTools = null;
+    (connection as any)._remoteToolsPromise = null;
+    execCalls = [];
+    responder = () => ({ stdout: '' });
+
+    const makeStream = (cmd: string) => {
+      const resp = responder(cmd);
+      const stdout = resp.stdout ?? '';
+      const stderr = resp.stderr ?? '';
+      const code = resp.code ?? 0;
+      const stream: any = {
+        on: jest.fn(function (this: any, event: string, cb: (...a: any[]) => void) {
+          if (event === 'data' && stdout) setTimeout(() => cb(Buffer.from(stdout)), 0);
+          if (event === 'close') setTimeout(() => cb(code), 2);
+          return this;
+        }),
+        stderr: {
+          on: jest.fn(function (this: any, event: string, cb: (...a: any[]) => void) {
+            if (event === 'data' && stderr) setTimeout(() => cb(Buffer.from(stderr)), 0);
+            return this;
+          }),
+        },
+        signal: jest.fn(),
+        close: jest.fn(),
+      };
+      return stream;
+    };
+
+    const execSpy = jest.fn((cmd: string, cb: (...a: any[]) => void) => {
+      execCalls.push(cmd);
+      cb(null, makeStream(cmd));
+    });
+    (connection as any)._client = { exec: execSpy, end: jest.fn(), destroy: jest.fn() };
+    // Avoid real SFTP stat enrichment.
+    (connection as any).getSFTP = jest.fn().mockResolvedValue({
+      stat: (_p: string, cb: (e: Error) => void) => cb(new Error('no stat')),
+    });
+  });
+
+  afterEach(() => {
+    (connection as any)._client = null;
+  });
+
+  const PROBE = 'command -v';
+
+  it('does not probe the server when nativeTools is off', async () => {
+    await connection.searchFiles('/home', 'x', { searchContent: true, nativeTools: 'off' });
+    expect(execCalls.some((c) => c.includes(PROBE))).toBe(false);
+    expect(execCalls[0]).toMatch(/^grep /);
+  });
+
+  it('probes once on auto and reuses the cached profile on the next search', async () => {
+    responder = (cmd) => cmd.includes(PROBE)
+      ? { stdout: 'rg=none\nfd=none\ngrepv=grep (GNU grep) 3.7\nxargsv=\nos=Linux\nnproc=1\n' }
+      : { stdout: '' };
+    await connection.searchFiles('/home', 'x', { searchContent: true, nativeTools: 'auto' });
+    await connection.searchFiles('/home', 'y', { searchContent: true, nativeTools: 'auto' });
+    expect(execCalls.filter((c) => c.includes(PROBE))).toHaveLength(1);
+  });
+
+  it('resets the cached profile on disconnect', async () => {
+    responder = (cmd) => cmd.includes(PROBE)
+      ? { stdout: 'grepv=grep (GNU grep) 3.7\nos=Linux\nnproc=1\n' } : { stdout: '' };
+    await connection.getRemoteSearchTools();
+    expect((connection as any)._remoteTools).not.toBeNull();
+    await connection.disconnect();
+    expect((connection as any)._remoteTools).toBeNull();
+    expect((connection as any)._remoteToolsPromise).toBeNull();
+  });
+
+  it('falls back to legacy and still returns results when the probe fails', async () => {
+    responder = (cmd) => cmd.includes(PROBE)
+      ? { stderr: 'probe boom', code: 1 } // this.exec rejects → getRemoteSearchTools catches → LEGACY
+      : { stdout: '/home/a.txt:7:hello\n' };
+    const res = await connection.searchFiles('/home', 'hello', { searchContent: true, nativeTools: 'auto' });
+    expect(res.length).toBe(1);
+    expect(execCalls.some((c) => c.startsWith('grep '))).toBe(true);
+  });
+
+  it('uses rg when detected, falls back to legacy grep on runtime failure, and degrades rg', async () => {
+    responder = (cmd) => {
+      if (cmd.includes(PROBE)) return { stdout: 'rg=/usr/bin/rg\nfd=none\ngrepv=grep (GNU grep) 3.7\nxargsv=\nos=Linux\nnproc=2\n' };
+      if (cmd.includes('/usr/bin/rg')) return { stdout: '', stderr: 'rg: hard failure' }; // native fails
+      return { stdout: '/home/a.txt:3:hit\n' }; // legacy grep matches
+    };
+    const res1 = await connection.searchFiles('/home', 'hit', { searchContent: true, nativeTools: 'auto' });
+    expect(res1.length).toBe(1);
+    expect(execCalls.some((c) => c.includes('/usr/bin/rg'))).toBe(true); // rg was tried
+    expect(execCalls.some((c) => c.startsWith('grep '))).toBe(true); // legacy retry ran
+
+    const before = execCalls.length;
+    await connection.searchFiles('/home', 'hit', { searchContent: true, nativeTools: 'auto' });
+    // rg is degraded → the second search must not invoke it again.
+    expect(execCalls.slice(before).some((c) => c.includes('/usr/bin/rg'))).toBe(false);
+  });
+
+  it('does NOT fall back when a native tool legitimately returns zero matches (clean stderr)', async () => {
+    responder = (cmd) => {
+      if (cmd.includes(PROBE)) return { stdout: 'rg=/usr/bin/rg\ngrepv=grep (GNU grep) 3.7\nos=Linux\nnproc=2\n' };
+      return { stdout: '' }; // rg runs clean, no matches, no stderr
+    };
+    const res = await connection.searchFiles('/home', 'nomatch', { searchContent: true, nativeTools: 'auto' });
+    expect(res).toEqual([]);
+    // Only probe + rg — no legacy grep retry (would double server load for nothing).
+    expect(execCalls.some((c) => c.startsWith('grep '))).toBe(false);
+  });
+
+  describe('searchIndexed (opt-in plocate/locate)', () => {
+    it('returns null when the server has no index tool (caller falls back to live find)', async () => {
+      responder = (cmd) => cmd.includes(PROBE) ? { stdout: 'grepv=grep (GNU grep) 3.7\nos=Linux\nnproc=1\n' } : { stdout: '' };
+      const res = await connection.searchIndexed('/home/user', 'app', {});
+      expect(res).toBeNull();
+    });
+
+    it('anchors to basePath and matches the basename, returning the DB age', async () => {
+      responder = (cmd) => {
+        if (cmd.includes(PROBE)) return { stdout: 'plocate=/usr/bin/plocate\ngrepv=grep (GNU grep) 3.7\nos=Linux\nnproc=2\n' };
+        if (cmd.includes('stat -c')) return { stdout: '1749632400\n' }; // epoch seconds (db mtime)
+        if (cmd.includes('plocate')) {
+          // locate returns path-substring matches; some are outside basePath or
+          // only match in a parent dir — both must be filtered out.
+          return { stdout: [
+            '/home/user/app.ts',          // keep: under base, basename has "app"
+            '/home/user/sub/app.js',      // keep
+            '/home/user/app-dir/readme.md', // drop: "app" only in a parent dir, not basename
+            '/etc/app.conf',              // drop: outside basePath
+          ].join('\n') + '\n' };
+        }
+        return { stdout: '' };
+      };
+      const res = await connection.searchIndexed('/home/user', 'app', { maxResults: 0 });
+      expect(res).not.toBeNull();
+      expect(res!.tool).toBe('plocate');
+      expect(res!.results.map((r) => r.path).sort()).toEqual(['/home/user/app.ts', '/home/user/sub/app.js']);
+      expect(typeof res!.dbMTimeMs).toBe('number');
     });
   });
 });

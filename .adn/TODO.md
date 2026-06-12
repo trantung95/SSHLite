@@ -1,5 +1,21 @@
 # SSH Lite -- Planned / TODO
 
+## Native search tools -- SHIPPED (core) in this change
+- Per-connection auto-detection of ripgrep / fd / parallel-grep / mdfind / plocate (`sshLite.searchNativeTools`, default `auto`). Content search uses `rg --no-ignore --hidden` (grep parity) or `find -print0 | xargs -0 -P grep` on multi-core/busybox; filename search uses `fd` or `find -prune`; macOS uses `mdfind`. Universal `find -prune` + guarded `LC_ALL=C` apply on every server. Three-tier runtime fallback (detection / execution-stderr / degrade-and-remember) guarantees grep/find is always the safety net. Pure builders in `src/connection/searchCommandBuilder.ts`; fixed a latent busybox `grep --include` silent-0-results bug. Unit-tested (`searchCommandBuilder.test.ts` + SSHConnection native-tools tests); docker regression suite in `src/integration/docker-ssh-search-tools.test.ts` (run `npm run test:docker:search-tools`, needs Docker).
+
+### FOLLOW-UP A -- Opt-in indexed filename search UI (plocate/locate) -- SHIPPED
+- Webview toggle (`useIndexBtn`, ⚡) next to find-files in `webview-src/search/`, shown only in filename mode, default OFF per tab, NOT a persisted setting. `useIndex` flows through the `search` postMessage.
+- `SSHConnection.searchIndexed(basePath, pattern, opts)` runs `buildLocateCommand`, anchors with `startsWith(basePath+'/')` AND a basename filter (matches live `find -iname`), returns the DB mtime (`stat -c %Y`). Returns null when no locate/DB → caller falls back. `SearchPanel.createSearchTask` surfaces the index age / "no file index — used live find" in the activity detail.
+- Verified on the docker `search-tools` server (plocate + updatedb at build): indexed search finds seeded files, anchored + basename-matched, returns DB age; busybox returns null → falls back. Unit-tested in `SSHConnection.test.ts` ("searchIndexed").
+
+### FOLLOW-UP B -- Client-side snapshot index (FilenameIndexService) -- SHIPPED
+- `src/services/FilenameIndexService.ts` (singleton). Command `sshLite.indexFolder` ("Index Folder for Fast Filename Search", folder/connection context menu) runs ONE remote listing, gzips the path list into `globalStorage` keyed by stable `host:port:user::basePath`. Later filename searches (when ⚡ is on) match LOCALLY — 0 round-trips, works on ANY server incl. busybox. Snapshot age shown; live search stays default; a build that would hit `sshLite.filenameIndexMaxEntries` (default 2,000,000) is REFUSED, never truncated. Precedence in search: client snapshot → server plocate → live find. Command count 114→115 (synced across the 5 files). Unit-tested in `FilenameIndexService.test.ts`.
+
+### FOLLOW-UP C -- Worker-pool sizing + future ideas
+- (Considered, intentionally NOT done) clamp worker pool to server `nproc`: dropped as questionable-correctness — concurrent SSH channels hide latency regardless of server cores, and `xargs -P` already scales grep to cores server-side.
+- Upload a static `rg` binary to opt-in hosts (VS Code Remote style) — only if a real request appears; conflicts with the "no server footprint" selling point.
+- Self-learn the fastest strategy per host from logged `durationMs` — needs the broader "Improve Diagnostic Logging" timing work first.
+
 ## FTP Support (issue #9)
 - Add FTP as a second connection type alongside SSH/SFTP
 - Reuse existing file tree UI (FileTreeProvider is protocol-agnostic)

@@ -5,6 +5,35 @@ Add new entries as bugs are found, mistakes are made, or better approaches are d
 
 ---
 
+## 2026-06-11 - Native remote search tools (ripgrep/fd/parallel-grep/plocate) with per-server auto-detection + 3-tier fallback
+
+**Feature**: remote search/filter now detects and uses faster OS-native tools per connection instead of hardcoding `grep -rnHI` / `find`. See `.adn/features/search-system.md` ("Native tool selection"). Pure command construction lives in `src/connection/searchCommandBuilder.ts` (no ssh2/vscode — fully unit-testable); `SSHConnection.searchFiles()` probes once per connection, selects a strategy, executes, and falls back. Reusable lessons:
+
+- **busybox `grep` silently returns 0 results with `--include`/`--exclude-dir`.** busybox grep does NOT support those GNU flags: it exits 2 and prints to stderr, but the legacy command's `2>/dev/null | head` swallowed both → a content search WITH a file filter returned an empty result set and looked like "no matches" (a latent LITE "true data, no missing" violation that the docker images masked because `Dockerfile.sshd`/Alpine all `apk add grep findutils coreutils`). **Rule**: when shelling out with GNU-only flags, detect the tool flavor (`grep --version` → "GNU grep") and use a portable construction for non-GNU (`find -print0 | xargs -0 grep -nH`); add a busybox docker image (no GNU userland) so the gap can't hide. Never let `2>/dev/null` hide a tool-incompatibility that yields wrong (fewer) results.
+
+- **ripgrep needs `--no-ignore --hidden` to match `grep -r` semantics.** `grep -r` respects no ignore files and walks hidden files; rg by default skips `.gitignore`d and hidden files. Swapping grep→rg WITHOUT those two flags silently returns FEWER results. The flag presence is asserted by an un-deletable unit test with a comment explaining why. rg may return a SUPERSET (it matches UTF-16-BOM files grep -I skips) — that is allowed under "true data" (more true results, never fewer) and documented.
+
+- **rg can emit non-`file:line:text` lines** ("path: binary file matches ...") that grep -I silently skips. The content parser drops lines whose second colon-field is not numeric ONLY on the rg path (`requireLineNumber` flag on `BuiltSearchCommand`); the legacy grep path keeps its exact behavior.
+
+- **`LC_ALL=C` speeds grep but can drop matches — guard it.** Only safe when NOT regex, query is pure ASCII, AND (case-sensitive OR no letters). GNU grep `-i` in a UTF-8 locale Unicode-case-folds (U+212A KELVIN matches `k`); C locale would silently miss those lines. `shouldUseCLocale()` encodes the predicate; case-sensitive ASCII fixed-string is provably byte-identical (UTF-8 self-synchronizing).
+
+- **find `! -path '*/dir/*'` still DESCENDS the excluded dir, then filters.** Switching to `\( -name 'dir' \) -prune -o <match> -print` stops descent entirely (big win on node_modules/.git) and is busybox-safe. Explicit `-print` is mandatory once `-prune` is present, else the pruned branch also prints. Equivalent-or-identical result set to the old excludes.
+
+- **Three-tier fallback so a native tool can never make search worse than grep/find:** (1) detection — missing tool/probe failure → legacy from the start; (2) execution — native commands omit `2>/dev/null` so stderr is visible; `shouldFallbackToLegacy({resultCount, stderrText, aborted, execError})` re-runs the legacy command ONCE when the native one errored or returned 0-with-stderr (the silent-exit-2 class), but NOT on a clean 0 (genuinely no matches — re-running would double server load, LITE) nor on user-abort; (3) memory — after a fallback the tool is marked degraded on the connection's `RemoteSearchTools` cache so later searches skip it. Reconnect re-probes (a fresh `SSHConnection` is created per connect).
+
+- **Detection is lazy + user-triggered (LITE).** The probe (`buildToolProbeCommand()` — one POSIX/busybox-safe exec returning tool paths + grep/xargs flavor + `uname -s` + `nproc`) runs INSIDE the first `nativeTools:'auto'` search, memoized via `_remoteToolsPromise` (same pattern as `_sftpPromise`), never at connect time. `parseToolProbeOutput()` never throws on garbage/partial output and requires absolute paths (rejects shell-builtin names from `command -v`).
+
+- **Refactor proof = exact-string tests stay green.** The byte-identical-grep unit tests (`SSHConnection.test.ts` "searchFiles") were the contract for extracting the builders; only the find tests changed (for `-prune`). Setting default: `sshLite.searchNativeTools` defaults to `'auto'`, but the `searchFiles` option defaults to `'off'` so any caller that doesn't pass it (and every existing unit test) stays on the legacy path with no probe — callers (`SearchPanel`, `FileTreeProvider`) read the setting and pass it explicitly.
+
+- **Indexed-search gotchas (opt-in plocate + client snapshot, found in code review):**
+  - **A prefix `grep -F -- '<basePath>'` must carry a trailing slash.** `grep -F -- '/home/alice'` ALSO matches `/home/alice2/...`; with a `| head -N` after it, those sibling false-positives eat the budget and silently drop real `/home/alice/...` results (LITE no-missing break) — even though a later client-side `startsWith('/home/alice/')` filter would have removed them, the data was already lost at `head`. Anchor BOTH the server prune and the client filter with `basePath + '/'`. (`buildLocateCommand`.)
+  - **Distinguish user-abort from a real refusal in a result code.** A long index build returned `{refused:'too-large'}` on `signal.aborted`, so cancelling showed a bogus "folder too large" warning. Give abort its own `'aborted'` code and have the command no-op silently on it. Any cancellable long task that returns a status union needs a dedicated cancelled state, distinct from failure states.
+  - **`stat -c %y` is unparseable by `Date.parse` (nanoseconds + ` +0000`); use `%Y`** (integer epoch seconds) for any mtime you'll compute an age from.
+  - **A filename index must REFUSE rather than truncate.** `buildIndex` passes `maxResults = cap` and treats `rows.length >= cap` as "possibly truncated → refuse" — never store a partial filename index (it would silently miss files). Surface the cap to the user.
+  - **Client snapshot key must be host-stable, not connection-id.** `connectionId` changes every reconnect; key snapshots by `host:port:user::basePath` so they survive reconnects. (`FilenameIndexService.hostKey`.)
+
+---
+
 ## 2026-06-10 - Connection Import/Export/Sync + Google Drive OAuth (issue #11): secret-free exports, drive.file scope, loopback+PKCE, async-return-unwrap
 
 **Feature**: see `.adn/features/connection-portability.md` for the full design. Key reusable lessons:

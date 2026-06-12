@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.10.1 - Faster remote search: native tools (ripgrep / fd / parallel grep) + opt-in filename index
+
+Remote search and filename filter no longer hardcode `grep`/`find`. Each connection lazily probes the server once (inside the first user-triggered search — LITE-compliant) and picks the fastest available tool, always falling back to grep/find so results never change for the worse. **One new command** (count 114 -> 115) and two new settings.
+
+### Faster content search (automatic, `sshLite.searchNativeTools`, default `auto`)
+
+- **ripgrep** when present — invoked with `--no-ignore --hidden -nH` for exact `grep -r` parity (no ignore files, includes hidden), so the result set is identical-or-superset, never fewer. ~5–13× faster on large trees.
+- **Parallel grep** `find -print0 | xargs -0 -P min(nproc,8) grep` on multi-core GNU servers without ripgrep — scales ~linearly with cores.
+- **`LC_ALL=C` prefix** for ASCII fixed-string case-sensitive searches (guarded by `shouldUseCLocale` so Unicode case-folding is never lost).
+- **busybox fix**: busybox `grep` rejects `--include`/`--exclude-dir` (and even the default `--include='*'`), exiting 2 — which `2>/dev/null` hid, silently returning **zero** results. Non-GNU grep now omits those flags or routes through a `find | xargs grep` pipeline. Real latent data-correctness bug.
+- `'off'` forces grep/find everywhere (no probe). The universal `find -prune` (stops descending excluded dirs like `node_modules`/`.git`) and the guarded `LC_ALL=C` apply on both settings — they change speed, not results.
+
+### Faster filename search
+
+- **fd** when present (else `find -prune`); **mdfind** (Spotlight) on macOS servers.
+- **Opt-in server index (⚡ toggle, plocate/locate)** — shown only in filename mode, default OFF per tab (never a persisted setting; staleness must never be a silent default). Results are anchored to the folder both server-side and client-side and basename-filtered to match live `find -iname`; the locate DB age is shown.
+- **Opt-in client snapshot index** — new command **Index Folder for Fast Filename Search** (`sshLite.indexFolder`, folder/connection context menu). Runs one remote listing, gzips the path list into the extension's global storage (keyed by stable `host:port:user::basePath`); later filename searches with ⚡ match **locally — zero round-trips, instant, on any server including busybox**. A build that would exceed `sshLite.filenameIndexMaxEntries` (default 2,000,000) is refused rather than truncated. Search precedence: client snapshot → server plocate → live find; the chosen path and its age appear in the search activity.
+
+### Three-tier runtime fallback (a native tool can never make search worse than grep/find)
+
+1. Detection — missing tool / probe failure → legacy from the start.
+2. Execution — native commands keep stderr visible; an exec error or "0 results with stderr" (the silent-exit-2 class) re-runs the legacy command once, but a clean 0 (genuinely no matches) and user-abort do not.
+3. Memory — a failed tool is marked degraded on the connection so later searches skip it; reconnect re-probes.
+
+### New settings
+
+- `sshLite.searchNativeTools`: `"auto"` (default) | `"off"`.
+- `sshLite.filenameIndexMaxEntries`: number (default 2,000,000) — cap above which a client snapshot is refused (never truncated).
+
+### Internals & tests
+
+- Pure command construction extracted to `src/connection/searchCommandBuilder.ts` (no ssh2/vscode — fully unit-testable); detection/execution/fallback in `SSHConnection`; new `FilenameIndexService`.
+- Detailed diagnostic logging (`search-tools` / `search-exec` / `search-fallback` / `filename-index` scopes): probe profile, chosen strategy + reason, built command, timing/bytes/lineCount/resultCount, zero-result classifier, every fallback/degrade.
+- Unit tests: `searchCommandBuilder.test.ts`, `FilenameIndexService.test.ts`, and a native-tools/fallback block in `SSHConnection.test.ts`. **Real-server docker regression suite** (`src/integration/docker-ssh-search-tools.test.ts`, `npm run test:docker:search-tools`) on a ripgrep+fd+plocate server and a busybox-only server proves `auto` vs `off` return identical result sets (hidden / gitignored / excluded-dir fixtures) and that the busybox bug is fixed.
+
 ## v0.10.0 - Import / Export / Sync connections, incl. native Google Drive (issue #11)
 
 Adds connection portability: back up saved hosts and restore them on another machine, plus optional native Google Drive sync. **Six new commands** (count 108 -> 114).

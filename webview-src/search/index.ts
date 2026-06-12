@@ -38,6 +38,7 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
         useRegex: false,
         wholeWord: false,
         findFilesMode: false,
+        useIndex: false,
         results: [],
         scopeServers: [],
         hitLimit: false,
@@ -63,6 +64,7 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
     let useRegex = false;
     let wholeWord = false;
     let findFilesMode = false;
+    let useIndex = false;
     let expandedFiles = new Set();
     let viewMode = 'list';
     let expandedTreeNodes = new Set();
@@ -90,6 +92,7 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
       tab.useRegex = useRegex;
       tab.wholeWord = wholeWord;
       tab.findFilesMode = findFilesMode;
+      tab.useIndex = useIndex;
       tab.viewMode = viewMode;
       tab.searchExpandState = searchExpandState;
       tab.expandedFiles = new Set(expandedFiles);
@@ -105,6 +108,7 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
       useRegex = tab.useRegex || false;
       wholeWord = tab.wholeWord || false;
       findFilesMode = tab.findFilesMode || false;
+      useIndex = tab.useIndex || false;
       viewMode = tab.viewMode || 'list';
       searchExpandState = tab.searchExpandState != null ? tab.searchExpandState : 2;
       expandedFiles = new Set(tab.expandedFiles || []);
@@ -115,6 +119,7 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
       wholeWordBtn.classList.toggle('active', wholeWord);
       regexBtn.classList.toggle('active', useRegex);
       findFilesBtn.classList.toggle('active', findFilesMode);
+      updateUseIndexBtn();
       searchInput.placeholder = findFilesMode ? 'Find Files by Name' : 'Search';
       // Update search/cancel button visibility
       if (tab.searching) {
@@ -124,6 +129,14 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
         searchBtn.style.display = 'inline-block';
         cancelBtn.style.display = 'none';
       }
+    }
+
+    // The indexed-search toggle is only meaningful for filename search, so it is
+    // shown only in find-files mode and its active state reflects `useIndex`.
+    function updateUseIndexBtn() {
+      if (!useIndexBtn) return;
+      useIndexBtn.style.display = findFilesMode ? 'inline-block' : 'none';
+      useIndexBtn.classList.toggle('active', useIndex);
     }
 
     function cleanupTab(tab) {
@@ -144,6 +157,7 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
     const wholeWordBtn = document.getElementById('wholeWordBtn');
     const regexBtn = document.getElementById('regexBtn');
     const findFilesBtn = document.getElementById('findFilesBtn');
+    const useIndexBtn = document.getElementById('useIndexBtn');
     const searchBtn = document.getElementById('searchBtn');
     const cancelBtn = document.getElementById('cancelBtn');
     const sortToggleBtn = document.getElementById('sortToggleBtn');
@@ -224,6 +238,15 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
         findFilesBtn.title = findFilesMode
           ? 'Search File Content \u2014 search for text inside files'
           : 'Find Files by Name \u2014 search for filenames instead of file content';
+        updateUseIndexBtn();
+      });
+
+      // Indexed (plocate) filename search toggle \u2014 only meaningful in find-files
+      // mode. Default OFF, per tab (never a persisted setting): staleness must
+      // never become a silent default.
+      useIndexBtn.addEventListener('click', () => {
+        useIndex = !useIndex;
+        useIndexBtn.classList.toggle('active', useIndex);
       });
 
       // Server list actions
@@ -296,7 +319,9 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
         caseSensitive,
         regex: useRegex,
         wholeWord,
-        findFiles: findFilesMode
+        findFiles: findFilesMode,
+        // Indexed search only applies to filename mode; never leak it to content search.
+        useIndex: findFilesMode && useIndex
       });
     }
 
@@ -1455,6 +1480,7 @@ info('search-webview', 'ready', { domReadyMs: Math.round(performance.now()) });
             currentTab.findFilesMode = findFilesMode;
             findFilesBtn.classList.toggle('active', findFilesMode);
             searchInput.placeholder = findFilesMode ? 'Find Files by Name' : 'Search';
+            updateUseIndexBtn();
           }
           if (message.wholeWord !== undefined) {
             wholeWord = message.wholeWord;

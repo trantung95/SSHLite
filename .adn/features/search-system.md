@@ -55,7 +55,49 @@ Build grep: `grep -rnHI [-F] [-w] [-i] --include=... --exclude-dir=... -- '<quer
 
 ### Find Files Mode
 
-`find <paths> <typeFlag> -iname "<pattern>"` with `typeFlag`: `-type f`, `-type d`, or both. Progressive results via `searchBatch`.
+`find <paths> <typeFlag> -iname "<pattern>"` with `typeFlag`: `-type f`, `-type d`, or both. Progressive results via `searchBatch`. Excludes use `-prune` (stops descent into excluded dirs) with an explicit `-print`.
+
+## Native Tool Selection (`sshLite.searchNativeTools`, default `auto`)
+
+Remote command construction is factored into the pure module `src/connection/searchCommandBuilder.ts` (no ssh2/vscode — fully unit-testable). `SSHConnection.searchFiles()` picks the fastest available strategy **per connection** instead of hardcoding grep/find.
+
+**Detection** — lazy, user-triggered (LITE: no auto server commands). On the first `nativeTools:'auto'` search, `getRemoteSearchTools()` runs ONE probe exec (`buildToolProbeCommand()`) returning tool paths + grep/xargs flavor + `uname -s` + `nproc`, parsed by `parseToolProbeOutput()` into a `RemoteSearchTools` profile, memoized for the connection lifetime (reset on disconnect / re-probed on reconnect). `'off'` skips the probe entirely and always uses grep/find.
+
+**Strategy matrix** (chosen in the builder from the probe profile):
+
+| Server profile | Filename search | Content search |
+|----------------|-----------------|----------------|
+| has `rg` | `fd` if present, else `find -prune` | `rg --no-ignore --hidden -nH ...` |
+| GNU, `nproc ≥ 2`, GNU xargs, no rg | `fd` if present, else `find -prune` | `find -print0 \| xargs -0 -P min(nproc,8) grep` |
+| GNU, 1 core, no rg | `find -prune` | `grep` (guarded `LC_ALL=C` prefix) |
+| non-GNU grep (busybox) | `find -prune` | `find -print0 \| xargs -0 grep` (fixes busybox `--include` silent-0 bug) |
+| macOS (Darwin) | `mdfind -onlyin <path> -name` (Spotlight; falls back to find if disabled) | `rg` if present, else grep |
+| has plocate/locate + user opts in | `locate`/`plocate` (indexed, may be stale) | — |
+
+**Result-correctness guarantees** (LITE "true data, no missing"):
+- rg uses `--no-ignore --hidden` so it matches `grep -r` (no ignore files, includes hidden) — never returns FEWER results. It may return a superset (UTF-16 files grep -I skips), which is allowed.
+- rg-path parser drops non-`file:line:text` lines (`requireLineNumber`); the legacy grep path is unchanged.
+- `LC_ALL=C` only when `shouldUseCLocale()` allows (not regex, pure ASCII, case-sensitive or no letters) — avoids Unicode case-fold misses.
+- `find -prune` is equivalent-or-identical to the old `! -path`/`! -name` excludes, just stops descending.
+
+**Three-tier runtime fallback** — a native tool can never make search worse than grep/find:
+1. **Detection**: missing tool or probe failure → legacy from the start.
+2. **Execution**: native commands omit `2>/dev/null`; `shouldFallbackToLegacy({resultCount, stderrText, aborted, execError})` re-runs the legacy command ONCE on exec-error or 0-results-with-stderr (the silent-exit-2 class), but NOT on a clean 0 (genuinely no matches — re-running doubles server load) nor on user-abort.
+3. **Memory**: after a fallback the tool is marked degraded on the connection's profile so later searches skip it.
+
+Manual override: `sshLite.searchNativeTools: "off"` forces grep/find everywhere (no probe). The `find -prune` and guarded `LC_ALL=C` improvements apply on BOTH settings — they change speed, not results.
+
+**Diagnostic logging** (scopes `search-tools`, `search-exec`, `search-fallback`): probe start/result/error, `strategy-selected` (tool + reason), `command-built`, `exec-done` (durationMs, bytes, lineCount, resultCount, truncated), `zero-results` (stderr-empty classifier), `native-tool-fallback`, `tool-degraded`. Enable `sshLite.diagnosticLogging` → reproduce → copy the SSH Lite Output channel.
+
+## Indexed filename search (opt-in ⚡)
+
+A second toggle (`useIndexBtn`, ⚡) appears beside the find-files button, ONLY in filename mode. Default OFF, per tab, deliberately NOT a persisted setting — an index is stale by nature, and staleness must never be a silent default. When on, each per-server filename search resolves in this precedence (`SearchPanel.createSearchTask`):
+
+1. **Client snapshot** (`FilenameIndexService`) — if the folder was indexed via the `sshLite.indexFolder` command ("Index Folder for Fast Filename Search", folder/connection context menu). One remote listing is gzipped into `globalStorage` keyed by stable `host:port:user::basePath`; later searches match LOCALLY (0 round-trips, instant, works on ANY server including busybox). A build that would exceed `sshLite.filenameIndexMaxEntries` (default 2,000,000) is REFUSED, never truncated (a partial filename index would silently miss files).
+2. **Server index** (`SSHConnection.searchIndexed` → `buildLocateCommand`) — plocate/locate. Results are anchored to `basePath + '/'` BOTH server-side (`grep -F`, so siblings can't steal the `head` budget) AND client-side, then basename-filtered to match live `find -iname` semantics. The locate DB mtime (`stat -c %Y`) drives a staleness hint.
+3. **Live find/fd** — the fallback when no index exists.
+
+The chosen path + its age are shown in the search activity detail (e.g. `42 results [client index, 2h old]`, `[plocate index, 5h old]`, or `[no file index — used live find]`). `searchIndexed` returns null (never a wrong-empty) whenever no index is available, so the caller always falls back. Logging: `filename-index` scope (`build-start/done/rejected`, `used`) and `search-tools`/`search-exec` (`indexed-search`, `locate-anchor-filter`).
 
 ### Progressive Results (searchBatch)
 

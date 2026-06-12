@@ -19,8 +19,10 @@ SSHLite/
     connection/
       ConnectionManager.ts                # Multi-connection orchestration, auto-reconnect (~613 lines)
       ConnectionManager.test.ts           # Connection lifecycle, reconnect tests
-      SSHConnection.ts                    # SSH/SFTP operations, host key verify (~1481 lines)
+      SSHConnection.ts                    # SSH/SFTP operations, host key verify, search tool probe + fallback
       SSHConnection.test.ts               # SSH operation tests
+      searchCommandBuilder.ts             # Pure remote-search command builders (grep/rg/fd/find/xargs/locate/mdfind) + probe parse + fallback decision (no ssh2/vscode)
+      searchCommandBuilder.test.ts        # Builder/strategy-matrix/escaping unit tests
     services/
       FileService.ts                      # File ops, upload state, auto-sync, backups (~4097 lines)
       FileService.test.ts                 # File service unit tests

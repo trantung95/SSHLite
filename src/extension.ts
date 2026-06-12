@@ -13,6 +13,7 @@ import { GoogleDriveSyncService } from './services/GoogleDriveSyncService';
 import { AuditService } from './services/AuditService';
 import { ServerMonitorService, showMonitorQuickPick } from './services/ServerMonitorService';
 import { FolderHistoryService } from './services/FolderHistoryService';
+import { FilenameIndexService } from './services/FilenameIndexService';
 import { RemoteClipboardService } from './services/RemoteClipboardService';
 import { SnippetService } from './services/SnippetService';
 import { CommandGuard } from './services/CommandGuard';
@@ -189,6 +190,40 @@ function buildServerSearchEntries(
 }
 
 /**
+ * Resolve a folder/connection tree item to (connection, absolute basePath,
+ * displayName) for folder-scoped commands (filterFileNames, indexFolder).
+ * Expands a leading `~` to the absolute home path. Returns null (after a warning)
+ * when the selection is not a folder or connection row.
+ */
+async function resolveFolderTreeTarget(
+  item: FileTreeItem | ConnectionTreeItem | undefined,
+  fileTreeProvider: FileTreeProvider,
+  warnMsg: string,
+): Promise<{ connection: SSHConnection; basePath: string; displayName: string } | null> {
+  if (item instanceof ConnectionTreeItem) {
+    const connection = item.connection;
+    // Read fresh path from the provider — ConnectionTreeItem instances are reused
+    // across targeted refreshes, so item.currentPath goes stale after navigation.
+    const livePath = fileTreeProvider.getCurrentPath(connection.id);
+    let basePath = livePath;
+    // Resolve ~ (tilde doesn't expand in single-quoted find/grep).
+    if (basePath === '~' || basePath.startsWith('~/')) {
+      try {
+        const homePath = (await connection.exec('echo ~')).trim();
+        basePath = basePath === '~' ? homePath : homePath + basePath.substring(1);
+      } catch {
+        basePath = livePath;
+      }
+    }
+    return { connection, basePath, displayName: connection.host.name };
+  } else if (item instanceof FileTreeItem && item.file.isDirectory) {
+    return { connection: item.connection, basePath: item.file.path, displayName: item.file.name };
+  }
+  vscode.window.showWarningMessage(warnMsg);
+  return null;
+}
+
+/**
  * Extension activation
  */
 export function activate(context: vscode.ExtensionContext): void {
@@ -260,6 +295,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const folderHistoryService = FolderHistoryService.getInstance();
   safeStep('folder-history-svc', () => folderHistoryService.initialize(context));
+  safeStep('filename-index-svc', () => FilenameIndexService.getInstance().initialize(context));
   safeStep('snippet-svc',        () => SnippetService.getInstance().initialize(context));
   safeStep('drive-sync-svc',     () => GoogleDriveSyncService.getInstance().initialize(context.secrets));
 
@@ -2538,37 +2574,49 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.window.setStatusBarMessage(`$(list-tree) Grouping by ${newMode}`, 2000);
     }),
 
-    // Filter files by name in folder or connection root (highlights in tree)
-    vscode.commands.registerCommand('sshLite.filterFileNames', async (item?: FileTreeItem | ConnectionTreeItem) => {
-      let connection: SSHConnection;
-      let basePath: string;
-      let displayName: string;
-
-      if (item instanceof ConnectionTreeItem) {
-        connection = item.connection;
-        // Read fresh path from the provider — ConnectionTreeItem instances are reused across
-        // targeted refreshes, so item.currentPath captured at construction goes stale after
-        // the user navigates from the connection row (e.g., goToRoot from '~' to '/').
-        const livePath = fileTreeProvider.getCurrentPath(connection.id);
-        // Resolve ~ to absolute path (tilde doesn't expand in single-quoted find/grep)
-        basePath = livePath;
-        if (basePath === '~' || basePath.startsWith('~/')) {
-          try {
-            const homePath = (await connection.exec('echo ~')).trim();
-            basePath = basePath === '~' ? homePath : homePath + basePath.substring(1);
-          } catch {
-            basePath = livePath; // fallback
-          }
-        }
-        displayName = item.connection.host.name;
-      } else if (item instanceof FileTreeItem && item.file.isDirectory) {
-        connection = item.connection;
-        basePath = item.file.path;
-        displayName = item.file.name;
-      } else {
-        vscode.window.showWarningMessage('Select a folder to filter');
+    // Index a folder's filenames into a client-side snapshot (instant local
+    // filename search afterward; works on any server incl. busybox).
+    vscode.commands.registerCommand('sshLite.indexFolder', async (item?: FileTreeItem | ConnectionTreeItem) => {
+      const target = await resolveFolderTreeTarget(item, fileTreeProvider, 'Select a folder to index');
+      if (!target) return;
+      const { connection, basePath, displayName } = target;
+      if (connection.state !== ConnectionState.Connected) {
+        vscode.window.showWarningMessage('Connect to the server before indexing.');
         return;
       }
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Indexing "${displayName}" for fast filename search…`, cancellable: true },
+        async (_progress, token) => {
+          const ac = new AbortController();
+          token.onCancellationRequested(() => ac.abort());
+          try {
+            const result = await FilenameIndexService.getInstance().buildIndex(connection, basePath, ac.signal);
+            if ('refused' in result) {
+              if (result.refused === 'aborted') {
+                return; // user cancelled — no message
+              } else if (result.refused === 'too-large') {
+                vscode.window.showWarningMessage(
+                  `"${displayName}" has more than ${result.limit.toLocaleString()} entries — not indexed (a partial index would silently miss files). Index a smaller folder, or raise sshLite.filenameIndexMaxEntries.`,
+                );
+              } else {
+                vscode.window.showWarningMessage('Filename index storage is unavailable.');
+              }
+              return;
+            }
+            vscode.window.showInformationMessage(
+              `Indexed ${result.count.toLocaleString()} entries in "${displayName}". Filename search here is now instant — it is a snapshot, so rebuild after large changes.`,
+            );
+          } catch (err) {
+            vscode.window.showErrorMessage(`Indexing failed: ${(err as Error).message}`);
+          }
+        },
+      );
+    }),
+
+    vscode.commands.registerCommand('sshLite.filterFileNames', async (item?: FileTreeItem | ConnectionTreeItem) => {
+      const target = await resolveFolderTreeTarget(item, fileTreeProvider, 'Select a folder to filter');
+      if (!target) return;
+      const { connection, basePath, displayName } = target;
 
       // QuickPick with pattern input + filter mode selection below
       interface FilterModeItem extends vscode.QuickPickItem { value: FilterMode }

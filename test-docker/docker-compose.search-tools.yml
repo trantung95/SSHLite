@@ -1,0 +1,33 @@
+# Isolated SSH servers for the native-search-tools integration suite.
+# Kept SEPARATE from docker-compose.yml so a build error here can never break
+# the main docker suite. Driven by globalSetup.search-tools.ts.
+#
+# Usage:   docker compose -f test-docker/docker-compose.search-tools.yml up -d --build
+# Cleanup: docker compose -f test-docker/docker-compose.search-tools.yml down --remove-orphans
+name: sshlite-search-tools
+
+services:
+  # Port 2207: has ripgrep + fd + plocate (and GNU grep/find) — native fast paths.
+  search-tools:
+    build:
+      context: .
+      dockerfile: Dockerfile.search-tools
+    container_name: sshlite-search-tools
+    ports:
+      - "2207:22"
+    hostname: search-tools
+    volumes:
+      - ./logs/sshlite-search-tools:/var/log/sshd
+
+  # Port 2208: busybox-only userland (no GNU grep/findutils) — fallback + the
+  # busybox `grep --include` silent-0 regression.
+  search-busybox:
+    build:
+      context: .
+      dockerfile: Dockerfile.busybox
+    container_name: sshlite-search-busybox
+    ports:
+      - "2208:22"
+    hostname: search-busybox
+    volumes:
+      - ./logs/sshlite-search-busybox:/var/log/sshd

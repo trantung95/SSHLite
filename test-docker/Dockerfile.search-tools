@@ -1,0 +1,48 @@
+FROM alpine:3.19
+
+# A server that HAS the fast native tools so the native paths (ripgrep / fd /
+# plocate) can be exercised and proven result-identical to grep/find. GNU
+# userland too (grep/findutils/coreutils) so the legacy path is the real GNU one.
+RUN apk add --no-cache openssh-server bash coreutils findutils grep sudo \
+    ripgrep fd plocate
+
+RUN adduser -D -s /bin/bash testuser && echo "testuser:testpass" | chpasswd
+
+RUN ssh-keygen -A && \
+    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && \
+    echo "UsePAM no" >> /etc/ssh/sshd_config && \
+    echo "Subsystem sftp /usr/lib/ssh/sftp-server" >> /etc/ssh/sshd_config
+
+# ---------------------------------------------------------------------------
+# Search fixture tree — deliberately hits every parity edge case:
+#   - a hidden dir + dotfile (proves rg --hidden parity)
+#   - a .gitignore that ignores a matching file (proves rg --no-ignore parity)
+#   - a match inside an excluded dir (node_modules) (proves prune/exclude parity)
+#   - filenames with spaces and a single quote (proves escaping)
+#   - a binary file containing the needle bytes (proves -I / rg binary skip)
+#   - .ts / .js files for include-pattern parity
+# Every text file below contains the token "needle" exactly once on line 1.
+# ---------------------------------------------------------------------------
+RUN set -eux; \
+    base=/home/testuser/searchfix; \
+    mkdir -p "$base/sub" "$base/.hidden" "$base/node_modules/pkg"; \
+    printf 'needle visible\n'   > "$base/normal.txt"; \
+    printf 'needle hidden\n'    > "$base/.hidden/secret.txt"; \
+    printf 'needle ignored\n'   > "$base/ignored.log"; \
+    printf 'needle in nm\n'     > "$base/node_modules/pkg/dep.txt"; \
+    printf 'needle spaced\n'    > "$base/my file.txt"; \
+    printf 'needle quoted\n'    > "$base/it'\''s.txt"; \
+    printf 'const x = "needle";\n' > "$base/sub/app.ts"; \
+    printf 'var y = "needle";\n'   > "$base/sub/app.js"; \
+    printf 'ignored.log\n'      > "$base/.gitignore"; \
+    head -c 2048 /dev/urandom > "$base/blob.bin"; \
+    printf 'needle\x00binary\n' >> "$base/blob.bin"; \
+    chown -R testuser:testuser /home/testuser
+
+# Build the plocate database so indexed-search tests have something to find.
+RUN updatedb 2>/dev/null || true
+
+RUN mkdir -p /var/log/sshd
+EXPOSE 22
+CMD ["/bin/sh", "-c", "/usr/sbin/sshd -D -e 2>&1 | tee /var/log/sshd/sshd.log"]

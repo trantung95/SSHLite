@@ -50,6 +50,15 @@ Alpine-based SSH servers built from `test-docker/Dockerfile.sshd`. Setup: `docke
 
 Tests: real SSH connection, SFTP upload/download, cross-server grep search, cancellation, permissions, large files.
 
+### Native search tools suite (isolated)
+
+`src/integration/docker-ssh-search-tools.test.ts` runs against TWO dedicated servers in a SEPARATE compose file (`test-docker/docker-compose.search-tools.yml`, project `sshlite-search-tools`) so a build error there can never break the main docker suite:
+
+- **`search-tools` (port 2207)** — `Dockerfile.search-tools`: ripgrep + fd + plocate + GNU userland. Exercises the rg/fd fast paths and the **results-parity** assertions (`nativeTools:'auto'` vs `'off'` must return identical sorted result sets across hidden / gitignored / excluded-dir / spaced-name / binary fixtures, for content + filename + worker-pool-file-list searches).
+- **`search-busybox` (port 2208)** — `Dockerfile.busybox`: busybox-only userland (NO GNU grep/findutils). The regression net for the busybox `grep --include` silent-0-results bug: `'auto'` detects the non-GNU grep and uses the find|xargs path (returns results); `'off'` reproduces the bug (empty).
+
+Run with `npm run test:docker:search-tools` (needs Docker Desktop). Isolated globalSetup/teardown (`globalSetup.search-tools.ts`) build + wait on 2207/2208 only. Unit coverage (no Docker) lives in `src/connection/searchCommandBuilder.test.ts` (every flag combo, escaping, strategy matrix, probe parsing, fallback predicate) + the "native search tool detection + runtime fallback" block in `SSHConnection.test.ts`.
+
 ### Server identities (hostnames)
 
 The three basic servers carry production-style hostnames, asserted in `docker-ssh.test.ts` and configured in `src/chaos/ChaosConfig.ts` + `ContainerHealthMonitor.ts` + `globalSetup.chaos.ts` / `globalTeardown.chaos.ts`. The compose **service key**, **`container_name`**, and **`hostname`** all match (see table). Change them together if renaming — the basic `globalSetup.ts` drives the file by port and `down`, but the chaos suite keys off `container_name`:

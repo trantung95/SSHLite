@@ -1868,11 +1868,12 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       );
 
       try {
-        // Execute find command on remote server
+        // Execute find command on remote server (fd / mdfind when available)
         const results = await connection.searchFiles(currentPath, pattern, {
           searchContent: false, // Filename search
           caseSensitive: false,
           maxResults,
+          nativeTools: vscode.workspace.getConfiguration('sshLite').get<'auto' | 'off'>('searchNativeTools', 'auto'),
         });
 
         if (signal.aborted) {
@@ -2260,12 +2261,13 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       const filterConfig = vscode.workspace.getConfiguration('sshLite');
       const maxResults = filterConfig.get<number>('filterMaxResults', 500);
 
-      // Search for files/folders matching the pattern
+      // Search for files/folders matching the pattern (fd / mdfind when available)
       const results = await connection.searchFiles(basePath, pattern, {
         searchContent: false,
         caseSensitive: false,
         maxResults,
         findType,
+        nativeTools: filterConfig.get<'auto' | 'off'>('searchNativeTools', 'auto'),
       });
 
       // Build highlighted paths set and match counts

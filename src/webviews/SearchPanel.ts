@@ -6,10 +6,22 @@ import { IHostConfig } from '../types';
 import { SavedCredential } from '../services/CredentialService';
 import { formatFileSize, formatRelativeTime } from '../utils/helpers';
 import { ActivityService } from '../services/ActivityService';
+import { FilenameIndexService } from '../services/FilenameIndexService';
 import { infoLog, diagLog, isDiagEnabled } from '../utils/diagnosticLog';
 
 /** Default exclude patterns matching VS Code's files.exclude + search.exclude defaults */
 const DEFAULT_SEARCH_EXCLUDES = '.git,.svn,.hg,CVS,.DS_Store,node_modules,bower_components,*.code-search';
+
+/** Human "X ago" for the indexed-search staleness hint, given an age in ms. */
+function formatIndexAge(ageMs: number): string {
+  if (!Number.isFinite(ageMs) || ageMs < 0) return 'unknown age';
+  const min = Math.floor(ageMs / 60000);
+  if (min < 1) return 'just updated';
+  if (min < 60) return `${min}m old`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h old`;
+  return `${Math.floor(hr / 24)}d old`;
+}
 
 /**
  * Search scope - a folder or file to search in
@@ -71,7 +83,7 @@ interface ServerSearchSettings {
  * Message types for webview communication
  */
 type WebviewMessage =
-  | { type: 'search'; query: string; include: string; exclude: string; caseSensitive: boolean; regex: boolean; findFiles?: boolean; wholeWord?: boolean }
+  | { type: 'search'; query: string; include: string; exclude: string; caseSensitive: boolean; regex: boolean; findFiles?: boolean; wholeWord?: boolean; useIndex?: boolean }
   | { type: 'removeScope'; index: number }
   | { type: 'clearScopes' }
   | { type: 'openResult'; result: WebviewSearchResult; line?: number }
@@ -658,7 +670,7 @@ export class SearchPanel {
       }
 
       case 'search':
-        await this.performSearch(message.query, message.include, message.exclude, message.caseSensitive, message.regex, message.findFiles, message.wholeWord);
+        await this.performSearch(message.query, message.include, message.exclude, message.caseSensitive, message.regex, message.findFiles, message.wholeWord, message.useIndex);
         break;
 
       case 'removeScope':
@@ -809,7 +821,8 @@ export class SearchPanel {
     caseSensitive: boolean,
     regex: boolean,
     findFiles?: boolean,
-    wholeWord?: boolean
+    wholeWord?: boolean,
+    useIndex?: boolean
   ): Promise<void> {
     // Determine which model to use: serverList (new) or searchScopes (legacy)
     // Checked servers without explicit paths default to searching from /
@@ -859,6 +872,9 @@ export class SearchPanel {
     const config = vscode.workspace.getConfiguration('sshLite');
     const maxResults = config.get<number>('searchMaxResults', 2000);
     const connectionTimeout = config.get<number>('connectionTimeout', 30000);
+    // 'auto' lets each connection probe for ripgrep/fd/parallel-grep and use the
+    // fastest tool with automatic grep/find fallback; 'off' forces grep/find.
+    const nativeTools = config.get<'auto' | 'off'>('searchNativeTools', 'auto');
 
     // Apply default exclusions (VS Code-style: .git, node_modules, etc.)
     const useDefaultExcludes = config.get<boolean>('searchUseDefaultExcludes', true);
@@ -990,16 +1006,43 @@ export class SearchPanel {
           const searchPromise = (async (): Promise<WebviewSearchResult[]> => {
             if (signal.aborted) return [];
             try {
-              const results = await connection.searchFiles(searchPathArg, query, {
-                searchContent: !findFiles,
-                caseSensitive,
-                regex,
-                wholeWord: !!wholeWord,
-                filePattern: includePattern || '*',
-                excludePattern: effectiveExcludePattern || undefined,
-                maxResults,
-                signal,
-              });
+              let results: Awaited<ReturnType<SSHConnection['searchFiles']>> | undefined;
+              let indexNote = '';
+
+              // Opt-in indexed filename search. Single-path only. Precedence:
+              // (1) client snapshot (instant, 0 round-trips, any server) →
+              // (2) server plocate/locate → (3) live find. Falls through on miss.
+              if (useIndex && findFiles && typeof searchPathArg === 'string') {
+                const snap = FilenameIndexService.getInstance().search(connection, searchPathArg, query, caseSensitive, maxResults);
+                if (snap) {
+                  results = snap.results;
+                  indexNote = ` [client index, ${formatIndexAge(Date.now() - snap.timestamp)}]`;
+                } else {
+                  const indexed = await connection.searchIndexed(searchPathArg, query, { caseSensitive, maxResults, signal });
+                  if (signal.aborted) { activityService.cancelActivity(activityId); return []; }
+                  if (indexed) {
+                    results = indexed.results;
+                    const age = indexed.dbMTimeMs ? formatIndexAge(Date.now() - indexed.dbMTimeMs) : 'unknown age';
+                    indexNote = ` [${indexed.tool} index, ${age}]`;
+                  } else {
+                    indexNote = ' [no file index — used live find]';
+                  }
+                }
+              }
+
+              if (!results) {
+                results = await connection.searchFiles(searchPathArg, query, {
+                  searchContent: !findFiles,
+                  caseSensitive,
+                  regex,
+                  wholeWord: !!wholeWord,
+                  filePattern: includePattern || '*',
+                  excludePattern: effectiveExcludePattern || undefined,
+                  maxResults,
+                  signal,
+                  nativeTools,
+                });
+              }
 
               if (signal.aborted) {
                 activityService.cancelActivity(activityId);
@@ -1013,8 +1056,8 @@ export class SearchPanel {
                 connectionName: connection.host.name,
               }));
 
-              diagLog('search', 'server-result', { server: displayName, count: mapped.length });
-              activityService.completeActivity(activityId, `${mapped.length} results`);
+              diagLog('search', 'server-result', { server: displayName, count: mapped.length, indexNote });
+              activityService.completeActivity(activityId, `${mapped.length} results${indexNote}`);
 
               serverResults.set(server.id, (serverResults.get(server.id) || 0) + mapped.length);
               return mapped;
@@ -1156,7 +1199,7 @@ export class SearchPanel {
                             searchContent: !findFiles, caseSensitive, regex, wholeWord: !!wholeWord,
                             filePattern: includePattern || '*',
                             excludePattern: effectiveExcludePattern || undefined,
-                            maxResults, signal,
+                            maxResults, signal, nativeTools,
                           });
                           if (signal.aborted) { activityService.cancelActivity(actId); return; }
                           const mapped = results.map((r) => ({
@@ -1207,7 +1250,7 @@ export class SearchPanel {
                           searchContent: !findFiles, caseSensitive, regex, wholeWord: !!wholeWord,
                           filePattern: includePattern || '*',
                           excludePattern: effectiveExcludePattern || undefined,
-                          maxResults, signal,
+                          maxResults, signal, nativeTools,
                         });
                         if (signal.aborted) { activityService.cancelActivity(actId); return; }
                         const mapped = results.map((r) => ({
@@ -1390,6 +1433,7 @@ export class SearchPanel {
               excludePattern: effectiveExcludePattern || undefined,
               maxResults,
               signal,
+              nativeTools,
             });
 
             if (signal.aborted) {

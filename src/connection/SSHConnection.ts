@@ -15,6 +15,23 @@ import {
 import { expandPath } from '../utils/helpers';
 import { CredentialService, SavedCredential } from '../services/CredentialService';
 import { diagLog, infoLog } from '../utils/diagnosticLog';
+import {
+  RemoteSearchTools,
+  LEGACY_TOOLS,
+  SearchTool,
+  ContentSearchOpts,
+  FilenameSearchOpts,
+  BuiltSearchCommand,
+  buildContentSearchCommand,
+  buildFilenameSearchCommand,
+  buildLocateCommand,
+  buildToolProbeCommand,
+  buildIndexStalenessCommand,
+  parseToolProbeOutput,
+  shouldFallbackToLegacy,
+  describeStrategy,
+  validateMaxResults,
+} from './searchCommandBuilder';
 
 // Shared output channel for SSH command logging
 let sshOutputChannel: vscode.OutputChannel | null = null;
@@ -140,6 +157,16 @@ export interface ServerCapabilities {
   hasInotifywait: boolean;  // Linux file watcher
   hasFswatch: boolean;      // macOS/BSD file watcher
   watchMethod: 'inotifywait' | 'fswatch' | 'poll';
+}
+
+/** One row of a search result (content match or filename hit), optionally stat-enriched. */
+export interface SearchResultRow {
+  path: string;
+  line?: number;
+  match?: string;
+  size?: number;
+  modified?: Date;
+  permissions?: string;
 }
 
 /**
@@ -660,6 +687,12 @@ export class SSHConnection implements ISSHConnection {
     }
     this._portForwards.clear();
 
+    // Clear cached search-tool profile so a reconnect re-probes (the server may
+    // have changed). A fresh SSHConnection is created per connect anyway; this
+    // is belt-and-suspenders for any reuse path.
+    this._remoteTools = null;
+    this._remoteToolsPromise = null;
+
     // Close client connection - the 'close' event will call handleDisconnect()
     // which sets state to Disconnected. Don't call setState here to avoid
     // double state change events that could trigger unwanted auto-reconnect.
@@ -674,6 +707,75 @@ export class SSHConnection implements ISSHConnection {
 
   /** Serialization promise for SFTP session creation — prevents duplicate sessions from concurrent calls */
   private _sftpPromise: Promise<SFTPWrapper> | null = null;
+
+  /**
+   * Memoized remote search-tool profile (rg/fd/locate/mdfind + grep flavor + OS +
+   * nproc). Probed lazily on the first 'auto' search and cached for the
+   * connection lifetime. A fresh SSHConnection is created on every (re)connect,
+   * so this naturally resets; disconnect() also clears it defensively.
+   */
+  private _remoteToolsPromise: Promise<RemoteSearchTools> | null = null;
+  private _remoteTools: RemoteSearchTools | null = null;
+
+  /**
+   * Probe the server's search tooling once per connection. Never throws: a probe
+   * failure resolves to LEGACY_TOOLS so search proceeds on the universal path.
+   */
+  async getRemoteSearchTools(): Promise<RemoteSearchTools> {
+    if (this._remoteTools) return this._remoteTools;
+    if (this._remoteToolsPromise) return this._remoteToolsPromise;
+
+    const t0 = Date.now();
+    infoLog('search-tools', 'probe-start', { connectionId: this.id });
+    this._remoteToolsPromise = (async (): Promise<RemoteSearchTools> => {
+      try {
+        const out = await this.exec(buildToolProbeCommand());
+        const tools = parseToolProbeOutput(out);
+        tools.detectedAt = Date.now();
+        tools.degraded = [];
+        this._remoteTools = tools;
+        infoLog('search-tools', 'probe-result', {
+          connectionId: this.id,
+          durationMs: Date.now() - t0,
+          os: tools.os,
+          nproc: tools.nproc,
+          grepFlavor: tools.grepFlavor,
+          xargsFlavor: tools.xargsFlavor,
+          rg: !!tools.rg,
+          fd: !!tools.fd,
+          plocate: !!tools.plocate,
+          locate: !!tools.locate,
+          mdfind: !!tools.mdfind,
+        });
+        return tools;
+      } catch (err) {
+        const fallback: RemoteSearchTools = { ...LEGACY_TOOLS, grepFlavor: 'unknown', detectedAt: Date.now(), degraded: [] };
+        this._remoteTools = fallback;
+        infoLog('search-tools', 'probe-error', { connectionId: this.id, durationMs: Date.now() - t0, errorMessage: (err as Error).message });
+        return fallback;
+      } finally {
+        this._remoteToolsPromise = null;
+      }
+    })();
+    return this._remoteToolsPromise;
+  }
+
+  /**
+   * Disable a native tool after a runtime failure so subsequent searches on this
+   * connection skip it (no wasted failing-then-retrying round trip).
+   */
+  private _markToolDegraded(tool: SearchTool): void {
+    const t = this._remoteTools;
+    if (!t) return;
+    if (!t.degraded) t.degraded = [];
+    if (!t.degraded.includes(tool)) t.degraded.push(tool);
+    if (tool === 'rg') t.rg = undefined;
+    else if (tool === 'fd') t.fd = undefined;
+    else if (tool === 'locate') { t.plocate = undefined; t.locate = undefined; }
+    else if (tool === 'mdfind') t.mdfind = undefined;
+    else if (tool === 'xargs-grep') { t.grepFlavor = 'gnu'; t.xargsFlavor = 'other'; } // force plain legacy grep next time
+    infoLog('search-fallback', 'tool-degraded', { connectionId: this.id, tool, degraded: t.degraded });
+  }
 
   /**
    * Get or create SFTP session.
@@ -1918,8 +2020,9 @@ export class SSHConnection implements ISSHConnection {
       maxResults?: number;
       signal?: AbortSignal; // Abort signal to cancel the search
       findType?: 'f' | 'd' | 'both'; // For find: files, directories, or both (default: 'f')
+      nativeTools?: 'auto' | 'off'; // Use rg/fd/etc when detected ('auto') or never ('off', default)
     } = {}
-  ): Promise<Array<{ path: string; line?: number; match?: string; size?: number; modified?: Date; permissions?: string }>> {
+  ): Promise<SearchResultRow[]> {
     if (this.state !== ConnectionState.Connected || !this._client) {
       throw new SFTPError('Not connected');
     }
@@ -1941,294 +2044,387 @@ export class SSHConnection implements ISSHConnection {
     }
 
     // Validate maxResults to prevent command injection (must be positive integer, 0 = unlimited)
-    const validatedMaxResults = maxResults === 0 ? 0 : Math.max(1, Math.floor(Number(maxResults) || 2000));
-
-    // Escape for single quotes (most secure shell escaping)
-    // Single quotes prevent ALL shell expansion except single quotes themselves
-    // To include a single quote, we end the string, add escaped quote, and start new string: '\''
-    const escapeForSingleQuotes = (str: string): string => str.replace(/'/g, "'\\''");
-
-    const escapedPattern = escapeForSingleQuotes(pattern);
-    // Support single path or multiple paths for parallel search
+    const validatedMaxResults = validateMaxResults(maxResults);
     const searchPaths = Array.isArray(searchPath) ? searchPath : [searchPath];
-    const escapedSearchPaths = searchPaths.map((p) => `'${escapeForSingleQuotes(p)}'`).join(' ');
-    const caseFlag = caseSensitive ? '' : '-i';
-    // Use -F for fixed string matching (literal text, not regex) unless user wants regex
-    // This allows searching for text with special chars like "audio/ogg; codecs=opus"
-    const fixedStringFlag = regex ? '' : '-F';
-    // -w matches whole words only (word boundary matching)
-    const wholeWordFlag = wholeWord ? '-w' : '';
 
-    // Split comma-separated file patterns for multiple --include flags (VS Code-style)
-    const filePatterns = filePattern.split(',').map((p) => p.trim()).filter(Boolean);
-    const includeFlags = filePatterns.length > 0
-      ? filePatterns.map((p) => `--include='${escapeForSingleQuotes(p)}'`).join(' ')
-      : "--include='*'";
-
-    // Build exclude flags for grep/find
-    let excludeFlags = '';
-    if (excludePattern) {
-      const excludePatterns = excludePattern.split(',').map((p) => p.trim()).filter(Boolean);
-      for (const ep of excludePatterns) {
-        if (searchContent) {
-          // Escape the exclude pattern for shell safety
-          const escapedEp = escapeForSingleQuotes(ep);
-          // Always apply both --exclude (files) and --exclude-dir (directories)
-          // so patterns like *uat* exclude both files and directories matching the glob
-          excludeFlags += ` --exclude='${escapedEp}' --exclude-dir='${escapedEp}'`;
-        }
+    // Resolve which tools to use. 'auto' lazily probes the server once per
+    // connection (inside this user-triggered search → LITE-compliant); 'off'
+    // (the default) keeps the universal grep/find path with no probe at all.
+    const nativeMode = options.nativeTools ?? 'off';
+    let tools: RemoteSearchTools = LEGACY_TOOLS;
+    if (nativeMode === 'auto') {
+      try {
+        tools = await this.getRemoteSearchTools();
+      } catch {
+        tools = LEGACY_TOOLS;
       }
+      if (signal?.aborted) return [];
     }
 
-    let command: string;
-    const headLimit = validatedMaxResults > 0 ? ` | head -${validatedMaxResults}` : '';
-    if (searchContent) {
-      // Use grep for content search
-      // -r: recursive, -n: line numbers, -H: show filename, -I: skip binary files,
-      // -F: fixed string (literal, not regex), -w: whole word matching
-      // --include: file pattern filter (multiple supported), --exclude/--exclude-dir: exclude patterns
-      // -- signals end of options, allowing patterns that start with dash (e.g., -lfsms-)
-      const grepMaxFlag = validatedMaxResults > 0 ? `-m ${validatedMaxResults}` : '';
-      command = `grep -rnHI ${fixedStringFlag} ${wholeWordFlag} ${caseFlag} ${includeFlags}${excludeFlags} ${grepMaxFlag} -- '${escapedPattern}' ${escapedSearchPaths} 2>/dev/null${headLimit}`;
-    } else {
-      // Use find for filename search
-      const findCaseFlag = caseSensitive ? '-name' : '-iname';
-      // Determine type flag based on findType option
-      const ft = options.findType || 'f';
-      const typeFlag = ft === 'f' ? '-type f' : ft === 'd' ? '-type d' : '\\( -type f -o -type d \\)';
-      // Build find exclude patterns
-      let findExcludes = '';
-      if (excludePattern) {
-        const excludePatterns = excludePattern.split(',').map((p) => p.trim()).filter(Boolean);
-        for (const ep of excludePatterns) {
-          const escapedEp = escapeForSingleQuotes(ep);
-          findExcludes += ` ! -path '*/${escapedEp}/*' ! -name '${escapedEp}'`;
-        }
-      }
-      command = `find ${escapedSearchPaths} ${typeFlag} ${findCaseFlag} '*${escapedPattern}*'${findExcludes} 2>/dev/null${headLimit}`;
+    const contentOpts: ContentSearchOpts = {
+      pattern, searchPaths, caseSensitive, regex, wholeWord, filePattern, excludePattern,
+      maxResults: validatedMaxResults,
+    };
+    const filenameOpts: FilenameSearchOpts = {
+      pattern, searchPaths, caseSensitive, excludePattern,
+      maxResults: validatedMaxResults, findType: options.findType || 'f',
+    };
+
+    const t0 = Date.now();
+    let built = searchContent
+      ? buildContentSearchCommand(contentOpts, tools)
+      : buildFilenameSearchCommand(filenameOpts, tools);
+
+    infoLog('search-exec', 'strategy-selected', {
+      connectionId: this.id, tool: built.tool, strategy: describeStrategy(built.tool, tools),
+      nativeMode, searchContent,
+    });
+    diagLog('search-exec', 'command-built', {
+      connectionId: this.id, tool: built.tool, isNative: built.isNative,
+      command: built.command, paths: searchPaths.length,
+    });
+
+    let outcome = await this._execSearch(built, { searchContent, signal });
+
+    // Runtime fallback: a native tool that errored or silently produced nothing
+    // (exit!=0 with stderr) gets exactly ONE legacy retry. Mark it degraded so
+    // later searches on this connection skip it (no wasted failing round trip).
+    if (built.isNative && shouldFallbackToLegacy({
+      resultCount: outcome.results.length, stderrText: outcome.stderrText,
+      aborted: outcome.aborted, execError: outcome.execError,
+    })) {
+      infoLog('search-fallback', 'native-tool-fallback', {
+        connectionId: this.id, tool: built.tool,
+        reason: outcome.execError ? 'exec-error' : 'zero-with-stderr',
+        stderr: outcome.stderrText.slice(0, 200),
+      });
+      this._markToolDegraded(built.tool);
+      const legacy = searchContent
+        ? buildContentSearchCommand(contentOpts, tools, true)
+        : buildFilenameSearchCommand(filenameOpts, tools, true);
+      built = legacy;
+      outcome = await this._execSearch(legacy, { searchContent, signal });
     }
 
-    // Log the search command
-    logSSHCommand(this.host.name, command);
+    if (outcome.aborted) return [];
+    if (outcome.execError) {
+      // The legacy command itself failed — preserve the historical reject.
+      infoLog('search-exec', 'exec-error', { connectionId: this.id, tool: built.tool, errorMessage: outcome.errorMessage });
+      throw new SFTPError(`Search failed: ${outcome.errorMessage || 'unknown error'}`);
+    }
 
-    // Acquire channel with retry (handles SSH MaxSessions limit)
-    let stream: ClientChannel;
+    infoLog('search-exec', 'exec-done', {
+      connectionId: this.id, tool: built.tool, durationMs: Date.now() - t0,
+      bytesReceived: outcome.bytesReceived, lineCount: outcome.lineCount,
+      resultCount: outcome.results.length, droppedNoLineNum: outcome.droppedNoLineNum,
+      truncated: validatedMaxResults > 0 && outcome.results.length >= validatedMaxResults,
+    });
+    if (outcome.results.length === 0) {
+      infoLog('search-exec', 'zero-results', {
+        connectionId: this.id, tool: built.tool,
+        stderrEmpty: outcome.stderrText.trim().length === 0,
+        stderr: outcome.stderrText.slice(0, 200),
+      });
+    }
+
+    return this._enrichAndSort(outcome.results, outcome.uniquePaths, () => signal?.aborted === true);
+  }
+
+  /**
+   * Opt-in indexed filename search via plocate/locate. MUCH faster than a live
+   * find (the OS keeps a trigram index) but STALE — it can miss files created
+   * since the last `updatedb` and list deleted ones. The UI must surface that.
+   *
+   * Returns null when no index tool exists or the lookup fails (e.g. no DB) so
+   * the caller can fall back to a live filename search. Results are anchored to
+   * `basePath` AND filtered to basename matches, matching the live `find -iname`
+   * semantics (locate itself matches the whole path as a substring).
+   */
+  async searchIndexed(
+    basePath: string,
+    pattern: string,
+    options: { caseSensitive?: boolean; maxResults?: number; signal?: AbortSignal } = {},
+  ): Promise<{ results: SearchResultRow[]; dbMTimeMs: number | null; tool: 'plocate' | 'locate' } | null> {
+    if (this.state !== ConnectionState.Connected || !this._client) {
+      throw new SFTPError('Not connected');
+    }
+    const { caseSensitive = false, maxResults = 2000, signal } = options;
+    const tools = await this.getRemoteSearchTools();
+    const toolName: 'plocate' | 'locate' = tools.plocate ? 'plocate' : 'locate';
+    const built = buildLocateCommand(basePath, pattern, caseSensitive, maxResults, tools);
+    if (!built) {
+      infoLog('search-tools', 'indexed-search-unavailable', { connectionId: this.id, basePath });
+      return null; // no locate/plocate → caller falls back to live find
+    }
+    if (signal?.aborted) return { results: [], dbMTimeMs: null, tool: toolName };
+
+    infoLog('search-tools', 'indexed-search', { connectionId: this.id, tool: toolName, basePath });
+    const outcome = await this._execSearch(built, { searchContent: false, signal });
+    if (outcome.aborted) return { results: [], dbMTimeMs: null, tool: toolName };
+    if (outcome.execError) {
+      // Missing DB / locate error → tell the caller to use a live search instead.
+      infoLog('search-fallback', 'indexed-search-failed', { connectionId: this.id, errorMessage: outcome.errorMessage });
+      return null;
+    }
+
+    // Anchor to basePath (server-side grep -F only narrows transfer) and match
+    // the basename (locate matches anywhere in the path), so the result set
+    // equals what a live `find -iname '*pattern*'` under basePath would yield.
+    const prefix = basePath.endsWith('/') ? basePath : basePath + '/';
+    const needle = caseSensitive ? pattern : pattern.toLowerCase();
+    const before = outcome.results.length;
+    const anchored = outcome.results.filter((r) => {
+      if (!r.path.startsWith(prefix)) return false;
+      const base = r.path.slice(r.path.lastIndexOf('/') + 1);
+      return (caseSensitive ? base : base.toLowerCase()).includes(needle);
+    });
+    infoLog('search-exec', 'locate-anchor-filter', { connectionId: this.id, tool: toolName, before, after: anchored.length });
+
+    const uniquePaths = new Set(anchored.map((r) => r.path));
+    const results = await this._enrichAndSort(anchored, uniquePaths, () => signal?.aborted === true);
+    const dbMTimeMs = await this._getIndexDbAge();
+    return { results, dbMTimeMs, tool: toolName };
+  }
+
+  /** Best-effort locate-database mtime in epoch ms (for the staleness hint). */
+  private async _getIndexDbAge(): Promise<number | null> {
     try {
-      stream = await this._execChannel(command);
-    } catch (err) {
-      throw new SFTPError(`Search failed: ${(err as Error).message}`, err as Error);
+      const out = (await this.exec(buildIndexStalenessCommand())).trim();
+      // %Y prints integer epoch seconds; convert to ms.
+      const secs = parseInt(out, 10);
+      return Number.isFinite(secs) && secs > 0 ? secs * 1000 : null;
+    } catch {
+      return null;
     }
+  }
 
-    // If already aborted before channel opened, close immediately
-    if (signal?.aborted) {
-      try { stream.signal('TERM'); } catch { /* signal not supported */ }
-      stream.close();
-      return [];
-    }
+  /**
+   * Run a single built search command and parse its output. Never rejects —
+   * resolves with an outcome object so the caller can decide whether to fall
+   * back to the legacy command. Honors the abort signal (SIGTERM + close).
+   */
+  private _execSearch(
+    built: BuiltSearchCommand,
+    opts: { searchContent: boolean; signal?: AbortSignal },
+  ): Promise<{
+    results: SearchResultRow[];
+    uniquePaths: Set<string>;
+    stderrText: string;
+    execError: boolean;
+    errorMessage?: string;
+    aborted: boolean;
+    lineCount: number;
+    bytesReceived: number;
+    droppedNoLineNum: number;
+  }> {
+    const { searchContent, signal } = opts;
+    logSSHCommand(this.host.name, built.command);
 
-    return new Promise((resolve, reject) => {
-      // Register abort handler to kill the remote process
-      let aborted = false;
-      const onAbort = () => {
-        aborted = true;
-        // Send SIGTERM to explicitly kill the remote process before closing the channel.
-        // stream.signal() may not be supported by all SSH servers; stream.close()
-        // sends channel_close which usually causes SSHD to send SIGHUP as fallback.
-        try { stream.signal('TERM'); } catch { /* signal not supported */ }
-        stream.close();
-      };
-      if (signal) {
-        signal.addEventListener('abort', onAbort, { once: true });
-      }
+    const empty = () => ({
+      results: [] as SearchResultRow[], uniquePaths: new Set<string>(), stderrText: '',
+      execError: false, aborted: false, lineCount: 0, bytesReceived: 0, droppedNoLineNum: 0,
+    });
 
-      // Stream error handler — without this the Promise can hang forever if the
-      // SSH channel errors out before emitting 'close' (e.g. server resets the
-      // connection mid-search). Routing the error to reject() unblocks callers.
-      let settled = false;
-      const settleResolve = (val: Array<{ path: string; line?: number; match?: string; size?: number; modified?: Date; permissions?: string }>) => {
-        if (settled) return;
-        settled = true;
-        resolve(val);
-      };
-      const settleReject = (err: Error) => {
-        if (settled) return;
-        settled = true;
-        if (signal) signal.removeEventListener('abort', onAbort);
-        infoLog('ssh-connect', 'searchFiles/stream-error', {
-          connectionId: this.id,
-          errorMessage: err.message,
-        });
-        reject(new SFTPError(`Search stream error: ${err.message}`, err));
-      };
-      stream.on('error', (err: Error) => settleReject(err));
-      stream.stderr.on('error', (err: Error) => settleReject(err));
-
-      const outputChunks: Buffer[] = [];
-      const errorChunks: Buffer[] = [];
-
-      stream.on('data', (data: Buffer) => {
-        outputChunks.push(data);
-      });
-
-      stream.stderr.on('data', (data: Buffer) => {
-        errorChunks.push(data);
-      });
-
-      stream.on('close', async () => {
-        // Clean up abort listener
-        if (signal) {
-          signal.removeEventListener('abort', onAbort);
-        }
-
-        // If aborted, return empty results
-        if (aborted) {
-          settleResolve([]);
+    return new Promise((resolve) => {
+      this._execChannel(built.command).then((stream) => {
+        if (signal?.aborted) {
+          try { stream.signal('TERM'); } catch { /* signal not supported */ }
+          stream.close();
+          resolve({ ...empty(), aborted: true });
           return;
         }
-          const output = Buffer.concat(outputChunks).toString('utf8');
-          const results: Array<{ path: string; line?: number; match?: string; size?: number; modified?: Date; permissions?: string }> = [];
-          const uniquePaths = new Set<string>();
 
-          // Yield to the event loop every PARSE_CHUNK lines. Without this, parsing
-          // a single grep response of tens of thousands of lines holds the event
-          // loop for hundreds of ms; if many parallel workers close around the
-          // same time the cumulative block exceeds VS Code's extension-host
-          // unresponsive watchdog (~10s), and the host is force-restarted.
-          // Confirmed cause: with searchParallelProcesses=1 the host doesn't
-          // crash; at default 5 across multiple servers it does.
-          const PARSE_CHUNK = 500;
-          const lines = output.split('\n');
+        let aborted = false;
+        const onAbort = () => {
+          aborted = true;
+          try { stream.signal('TERM'); } catch { /* signal not supported */ }
+          stream.close();
+        };
+        if (signal) signal.addEventListener('abort', onAbort, { once: true });
 
-          if (searchContent) {
-            // Parse grep output: filename:line:match
-            for (let i = 0; i < lines.length; i++) {
-              if (i > 0 && i % PARSE_CHUNK === 0) {
-                await new Promise<void>((resolveYield) => setImmediate(resolveYield));
-                if (aborted) {
-                  settleResolve([]);
-                  return;
-                }
-              }
-              const line = lines[i];
-              if (!line) continue;
-              const colonIndex = line.indexOf(':');
-              if (colonIndex === -1) continue;
+        let settled = false;
+        const settle = (val: Awaited<ReturnType<SSHConnection['_execSearch']>>) => {
+          if (settled) return;
+          settled = true;
+          if (signal) signal.removeEventListener('abort', onAbort);
+          resolve(val);
+        };
 
-              const filePath = line.substring(0, colonIndex);
-              uniquePaths.add(filePath);
-              const rest = line.substring(colonIndex + 1);
-              const secondColonIndex = rest.indexOf(':');
+        const outputChunks: Buffer[] = [];
+        const errorChunks: Buffer[] = [];
 
-              if (secondColonIndex !== -1) {
-                const lineNum = parseInt(rest.substring(0, secondColonIndex), 10);
-                const match = rest.substring(secondColonIndex + 1);
-                results.push({
-                  path: filePath,
-                  line: isNaN(lineNum) ? undefined : lineNum,
-                  match: match.trim(),
-                });
-              } else {
-                results.push({ path: filePath, match: rest.trim() });
-              }
-            }
-          } else {
-            // Parse find output: just file paths
-            for (let i = 0; i < lines.length; i++) {
-              if (i > 0 && i % PARSE_CHUNK === 0) {
-                await new Promise<void>((resolveYield) => setImmediate(resolveYield));
-                if (aborted) {
-                  settleResolve([]);
-                  return;
-                }
-              }
-              const filePath = lines[i];
-              if (!filePath) continue;
-              const trimmedPath = filePath.trim();
-              if (!trimmedPath) continue;
-              uniquePaths.add(trimmedPath);
-              results.push({ path: trimmedPath });
-            }
-          }
-
-          // Stat-enrichment with yields. The original eager Promise.all over
-          // 100 sftp.stat calls saturated ssh2's native crypto and tripped
-          // VS Code's extension-host watchdog. Same outcome (size/modified/
-          // permissions on result rows), but processed in small batches with
-          // setImmediate yields between them so the event loop stays responsive
-          // even when many search workers complete near each other.
-          //
-          // Cap reduced from 100 to 30 paths per task: combined with the global
-          // 10-worker cap, that's at most ~300 stat ops in flight per search,
-          // spread over many event-loop turns rather than bursting at once.
-          const pathsToStat = Array.from(uniquePaths).slice(0, 30);
-          const statsMap = new Map<string, { size: number; modified: Date; permissions: string }>();
-          const STAT_BATCH_SIZE = 5;
-
-          try {
-            const sftp = await this.getSFTP();
-            for (let i = 0; i < pathsToStat.length; i += STAT_BATCH_SIZE) {
-              if (aborted) break;
-              const batch = pathsToStat.slice(i, i + STAT_BATCH_SIZE);
-              await Promise.all(
-                batch.map(async (filePath) => {
-                  try {
-                    const stats = await new Promise<{ size: number; mtime: number; mode: number }>((res, rej) => {
-                      sftp.stat(filePath, (err: Error | undefined, s: { size: number; mtime: number; mode: number }) => {
-                        if (err) rej(err);
-                        else res(s);
-                      });
-                    });
-                    const permissions = ((stats.mode & 0o400) ? 'r' : '-') +
-                      ((stats.mode & 0o200) ? 'w' : '-') +
-                      ((stats.mode & 0o100) ? 'x' : '-') +
-                      ((stats.mode & 0o040) ? 'r' : '-') +
-                      ((stats.mode & 0o020) ? 'w' : '-') +
-                      ((stats.mode & 0o010) ? 'x' : '-') +
-                      ((stats.mode & 0o004) ? 'r' : '-') +
-                      ((stats.mode & 0o002) ? 'w' : '-') +
-                      ((stats.mode & 0o001) ? 'x' : '-');
-                    statsMap.set(filePath, {
-                      size: stats.size,
-                      modified: new Date(stats.mtime * 1000),
-                      permissions,
-                    });
-                  } catch {
-                    // Ignore stat errors for individual files
-                  }
-                })
-              );
-              // Yield to event loop between batches so concurrent workers do
-              // not collectively block the host.
-              await new Promise<void>((r) => setImmediate(r));
-            }
-          } catch {
-            // Ignore if SFTP fails - stats are optional
-          }
-
-          // Enrich results with stats
-          for (const result of results) {
-            const stats = statsMap.get(result.path);
-            if (stats) {
-              result.size = stats.size;
-              result.modified = stats.modified;
-              result.permissions = stats.permissions;
-            }
-          }
-
-          // Sort results: by path alphabetically, then by line number
-          results.sort((a, b) => {
-            const pathCompare = a.path.localeCompare(b.path);
-            if (pathCompare !== 0) return pathCompare;
-            // Same file - sort by line number
-            if (a.line !== undefined && b.line !== undefined) {
-              return a.line - b.line;
-            }
-            return 0;
-          });
-
-          settleResolve(results);
+        stream.on('error', (err: Error) => {
+          infoLog('search-exec', 'stream-error', { connectionId: this.id, errorMessage: err.message });
+          settle({ ...empty(), execError: true, errorMessage: err.message, stderrText: Buffer.concat(errorChunks).toString('utf8') });
         });
+        stream.stderr.on('error', (err: Error) => {
+          settle({ ...empty(), execError: true, errorMessage: err.message });
+        });
+        stream.on('data', (data: Buffer) => { outputChunks.push(data); });
+        stream.stderr.on('data', (data: Buffer) => {
+          errorChunks.push(data);
+          diagLog('search-exec', 'stderr-chunk', { connectionId: this.id, tool: built.tool, stderr: data.toString('utf8').slice(0, 200) });
+        });
+
+        stream.on('close', async () => {
+          if (aborted) { settle({ ...empty(), aborted: true }); return; }
+          const outBuf = Buffer.concat(outputChunks);
+          const bytesReceived = outBuf.length;
+          const output = outBuf.toString('utf8');
+          const stderrText = Buffer.concat(errorChunks).toString('utf8');
+          const parsed = await this._parseSearchOutput(
+            output, searchContent, built.requireLineNumber, built.tool === 'fd', () => aborted,
+          );
+          if (parsed.abortedDuringParse) { settle({ ...empty(), aborted: true }); return; }
+          settle({
+            results: parsed.results, uniquePaths: parsed.uniquePaths, stderrText,
+            execError: false, aborted: false, lineCount: parsed.lineCount,
+            bytesReceived, droppedNoLineNum: parsed.droppedNoLineNum,
+          });
+        });
+      }).catch((err: Error) => {
+        resolve({ ...empty(), execError: true, errorMessage: err.message });
       });
+    });
+  }
+
+  /**
+   * Parse raw search output into result rows, yielding to the event loop every
+   * PARSE_CHUNK lines so a huge response cannot trip the extension-host watchdog.
+   * `requireLineNumber` drops content lines lacking a numeric line field (rg
+   * binary-match notes). `normalizeTrailingSlash` trims fd's directory slashes.
+   */
+  private async _parseSearchOutput(
+    output: string,
+    searchContent: boolean,
+    requireLineNumber: boolean,
+    normalizeTrailingSlash: boolean,
+    isAborted: () => boolean,
+  ): Promise<{ results: SearchResultRow[]; uniquePaths: Set<string>; droppedNoLineNum: number; lineCount: number; abortedDuringParse: boolean }> {
+    const results: SearchResultRow[] = [];
+    const uniquePaths = new Set<string>();
+    let droppedNoLineNum = 0;
+    const PARSE_CHUNK = 500;
+    const lines = output.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+      if (i > 0 && i % PARSE_CHUNK === 0) {
+        await new Promise<void>((resolveYield) => setImmediate(resolveYield));
+        if (isAborted()) return { results, uniquePaths, droppedNoLineNum, lineCount: lines.length, abortedDuringParse: true };
+        diagLog('search-exec', 'parse-progress', { connectionId: this.id, parsedLines: i, resultCount: results.length });
+      }
+      const line = lines[i];
+      if (!line) continue;
+
+      if (searchContent) {
+        // grep/rg output: filename:line:match
+        const colonIndex = line.indexOf(':');
+        if (colonIndex === -1) continue;
+        const filePath = line.substring(0, colonIndex);
+        const rest = line.substring(colonIndex + 1);
+        const secondColonIndex = rest.indexOf(':');
+        if (secondColonIndex !== -1) {
+          const lineNum = parseInt(rest.substring(0, secondColonIndex), 10);
+          const match = rest.substring(secondColonIndex + 1);
+          if (isNaN(lineNum)) {
+            if (requireLineNumber) { droppedNoLineNum++; continue; }
+            uniquePaths.add(filePath);
+            results.push({ path: filePath, line: undefined, match: match.trim() });
+          } else {
+            uniquePaths.add(filePath);
+            results.push({ path: filePath, line: lineNum, match: match.trim() });
+          }
+        } else {
+          if (requireLineNumber) { droppedNoLineNum++; continue; }
+          uniquePaths.add(filePath);
+          results.push({ path: filePath, match: rest.trim() });
+        }
+      } else {
+        // find/fd output: just paths
+        let trimmedPath = line.trim();
+        if (!trimmedPath) continue;
+        if (normalizeTrailingSlash && trimmedPath.length > 1 && trimmedPath.endsWith('/')) {
+          trimmedPath = trimmedPath.slice(0, -1);
+        }
+        uniquePaths.add(trimmedPath);
+        results.push({ path: trimmedPath });
+      }
+    }
+    return { results, uniquePaths, droppedNoLineNum, lineCount: lines.length, abortedDuringParse: false };
+  }
+
+  /**
+   * Stat-enrich (size/mtime/permissions) up to 30 unique result paths in small
+   * batches with event-loop yields, then sort by path then line. Stat errors per
+   * file are ignored (deleted/inaccessible files just lack metadata).
+   */
+  private async _enrichAndSort(
+    results: SearchResultRow[],
+    uniquePaths: Set<string>,
+    isAborted: () => boolean,
+  ): Promise<SearchResultRow[]> {
+    const pathsToStat = Array.from(uniquePaths).slice(0, 30);
+    const statsMap = new Map<string, { size: number; modified: Date; permissions: string }>();
+    const STAT_BATCH_SIZE = 5;
+
+    try {
+      const sftp = await this.getSFTP();
+      for (let i = 0; i < pathsToStat.length; i += STAT_BATCH_SIZE) {
+        if (isAborted()) break;
+        const batch = pathsToStat.slice(i, i + STAT_BATCH_SIZE);
+        await Promise.all(
+          batch.map(async (filePath) => {
+            try {
+              const stats = await new Promise<{ size: number; mtime: number; mode: number }>((res, rej) => {
+                sftp.stat(filePath, (err: Error | undefined, s: { size: number; mtime: number; mode: number }) => {
+                  if (err) rej(err);
+                  else res(s);
+                });
+              });
+              const permissions = ((stats.mode & 0o400) ? 'r' : '-') +
+                ((stats.mode & 0o200) ? 'w' : '-') +
+                ((stats.mode & 0o100) ? 'x' : '-') +
+                ((stats.mode & 0o040) ? 'r' : '-') +
+                ((stats.mode & 0o020) ? 'w' : '-') +
+                ((stats.mode & 0o010) ? 'x' : '-') +
+                ((stats.mode & 0o004) ? 'r' : '-') +
+                ((stats.mode & 0o002) ? 'w' : '-') +
+                ((stats.mode & 0o001) ? 'x' : '-');
+              statsMap.set(filePath, {
+                size: stats.size,
+                modified: new Date(stats.mtime * 1000),
+                permissions,
+              });
+            } catch {
+              // Ignore stat errors for individual files
+            }
+          })
+        );
+        await new Promise<void>((r) => setImmediate(r));
+      }
+    } catch {
+      // Ignore if SFTP fails - stats are optional
+    }
+
+    for (const result of results) {
+      const stats = statsMap.get(result.path);
+      if (stats) {
+        result.size = stats.size;
+        result.modified = stats.modified;
+        result.permissions = stats.permissions;
+      }
+    }
+
+    results.sort((a, b) => {
+      const pathCompare = a.path.localeCompare(b.path);
+      if (pathCompare !== 0) return pathCompare;
+      if (a.line !== undefined && b.line !== undefined) {
+        return a.line - b.line;
+      }
+      return 0;
+    });
+
+    return results;
   }
 
   /**

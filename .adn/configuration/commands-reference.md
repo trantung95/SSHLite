@@ -1,6 +1,6 @@
 # Commands Reference
 
-All 114 commands registered by SSH Lite (SSH Tools), organized by category.
+All 115 commands registered by SSH Lite (SSH Tools), organized by category.
 
 ---
 
@@ -142,6 +142,7 @@ Backing services: `SystemToolsService` (processes + systemctl), `SnippetService`
 | `sshLite.clearFilter` | Clear Filter | View title |
 | `sshLite.filterFileNames` | Filter by Filename | Tree context (connection + folder) |
 | `sshLite.clearFilenameFilter` | Clear Filename Filter | View title / Tree context |
+| `sshLite.indexFolder` | Index Folder for Fast Filename Search | Tree context (connection + folder) |
 | `sshLite.searchServerForFilter` | Search Server for Filter | View title |
 | `sshLite.revealSearchResultInTree` | Reveal Search Result | Context |
 

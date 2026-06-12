@@ -1,7 +1,7 @@
 # SSH Lite (SSH Tools) — Command Reference
 
 > Auto-generated from `package.json`. Run `npm run docs:commands` to regenerate.
-> Last updated: 2026-06-11 · Version: 0.10.0
+> Last updated: 2026-06-12 · Version: 0.10.1
 
 This document lists every command registered by SSH Lite (SSH Tools), organized by category.
 Open the Command Palette (**Ctrl+Shift+P** / **Cmd+Shift+P**) and type the command title to find it.
@@ -93,6 +93,7 @@ Open the Command Palette (**Ctrl+Shift+P** / **Cmd+Shift+P**) and type the comma
 | Search Server for Filter | `sshLite.searchServerForFilter` | — | View toolbar |
 | Show Search | `sshLite.showSearch` | `ctrl+shift+s / cmd+shift+s (Mac)` | Keybinding: ctrl+shift+s / cmd+shift+s (Mac), View toolbar |
 | Search Here | `sshLite.searchInScope` | — | Tree context menu |
+| Index Folder for Fast Filename Search | `sshLite.indexFolder` | — | Tree context menu |
 | Filter by Name | `sshLite.filterFileNames` | — | Tree context menu |
 | Clear Filename Filter | `sshLite.clearFilenameFilter` | — | View toolbar, Tree context menu |
 | Cancel Search | `sshLite.cancelSearch` | — | Command Palette only |

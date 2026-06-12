@@ -2,7 +2,7 @@
   "name": "ssh-lite",
   "displayName": "SSH Lite (SSH Tools)",
   "description": "A visual SSH client for VS Code. Browse, edit, monitor, manage services - by clicking, not typing vi/systemctl/crontab. Nothing installed on the remote server. Perfect for VPS, cloud servers (AWS/Azure/GCP), and Linux administration.",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "publisher": "hybr8",
   "engines": {
     "vscode": "^1.85.0"
@@ -615,6 +615,12 @@
         "title": "Search Here",
         "category": "SSH Lite",
         "icon": "$(search)"
+      },
+      {
+        "command": "sshLite.indexFolder",
+        "title": "Index Folder for Fast Filename Search",
+        "category": "SSH Lite",
+        "icon": "$(database)"
       },
       {
         "command": "sshLite.filterFileNames",
@@ -1413,6 +1419,16 @@
           "group": "1_actions@6"
         },
         {
+          "command": "sshLite.indexFolder",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^folder/",
+          "group": "1_actions@8"
+        },
+        {
+          "command": "sshLite.indexFolder",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "group": "1_actions@4"
+        },
+        {
           "command": "sshLite.showChanges",
           "when": "view == sshLite.fileExplorer && viewItem =~ /^file/",
           "group": "1_actions@4"
@@ -1749,6 +1765,12 @@
           "minimum": 1,
           "description": "Maximum number of files to show when filtering (default: 1000)."
         },
+        "sshLite.filenameIndexMaxEntries": {
+          "type": "number",
+          "default": 2000000,
+          "minimum": 1000,
+          "description": "Maximum number of paths a client-side filename snapshot index may hold (default: 2,000,000 ~ a few tens of MB gzipped). A folder that would exceed this is refused rather than indexed partially — a truncated index would silently miss files. Used by the 'Index Folder for Fast Filename Search' command."
+        },
         "sshLite.searchParallelProcesses": {
           "type": "number",
           "default": 2,
@@ -1760,6 +1782,19 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically exclude common directories from search (.git, node_modules, .svn, .hg, CVS, .DS_Store, bower_components, *.code-search). Matches VS Code's default search behavior."
+        },
+        "sshLite.searchNativeTools": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "off"
+          ],
+          "enumDescriptions": [
+            "Detect and use faster native tools on the remote server (ripgrep for content, fd for filenames, parallel grep on multi-core hosts) when available. Falls back to grep/find automatically if a tool is missing or fails. Produces identical-or-superset results — never fewer.",
+            "Always use grep/find. No server tool detection (no probe command)."
+          ],
+          "default": "auto",
+          "description": "How remote search picks its tool. 'auto' (default) accelerates with ripgrep/fd/parallel-grep when the server has them, transparently falling back to grep/find on any failure. 'off' forces the universal grep/find path. The find -prune and LC_ALL=C construction improvements apply on both settings (they change speed, not results)."
         },
         "sshLite.localFileTooltips": {
           "type": "boolean",
@@ -1909,6 +1944,7 @@
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "test:docker": "jest --config jest.docker.config.js --no-coverage",
+    "test:docker:search-tools": "jest --config jest.docker.search-tools.config.js --no-coverage",
     "test:multios": "jest --config jest.multios.config.js --no-coverage",
     "test:windows-client": "jest --config jest.windows-client.config.js --no-coverage",
     "test:all": "jest --no-coverage && npm run test:docker",

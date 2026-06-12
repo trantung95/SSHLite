@@ -296,6 +296,10 @@
     "title": "Search Here"
   },
   {
+    "id": "sshLite.indexFolder",
+    "title": "Index Folder for Fast Filename Search"
+  },
+  {
     "id": "sshLite.filterFileNames",
     "title": "Filter by Name"
   },

@@ -1,0 +1,32 @@
+FROM alpine:3.19
+
+# A DELIBERATELY busybox-only userland: NO `grep findutils coreutils`. So
+# `grep`/`find`/`head`/`xargs` resolve to busybox applets — exactly the
+# environment the regular test images mask by apk-adding the GNU tools.
+# This is the regression net for the busybox `grep --include` silent-0-results
+# bug: with the native-tools path 'auto', SSH Lite must detect the non-GNU grep
+# and use a find|xargs pipeline; with 'off' the legacy `grep --include` returns
+# an empty set (the bug), which the test asserts as the contrast.
+RUN apk add --no-cache openssh-server sudo
+
+RUN adduser -D -s /bin/sh testuser && echo "testuser:testpass" | chpasswd
+
+RUN ssh-keygen -A && \
+    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && \
+    echo "UsePAM no" >> /etc/ssh/sshd_config && \
+    echo "Subsystem sftp /usr/lib/ssh/sftp-server" >> /etc/ssh/sshd_config
+
+# Minimal busybox-built fixture (same "needle" token on line 1 of each text file).
+RUN set -eux; \
+    base=/home/testuser/searchfix; \
+    mkdir -p "$base/sub" "$base/node_modules/pkg"; \
+    printf 'needle visible\n' > "$base/normal.txt"; \
+    printf 'needle in nm\n'   > "$base/node_modules/pkg/dep.txt"; \
+    printf 'const x = "needle";\n' > "$base/sub/app.ts"; \
+    printf 'var y = "needle";\n'   > "$base/sub/app.js"; \
+    chown -R testuser:testuser /home/testuser
+
+RUN mkdir -p /var/log/sshd
+EXPOSE 22
+CMD ["/bin/sh", "-c", "/usr/sbin/sshd -D -e 2>&1 | tee /var/log/sshd/sshd.log"]
