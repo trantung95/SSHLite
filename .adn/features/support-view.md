@@ -8,6 +8,8 @@ links to report a bug, donate, star/rate/share. Added in **v0.9.0**. The coder's
 assistants, and other VS Code windows; floats AI tool name labels; follows the
 cursor; dozes off when idle - see the sections below).
 
+> **Design skills**: when reshaping this view's UI or the pixel-art **NPC** mascot, invoke the vendored `frontend-design` skill (webview look-and-feel) and `canvas-design` skill (the NPC's pixel art + font choices under `.claude/skills/canvas-design/canvas-fonts/`). See `CLAUDE.md` -> "Webview / UI & Visual Design Skills".
+
 ## Why a WebviewView (not a TreeDataProvider)
 
 A `TreeDataProvider` row can only show a ~16px `ThemeIcon` — it cannot render a real

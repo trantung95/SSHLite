@@ -38,6 +38,23 @@ Legend: **PORT** = installed adapted. **DROP** = source-specific, not installed.
 | `auto-commit` | DROP (not selected) | Auto git commit; not requested. |
 | `db-probe-detail`, `ddl-export-load-warning`, `prelive-schema-changes`, `probe-vs-documented-fact`, `qa-steps-generic`, `sentinel-mr-detail`, `sql-script-detail`, `sql-target-engine-comment`, `validate-queries`, `verify-ddl-before-sql`, `secrets-blocklist`, `parent-ticket-sync` | DROP | Database / SQL / DDL / GitLab-MR / ticket domain skills. Not applicable to an SSH extension. |
 
+## Design skills (source: `anthropics/skills`, NOT 3in1)
+
+Vendored 2026-06-13 at the user's request to raise webview/visual-design quality (the 5 webviews + the pixel-art NPC mascot). Different upstream from the 3in1 port above.
+
+| Skill | Decision | Notes |
+|---|---|---|
+| `frontend-design` | VENDOR (full) | Copied from `anthropics/skills` `skills/frontend-design/` (SKILL.md + LICENSE.txt). Upstream version, richer than the `claude-plugins-official` plugin copy; its `description` triggers on "building new UI or reshaping an existing one". **Drift risk**: a `frontend-design:frontend-design` marketplace plugin may also be installed; the repo copy is authoritative for teammates/CI without the plugin. |
+| `canvas-design` | VENDOR (full) | Copied from `anthropics/skills` `skills/canvas-design/`: SKILL.md + LICENSE.txt + the **complete** `canvas-fonts/` (81 files, ~5.6 MB: 54 `.ttf` + license txts). Static PNG/PDF poster art + font library; secondary fit (art direction + fonts for the NPC and marketing, not web UI). `.vscodeignore` `.claude/**` keeps the fonts out of the `.vsix`. |
+
+Re-sync both:
+```
+git clone --depth 1 --filter=blob:none --sparse https://github.com/anthropics/skills.git
+cd skills && git sparse-checkout set skills/canvas-design skills/frontend-design
+# copy skills/{frontend-design,canvas-design}/ over .claude/skills/{frontend-design,canvas-design}/
+```
+Auto-trigger wiring: a `.adn/lessons.md` "Design skills" block (keyword-matched by `prompt-context-injector`) + a CLAUDE.md "Webview / UI & Visual Design Skills" section.
+
 ## Agents (source: `D:\CT\Repos\3in1\.claude\agents\`)
 
 | Source agent | Decision | Notes |

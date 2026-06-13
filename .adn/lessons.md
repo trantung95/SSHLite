@@ -5,6 +5,16 @@ Add new entries as bugs are found, mistakes are made, or better approaches are d
 
 ---
 
+## 2026-06-13 - Design skills (frontend-design + canvas-design) vendored for webview / NPC work
+
+**Infra**: two Anthropic design skills are vendored under `.claude/skills/` (committed; `.vscodeignore` `.claude/**` keeps them out of the `.vsix`). Use them - do not hand-roll UI aesthetics:
+
+- **`frontend-design`** when building or reshaping ANY webview UI - the 5 webviews: Search, Support/NPC, Connection Import, Donate, Server Monitor (each = panel/view `.ts` + `webview-src/` where applicable). Outputs working HTML/CSS/JS; its description triggers on "building new UI or reshaping an existing one".
+- **`canvas-design`** when crafting static visual art or picking type: the pixel-art **NPC** coder mascot (Support view), marketplace screenshots, donate art, icons. Outputs PNG/PDF (NOT web UI, NOT the HTML5 `<canvas>` API) and bundles a pixel/display font library (`.claude/skills/canvas-design/canvas-fonts/`, e.g. Pixelify Sans, Silkscreen). Use it for art direction + fonts, then port the look into the webview code.
+- Source / re-sync: upstream `anthropics/skills`; full provenance + clone commands in `.claude/skills/porting-ai-docs/references/catalog.md`. CLAUDE.md "Webview / UI & Visual Design Skills" has the per-webview map. Keywords: webview, UI, NPC, mascot, panel, donate, search panel, monitor, design, font, giao dien.
+
+---
+
 ## 2026-06-11 - Native remote search tools (ripgrep/fd/parallel-grep/plocate) with per-server auto-detection + 3-tier fallback
 
 **Feature**: remote search/filter now detects and uses faster OS-native tools per connection instead of hardcoding `grep -rnHI` / `find`. See `.adn/features/search-system.md` ("Native tool selection"). Pure command construction lives in `src/connection/searchCommandBuilder.ts` (no ssh2/vscode — fully unit-testable); `SSHConnection.searchFiles()` probes once per connection, selects a strategy, executes, and falls back. Reusable lessons:

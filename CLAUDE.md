@@ -170,6 +170,20 @@ Keep `.adn/` in sync with code changes. Mapping:
 
 - **Solo project** — commit directly to `master`. No feature branches, no PRs, no worktree isolation. The `superpowers:using-git-worktrees` and similar branch-ceremony skills are overridden for this repo. Do NOT skip hooks, signing, or other safety mechanisms — only the branch ceremony.
 
+## Webview / UI & Visual Design Skills (CRITICAL)
+
+The repo vendors two Anthropic design skills under `.claude/skills/` so any Claude install or teammate gets them without the marketplace plugin. **Invoke them when relevant - do not hand-roll webview look-and-feel:**
+
+| Skill | Invoke when | Scope in this repo |
+|------|-------------|--------------------|
+| `frontend-design` | Building or reshaping ANY webview UI | The 5 webviews: Search (`src/webviews/SearchPanel.ts` + `webview-src/search/`), Support / NPC (`SupportViewProvider.ts` + `webview-src/support/`), Connection Import (`ConnectionImportPanel.ts`), Donate (`DonatePanel.ts`), Server Monitor (`ServerMonitorService.ts` `getMonitorWebviewContent()`) |
+| `canvas-design` | Crafting static visual art / picking type | The pixel-art **NPC** coder mascot, marketplace/store screenshots, donate-page art, icons. Bundles a pixel/display font library (Pixelify Sans, Silkscreen, ...) under `.claude/skills/canvas-design/canvas-fonts/` |
+
+- `frontend-design` outputs working HTML/CSS/JS; `canvas-design` outputs static PNG/PDF art (NOT web UI, NOT the HTML5 `<canvas>` API) - use it for art direction and as a font source, then port the look into the webview code.
+- Both auto-trigger from their `description`; the `.adn/lessons.md` "Design skills" entry reinforces the trigger for prompts that name a specific panel.
+- `.claude/**` is in `.vscodeignore`, so the vendored fonts never ship in the published `.vsix`.
+- Provenance + re-sync steps: `.claude/skills/porting-ai-docs/references/catalog.md` ("Design skills" section). Upstream is `anthropics/skills`.
+
 ## Marketing & README Guidelines
 
 README must lead with **GUI/click-driven value**, not just feature lists:
