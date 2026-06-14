@@ -130,6 +130,18 @@ export class Position {
   ) {}
 }
 
+// WorkspaceEdit mock (enough for FileService.openRemoteFile content replacement)
+export class WorkspaceEdit {
+  public edits: Array<{ uri: unknown; range: unknown; text: string }> = [];
+  replace(uri: unknown, range: unknown, text: string): void {
+    this.edits.push({ uri, range, text });
+  }
+  insert(uri: unknown, position: unknown, text: string): void {
+    this.edits.push({ uri, range: position, text });
+  }
+  delete(): void { /* no-op */ }
+}
+
 // TreeItem mock
 export class TreeItem {
   label?: string | { label: string };
@@ -285,6 +297,7 @@ export const workspace = {
     getText: () => '',
     save: jest.fn().mockResolvedValue(true),
   }),
+  applyEdit: jest.fn().mockResolvedValue(true),
   onDidSaveTextDocument: new EventEmitter<unknown>().event,
   onDidChangeTextDocument: new EventEmitter<unknown>().event,
   onDidCloseTextDocument: new EventEmitter<unknown>().event,

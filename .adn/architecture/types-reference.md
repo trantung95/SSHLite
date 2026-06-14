@@ -11,15 +11,20 @@ All core interfaces and types defined in `src/types.ts` and `src/types/progressi
 SSH host configuration. Source: `src/types.ts`
 
 ```typescript
+type ConnectionType = 'ssh' | 'ftp';
+
 interface IHostConfig {
   id: string;              // Unique key: "${host}:${port}:${username}"
   name: string;            // Display name
   host: string;            // Hostname or IP
-  port: number;            // SSH port (default: 22)
-  username: string;        // Authentication username
-  privateKeyPath?: string; // Path to private key file
+  port: number;            // Port (default: 22 for SSH, 21 for FTP)
+  username: string;        // Authentication username ('anonymous' for anonymous FTP)
+  privateKeyPath?: string; // Path to private key file (SSH only)
   tabLabel?: string;       // Custom tab prefix (e.g., "PRD", "DEV")
   source: 'ssh-config' | 'saved';  // Origin of this config
+  connectionType?: ConnectionType; // Transport. Absent means 'ssh' (backward compat)
+  secure?: boolean;        // FTP only: use explicit FTPS (TLS)
+  anonymous?: boolean;     // FTP only: anonymous login
 }
 ```
 
@@ -27,6 +32,7 @@ interface IHostConfig {
 - `id` is the connection identifier used throughout the codebase
 - `tabLabel` shows as `[PRD]` instead of `[SSH]` in editor tabs when set
 - `source` distinguishes between ~/.ssh/config entries and manually saved hosts
+- `connectionType` is optional for backward compatibility; use the `getConnectionType(host)` helper which defaults a missing value to `'ssh'` (issue #9)
 
 ### IRemoteFile
 
@@ -47,35 +53,67 @@ interface IRemoteFile {
 }
 ```
 
-### ISSHConnection
+### IConnection / ISSHConnection (issue #9)
 
-SSH connection interface. Source: `src/types.ts`
+Connections are split into a protocol-agnostic `IConnection` (implemented by both
+`SSHConnection` and `FTPConnection`) and an SSH-only `ISSHConnection extends IConnection`
+that adds the ssh2-coupled surface. Source: `src/types.ts`. See
+[connection-protocols.md](../features/connection-protocols.md).
 
 ```typescript
-interface ISSHConnection {
+interface IConnectionCapabilities {
+  type: ConnectionType;       // 'ssh' or 'ftp'
+  supportsExec: boolean;      // false for FTP
+  supportsShell: boolean;     // false for FTP
+  supportsPortForward: boolean;
+  supportsNativeWatch: boolean;  // false for FTP (poll instead)
+  supportsSearch: boolean;
+  supportsServerBackup: boolean;
+  supportsSudo: boolean;
+}
+
+interface IConnection {
   readonly id: string;
   readonly host: IHostConfig;
   readonly state: ConnectionState;
-  readonly client: Client | null;  // ssh2 Client
+  readonly capabilities: IConnectionCapabilities;
+  readonly onStateChange: Event<ConnectionState>;
+  readonly onFileChange: Event<{ remotePath: string; event: 'modify'|'delete'|'create' }>;
 
   connect(): Promise<void>;
   disconnect(): Promise<void>;
-  exec(command: string): Promise<string>;
-  shell(): Promise<ClientChannel>;
+  dispose(): void;
 
-  // File operations
+  // File operations (work over both SSH and FTP)
   listFiles(remotePath: string): Promise<IRemoteFile[]>;
   readFile(remotePath: string): Promise<Buffer>;
   writeFile(remotePath: string, content: Buffer): Promise<void>;
   deleteFile(remotePath: string): Promise<void>;
   mkdir(remotePath: string): Promise<void>;
+  rename(oldPath: string, newPath: string): Promise<void>;
   stat(remotePath: string): Promise<IRemoteFile>;
+  fileExists(remotePath: string): Promise<boolean>;
 
-  // Port forwarding
+  // Resolve the default/home directory (SSH: echo ~ / realpath; FTP: PWD after login)
+  resolveHomePath(): Promise<string>;
+}
+
+interface ISSHConnection extends IConnection {
+  readonly client: Client | null;  // ssh2 Client (SSH only)
+  exec(command: string): Promise<string>;
+  shell(): Promise<ClientChannel>;
   forwardPort(localPort: number, remoteHost: string, remotePort: number): Promise<void>;
   stopForward(localPort: number): Promise<void>;
 }
+
+// Helpers (src/types.ts)
+function getConnectionType(host: IHostConfig): ConnectionType; // missing => 'ssh'
+function isSSHConnection(c: IConnection): c is ISSHConnection;  // c.capabilities.supportsExec
 ```
+
+`ConnectionFactory.createConnection(host, credential)` returns a `FTPConnection`
+when `getConnectionType(host) === 'ftp'`, otherwise a `SSHConnection`.
+`ConnectionManager` stores `Map<string, IConnection>` and calls the factory.
 
 ### ISavedPortForwardRule
 
@@ -157,9 +195,16 @@ SSHError extends Error
   │   → May be recoverable: triggers auto-reconnect
   │   → Example: ECONNREFUSED, ETIMEDOUT, network drop
   │
-  └─ SFTPError (code: 'SFTP_ERROR')
-      → File operation failed
-      → Example: permission denied, file not found
+  ├─ SFTPError (code: 'SFTP_ERROR')
+  │   → File operation failed
+  │   → Example: permission denied, file not found
+  │
+  ├─ FTPError (code: 'FTP_ERROR')
+  │   → FTP transport/operation failed (issue #9)
+  │   → Extends SSHError so the reconnect classifier keeps working
+  │
+  └─ UnsupportedOverFtpError (code: 'FTP_UNSUPPORTED')
+      → A shell-only operation was attempted over FTP
 ```
 
 **Important**: Error type determines reconnect behavior in ConnectionManager. `AuthenticationError` prevents reconnect to avoid account lockout.

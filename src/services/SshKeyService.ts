@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { spawn } from 'child_process';
 import { SSHConnection } from '../connection/SSHConnection';
+import { assertCapability } from '../utils/capabilityGuard';
 
 export interface KeyGenOptions {
   type: 'ed25519' | 'rsa';
@@ -82,6 +83,7 @@ export class SshKeyService {
    * Skips if the exact key line already exists.
    */
   async pushPublicKey(connection: SSHConnection, localPubKeyPath: string): Promise<{ added: boolean; reason?: string }> {
+    assertCapability(connection, 'supportsExec', 'Pushing a public key');
     if (!fs.existsSync(localPubKeyPath)) {
       throw new Error(`Public key not found: ${localPubKeyPath}`);
     }

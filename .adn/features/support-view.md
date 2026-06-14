@@ -1,7 +1,7 @@
 # Support View (WebviewView)
 
 The **"Support SSH Lite"** section is the first entry in the `sshLite` activity-bar
-container — above SSH Hosts — and is **collapsed by default**. It holds SSH Lite's
+container — above the Hosts view — and is **collapsed by default**. It holds SSH Lite's
 *secondary* purposes (not its core function): an animated promo banner plus quick
 links to report a bug, donate, star/rate/share. Added in **v0.9.0**. The coder's
 "liveliness" was widened in **v0.9.1** (reacts to SSH Lite terminals, AI

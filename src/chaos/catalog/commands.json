@@ -64,6 +64,14 @@
     "title": "Refresh Hosts"
   },
   {
+    "id": "sshLite.hostsViewAsList",
+    "title": "View Hosts as List"
+  },
+  {
+    "id": "sshLite.hostsViewAsTree",
+    "title": "View Hosts as Tree (group by protocol)"
+  },
+  {
     "id": "sshLite.goToPath",
     "title": "Go to Path..."
   },

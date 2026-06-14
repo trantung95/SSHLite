@@ -65,7 +65,7 @@ For a Desktop client the "client secret" is not confidential (it ships in the ex
 
 ## Commands & UI
 
-Six commands, grouped under a single **Import / Export / Sync** submenu (`$(sync)`) on the SSH Hosts toolbar (`navigation@4`), and all in the Command Palette:
+Six commands, grouped under a single **Import / Export / Sync** submenu (`$(sync)`) on the Hosts toolbar (`navigation@4`), and all in the Command Palette:
 
 | Command | Action |
 |---------|--------|

@@ -45,6 +45,7 @@ import { parseHostInfoFromPath as parseHostInfo, isInSshTempDir, hasSshPrefix } 
 import { setDiagOutputChannel, refreshDiagEnabled, infoLog } from './utils/diagnosticLog';
 import { setTabPrefixMode, TabPrefixMode } from './utils/connectionPrefix';
 import { resolveTreeSelection } from './utils/treeSelection';
+import { ensureCapability, hasCapability, ConnectionCapabilityKey } from './utils/capabilityGuard';
 
 let outputChannel: vscode.OutputChannel;
 
@@ -134,9 +135,20 @@ async function promptPrivateKeyAuth(
 /**
  * Helper to select a connection from quick pick
  */
-async function selectConnection(connectionManager: ConnectionManager) {
-  const connections = connectionManager.getAllConnections();
+async function selectConnection(
+  connectionManager: ConnectionManager,
+  requireCapability?: ConnectionCapabilityKey
+) {
+  let connections = connectionManager.getAllConnections();
+  if (requireCapability) {
+    // SSH-only feature: never offer an FTP connection to the picker, so the user
+    // cannot pick a connection the action would crash on.
+    connections = connections.filter((c) => hasCapability(c, requireCapability));
+  }
   if (connections.length === 0) {
+    if (requireCapability) {
+      void vscode.window.showWarningMessage('No SSH connection is available for this action.');
+    }
     return undefined;
   }
 
@@ -167,7 +179,9 @@ function buildServerSearchEntries(
   connectionManager: ConnectionManager,
   credentialService: CredentialService
 ): ServerSearchEntry[] {
-  const hosts = hostService.getAllHosts();
+  // Cross-server search runs remote find/grep, which FTP cannot do. Exclude FTP
+  // hosts so they are never offered as a search target (would crash the worker).
+  const hosts = hostService.getAllHosts().filter((h) => (h.connectionType ?? 'ssh') !== 'ftp');
   const connections = connectionManager.getAllConnections();
   // Connection IDs are "host:port:username" format — build a Set of host config IDs
   // that have active connections, so we can match against host.id
@@ -209,7 +223,7 @@ async function resolveFolderTreeTarget(
     // Resolve ~ (tilde doesn't expand in single-quoted find/grep).
     if (basePath === '~' || basePath.startsWith('~/')) {
       try {
-        const homePath = (await connection.exec('echo ~')).trim();
+        const homePath = await connection.resolveHomePath();
         basePath = basePath === '~' ? homePath : homePath + basePath.substring(1);
       } catch {
         basePath = livePath;
@@ -315,6 +329,16 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Create tree providers
   const hostTreeProvider = new HostTreeProvider();
+  // Restore the persisted Hosts view mode (grouped by protocol vs flat list) and
+  // seed the context key the view-title toggle button reads. Default: grouped.
+  const hostsGrouped = context.globalState.get<boolean>('sshLite.hostsGrouped', true);
+  hostTreeProvider.setGrouped(hostsGrouped);
+  void vscode.commands.executeCommand('setContext', 'sshLite.hostsGrouped', hostsGrouped);
+  const setHostsViewMode = async (grouped: boolean): Promise<void> => {
+    await context.globalState.update('sshLite.hostsGrouped', grouped);
+    await vscode.commands.executeCommand('setContext', 'sshLite.hostsGrouped', grouped);
+    hostTreeProvider.setGrouped(grouped);
+  };
   const fileTreeProvider = new FileTreeProvider();
   const portForwardTreeProvider = new PortForwardTreeProvider();
   const activityTreeProvider = new ActivityTreeProvider();
@@ -1102,13 +1126,8 @@ export function activate(context: vscode.ExtensionContext): void {
         const config = vscode.workspace.getConfiguration('sshLite');
         parentPath = config.get<string>('defaultRemotePath', '~');
         if (parentPath === '~') {
-          // Resolve $HOME via the SSH connection. Indirect through a bound
-          // function reference to keep the codebase's static-analysis hooks
-          // (which guard against child_process.exec) from false-positiving on
-          // an `exec(...)` token in this VS Code extension activation file.
-          const remoteShell = connection.exec.bind(connection);
           try {
-            parentPath = (await remoteShell('echo $HOME')).trim();
+            parentPath = await connection.resolveHomePath();
           } catch {
             parentPath = '/home/' + connection.host.username;
           }
@@ -1390,6 +1409,14 @@ export function activate(context: vscode.ExtensionContext): void {
 
     vscode.commands.registerCommand('sshLite.refreshHosts', () => {
       hostTreeProvider.refresh();
+    }),
+
+    vscode.commands.registerCommand('sshLite.hostsViewAsList', () => {
+      void setHostsViewMode(false);
+    }),
+
+    vscode.commands.registerCommand('sshLite.hostsViewAsTree', () => {
+      void setHostsViewMode(true);
     }),
 
     vscode.commands.registerCommand('sshLite.renameHost', async (item?: ServerTreeItem) => {
@@ -1850,8 +1877,7 @@ export function activate(context: vscode.ExtensionContext): void {
         // Expand ~ to actual home directory
         if (remotePath === '~') {
           try {
-            const result = await connection.exec('echo $HOME');
-            remotePath = result.trim();
+            remotePath = await connection.resolveHomePath();
           } catch {
             remotePath = '/home/' + connection.host.username;
           }
@@ -1975,8 +2001,7 @@ export function activate(context: vscode.ExtensionContext): void {
         parentPath = config.get<string>('defaultRemotePath', '~');
         if (parentPath === '~') {
           try {
-            const result = await connection.exec('echo $HOME');
-            parentPath = result.trim();
+            parentPath = await connection.resolveHomePath();
           } catch {
             parentPath = '/home/' + connection.host.username;
           }
@@ -2015,9 +2040,7 @@ export function activate(context: vscode.ExtensionContext): void {
         parentPath = config.get<string>('defaultRemotePath', '~');
         if (parentPath === '~') {
           try {
-            const homeCmd = 'echo $HOME';
-            const result = await connection.exec(homeCmd);
-            parentPath = result.trim();
+            parentPath = await connection.resolveHomePath();
           } catch {
             parentPath = '/home/' + connection.host.username;
           }
@@ -2197,7 +2220,7 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.window.setStatusBarMessage('$(filter) Filter cleared', 2000);
     }),
 
-    // Filter hosts in SSH Hosts panel
+    // Filter hosts in the Hosts panel
     vscode.commands.registerCommand('sshLite.filterHosts', async () => {
       logCommand('filterHosts');
       const currentFilter = hostTreeProvider.getFilter();
@@ -2369,10 +2392,13 @@ export function activate(context: vscode.ExtensionContext): void {
       searchPanel.setServerList(buildServerSearchEntries(hostService, connectionManager, credentialService));
       searchPanel.loadSortOrder(context);
 
-      // Legacy: add all connections' current paths as default scopes only if no scopes exist
+      // Legacy: add all connections' current paths as default scopes only if no scopes exist.
+      // Skip FTP (no remote search) so an FTP scope can never reach the SSH-only
+      // searchFiles path — mirrors the cross-server filter (buildServerSearchEntries).
       if (!searchPanel.hasScopes()) {
         const connections = connectionManager.getAllConnections();
         for (const conn of connections) {
+          if (!hasCapability(conn, 'supportsSearch')) continue;
           searchPanel.addScope(fileTreeProvider.getCurrentPath(conn.id), conn);
         }
       }
@@ -2498,11 +2524,19 @@ export function activate(context: vscode.ExtensionContext): void {
       searchPanel.setServerList(buildServerSearchEntries(hostService, connectionManager, credentialService));
       searchPanel.loadSortOrder(context);
 
-      // Add the selected scope (don't clear existing scopes to allow multiple)
+      // Add the selected scope (don't clear existing scopes to allow multiple).
+      // Remote search needs find/grep over a shell; FTP has none, so never add an
+      // FTP scope (it would crash the search worker on connection.searchFiles).
       if (item instanceof ConnectionTreeItem) {
+        if (!ensureCapability(item.connection, 'supportsSearch')) {
+          return;
+        }
         const searchPath = fileTreeProvider.getCurrentPath(item.connection.id);
         searchPanel.addScope(searchPath, item.connection);
       } else if (item instanceof FileTreeItem) {
+        if (!ensureCapability(item.connection, 'supportsSearch')) {
+          return;
+        }
         // For files, add the file directly as search scope
         // For folders, add the folder itself
         if (item.file.isDirectory) {
@@ -2512,9 +2546,9 @@ export function activate(context: vscode.ExtensionContext): void {
           searchPanel.addScope(item.file.path, item.connection, true);
         }
       } else {
-        // No item - add all connections' current paths (only if no scopes exist)
+        // No item - add all SEARCHABLE connections' current paths (only if no scopes exist)
         if (!searchPanel.hasScopes()) {
-          const connections = connectionManager.getAllConnections();
+          const connections = connectionManager.getAllConnections().filter((c) => hasCapability(c, 'supportsSearch'));
           for (const conn of connections) {
             searchPanel.addScope(fileTreeProvider.getCurrentPath(conn.id), conn);
           }
@@ -2582,6 +2616,10 @@ export function activate(context: vscode.ExtensionContext): void {
       const { connection, basePath, displayName } = target;
       if (connection.state !== ConnectionState.Connected) {
         vscode.window.showWarningMessage('Connect to the server before indexing.');
+        return;
+      }
+      // The snapshot index is built with a remote find (searchFiles), which FTP lacks.
+      if (!ensureCapability(connection, 'supportsSearch', 'Filename indexing')) {
         return;
       }
       await vscode.window.withProgress(
@@ -2889,6 +2927,10 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
+      if (!ensureCapability(connection, 'supportsShell')) {
+        return;
+      }
+
       logCommand('openTerminalHere', targetPath);
       try {
         const shell = await vscode.window.withProgress(
@@ -2960,6 +3002,10 @@ export function activate(context: vscode.ExtensionContext): void {
         }
 
         connection = selected.connection;
+      }
+
+      if (!ensureCapability(connection, 'supportsShell')) {
+        return;
       }
 
       logCommand('openTerminal', connection.host.name);
@@ -3070,11 +3116,15 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       }
       if (!connection) {
-        connection = await selectConnection(connectionManager);
+        connection = await selectConnection(connectionManager, 'supportsExec');
       }
 
       if (!connection) {
         vscode.window.showWarningMessage('No active connection selected');
+        return;
+      }
+
+      if (!ensureCapability(connection, 'supportsExec')) {
         return;
       }
 
@@ -3092,11 +3142,15 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       }
       if (!connection) {
-        connection = await selectConnection(connectionManager);
+        connection = await selectConnection(connectionManager, 'supportsExec');
       }
 
       if (!connection) {
         vscode.window.showWarningMessage('No active connection selected');
+        return;
+      }
+
+      if (!ensureCapability(connection, 'supportsExec')) {
         return;
       }
 
@@ -3114,11 +3168,15 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       }
       if (!connection) {
-        connection = await selectConnection(connectionManager);
+        connection = await selectConnection(connectionManager, 'supportsExec');
       }
 
       if (!connection) {
         vscode.window.showWarningMessage('No active connection selected');
+        return;
+      }
+
+      if (!ensureCapability(connection, 'supportsExec')) {
         return;
       }
 
@@ -3923,7 +3981,8 @@ export function activate(context: vscode.ExtensionContext): void {
           if (conn) break;
         }
       } else {
-        conn = await selectConnection(connectionManager);
+        // Server-side backups need a shell; don't offer FTP connections in the picker.
+        conn = await selectConnection(connectionManager, 'supportsServerBackup');
       }
 
       if (!conn) {
@@ -3947,7 +4006,8 @@ export function activate(context: vscode.ExtensionContext): void {
           if (connection) break;
         }
       } else {
-        connection = await selectConnection(connectionManager);
+        // Server-side backups need a shell; don't offer FTP connections in the picker.
+        connection = await selectConnection(connectionManager, 'supportsServerBackup');
       }
 
       if (!connection) {

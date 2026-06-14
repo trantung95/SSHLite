@@ -1,5 +1,49 @@
 # Changelog
 
+## v1.0.0 - FTP / FTPS support (issue #9); first stable release
+
+First stable (1.0) release. FTP is now a second connection type alongside SSH/SFTP, for file browsing and transfer only, with nothing installed on the remote (LITE). The hosts view also gained an optional SSH/FTP grouped tree, adding two commands (`sshLite.hostsViewAsList` / `sshLite.hostsViewAsTree`, the List/Tree toggle); command count 115 -> 117. All existing SSH connection configs, saved hosts, settings, and keybindings load and work unchanged - the new `connectionType` host field is optional and absence means `'ssh'`, so there is no migration.
+
+### Architecture
+
+- New protocol-agnostic `IConnection` interface in `src/types.ts` (lifecycle, file operations, `resolveHomePath()`, `capabilities`, events). `ISSHConnection extends IConnection` adds the ssh2-only surface (`client`, `exec`, `shell`, `forwardPort`, `stopForward`). Both `SSHConnection` and the new `FTPConnection` implement `IConnection`.
+- `IConnectionCapabilities` (type, supportsExec/Shell/PortForward/NativeWatch/Search/ServerBackup/Sudo) drives feature gating. SSH reports all true; FTP all false.
+- New `ConnectionType` alias, `getConnectionType(host)` (missing means `'ssh'`), `isSSHConnection(c)` type guard, and `FTPError` / `UnsupportedOverFtpError` (both extend `SSHError`).
+- `IHostConfig` gained optional `connectionType`, `secure` (FTPS), `anonymous`. Port defaults to 21 for FTP, 22 for SSH.
+- `ConnectionFactory.createConnection(host, credential)` branches on the protocol; `ConnectionManager` stores `Map<string, IConnection>` and calls the factory. Public accessors keep the `SSHConnection` type through a documented downcast bridge for backward compatibility.
+
+### FTPConnection (`src/connection/FTPConnection.ts`)
+
+- Wraps the pure-JavaScript `basic-ftp` library (new dependency, MIT, no native modules). Supports plain FTP, explicit FTPS (TLS), and anonymous login.
+- basic-ftp uses a single control socket and one command at a time, so every operation is funnelled through an internal serialization queue, which keeps the file tree's parallel directory preloading safe.
+- Method mapping: list, downloadTo (read), uploadFrom (write), remove/removeDir (delete), ensureDir + restore working directory (mkdir), rename, list-parent-and-match (stat/fileExists), cached pwd (resolveHomePath). FTP has no `~`; the login directory (often the chroot root `/`) is the home.
+
+### Graceful degradation
+
+- Shell-only features are hidden for FTP: interactive terminal, cross-server search, server monitor, system tools, server-side backups, sudo, port forwarding, snippets, run-script, push-pubkey, remote diff, copy/cut/paste, index-folder, and native (inotify/fswatch) file watching (FTP falls back to polling).
+- Mechanism: FTP tree rows carry a `.ftp` marker after their base `contextValue` (`connection.ftp`, `file.ftp`, `folder.ftp`, `connectedServer.ftp`); shell-only `package.json` `when` clauses use a `(?!\.ftp)` negative lookahead; shared clauses match both. `FileService` gates server backup and native watch behind `connection.capabilities`.
+- Protocol-agnostic browse/reveal/default-folder paths now call `resolveHomePath()` instead of `exec('echo ~')`.
+- The add-host flow (`HostService.promptAddHost` / `promptEditHost`) asks SSH vs FTP first, then for FTP asks plain vs FTPS and username/password vs anonymous; the private-key prompt is skipped for FTP. FTP fields round-trip through save/load and export/import.
+
+### Settings
+
+- New `sshLite.ftpRejectUnauthorized` (default true) for FTPS certificate validation.
+- `sshLite.hosts` schema gained `connectionType`, `secure`, `anonymous`.
+
+### Tests
+
+- Unit: `FTPConnection.test.ts` (mocked basic-ftp, serialization queue, anonymous, 530 to AuthenticationError), `ConnectionFactory.test.ts`, HostService FTP migration cases, `ftp-menu-gating.test.ts` (audits the `when` gating and inline-slot collisions).
+- Integration (against live FTP containers in `test-docker/docker-compose.yml`, all verified passing):
+  - `docker-ftp-fileops.test.ts` - smoke round-trip vs vsftpd (port 2207).
+  - `docker-ftp-servers.test.ts` - FTPConnection MATRIX across vsftpd (delfer, not chrooted, rename allowed), pure-ftpd (stilliard, port 2208, chrooted, rename denied so the graceful FTPError path is covered), and pure-ftpd over explicit FTPS/TLS with a self-signed cert. Catches LIST/MLSD parsing, path, and rename differences mocks miss.
+  - `docker-ftp-fileservice.test.ts` - the REAL `FileService` over live FTP: a >1MB `openRemoteFile` (proves it routes to `readFile`, not the SFTP-only chunked path that the code review found crashing), `downloadFileTo`, `deleteRemote` (file + non-empty dir), `createFolder`/`createFile`, `deleteRemotePath` recursive, and `copyRemoteCrossHost` between two FTP hosts.
+
+### Code review fixes (shared file-op paths that still used a shell)
+
+A multi-agent review of the diff found four FTP crash bugs in SHARED (non-UI-gated) paths, all fixed and regression-tested: (1) `openRemoteFile` routed files >=1MB to the SFTP-only progressive/chunked download and >=100MB to a head/tail handler, so opening any non-trivial FTP file crashed; both branches are now gated on `capabilities.supportsExec`. (2) `showProperties` (runs `stat`/`file` via exec) matched `file.ftp`/`folder.ftp`; tightened with `(?!\.ftp)`. (3) The Ctrl+V paste keyboard path (no `viewItem` guard) reached `deleteRemotePath` (`rm -rf`) and `copyRemoteSameHost` (`cp`); both now capability-guard (FTP delete walks the tree with `listFiles`/`deleteFile`; FTP same-host copy throws a clear error). (4) The `isPermissionDenied` sudo-retry blocks now also require `capabilities.supportsSudo`.
+
+See `.adn/features/connection-protocols.md` for the full design.
+
 ## v0.10.1 - Faster remote search: native tools (ripgrep / fd / parallel grep) + opt-in filename index
 
 Remote search and filename filter no longer hardcode `grep`/`find`. Each connection lazily probes the server once (inside the first user-triggered search — LITE-compliant) and picks the fastest available tool, always falling back to grep/find so results never change for the worse. **One new command** (count 114 -> 115) and two new settings.

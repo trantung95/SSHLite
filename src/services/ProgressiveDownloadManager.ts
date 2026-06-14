@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { SSHConnection } from '../connection/SSHConnection';
+import { assertCapability } from '../utils/capabilityGuard';
 import { IRemoteFile } from '../types';
 import { ProgressiveFileContentProvider } from '../providers/ProgressiveFileContentProvider';
 import {
@@ -135,6 +136,10 @@ export class ProgressiveDownloadManager {
     connection: SSHConnection,
     remoteFile: IRemoteFile
   ): Promise<void> {
+    // Chunked download uses SSH-only readFileChunked (dd/tail over exec). FTP
+    // callers must use the plain readFile path; openRemoteFile already routes
+    // them there, this is the backstop.
+    assertCapability(connection, 'supportsExec');
     const downloadId = `${connection.id}:${remoteFile.path}`;
 
     // Acquire lock for atomic check-and-set of download state

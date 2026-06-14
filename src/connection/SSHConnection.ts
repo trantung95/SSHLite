@@ -5,6 +5,7 @@ import * as crypto from 'crypto';
 import * as vscode from 'vscode';
 import {
   ISSHConnection,
+  IConnectionCapabilities,
   IHostConfig,
   IRemoteFile,
   ConnectionState,
@@ -208,12 +209,36 @@ export class SSHConnection implements ISSHConnection {
     this._credential = credential;
   }
 
-  get capabilities(): ServerCapabilities | null {
+  /** Server OS / watch-method capabilities (SSH-specific, detected after connect). */
+  get serverCapabilities(): ServerCapabilities | null {
     return this._capabilities;
+  }
+
+  /** Protocol capabilities — an SSH connection supports the full feature set. */
+  get capabilities(): IConnectionCapabilities {
+    return {
+      type: 'ssh',
+      supportsExec: true,
+      supportsShell: true,
+      supportsPortForward: true,
+      supportsNativeWatch: true,
+      supportsSearch: true,
+      supportsServerBackup: true,
+      supportsSudo: true,
+    };
   }
 
   get client(): Client | null {
     return this._client;
+  }
+
+  /**
+   * Resolve the connection's home directory as an absolute path.
+   * Protocol-agnostic entry point (IConnection) — replaces scattered `echo ~` calls.
+   */
+  async resolveHomePath(): Promise<string> {
+    const home = (await this.exec('echo ~')).trim();
+    return home || `/home/${this.host.username}`;
   }
 
   /** Whether sudo mode is active for this connection */

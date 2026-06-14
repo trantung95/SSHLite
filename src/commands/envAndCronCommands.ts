@@ -3,8 +3,13 @@ import { ConnectionManager } from '../connection/ConnectionManager';
 import { SSHConnection } from '../connection/SSHConnection';
 import { ENV_SCHEME, CRON_SCHEME, buildUri } from '../providers/VirtualDocProviders';
 import { ToolsContext, pickConnection } from './sshToolsCommands';
+import { hasCapability } from '../utils/capabilityGuard';
 
 async function saveCrontab(connection: SSHConnection, newContents: string): Promise<void> {
+  if (!hasCapability(connection, 'supportsExec')) {
+    vscode.window.showWarningMessage('Crontab is not available over FTP connections.');
+    return;
+  }
   const tmpPath = '/tmp/sshlite-cron-' + Date.now() + '.txt';
   try {
     await connection.writeFile(tmpPath, Buffer.from(newContents, 'utf8'));

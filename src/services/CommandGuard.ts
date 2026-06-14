@@ -23,6 +23,7 @@ import { ActivityService, ActivityType } from './ActivityService';
 import { formatFileSize } from '../utils/helpers';
 import { ChannelSemaphore, ChannelLimitError, ChannelTimeoutError } from './ChannelSemaphore';
 import { diagLog, infoLog } from '../utils/diagnosticLog';
+import { assertCapability } from '../utils/capabilityGuard';
 
 /**
  * Options for tracked operations
@@ -109,6 +110,8 @@ export class CommandGuard {
     pty?: { term?: string; rows?: number; cols?: number },
     opts?: { env?: Record<string, string> }
   ): Promise<ClientChannel> {
+    // Backstop: FTP has no interactive shell. Fail clearly instead of a TypeError.
+    assertCapability(connection, 'supportsShell');
     const semaphore = this.getSemaphore(connection.id);
     const acquireStart = Date.now();
     diagLog('command-guard', 'openShell/begin', {
@@ -184,6 +187,8 @@ export class CommandGuard {
     command: string,
     options?: TrackingOptions
   ): Promise<string> {
+    // Backstop: FTP cannot run shell commands. Fail clearly instead of a TypeError.
+    assertCapability(connection, 'supportsExec');
     const desc = options?.description || this.extractCommandDescription(command);
     const activityId = this.activityService.startActivity(
       options?.type || 'terminal',
@@ -423,6 +428,8 @@ export class CommandGuard {
     },
     trackOptions?: TrackingOptions
   ): Promise<Array<{ path: string; line?: number; preview?: string }>> {
+    // Backstop: remote search needs find/grep/rg over a shell. FTP has none.
+    assertCapability(connection, 'supportsSearch');
     const activityId = this.activityService.startActivity(
       trackOptions?.type || 'search',
       connection.id,

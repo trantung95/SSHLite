@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ConnectionManager } from '../connection/ConnectionManager';
 import { SSHConnection } from '../connection/SSHConnection';
+import { hasCapability } from '../utils/capabilityGuard';
 
 export const ENV_SCHEME = 'sshlite-env';
 export const CRON_SCHEME = 'sshlite-cron';
@@ -29,6 +30,9 @@ export class RemoteEnvDocumentProvider implements vscode.TextDocumentContentProv
     const connection = resolveConnection(uri);
     if (!connection) {
       return '# Connection not active';
+    }
+    if (!hasCapability(connection, 'supportsExec')) {
+      return '# Environment variables are not available over FTP connections.';
     }
     try {
       const out = await connection.exec('env | sort');
@@ -59,6 +63,9 @@ export class RemoteCronDocumentProvider implements vscode.TextDocumentContentPro
     const connection = resolveConnection(uri);
     if (!connection) {
       return '# Connection not active';
+    }
+    if (!hasCapability(connection, 'supportsExec')) {
+      return '# Crontab is not available over FTP connections.';
     }
     try {
       const out = await connection.exec('crontab -l 2>/dev/null || true');

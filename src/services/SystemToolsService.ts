@@ -1,4 +1,5 @@
 import { SSHConnection } from '../connection/SSHConnection';
+import { assertCapability } from '../utils/capabilityGuard';
 
 export interface ProcessEntry {
   pid: number;
@@ -102,6 +103,7 @@ export class SystemToolsService {
   }
 
   async listProcesses(connection: SSHConnection, limit = 100): Promise<ProcessEntry[]> {
+    assertCapability(connection, 'supportsExec');
     const safeLimit = Math.max(1, Math.min(Math.floor(limit), 5000));
     // Try GNU ps with cpu/mem first; capture exit code separately so || fallback works correctly.
     // Busybox ps does not support %cpu/%mem columns, so we fall back to ps aux.
@@ -111,6 +113,7 @@ export class SystemToolsService {
   }
 
   async listServices(connection: SSHConnection): Promise<ServiceEntry[]> {
+    assertCapability(connection, 'supportsExec');
     const out = await connection.exec(
       'systemctl list-units --type=service --no-pager --plain --state=loaded 2>/dev/null || true'
     );
@@ -118,6 +121,7 @@ export class SystemToolsService {
   }
 
   async killProcess(connection: SSHConnection, pid: number, useSudo: boolean, signal: string = 'TERM'): Promise<void> {
+    assertCapability(connection, 'supportsExec');
     if (!Number.isFinite(pid) || pid <= 0 || pid > 2 ** 22) {
       throw new Error(`Invalid PID: ${pid}`);
     }
@@ -138,6 +142,7 @@ export class SystemToolsService {
     action: 'status' | 'start' | 'stop' | 'restart',
     useSudo: boolean
   ): Promise<string> {
+    assertCapability(connection, 'supportsExec');
     if (!/^[a-zA-Z0-9@._\-:]+$/.test(serviceName)) {
       throw new Error(`Invalid service name: ${serviceName}`);
     }

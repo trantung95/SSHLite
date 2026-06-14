@@ -1,6 +1,6 @@
 # Commands Reference
 
-All 115 commands registered by SSH Lite (SSH Tools), organized by category.
+All 117 commands registered by SSH Lite (SSH Tools), organized by category.
 
 ---
 
@@ -17,7 +17,7 @@ All 115 commands registered by SSH Lite (SSH Tools), organized by category.
 
 ### Connection Portability — Import / Export / Sync (issue #11)
 
-All grouped under the **Import / Export / Sync** submenu (`$(sync)`) on the SSH Hosts toolbar, and in the Palette. See [connection-portability.md](../features/connection-portability.md).
+All grouped under the **Import / Export / Sync** submenu (`$(sync)`) on the Hosts toolbar, and in the Palette. See [connection-portability.md](../features/connection-portability.md).
 
 | Command | Title | Source |
 |---------|-------|--------|
@@ -40,6 +40,8 @@ All grouped under the **Import / Export / Sync** submenu (`$(sync)`) on the SSH 
 | `sshLite.refreshHosts` | Refresh Hosts | View title |
 | `sshLite.filterHosts` | Filter Hosts | View title |
 | `sshLite.clearHostFilter` | Clear Host Filter | View title |
+| `sshLite.hostsViewAsList` | View Hosts as List | View title (when grouped) |
+| `sshLite.hostsViewAsTree` | View Hosts as Tree (group by protocol) | View title (when flat) |
 | `sshLite.copyHost` | Copy Host Info | Tree context |
 
 ### Credential Management

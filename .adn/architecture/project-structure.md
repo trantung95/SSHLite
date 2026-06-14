@@ -19,8 +19,12 @@ SSHLite/
     connection/
       ConnectionManager.ts                # Multi-connection orchestration, auto-reconnect (~613 lines)
       ConnectionManager.test.ts           # Connection lifecycle, reconnect tests
+      ConnectionFactory.ts                # createConnection(): SSH vs FTP by host.connectionType (issue #9)
+      ConnectionFactory.test.ts           # Factory branch tests
       SSHConnection.ts                    # SSH/SFTP operations, host key verify, search tool probe + fallback
       SSHConnection.test.ts               # SSH operation tests
+      FTPConnection.ts                    # FTP/FTPS operations via basic-ftp, serialization queue (issue #9)
+      FTPConnection.test.ts               # FTP operation tests (mocked basic-ftp)
       searchCommandBuilder.ts             # Pure remote-search command builders (grep/rg/fd/find/xargs/locate/mdfind) + probe parse + fallback decision (no ssh2/vscode)
       searchCommandBuilder.test.ts        # Builder/strategy-matrix/escaping unit tests
     services/
@@ -111,6 +115,9 @@ SSHLite/
       testHelpers.ts                      # Factory functions for test data
     integration/
       docker-ssh.test.ts                  # Docker-based SSH integration tests
+      docker-ftp-fileops.test.ts          # FTP smoke: file round-trip vs vsftpd (issue #9)
+      docker-ftp-servers.test.ts          # FTPConnection matrix: vsftpd + pure-ftpd + FTPS/TLS (issue #9)
+      docker-ftp-fileservice.test.ts      # Real FileService vs live FTP: openRemoteFile/delete/cross-host (issue #9)
       multi-server.test.ts                # Multi-server integration tests
       multi-os-ssh.test.ts                # Multi-OS SSH tests
       multios-monitor.test.ts             # Multi-OS monitor tests

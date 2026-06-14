@@ -3,7 +3,7 @@ module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
   roots: ['<rootDir>/src'],
-  testMatch: ['**/docker-ssh.test.ts', '**/docker-ssh-tools.test.ts', '**/docker-ssh-sudo.test.ts', '**/docker-ssh-download.test.ts', '**/docker-ssh-collision.test.ts', '**/docker-ssh-reveal.test.ts', '**/docker-ssh-listing-failure.test.ts', '**/docker-ssh-image-open.test.ts', '**/docker-ssh-import.test.ts'],
+  testMatch: ['**/docker-ssh.test.ts', '**/docker-ssh-tools.test.ts', '**/docker-ssh-sudo.test.ts', '**/docker-ssh-download.test.ts', '**/docker-ssh-collision.test.ts', '**/docker-ssh-reveal.test.ts', '**/docker-ssh-listing-failure.test.ts', '**/docker-ssh-image-open.test.ts', '**/docker-ssh-import.test.ts', '**/docker-ftp-fileops.test.ts', '**/docker-ftp-servers.test.ts', '**/docker-ftp-fileservice.test.ts', '**/docker-ftp-stress.test.ts'],
   moduleFileExtensions: ['ts', 'js', 'json'],
   // vscode mock required for SSH Tools service tests
   moduleNameMapper: {

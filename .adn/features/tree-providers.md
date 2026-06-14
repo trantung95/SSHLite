@@ -11,17 +11,36 @@ Covers `HostTreeProvider`, `FileTreeProvider`, and `FileDecorationProvider`.
 
 ## HostTreeProvider (`src/providers/HostTreeProvider.ts`)
 
+The view is titled **Hosts** (not "SSH Hosts") because it holds both SSH and FTP hosts.
+
 ### Tree Hierarchy
+
+Grouped (tree) mode, the default:
+
+```
+sshLite.hosts → ProtocolGroupTreeItem (SSH / FTP) → ServerTreeItem → UserCredentialTreeItem → PinnedFolderTreeItem
+                                                                                            └─ AddCredentialTreeItem
+```
+
+Flat (list) mode skips the protocol layer:
 
 ```
 sshLite.hosts → ServerTreeItem → UserCredentialTreeItem → PinnedFolderTreeItem
                                                         └─ AddCredentialTreeItem
 ```
 
+### View mode: grouped by protocol vs flat (issue #9)
+
+The root either shows two **ProtocolGroupTreeItem** nodes ("SSH" and "FTP") with servers nested underneath, or a flat list of all servers. Both groups are always shown, even when empty (description reads "No hosts"), so the user can see where each host type lands. A host with no explicit `connectionType` counts as SSH (backward compat).
+
+- Toggle: view-title buttons `sshLite.hostsViewAsList` (shown when grouped) and `sshLite.hostsViewAsTree` (shown when flat), gated by the context key `sshLite.hostsGrouped`.
+- The choice is persisted in `globalState` under `sshLite.hostsGrouped` (default `true`) and restored at activation, which also seeds the context key. `HostTreeProvider.setGrouped()` / `isGrouped()` hold the in-memory flag; `getServerItems(protocol?)` filters hosts to a protocol for each group.
+
 ### contextValues
 
 | Class | contextValue | When Shown |
 |-------|-------------|------------|
+| ProtocolGroupTreeItem | `protocolGroup` | Root, grouped mode only (SSH/FTP) |
 | ServerTreeItem | `server`, `savedServer`, `connectedServer.saved` | Always |
 | UserCredentialTreeItem | `credential`, `credentialConnected` | Under servers |
 | PinnedFolderTreeItem | `pinnedFolder`, `pinnedFolderConnected` | Under credentials |

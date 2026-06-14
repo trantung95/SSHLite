@@ -17,6 +17,7 @@ import { formatFileSize, normalizeLocalPath, decodeUriComponentSafe } from '../u
 import { isLikelyBinary, isImageFile, DEFAULT_PROGRESSIVE_CONFIG } from '../types/progressive';
 import { registerTabLabel, buildLocalTempPath, buildAuxTempFileName } from '../utils/connectionPrefix';
 import { infoLog } from '../utils/diagnosticLog';
+import { assertCapability, hasCapability } from '../utils/capabilityGuard';
 
 /**
  * Large file size threshold (100MB default)
@@ -330,8 +331,11 @@ export class FileService {
       { detail: mapping.remotePath, cancellable: false }
     );
 
-    // Try to start native file watcher
-    const watchStarted = await connection.watchFile(mapping.remotePath);
+    // Try to start native file watcher. Native (inotify/fswatch) watching needs a
+    // shell, so FTP connections skip it and fall through to the polling path below.
+    const watchStarted = connection.capabilities.supportsNativeWatch
+      ? await connection.watchFile(mapping.remotePath)
+      : false;
 
     // Start heartbeat to monitor connection health
     this.startWatchHeartbeat();
@@ -1295,6 +1299,12 @@ export class FileService {
    * Called when a file is first opened for editing
    */
   async createServerBackup(connection: SSHConnection, remotePath: string): Promise<string | undefined> {
+    // Server-side backups use shell commands (mkdir/cp). Not available over FTP —
+    // the local backup history (kept separately) still protects FTP edits.
+    if (!connection.capabilities.supportsServerBackup) {
+      infoLog('file-service', 'server-backup-skipped', { connectionId: connection.id, reason: 'no-shell' });
+      return undefined;
+    }
     try {
       // Generate backup filename with timestamp
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -1334,6 +1344,7 @@ export class FileService {
    * List ALL server backups (for backup viewer UI)
    */
   async listAllServerBackups(connection: SSHConnection): Promise<{name: string, path: string, timestamp: Date, size: number, isDirectory: boolean}[]> {
+    assertCapability(connection, 'supportsServerBackup');
     try {
       // List all files in backup folder with size
       const result = await connection.exec(
@@ -1459,6 +1470,7 @@ export class FileService {
     connection: SSHConnection,
     backup: { name: string; path: string; timestamp: Date; isDirectory: boolean }
   ): Promise<void> {
+    assertCapability(connection, 'supportsServerBackup');
     // Extract original path from backup name
     const originalName = backup.name.replace(/_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z(\.tar\.gz)?/, '');
 
@@ -1516,6 +1528,7 @@ export class FileService {
     connection: SSHConnection,
     backup: { name: string; path: string }
   ): Promise<void> {
+    assertCapability(connection, 'supportsServerBackup');
     const confirm = await vscode.window.showWarningMessage(
       `Delete backup "${backup.name}"? This cannot be undone.`,
       { modal: true },
@@ -1536,6 +1549,7 @@ export class FileService {
    * List all server backups for a remote file
    */
   async listServerBackups(connection: SSHConnection, remotePath: string): Promise<{name: string, path: string, timestamp: Date}[]> {
+    assertCapability(connection, 'supportsServerBackup');
     try {
       const baseName = path.basename(remotePath, path.extname(remotePath));
       const ext = path.extname(remotePath);
@@ -1616,6 +1630,7 @@ export class FileService {
    * Restore a file from server backup
    */
   async restoreFromServerBackup(connection: SSHConnection, remotePath: string, backupPath: string): Promise<boolean> {
+    assertCapability(connection, 'supportsServerBackup');
     try {
       // Create backup of current version before restoring
       await this.createServerBackup(connection, remotePath);
@@ -1842,6 +1857,7 @@ export class FileService {
    * Open server backup folder in terminal or show listing
    */
   async openServerBackupFolder(connection: SSHConnection): Promise<void> {
+    assertCapability(connection, 'supportsServerBackup');
     try {
       // List all files in the backup folder
       const result = await connection.exec(`ls -lh ${SERVER_BACKUP_FOLDER} 2>/dev/null || echo "No backups found"`);
@@ -1895,6 +1911,9 @@ export class FileService {
    * Clean up old server backups based on retention settings
    */
   async cleanupServerBackups(connection: SSHConnection): Promise<number> {
+    if (!hasCapability(connection, 'supportsServerBackup')) {
+      return 0; // FTP keeps no server-side backups; nothing to clean up.
+    }
     const config = vscode.workspace.getConfiguration('sshLite');
     const retentionHours = config.get<number>('tempFileRetentionHours', 504);
 
@@ -1920,6 +1939,7 @@ export class FileService {
    * Delete all server backups for a connection
    */
   async clearServerBackups(connection: SSHConnection): Promise<number> {
+    assertCapability(connection, 'supportsServerBackup');
     try {
       const result = await connection.exec(
         `ls -1 ${SERVER_BACKUP_FOLDER} 2>/dev/null | wc -l; rm -rf ${SERVER_BACKUP_FOLDER}/* 2>/dev/null || true`
@@ -2206,7 +2226,7 @@ export class FileService {
       const fileName = path.basename(mapping.remotePath);
 
       // Permission denied — offer sudo retry before showing normal error
-      if (this.isPermissionDenied(err) && !connection.sudoMode) {
+      if (this.isPermissionDenied(err) && !connection.sudoMode && connection.capabilities.supportsSudo) {
         // Clear upload state before showing dialog
         this.uploadingFiles.delete(mapping.localPath);
         this.uploadSpinners.get(mapping.localPath)?.dispose();
@@ -2895,8 +2915,10 @@ export class FileService {
 
     const activityService = ActivityService.getInstance();
 
-    // Check for very large files (>100MB) - use old large file handler
-    if (remoteFile.size >= LARGE_FILE_THRESHOLD) {
+    // Check for very large files (>100MB) - use old large file handler.
+    // The large-file handler (head/tail preview, chunked download) needs a shell,
+    // so FTP connections fall through to the plain readFile path below instead.
+    if (remoteFile.size >= LARGE_FILE_THRESHOLD && connection.capabilities.supportsExec) {
       const activityId = activityService.startActivity(
         'download',
         connection.id,
@@ -2947,10 +2969,13 @@ export class FileService {
     }
 
     // Check for progressive download threshold (default 1MB)
-    // Uses tail-first preview + background download for better UX
+    // Uses tail-first preview + background download for better UX.
+    // Progressive download relies on SFTP chunked reads / tail (shell), so FTP
+    // connections skip it and use the plain readFile path below.
     const progressiveThreshold = this.getProgressiveDownloadThreshold();
     if (progressiveThreshold > 0 &&
         remoteFile.size >= progressiveThreshold &&
+        connection.capabilities.supportsExec &&
         !isLikelyBinary(remoteFile.name)) {
       const activityId = activityService.startActivity(
         'download',
@@ -3569,6 +3594,7 @@ export class FileService {
     connection: SSHConnection,
     remoteFile: IRemoteFile
   ): Promise<void> {
+    assertCapability(connection, 'supportsExec');
     try {
       // Use head command to get first 1000 lines
       const result = await connection.exec(`head -n 1000 "${remoteFile.path}"`);
@@ -3601,6 +3627,7 @@ export class FileService {
     connection: SSHConnection,
     remoteFile: IRemoteFile
   ): Promise<void> {
+    assertCapability(connection, 'supportsExec');
     const command = await vscode.window.showQuickPick(
       [
         { label: 'head -n 100', description: 'First 100 lines', value: `head -n 100 "${remoteFile.path}"` },
@@ -4043,8 +4070,8 @@ export class FileService {
     } catch (error) {
       const err = error as Error;
 
-      // Permission denied — offer sudo retry
-      if (this.isPermissionDenied(err) && !connection.sudoMode) {
+      // Permission denied — offer sudo retry (SSH only; FTP has no sudo)
+      if (this.isPermissionDenied(err) && !connection.sudoMode && connection.capabilities.supportsSudo) {
         const sudoHandled = await this.handlePermissionDenied(
           connection,
           remoteFile.name,
@@ -4088,6 +4115,11 @@ export class FileService {
    * Create a backup of a directory (as tar.gz)
    */
   private async createDirectoryBackup(connection: SSHConnection, remotePath: string): Promise<string | undefined> {
+    // Directory backups use shell commands (tar). Not available over FTP.
+    if (!connection.capabilities.supportsServerBackup) {
+      infoLog('file-service', 'dir-backup-skipped', { connectionId: connection.id, reason: 'no-shell' });
+      return undefined;
+    }
     try {
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const dirName = path.basename(remotePath);
@@ -4173,7 +4205,7 @@ export class FileService {
     } catch (error) {
       const err = error as Error;
 
-      if (this.isPermissionDenied(err) && !connection.sudoMode) {
+      if (this.isPermissionDenied(err) && !connection.sudoMode && connection.capabilities.supportsSudo) {
         let sudoResult: string | undefined;
         const sudoHandled = await this.handlePermissionDenied(
           connection,
@@ -4248,7 +4280,7 @@ export class FileService {
     } catch (error) {
       const err = error as Error;
 
-      if (this.isPermissionDenied(err) && !connection.sudoMode) {
+      if (this.isPermissionDenied(err) && !connection.sudoMode && connection.capabilities.supportsSudo) {
         let sudoResult: string | undefined;
         const sudoHandled = await this.handlePermissionDenied(
           connection,
@@ -4283,6 +4315,7 @@ export class FileService {
    * are safe.
    */
   async getRemoteProperties(connection: SSHConnection, remoteFile: IRemoteFile): Promise<string> {
+    assertCapability(connection, 'supportsExec');
     const escapedPath = remoteFile.path.replace(/'/g, "'\\''");
     const statFormat = '%F|%s|%A|%a|%U|%u|%G|%g|%y|%x|%N';
     const cmd = "stat --format='" + statFormat + "' '" + escapedPath + "'";
@@ -4361,7 +4394,7 @@ export class FileService {
     } catch (error) {
       const err = error as Error;
 
-      if (this.isPermissionDenied(err) && !connection.sudoMode) {
+      if (this.isPermissionDenied(err) && !connection.sudoMode && connection.capabilities.supportsSudo) {
         let sudoResult: string | undefined;
         const sudoHandled = await this.handlePermissionDenied(
           connection,
@@ -4451,7 +4484,7 @@ export class FileService {
     } catch (error) {
       const err = error as Error;
 
-      if (this.isPermissionDenied(err) && !connection.sudoMode) {
+      if (this.isPermissionDenied(err) && !connection.sudoMode && connection.capabilities.supportsSudo) {
         let sudoResult: string | undefined;
         const sudoHandled = await this.handlePermissionDenied(
           connection,
@@ -4507,8 +4540,7 @@ export class FileService {
     let remotePath = config.get<string>('defaultRemotePath', '~');
     if (remotePath === '~') {
       try {
-        const result = await connection.exec('echo $HOME');
-        remotePath = result.trim();
+        remotePath = await connection.resolveHomePath();
       } catch {
         remotePath = '/home/' + connection.host.username;
       }
@@ -4523,6 +4555,11 @@ export class FileService {
    */
   async deleteRemotePath(connection: SSHConnection, remotePath: string, isDirectory: boolean): Promise<void> {
     if (isDirectory) {
+      if (!connection.capabilities.supportsExec) {
+        // FTP has no shell: delete the tree with IConnection methods instead of `rm -rf`.
+        await this.deleteDirectoryRecursive(connection, remotePath);
+        return;
+      }
       const esc = this.escapePathForShell(remotePath);
       await connection.exec(`rm -rf -- '${esc}'`);
     } else {
@@ -4540,6 +4577,11 @@ export class FileService {
     destPath: string,
     isDirectory: boolean
   ): Promise<void> {
+    if (!connection.capabilities.supportsExec) {
+      // Same-host copy uses `cp` over a shell; FTP has none. Copy/cut/paste is
+      // hidden for FTP in the menus, so this only guards the keyboard path.
+      throw new Error('Copy on the same FTP server is not supported.');
+    }
     const srcEsc = this.escapePathForShell(srcPath);
     const destEsc = this.escapePathForShell(destPath);
     const flag = isDirectory ? '-r ' : '';
@@ -4558,7 +4600,7 @@ export class FileService {
       });
     } catch (error) {
       const err = error as Error;
-      if (this.isPermissionDenied(err) && !connection.sudoMode) {
+      if (this.isPermissionDenied(err) && !connection.sudoMode && connection.capabilities.supportsSudo) {
         const sudoHandled = await this.handlePermissionDenied(
           connection,
           srcPath.split('/').pop() || srcPath,
@@ -4635,7 +4677,7 @@ export class FileService {
       });
     } catch (error) {
       const err = error as Error;
-      if (this.isPermissionDenied(err) && !connection.sudoMode) {
+      if (this.isPermissionDenied(err) && !connection.sudoMode && connection.capabilities.supportsSudo) {
         const sudoHandled = await this.handlePermissionDenied(
           connection,
           srcPath.split('/').pop() || srcPath,

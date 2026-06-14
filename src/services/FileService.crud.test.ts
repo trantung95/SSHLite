@@ -39,6 +39,7 @@ var mockConnection = {
   id: 'test-host:22:testuser',
   host: { name: 'Test Server', host: 'test-host', port: 22, username: 'testuser' },
   state: 'connected',
+  capabilities: { type: 'ssh', supportsExec: true, supportsShell: true, supportsPortForward: true, supportsNativeWatch: true, supportsSearch: true, supportsServerBackup: true, supportsSudo: true },
   writeFile: mockWriteFile,
   readFile: mockReadFile,
   listFiles: mockListFiles,

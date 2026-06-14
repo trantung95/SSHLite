@@ -109,20 +109,20 @@ describe.each(CI_SERVERS)('SSHConnection on $os', (server: OSServerConfig) => {
     });
 
     it('should detect OS as linux', () => {
-      expect(conn.capabilities).not.toBeNull();
-      expect(conn.capabilities!.os).toBe('linux');
+      expect(conn.serverCapabilities).not.toBeNull();
+      expect(conn.serverCapabilities!.os).toBe('linux');
     });
 
     it('should detect watch method as poll (no inotifywait in containers)', () => {
-      expect(conn.capabilities!.watchMethod).toBe('poll');
+      expect(conn.serverCapabilities!.watchMethod).toBe('poll');
     });
 
     it('should report hasInotifywait as false', () => {
-      expect(conn.capabilities!.hasInotifywait).toBe(false);
+      expect(conn.serverCapabilities!.hasInotifywait).toBe(false);
     });
 
     it('should report hasFswatch as false', () => {
-      expect(conn.capabilities!.hasFswatch).toBe(false);
+      expect(conn.serverCapabilities!.hasFswatch).toBe(false);
     });
   });
 

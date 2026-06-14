@@ -4,6 +4,7 @@ import { ConnectionManager } from '../connection/ConnectionManager';
 import { SSHConnection } from '../connection/SSHConnection';
 import { IRemoteFile, IHostConfig } from '../types';
 import { formatFileSize, formatRelativeTime, formatDateTime } from '../utils/helpers';
+import { ensureCapability, hasCapability } from '../utils/capabilityGuard';
 import { FolderHistoryService } from '../services/FolderHistoryService';
 import { FileService } from '../services/FileService';
 import { PriorityQueueService, PreloadPriority } from '../services/PriorityQueueService';
@@ -54,7 +55,9 @@ export class ConnectionTreeItem extends vscode.TreeItem {
     // Unique ID for VS Code to preserve expand/collapse state
     this.id = `connection:${connection.id}`;
     this.description = `${connection.host.username}@${connection.host.host} - ${currentPath}`;
-    this.contextValue = 'connection';
+    // FTP connections get a `.ftp` suffix so package.json `when` clauses can hide
+    // shell-only actions (terminal, search, monitor, sudo, server backups) for them.
+    this.contextValue = connection.capabilities.type === 'ftp' ? 'connection.ftp' : 'connection';
     // Use custom SVG icon with green color baked in (persists when selected)
     if (extensionPath) {
       this.iconPath = {
@@ -158,9 +161,10 @@ export class FileTreeItem extends vscode.TreeItem {
     // Unique ID for VS Code to preserve expand/collapse state
     this.id = `file:${connection.id}:${file.path}`;
     this.resourceUri = vscode.Uri.parse(`ssh://${connection.id}${file.path}`);
+    const ftpSuffix = connection.capabilities.type === 'ftp' ? '.ftp' : '';
     this.contextValue = file.isDirectory
-      ? (isFiltered ? 'folder.filtered' : 'folder')
-      : 'file';
+      ? (isFiltered ? `folder${ftpSuffix}.filtered` : `folder${ftpSuffix}`)
+      : `file${ftpSuffix}`;
 
     // Set icon based on type, with special indicators for open/loading files
     if (file.isDirectory) {
@@ -1261,7 +1265,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
         // Show connection.filtered contextValue when any filename filter is active on this connection
         const filterDesc = this.buildConnectionFilterDescription(conn.id);
         if (filterDesc !== undefined) {
-          item.contextValue = 'connection.filtered';
+          item.contextValue = conn.capabilities.type === 'ftp' ? 'connection.ftp.filtered' : 'connection.filtered';
           // Replace the gray server info with the filter summary, mirroring folder.filtered.
           item.description = filterDesc;
         }
@@ -1845,6 +1849,11 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
     // Search each connection in parallel
     const searchPromises = connections.map(async (connection) => {
+      // FTP cannot run a remote find/grep; skip it so the deep filter never calls
+      // searchFiles on it (the client-side filter still applies to listed entries).
+      if (!hasCapability(connection, 'supportsSearch')) {
+        return;
+      }
       const currentPath = this.getCurrentPath(connection.id);
 
       // Convert glob pattern to find pattern
@@ -2065,7 +2074,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       this.resolveCurrentPathSync(connectionId);
       if (!this.resolvedHomePaths.has(connectionId)) {
         try {
-          this.setResolvedHome(connectionId, (await connection.exec('echo ~')).trim());
+          this.setResolvedHome(connectionId, await connection.resolveHomePath());
         } catch {
           // Non-fatal: getParent() falls back to the literal currentPath.
         }
@@ -2234,7 +2243,15 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     if (!pattern) {
       this.activeFilters.delete(filterKey);
       this._onDidChangeTreeData.fire();
-      return;
+      return undefined;
+    }
+
+    // The per-folder filename filter runs a recursive remote find (searchFiles),
+    // which FTP cannot do. Guard so the action shows a clear message instead of a
+    // crash when invoked on an FTP folder (the icon is shown on FTP rows too).
+    if (!hasCapability(connection, 'supportsSearch')) {
+      ensureCapability(connection, 'supportsSearch', 'Filename filtering');
+      return undefined;
     }
 
     const patternLower = pattern.toLowerCase();

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { SSHConnection } from '../connection/SSHConnection';
+import { hasCapability } from '../utils/capabilityGuard';
 import { IHostConfig } from '../types';
 import { SavedCredential } from '../services/CredentialService';
 import { formatFileSize, formatRelativeTime } from '../utils/helpers';
@@ -1075,6 +1076,9 @@ export class SearchPanel {
         for (const server of checkedServers) {
           const connection = connectionMap.get(server.id);
           if (!connection) continue; // failed to connect
+          // Backstop: remote search needs find/grep over a shell. FTP scopes are
+          // already excluded at entry, but never call searchFiles on one.
+          if (!hasCapability(connection, 'supportsSearch')) continue;
 
           // Filter out redundant child paths (already covered by parent)
           // Default to / if no paths specified (user checked server without adding paths)
@@ -1409,6 +1413,16 @@ export class SearchPanel {
           const connection = this.connectionResolver
             ? (this.connectionResolver(scope.connection.id) || scope.connection)
             : scope.connection;
+
+          // Backstop: remote search needs find/grep over a shell; FTP connections have
+          // no searchFiles. Default scopes are already FTP-filtered at the showSearch
+          // entry, but a scope can also arrive via searchInScope — skip rather than hit
+          // a runtime "searchFiles is not a function" TypeError. Mirrors the server-list
+          // branch guard above.
+          if (!hasCapability(connection, 'supportsSearch')) {
+            diagLog('search', 'legacy/scope-skipped-no-search', { scope: scope.displayName, connectionId: connection.id });
+            return [];
+          }
 
           const activityId = activityService.startActivity(
             'search',

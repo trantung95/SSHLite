@@ -1232,6 +1232,11 @@ function startPromo(): void {
     ctx.font = 'bold 8px monospace';
     ctx.textBaseline = 'alphabetic';
     ctx.fillText('SSH LITE', 8, 115);
+    // Mirror "FTP" on the opposite (right) side, symmetric to "SSH LITE": same
+    // baseline, right-aligned with the same 8px margin (canvas is 160px wide).
+    ctx.textAlign = 'right';
+    ctx.fillText('FTP', 152, 115);
+    ctx.textAlign = 'left';
     ctx.globalAlpha = 1;
   };
 

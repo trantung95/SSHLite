@@ -1,9 +1,31 @@
 import * as vscode from 'vscode';
 import { SSHConnection } from './SSHConnection';
-import { IHostConfig, ConnectionState, AuthenticationError, ILastConnectionAttempt, SSHError } from '../types';
+import { createConnection } from './ConnectionFactory';
+import { IConnection, IHostConfig, ConnectionState, AuthenticationError, ILastConnectionAttempt, SSHError } from '../types';
 import { SavedCredential, CredentialService } from '../services/CredentialService';
 import { ActivityService } from '../services/ActivityService';
 import { infoLog, diagLog } from '../utils/diagnosticLog';
+
+/**
+ * Bridge for the public ConnectionManager API.
+ *
+ * Internally the manager stores `IConnection` (SSH or FTP). Its public accessors,
+ * however, are typed `SSHConnection` for backward compatibility — dozens of
+ * SSH-only call sites pre-date FTP and depend on the concrete type. This is safe
+ * because:
+ *  - SSHConnection is a structural superset of IConnection, so file-ops/tree
+ *    consumers (the only paths an FTP connection ever reaches) call methods that
+ *    exist on the returned reference at runtime.
+ *  - SSH-only features are hidden for FTP rows via package.json `when` gating, so
+ *    those handlers are never invoked on an FTP connection.
+ * Use `conn.capabilities` (present on both implementations) before calling any
+ * shell-only method on a connection that could be FTP.
+ */
+function asSSH(conn: IConnection): SSHConnection;
+function asSSH(conn: IConnection | undefined): SSHConnection | undefined;
+function asSSH(conn: IConnection | undefined): SSHConnection | undefined {
+  return conn as SSHConnection | undefined;
+}
 
 /**
  * Info about a disconnected connection that we should try to reconnect
@@ -22,7 +44,7 @@ interface DisconnectedConnectionInfo {
  */
 export class ConnectionManager {
   private static _instance: ConnectionManager;
-  private _connections: Map<string, SSHConnection> = new Map();
+  private _connections: Map<string, IConnection> = new Map();
   private _context: vscode.ExtensionContext | null = null;
   private static readonly LAST_CONNECTION_KEY = 'sshLite.lastConnectionAttempts';
 
@@ -125,16 +147,16 @@ export class ConnectionManager {
     const existing = this._connections.get(connectionId);
     if (existing && existing.state === ConnectionState.Connected) {
       diagLog('connection-manager', 'connect/reuse-existing', { connectionId });
-      return existing;
+      return asSSH(existing);
     }
 
     // Create new connection
-    const connection = new SSHConnection(host);
+    const connection = createConnection(host);
 
     // Listen to state changes
     connection.onStateChange((state) => {
       diagLog('connection-manager', 'state-change', { connectionId, state });
-      this._onConnectionStateChange.fire({ connection, state });
+      this._onConnectionStateChange.fire({ connection: asSSH(connection), state });
 
       // Handle unexpected disconnect - start auto-reconnect
       if (state === ConnectionState.Disconnected) {
@@ -194,7 +216,7 @@ export class ConnectionManager {
         'sshLite.hasConnections',
         this._connections.size > 0
       );
-      return connection;
+      return asSSH(connection);
     } catch (error) {
       // Fail activity tracking
       activityService.failActivity(activityId, (error as Error).message);
@@ -235,16 +257,16 @@ export class ConnectionManager {
     const existing = this._connections.get(connectionId);
     if (existing && existing.state === ConnectionState.Connected) {
       diagLog('connection-manager', 'connect/reuse-existing', { connectionId, withCredential: true });
-      return existing;
+      return asSSH(existing);
     }
 
     // Create new connection with credential
-    const connection = new SSHConnection(host, credential);
+    const connection = createConnection(host, credential);
 
     // Listen to state changes
     connection.onStateChange((state) => {
       diagLog('connection-manager', 'state-change', { connectionId, state, withCredential: true });
-      this._onConnectionStateChange.fire({ connection, state });
+      this._onConnectionStateChange.fire({ connection: asSSH(connection), state });
 
       // Handle unexpected disconnect - start auto-reconnect
       if (state === ConnectionState.Disconnected) {
@@ -305,7 +327,7 @@ export class ConnectionManager {
         'sshLite.hasConnections',
         this._connections.size > 0
       );
-      return connection;
+      return asSSH(connection);
     } catch (error) {
       // Fail activity tracking
       activityService.failActivity(activityId, (error as Error).message);
@@ -684,7 +706,7 @@ export class ConnectionManager {
    * Get a specific connection
    */
   getConnection(connectionId: string): SSHConnection | undefined {
-    return this._connections.get(connectionId);
+    return asSSH(this._connections.get(connectionId));
   }
 
   /**
@@ -693,7 +715,7 @@ export class ConnectionManager {
   getAllConnections(): SSHConnection[] {
     return Array.from(this._connections.values()).filter(
       (conn) => conn.state === ConnectionState.Connected
-    );
+    ).map((conn) => asSSH(conn));
   }
 
   /**

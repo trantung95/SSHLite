@@ -18,7 +18,8 @@ await config.update('hosts', updatedHosts, vscode.ConfigurationTarget.Global);
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `sshLite.hosts` | `array` | `[]` | Saved SSH hosts. Each entry: `{ name, host, port?, username, privateKeyPath? }` |
+| `sshLite.hosts` | `array` | `[]` | Saved SSH and FTP hosts. Each entry: `{ name, host, port?, username, privateKeyPath?, connectionType?, secure?, anonymous? }`. `connectionType` is `'ssh'` (default when absent) or `'ftp'`; `secure`/`anonymous` apply to FTP only; port defaults to 22 (SSH) or 21 (FTP). See [connection-protocols.md](../features/connection-protocols.md) |
+| `sshLite.ftpRejectUnauthorized` | `boolean` | `true` | For FTPS (TLS) connections, reject servers whose certificate cannot be verified. Disable only for trusted servers using self-signed certificates (issue #9). |
 | `sshLite.sshConfigPath` | `string` | `""` | Custom path to SSH config file. Empty = `~/.ssh/config` |
 | `sshLite.defaultRemotePath` | `string` | `"~"` | Default remote path when connecting |
 | `sshLite.googleDrive.fileName` | `string` | `"sshlite-connections.json"` | Name of the file SSH Lite creates in Google Drive when syncing connections (issue #11). Only files created by SSH Lite are accessible (`drive.file` scope). See [connection-portability.md](../features/connection-portability.md) |

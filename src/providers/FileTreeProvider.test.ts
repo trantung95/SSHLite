@@ -965,7 +965,7 @@ describe('FileTreeProvider - Change 8: Smart Reveal', () => {
   describe('revealFile() - Case A: file under currentPath', () => {
     it('should load intermediate dirs and return FileTreeItem without changing currentPath', async () => {
       const mockConn = createMockConnection({ id: 'conn-1' });
-      mockConn.exec.mockResolvedValue('/home/user\n');
+      mockConn.resolveHomePath.mockResolvedValue('/home/user');
       mockGetConnection.mockReturnValue(mockConn);
       mockGetAllConnections.mockReturnValue([mockConn]);
       mockGetAllConnectionsWithReconnecting.mockReturnValue({
@@ -1023,7 +1023,7 @@ describe('FileTreeProvider - Change 8: Smart Reveal', () => {
   describe('revealFile() - Case B: file outside currentPath', () => {
     it('should navigate to root with auto-expand when file is outside currentPath', async () => {
       const mockConn = createMockConnection({ id: 'conn-1' });
-      mockConn.exec.mockResolvedValue('/home/user\n');
+      mockConn.resolveHomePath.mockResolvedValue('/home/user');
       mockGetConnection.mockReturnValue(mockConn);
       mockGetAllConnections.mockReturnValue([mockConn]);
       mockGetAllConnectionsWithReconnecting.mockReturnValue({
@@ -1060,7 +1060,7 @@ describe('FileTreeProvider - Change 8: Smart Reveal', () => {
       // We access loadIntermediateDirs indirectly through revealFile Case A
       // But we can verify the caching behavior by checking listFiles calls
 
-      mockConn.exec.mockResolvedValue('/home\n');
+      mockConn.resolveHomePath.mockResolvedValue('/home');
       mockConn.listFiles.mockImplementation(async (remotePath: string) => {
         if (remotePath === '/home') {
           return [
@@ -1135,7 +1135,7 @@ describe('FileTreeProvider - Change 8: Smart Reveal', () => {
   describe('navigateToRootWithExpand() (via revealFile Case B)', () => {
     it('should navigate to root with both original and target paths as auto-expand', async () => {
       const mockConn = createMockConnection({ id: 'conn-1' });
-      mockConn.exec.mockResolvedValue('/home/user\n');
+      mockConn.resolveHomePath.mockResolvedValue('/home/user');
       mockGetConnection.mockReturnValue(mockConn);
       mockGetAllConnections.mockReturnValue([mockConn]);
       mockGetAllConnectionsWithReconnecting.mockReturnValue({
@@ -1161,7 +1161,7 @@ describe('FileTreeProvider - Change 8: Smart Reveal', () => {
 
     it('should load ancestor directories for both original and target paths', async () => {
       const mockConn = createMockConnection({ id: 'conn-1' });
-      mockConn.exec.mockResolvedValue('/home/admin\n');
+      mockConn.resolveHomePath.mockResolvedValue('/home/admin');
       mockGetConnection.mockReturnValue(mockConn);
       mockGetAllConnections.mockReturnValue([mockConn]);
       mockGetAllConnectionsWithReconnecting.mockReturnValue({
@@ -1338,7 +1338,7 @@ describe('FileTreeProvider - Change 8: Smart Reveal', () => {
     // getParent() walk has no phantom nodes.
     it('resolves home on the already-visible fast path so getParent has no phantoms', async () => {
       const conn = createMockConnection({ id: 'conn-1' });
-      conn.exec.mockResolvedValue('/home/user\n');
+      conn.resolveHomePath.mockResolvedValue('/home/user');
       mockGetConnection.mockReturnValue(conn);
       mockGetAllConnections.mockReturnValue([conn]);
       mockGetAllConnectionsWithReconnecting.mockReturnValue({ active: [conn], reconnecting: [] });
@@ -1360,7 +1360,7 @@ describe('FileTreeProvider - Change 8: Smart Reveal', () => {
       // have shelled out `echo ~` first to learn the absolute home.
       const item = await provider.revealFile('conn-1', '/home/user/projects/app.ts');
       expect(item).toBeDefined();
-      expect(conn.exec).toHaveBeenCalled();
+      expect(conn.resolveHomePath).toHaveBeenCalled();
 
       const chain = await parentChain(provider, item);
       expect(chain[chain.length - 1]).toBe('connection:conn-1');

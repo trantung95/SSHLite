@@ -160,6 +160,9 @@ export class HostService {
       username: string;
       privateKeyPath?: string;
       tabLabel?: string;
+      connectionType?: 'ssh' | 'ftp';
+      secure?: boolean;
+      anonymous?: boolean;
     }>>('hosts', []);
 
     const validHosts: IHostConfig[] = [];
@@ -174,15 +177,19 @@ export class HostService {
         console.warn(`[SSH Lite] Skipping invalid saved host: missing ${missing}. Entry: ${JSON.stringify(host)}`);
         continue;
       }
+      const isFtp = host.connectionType === 'ftp';
       validHosts.push({
-        id: `${host.host}:${host.port || 22}:${host.username}`,
+        id: `${host.host}:${host.port || (isFtp ? 21 : 22)}:${host.username}`,
         name: host.name,
         host: host.host,
-        port: host.port || 22,
+        port: host.port || (isFtp ? 21 : 22),
         username: host.username,
         privateKeyPath: host.privateKeyPath ? expandPath(host.privateKeyPath) : undefined,
         tabLabel: host.tabLabel,
         source: 'saved' as const,
+        connectionType: host.connectionType,
+        secure: host.secure,
+        anonymous: host.anonymous,
       });
     }
     return validHosts;
@@ -200,6 +207,9 @@ export class HostService {
       username: string;
       privateKeyPath?: string;
       tabLabel?: string;
+      connectionType?: 'ssh' | 'ftp';
+      secure?: boolean;
+      anonymous?: boolean;
     }>>('hosts', []);
 
     // Check for duplicate
@@ -214,6 +224,9 @@ export class HostService {
       username: host.username,
       privateKeyPath: host.privateKeyPath,
       tabLabel: host.tabLabel,
+      connectionType: host.connectionType,
+      secure: host.secure,
+      anonymous: host.anonymous,
     };
 
     if (existingIndex >= 0) {
@@ -240,6 +253,9 @@ export class HostService {
     username: string;
     privateKeyPath?: string;
     tabLabel?: string;
+    connectionType?: 'ssh' | 'ftp';
+    secure?: boolean;
+    anonymous?: boolean;
   }> {
     const config = vscode.workspace.getConfiguration('sshLite');
     const saved = config.get<Array<{
@@ -249,6 +265,9 @@ export class HostService {
       username?: string;
       privateKeyPath?: string;
       tabLabel?: string;
+      connectionType?: 'ssh' | 'ftp';
+      secure?: boolean;
+      anonymous?: boolean;
     }>>('hosts', []);
 
     const out = [];
@@ -256,6 +275,7 @@ export class HostService {
       if (!h || !h.name || !h.host || !h.username) {
         continue;
       }
+      const isFtp = h.connectionType === 'ftp';
       const entry: {
         name: string;
         host: string;
@@ -263,10 +283,13 @@ export class HostService {
         username: string;
         privateKeyPath?: string;
         tabLabel?: string;
+        connectionType?: 'ssh' | 'ftp';
+        secure?: boolean;
+        anonymous?: boolean;
       } = {
         name: h.name,
         host: h.host,
-        port: h.port || 22,
+        port: h.port || (isFtp ? 21 : 22),
         username: h.username,
       };
       if (h.privateKeyPath) {
@@ -274,6 +297,15 @@ export class HostService {
       }
       if (h.tabLabel) {
         entry.tabLabel = h.tabLabel;
+      }
+      if (isFtp) {
+        entry.connectionType = 'ftp';
+        if (h.secure) {
+          entry.secure = true;
+        }
+        if (h.anonymous) {
+          entry.anonymous = true;
+        }
       }
       out.push(entry);
     }
@@ -297,6 +329,9 @@ export class HostService {
     username: string;
     privateKeyPath?: string;
     tabLabel?: string;
+    connectionType?: 'ssh' | 'ftp';
+    secure?: boolean;
+    anonymous?: boolean;
   }> {
     type ExportHost = {
       name: string;
@@ -305,6 +340,9 @@ export class HostService {
       username: string;
       privateKeyPath?: string;
       tabLabel?: string;
+      connectionType?: 'ssh' | 'ftp';
+      secure?: boolean;
+      anonymous?: boolean;
     };
 
     const home = os.homedir();
@@ -380,6 +418,9 @@ export class HostService {
       username: string;
       privateKeyPath?: string;
       tabLabel?: string;
+      connectionType?: 'ssh' | 'ftp';
+      secure?: boolean;
+      anonymous?: boolean;
     }>,
     mode: 'merge' | 'replace'
   ): Promise<{ added: number; updated: number }> {
@@ -390,6 +431,9 @@ export class HostService {
       username: string;
       privateKeyPath?: string;
       tabLabel?: string;
+      connectionType?: 'ssh' | 'ftp';
+      secure?: boolean;
+      anonymous?: boolean;
     };
 
     // Whitelist + validate incoming entries (mirror loadSavedHosts' guard).
@@ -398,10 +442,11 @@ export class HostService {
       if (!h || !h.name || !h.host || !h.username) {
         continue;
       }
+      const isFtp = h.connectionType === 'ftp';
       const entry: SavedHostEntry = {
         name: h.name,
         host: h.host,
-        port: h.port || 22,
+        port: h.port || (isFtp ? 21 : 22),
         username: h.username,
       };
       if (h.privateKeyPath) {
@@ -409,6 +454,15 @@ export class HostService {
       }
       if (h.tabLabel) {
         entry.tabLabel = h.tabLabel;
+      }
+      if (h.connectionType === 'ftp') {
+        entry.connectionType = 'ftp';
+        if (h.secure) {
+          entry.secure = true;
+        }
+        if (h.anonymous) {
+          entry.anonymous = true;
+        }
       }
       sanitized.push(entry);
     }
@@ -543,6 +597,21 @@ export class HostService {
    * Prompt user to add a new host
    */
   async promptAddHost(): Promise<IHostConfig | undefined> {
+    // Protocol is the first decision: it changes every later prompt (port,
+    // auth, FTP options) and which connection class is built.
+    const typePick = await vscode.window.showQuickPick(
+      [
+        { label: 'SSH / SFTP', description: 'Secure shell - full feature set', value: 'ssh' as const },
+        { label: 'FTP / FTPS', description: 'File transfer only (browse, edit, upload/download)', value: 'ftp' as const },
+      ],
+      { title: 'Connection type', placeHolder: 'Choose how to connect', ignoreFocusOut: true }
+    );
+    if (!typePick) {
+      return undefined;
+    }
+    const connectionType = typePick.value;
+    const isFtp = connectionType === 'ftp';
+
     const name = await vscode.window.showInputBox({
       prompt: 'Enter a display name for this host',
       placeHolder: 'My Server',
@@ -564,8 +633,8 @@ export class HostService {
     }
 
     const portStr = await vscode.window.showInputBox({
-      prompt: 'Enter SSH port',
-      value: '22',
+      prompt: isFtp ? 'Enter FTP port' : 'Enter SSH port',
+      value: isFtp ? '21' : '22',
       ignoreFocusOut: true,
       validateInput: validatePort,
     });
@@ -576,28 +645,43 @@ export class HostService {
 
     const port = parseInt(portStr, 10);
 
-    const username = await vscode.window.showInputBox({
-      prompt: 'Enter username',
-      value: os.userInfo().username,
-      ignoreFocusOut: true,
-    });
+    const ftp = isFtp ? await this.promptFtpOptions() : { secure: undefined, anonymous: undefined, username: undefined };
+    if (isFtp && ftp === undefined) {
+      return undefined;
+    }
+
+    let username = ftp?.username;
+    let privateKeyPath: string | undefined;
+
+    if (!isFtp) {
+      username = await vscode.window.showInputBox({
+        prompt: 'Enter username',
+        value: os.userInfo().username,
+        ignoreFocusOut: true,
+      });
+      if (!username) {
+        return undefined;
+      }
+      privateKeyPath = (await vscode.window.showInputBox({
+        prompt: 'Enter path to private key (optional, leave empty for password auth)',
+        placeHolder: '~/.ssh/id_rsa',
+        ignoreFocusOut: true,
+      })) || undefined;
+    }
 
     if (!username) {
       return undefined;
     }
-
-    const privateKeyPath = await vscode.window.showInputBox({
-      prompt: 'Enter path to private key (optional, leave empty for password auth)',
-      placeHolder: '~/.ssh/id_rsa',
-      ignoreFocusOut: true,
-    });
 
     const hostConfig: Omit<IHostConfig, 'id' | 'source'> = {
       name,
       host,
       port,
       username,
-      privateKeyPath: privateKeyPath || undefined,
+      privateKeyPath,
+      connectionType,
+      secure: isFtp ? ftp?.secure : undefined,
+      anonymous: isFtp ? ftp?.anonymous : undefined,
     };
 
     await this.saveHost(hostConfig);
@@ -610,9 +694,73 @@ export class HostService {
   }
 
   /**
+   * Prompt for FTP-specific options (security + login). Returns undefined if the
+   * user cancels. For anonymous login the username is forced to 'anonymous'.
+   */
+  private async promptFtpOptions(
+    current?: { secure?: boolean; anonymous?: boolean; username?: string }
+  ): Promise<{ secure: boolean; anonymous: boolean; username: string } | undefined> {
+    const securePick = await vscode.window.showQuickPick(
+      [
+        { label: 'Plain FTP', description: 'Unencrypted — credentials sent in clear text', value: false },
+        { label: 'FTPS (explicit TLS)', description: 'Encrypted control and data connection', value: true },
+      ],
+      {
+        title: 'FTP security',
+        placeHolder: current?.secure ? 'Currently: FTPS' : 'Use TLS?',
+        ignoreFocusOut: true,
+      }
+    );
+    if (!securePick) {
+      return undefined;
+    }
+
+    const authPick = await vscode.window.showQuickPick(
+      [
+        { label: 'Username and password', value: 'user' as const },
+        { label: 'Anonymous', description: 'Log in as "anonymous"', value: 'anon' as const },
+      ],
+      { title: 'FTP login', placeHolder: 'How to authenticate', ignoreFocusOut: true }
+    );
+    if (!authPick) {
+      return undefined;
+    }
+    const anonymous = authPick.value === 'anon';
+
+    let username = 'anonymous';
+    if (!anonymous) {
+      const entered = await vscode.window.showInputBox({
+        prompt: 'Enter username',
+        value: current?.username && current.username !== 'anonymous' ? current.username : os.userInfo().username,
+        ignoreFocusOut: true,
+      });
+      if (!entered) {
+        return undefined;
+      }
+      username = entered;
+    }
+
+    return { secure: securePick.value, anonymous, username };
+  }
+
+  /**
    * Prompt user to edit a host
    */
   async promptEditHost(hostConfig: IHostConfig): Promise<IHostConfig | undefined> {
+    const currentType = hostConfig.connectionType ?? 'ssh';
+    const typePick = await vscode.window.showQuickPick(
+      [
+        { label: 'SSH / SFTP', description: currentType === 'ssh' ? 'Current' : undefined, value: 'ssh' as const },
+        { label: 'FTP / FTPS', description: currentType === 'ftp' ? 'Current' : undefined, value: 'ftp' as const },
+      ],
+      { title: 'Connection type', placeHolder: 'Choose how to connect', ignoreFocusOut: true }
+    );
+    if (!typePick) {
+      return undefined;
+    }
+    const connectionType = typePick.value;
+    const isFtp = connectionType === 'ftp';
+
     const name = await vscode.window.showInputBox({
       prompt: 'Enter a display name for this host',
       value: hostConfig.name,
@@ -634,7 +782,7 @@ export class HostService {
     }
 
     const portStr = await vscode.window.showInputBox({
-      prompt: 'Enter SSH port',
+      prompt: isFtp ? 'Enter FTP port' : 'Enter SSH port',
       value: hostConfig.port.toString(),
       ignoreFocusOut: true,
       validateInput: validatePort,
@@ -646,21 +794,38 @@ export class HostService {
 
     const port = parseInt(portStr, 10);
 
-    const username = await vscode.window.showInputBox({
-      prompt: 'Enter username',
-      value: hostConfig.username,
-      ignoreFocusOut: true,
-    });
+    let username: string | undefined;
+    let privateKeyPath: string | undefined;
+    let secure: boolean | undefined;
+    let anonymous: boolean | undefined;
 
-    if (!username) {
-      return undefined;
+    if (isFtp) {
+      const ftp = await this.promptFtpOptions({
+        secure: hostConfig.secure,
+        anonymous: hostConfig.anonymous,
+        username: hostConfig.username,
+      });
+      if (!ftp) {
+        return undefined;
+      }
+      username = ftp.username;
+      secure = ftp.secure;
+      anonymous = ftp.anonymous;
+    } else {
+      username = await vscode.window.showInputBox({
+        prompt: 'Enter username',
+        value: hostConfig.username,
+        ignoreFocusOut: true,
+      });
+      if (!username) {
+        return undefined;
+      }
+      privateKeyPath = (await vscode.window.showInputBox({
+        prompt: 'Enter path to private key (optional, leave empty for password auth)',
+        value: hostConfig.privateKeyPath || '',
+        ignoreFocusOut: true,
+      })) || undefined;
     }
-
-    const privateKeyPath = await vscode.window.showInputBox({
-      prompt: 'Enter path to private key (optional, leave empty for password auth)',
-      value: hostConfig.privateKeyPath || '',
-      ignoreFocusOut: true,
-    });
 
     // Remove old host
     await this.removeHost(hostConfig.id);
@@ -671,7 +836,10 @@ export class HostService {
       host,
       port,
       username,
-      privateKeyPath: privateKeyPath || undefined,
+      privateKeyPath,
+      connectionType,
+      secure: isFtp ? secure : undefined,
+      anonymous: isFtp ? anonymous : undefined,
     };
 
     await this.saveHost(newConfig);

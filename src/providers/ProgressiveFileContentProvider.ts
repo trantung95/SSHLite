@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { ConnectionManager } from '../connection/ConnectionManager';
 import { SSHConnection } from '../connection/SSHConnection';
+import { assertCapability } from '../utils/capabilityGuard';
 import {
   PROGRESSIVE_PREVIEW_SCHEME,
   parsePreviewUri,
@@ -127,6 +128,10 @@ export class ProgressiveFileContentProvider implements vscode.TextDocumentConten
     if (!connection) {
       throw new Error(`Connection not found: ${connectionId}`);
     }
+
+    // readFileLastLines uses tail over exec (SSH-only). FTP previews never use
+    // this provider, but fail clearly rather than with a TypeError if they do.
+    assertCapability(connection, 'supportsExec');
 
     // Get file stats for display
     const stats = await connection.stat(remotePath);

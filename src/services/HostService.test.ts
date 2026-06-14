@@ -130,6 +130,52 @@ describe('HostService', () => {
     });
   });
 
+  describe('FTP hosts (issue #9)', () => {
+    it('treats a host without connectionType as SSH (backward compat)', () => {
+      setMockConfig('sshLite.hosts', [
+        { name: 'Legacy', host: '10.0.0.1', port: 22, username: 'admin' },
+      ]);
+      const hosts = service.getAllHosts();
+      expect(hosts[0].connectionType).toBeUndefined();
+      expect(hosts[0].port).toBe(22);
+    });
+
+    it('loads an FTP host and defaults its port to 21', () => {
+      setMockConfig('sshLite.hosts', [
+        { name: 'Ftp', host: '10.0.0.2', username: 'anonymous', connectionType: 'ftp', secure: true, anonymous: true },
+      ]);
+      const h = service.getAllHosts()[0];
+      expect(h.connectionType).toBe('ftp');
+      expect(h.secure).toBe(true);
+      expect(h.anonymous).toBe(true);
+      expect(h.port).toBe(21);
+      expect(h.id).toBe('10.0.0.2:21:anonymous');
+    });
+
+    it('round-trips FTP fields through saveHost', async () => {
+      await service.saveHost({
+        name: 'Ftp', host: '10.0.0.3', port: 21, username: 'u',
+        connectionType: 'ftp', secure: true, anonymous: false,
+      } as any);
+      const h = service.getAllHosts().find(x => x.host === '10.0.0.3')!;
+      expect(h.connectionType).toBe('ftp');
+      expect(h.secure).toBe(true);
+    });
+
+    it('preserves FTP fields through export/import', async () => {
+      setMockConfig('sshLite.hosts', [
+        { name: 'Ftp', host: '10.0.0.4', port: 21, username: 'u', connectionType: 'ftp', secure: true },
+      ]);
+      const exported = service.getSavedHostsForExport();
+      expect(exported[0]).toMatchObject({ connectionType: 'ftp', secure: true, port: 21 });
+
+      await service.importSavedHosts(exported, 'replace');
+      const h = service.getAllHosts().find(x => x.host === '10.0.0.4')!;
+      expect(h.connectionType).toBe('ftp');
+      expect(h.secure).toBe(true);
+    });
+  });
+
   describe('saveHost', () => {
     it('should add a new host to settings', async () => {
       setMockConfig('sshLite.hosts', []);

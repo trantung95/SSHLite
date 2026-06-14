@@ -25,6 +25,7 @@ jest.mock('os', () => ({
 }));
 
 var mockExec = jest.fn().mockResolvedValue('');
+var mockResolveHomePath = jest.fn().mockResolvedValue('/home/u');
 var mockRename = jest.fn().mockResolvedValue(undefined);
 var mockMkdir = jest.fn().mockResolvedValue(undefined);
 var mockReadFile = jest.fn().mockResolvedValue(Buffer.from('contents'));
@@ -38,7 +39,9 @@ function makeMockConnection(id: string, hostName: string) {
     host: { name: hostName, host: hostName, port: 22, username: 'u' },
     state: 'connected',
     sudoMode: false,
+    capabilities: { type: 'ssh', supportsExec: true, supportsShell: true, supportsPortForward: true, supportsNativeWatch: true, supportsSearch: true, supportsServerBackup: true, supportsSudo: true },
     exec: mockExec,
+    resolveHomePath: mockResolveHomePath,
     rename: mockRename,
     mkdir: mockMkdir,
     readFile: mockReadFile,
@@ -334,25 +337,24 @@ describe('FileService - remote copy/paste', () => {
   });
 
   describe('resolveDefaultRemotePath', () => {
-    it('expands ~ by running echo $HOME', async () => {
+    it('expands ~ via the connection resolveHomePath()', async () => {
       const conn = { ...mockSrcConnection, host: { ...mockSrcConnection.host, username: 'alice' } };
-      mockExec.mockResolvedValueOnce('/home/alice\n');
+      mockResolveHomePath.mockResolvedValueOnce('/home/alice');
       const result = await service.resolveDefaultRemotePath(conn as any);
-      expect(mockExec).toHaveBeenCalledWith('echo $HOME');
+      expect(mockResolveHomePath).toHaveBeenCalled();
       expect(result).toBe('/home/alice');
     });
 
-    it('falls back to /home/<username> when exec throws', async () => {
+    it('falls back to /home/<username> when resolveHomePath throws', async () => {
       const conn = { ...mockSrcConnection, host: { ...mockSrcConnection.host, username: 'bob' } };
-      mockExec.mockRejectedValueOnce(new Error('not connected'));
+      mockResolveHomePath.mockRejectedValueOnce(new Error('not connected'));
       const result = await service.resolveDefaultRemotePath(conn as any);
       expect(result).toBe('/home/bob');
     });
 
-    it('expands ~ and trims whitespace from exec output', async () => {
+    it('returns the absolute home from resolveHomePath()', async () => {
       const conn = { ...mockSrcConnection, host: { ...mockSrcConnection.host, username: 'alice' } };
-      // exec returns path with extra whitespace/newline
-      mockExec.mockResolvedValueOnce('  /home/alice  \n');
+      mockResolveHomePath.mockResolvedValueOnce('/home/alice');
       const result = await service.resolveDefaultRemotePath(conn as any);
       expect(result).toBe('/home/alice');
     });
@@ -376,6 +378,31 @@ describe('FileService - remote copy/paste', () => {
       await service.deleteRemotePath(mockSrcConnection as any, "/home/user/it's", true);
       const cmd = mockExec.mock.calls[0][0] as string;
       expect(cmd).toContain("'\\''");
+    });
+
+    // issue #9: FTP has no shell, so directory delete must NOT run `rm -rf`.
+    it('deletes a directory recursively (no exec) over FTP', async () => {
+      const ftpConn = {
+        ...mockSrcConnection,
+        capabilities: { ...mockSrcConnection.capabilities, type: 'ftp', supportsExec: false },
+      };
+      mockListFiles.mockResolvedValueOnce([]); // empty dir
+      await service.deleteRemotePath(ftpConn as any, '/data/dir', true);
+      expect(mockExec).not.toHaveBeenCalled();
+      expect(mockDeleteFile).toHaveBeenCalledWith('/data/dir');
+    });
+  });
+
+  describe('copyRemoteSameHost (issue #9)', () => {
+    it('rejects with a clear message over FTP (no shell cp)', async () => {
+      const ftpConn = {
+        ...mockSrcConnection,
+        capabilities: { ...mockSrcConnection.capabilities, type: 'ftp', supportsExec: false },
+      };
+      await expect(
+        service.copyRemoteSameHost(ftpConn as any, '/a', '/b', false)
+      ).rejects.toThrow(/not supported/i);
+      expect(mockExec).not.toHaveBeenCalled();
     });
   });
 });

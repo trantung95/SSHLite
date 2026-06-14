@@ -72,7 +72,7 @@ SSH Lite sits in the middle: as light as raw SSH, as friendly as Remote-SSH.
 
 Reads `~/.ssh/config`. Supports SSH keys (RSA / Ed25519 / ECDSA, encrypted), agent, and password.
 
-**115 commands** — full reference at [docs/COMMANDS.md](https://github.com/trantung95/SSHLite/blob/master/docs/COMMANDS.md).
+**117 commands** — full reference at [docs/COMMANDS.md](https://github.com/trantung95/SSHLite/blob/master/docs/COMMANDS.md).
 
 ## Remote-SSH compatibility
 
@@ -91,9 +91,9 @@ Two edge cases worth knowing:
 
 ## Release Notes
 
-**0.10.1** - **Much faster remote search**: SSH Lite now detects and uses the fastest search tools already on your server, automatically — **ripgrep** for content (up to ~10× faster than grep) and **fd** for filenames — and safely falls back to grep/find when they aren't installed (control with `sshLite.searchNativeTools`). On a multi-core server without ripgrep it runs grep in parallel across the cores. For filename search you can opt into a server index (the ⚡ button, plocate) or right-click a folder → **Index Folder for Fast Filename Search** for instant, offline name matching on any server. Also fixes a bug where a content search with a file filter could silently return zero results on busybox/Alpine servers.
+**1.0.0** - First stable release. **Connect to FTP and FTPS servers** (issue #9): add a host, pick **FTP / FTPS**, and browse, edit, upload, download, rename, delete, and create files and folders with the same clicks you already use for SSH, with no terminal, no separate FTP client, and nothing installed on the server. Supports plain FTP, encrypted **FTPS** (TLS), and **anonymous** login. Because FTP has no shell, the shell-only features (terminal, cross-server search, server monitor, system tools, sudo, port forwarding) are hidden for FTP connections so the menus only show what actually works. Built on the pure-JavaScript `basic-ftp` library. The hosts view also gains a **SSH / FTP grouped tree** with a one-click List/Tree toggle. Existing SSH connections, saved hosts, settings, and keybindings are unchanged - no migration needed.
 
-**0.10.0** - **Import / Export / Sync your connections** (issue #11): back up every saved server — and its pinned folders — to a JSON file, then restore them on another machine with a click. Use the new **Import / Export / Sync** button on the SSH Hosts toolbar; on import you choose **Merge** (add and update) or **Replace all**. Native **Google Drive sync** (sign in once, then **Push** / **Pull**) is **coming soon** — the commands are present but grayed out until the cloud client is provisioned. Passwords are never put in the export: they stay in VS Code's secret storage, so you're simply prompted on the first connect after an import.
+**0.10.1** - **Much faster remote search**: SSH Lite now detects and uses the fastest search tools already on your server, automatically — **ripgrep** for content (up to ~10× faster than grep) and **fd** for filenames — and safely falls back to grep/find when they aren't installed (control with `sshLite.searchNativeTools`). On a multi-core server without ripgrep it runs grep in parallel across the cores. For filename search you can opt into a server index (the ⚡ button, plocate) or right-click a folder → **Index Folder for Fast Filename Search** for instant, offline name matching on any server. Also fixes a bug where a content search with a file filter could silently return zero results on busybox/Alpine servers.
 
 [Full changelog](https://github.com/trantung95/SSHLite/blob/master/.adn/CHANGELOG.md)
 

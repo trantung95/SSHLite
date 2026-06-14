@@ -2,7 +2,7 @@
   "name": "ssh-lite",
   "displayName": "SSH Lite (SSH Tools)",
   "description": "A visual SSH client for VS Code. Browse, edit, monitor, manage services - by clicking, not typing vi/systemctl/crontab. Nothing installed on the remote server. Perfect for VPS, cloud servers (AWS/Azure/GCP), and Linux administration.",
-  "version": "0.10.1",
+  "version": "1.0.0",
   "publisher": "hybr8",
   "engines": {
     "vscode": "^1.85.0"
@@ -15,6 +15,13 @@
   "keywords": [
     "ssh",
     "sftp",
+    "ftp",
+    "ftps",
+    "ftp client",
+    "ftps client",
+    "ftp browser",
+    "ftp file transfer",
+    "secure ftp",
     "remote",
     "terminal",
     "file transfer",
@@ -151,7 +158,7 @@
         },
         {
           "id": "sshLite.hosts",
-          "name": "SSH Hosts"
+          "name": "Hosts"
         },
         {
           "id": "sshLite.fileExplorer",
@@ -267,6 +274,18 @@
         "title": "Refresh Hosts",
         "category": "SSH Lite",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "sshLite.hostsViewAsList",
+        "title": "View Hosts as List",
+        "category": "SSH Lite",
+        "icon": "$(list-flat)"
+      },
+      {
+        "command": "sshLite.hostsViewAsTree",
+        "title": "View Hosts as Tree (group by protocol)",
+        "category": "SSH Lite",
+        "icon": "$(list-tree)"
       },
       {
         "command": "sshLite.goToPath",
@@ -951,6 +970,16 @@
           "group": "navigation@3"
         },
         {
+          "command": "sshLite.hostsViewAsList",
+          "when": "view == sshLite.hosts && sshLite.hostsGrouped",
+          "group": "navigation@5"
+        },
+        {
+          "command": "sshLite.hostsViewAsTree",
+          "when": "view == sshLite.hosts && !sshLite.hostsGrouped",
+          "group": "navigation@5"
+        },
+        {
           "command": "sshLite.goToPath",
           "when": "view == sshLite.fileExplorer",
           "group": "navigation@1"
@@ -1150,12 +1179,12 @@
         },
         {
           "command": "sshLite.openServerBackupFolder",
-          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer/",
+          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer(?!\\.ftp)/",
           "group": "3_cleanup@2"
         },
         {
           "command": "sshLite.showAllBackups",
-          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer/",
+          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer(?!\\.ftp)/",
           "group": "3_cleanup@3"
         },
         {
@@ -1165,7 +1194,7 @@
         },
         {
           "command": "sshLite.enableSudoMode",
-          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer(?!.*sudo)/",
+          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer(?!\\.ftp)(?!.*sudo)/",
           "group": "2_connection@5"
         },
         {
@@ -1175,47 +1204,47 @@
         },
         {
           "command": "sshLite.openTerminal",
-          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer/",
+          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer(?!\\.ftp)/",
           "group": "inline@2"
         },
         {
           "command": "sshLite.monitor",
-          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer/",
+          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer(?!\\.ftp)/",
           "group": "inline@3"
         },
         {
           "command": "sshLite.showRemoteProcesses",
-          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer/",
+          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer(?!\\.ftp)/",
           "group": "5_tools@1"
         },
         {
           "command": "sshLite.manageRemoteService",
-          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer/",
+          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer(?!\\.ftp)/",
           "group": "5_tools@2"
         },
         {
           "command": "sshLite.showRemoteEnv",
-          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer/",
+          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer(?!\\.ftp)/",
           "group": "5_tools@3"
         },
         {
           "command": "sshLite.editRemoteCron",
-          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer/",
+          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer(?!\\.ftp)/",
           "group": "5_tools@4"
         },
         {
           "command": "sshLite.runSnippet",
-          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer/",
+          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer(?!\\.ftp)/",
           "group": "5_tools@5"
         },
         {
           "command": "sshLite.runLocalScriptRemote",
-          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer/",
+          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer(?!\\.ftp)/",
           "group": "5_tools@6"
         },
         {
           "command": "sshLite.pushPubKeyToHost",
-          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer/",
+          "when": "view == sshLite.hosts && viewItem =~ /^connectedServer(?!\\.ftp)/",
           "group": "5_tools@7"
         },
         {
@@ -1240,22 +1269,22 @@
         },
         {
           "command": "sshLite.openTerminal",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection(?!\\.ftp)/",
           "group": "inline@4"
         },
         {
           "command": "sshLite.monitor",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection(?!\\.ftp)/",
           "group": "inline@5"
         },
         {
           "command": "sshLite.filterFileNames",
-          "when": "view == sshLite.fileExplorer && viewItem == connection",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection(\\.ftp)?$/",
           "group": "inline@2"
         },
         {
           "command": "sshLite.clearFilenameFilter",
-          "when": "view == sshLite.fileExplorer && viewItem == connection.filtered",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection(\\.ftp)?\\.filtered$/",
           "group": "inline@2"
         },
         {
@@ -1265,47 +1294,47 @@
         },
         {
           "command": "sshLite.openServerBackupFolder",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection(?!\\.ftp)/",
           "group": "1_cleanup@2"
         },
         {
           "command": "sshLite.showAllBackups",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection(?!\\.ftp)/",
           "group": "1_cleanup@3"
         },
         {
           "command": "sshLite.showRemoteProcesses",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection(?!\\.ftp)/",
           "group": "5_tools@1"
         },
         {
           "command": "sshLite.manageRemoteService",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection(?!\\.ftp)/",
           "group": "5_tools@2"
         },
         {
           "command": "sshLite.showRemoteEnv",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection(?!\\.ftp)/",
           "group": "5_tools@3"
         },
         {
           "command": "sshLite.editRemoteCron",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection(?!\\.ftp)/",
           "group": "5_tools@4"
         },
         {
           "command": "sshLite.runSnippet",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection(?!\\.ftp)/",
           "group": "5_tools@5"
         },
         {
           "command": "sshLite.runLocalScriptRemote",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection(?!\\.ftp)/",
           "group": "5_tools@6"
         },
         {
           "command": "sshLite.pushPubKeyToHost",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection(?!\\.ftp)/",
           "group": "5_tools@7"
         },
         {
@@ -1315,12 +1344,12 @@
         },
         {
           "command": "sshLite.searchInScope",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^file/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^file(?!\\.ftp)/",
           "group": "inline@1"
         },
         {
           "command": "sshLite.openTerminalHere",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^file/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^file(?!\\.ftp)/",
           "group": "inline@3"
         },
         {
@@ -1330,22 +1359,22 @@
         },
         {
           "command": "sshLite.searchInScope",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^folder/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^folder(?!\\.ftp)/",
           "group": "inline@1"
         },
         {
           "command": "sshLite.filterFileNames",
-          "when": "view == sshLite.fileExplorer && viewItem == folder",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^folder(\\.ftp)?$/",
           "group": "inline@2"
         },
         {
           "command": "sshLite.clearFilenameFilter",
-          "when": "view == sshLite.fileExplorer && viewItem == folder.filtered",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^folder(\\.ftp)?\\.filtered$/",
           "group": "inline@2"
         },
         {
           "command": "sshLite.openTerminalHere",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^folder/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^folder(?!\\.ftp)/",
           "group": "inline@3"
         },
         {
@@ -1380,7 +1409,7 @@
         },
         {
           "command": "sshLite.newFileAsRoot",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^folder/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^folder(?!\\.ftp)/",
           "group": "1_actions@7"
         },
         {
@@ -1395,62 +1424,62 @@
         },
         {
           "command": "sshLite.newFileAsRoot",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection(?!\\.ftp)/",
           "group": "1_actions@3"
         },
         {
           "command": "sshLite.showProperties",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^(file|folder)/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^(file|folder)(?!\\.ftp)/",
           "group": "9_info@1"
         },
         {
           "command": "sshLite.searchInScope",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^folder/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^folder(?!\\.ftp)/",
           "group": "1_actions@2"
         },
         {
           "command": "sshLite.filterFileNames",
-          "when": "view == sshLite.fileExplorer && viewItem == folder",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^folder(\\.ftp)?$/",
           "group": "1_actions@6"
         },
         {
           "command": "sshLite.clearFilenameFilter",
-          "when": "view == sshLite.fileExplorer && viewItem == folder.filtered",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^folder(\\.ftp)?\\.filtered$/",
           "group": "1_actions@6"
         },
         {
           "command": "sshLite.indexFolder",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^folder/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^folder(?!\\.ftp)/",
           "group": "1_actions@8"
         },
         {
           "command": "sshLite.indexFolder",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection(?!\\.ftp)/",
           "group": "1_actions@4"
         },
         {
           "command": "sshLite.showChanges",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^file/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^file(?!\\.ftp)/",
           "group": "1_actions@4"
         },
         {
           "command": "sshLite.showFileBackups",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^file/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^file(?!\\.ftp)/",
           "group": "1_actions@5"
         },
         {
           "command": "sshLite.showServerBackups",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^file/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^file(?!\\.ftp)/",
           "group": "1_actions@6"
         },
         {
           "command": "sshLite.showBackupLogs",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^file/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^file(?!\\.ftp)/",
           "group": "1_actions@7"
         },
         {
           "command": "sshLite.openTerminalHere",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^(file|folder)/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^(file|folder)(?!\\.ftp)/",
           "group": "1_actions@8"
         },
         {
@@ -1465,17 +1494,17 @@
         },
         {
           "command": "sshLite.copyRemoteItem",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^(file|folder)/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^(file|folder)(?!\\.ftp)/",
           "group": "2_clipboard@1"
         },
         {
           "command": "sshLite.cutRemoteItem",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^(file|folder)/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^(file|folder)(?!\\.ftp)/",
           "group": "2_clipboard@2"
         },
         {
           "command": "sshLite.pasteRemoteItem",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^(folder|connection)/ && sshLite.hasClipboard",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^(folder|connection)(?!\\.ftp)/ && sshLite.hasClipboard",
           "group": "2_clipboard@3"
         },
         {
@@ -1495,7 +1524,7 @@
         },
         {
           "command": "sshLite.diffWithLocal",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^file/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^file(?!\\.ftp)/",
           "group": "4_compare@1"
         },
         {
@@ -1515,12 +1544,12 @@
         },
         {
           "command": "sshLite.searchInScope",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^file/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^file(?!\\.ftp)/",
           "group": "1_actions@2"
         },
         {
           "command": "sshLite.searchInScope",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^connection(?!\\.ftp)/",
           "group": "inline@1"
         },
         {
@@ -1556,7 +1585,7 @@
         "sshLite.hosts": {
           "type": "array",
           "default": [],
-          "description": "Saved SSH hosts",
+          "description": "Saved SSH and FTP hosts",
           "items": {
             "type": "object",
             "properties": {
@@ -1570,16 +1599,32 @@
               },
               "port": {
                 "type": "number",
-                "default": 22,
-                "description": "SSH port"
+                "description": "Port (defaults to 22 for SSH, 21 for FTP)"
               },
               "username": {
                 "type": "string",
-                "description": "Username"
+                "description": "Username (use 'anonymous' for anonymous FTP)"
               },
               "privateKeyPath": {
                 "type": "string",
-                "description": "Path to private key"
+                "description": "Path to private key (SSH only)"
+              },
+              "connectionType": {
+                "type": "string",
+                "enum": [
+                  "ssh",
+                  "ftp"
+                ],
+                "default": "ssh",
+                "description": "Transport protocol. Omit or 'ssh' for SSH/SFTP; 'ftp' for FTP/FTPS."
+              },
+              "secure": {
+                "type": "boolean",
+                "description": "FTP only: use explicit FTPS (TLS)."
+              },
+              "anonymous": {
+                "type": "boolean",
+                "description": "FTP only: anonymous login."
               }
             },
             "required": [
@@ -1588,6 +1633,11 @@
               "username"
             ]
           }
+        },
+        "sshLite.ftpRejectUnauthorized": {
+          "type": "boolean",
+          "default": true,
+          "description": "For FTPS (TLS) connections, reject servers whose certificate cannot be verified. Disable only for trusted servers using self-signed certificates."
         },
         "sshLite.sshConfigPath": {
           "type": "string",
@@ -1843,7 +1893,11 @@
         },
         "sshLite.npcBannerMode": {
           "type": "string",
-          "enum": ["occasional", "always", "never"],
+          "enum": [
+            "occasional",
+            "always",
+            "never"
+          ],
           "enumDescriptions": [
             "Show the cheering headband once in a while.",
             "Keep the cheering headband shown continuously.",
@@ -1957,6 +2011,7 @@
     "clean": "node -e \"const fs=require('fs');const rm=p=>{if(fs.existsSync(p)){fs.rmSync(p,{recursive:true,force:true});console.log('Deleted:',p)}};rm('out');rm('node_modules');rm('*.vsix');\""
   },
   "dependencies": {
+    "basic-ftp": "^6.0.1",
     "ssh-config": "^5.0.0",
     "ssh2": "^1.16.0"
   },

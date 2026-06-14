@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ConnectionManager } from '../connection/ConnectionManager';
 import { SSHConnection } from '../connection/SSHConnection';
+import { hasCapability } from '../utils/capabilityGuard';
 import {
   RemoteEnvDocumentProvider, RemoteCronDocumentProvider,
 } from '../providers/VirtualDocProviders';
@@ -22,7 +23,12 @@ export interface ToolsContext {
 }
 
 export function getConnectedConnections(): SSHConnection[] {
-  return ConnectionManager.getInstance().getAllConnections().filter((c) => c.state === 'connected');
+  // Every SSH Tool runs a remote command (exec). Exclude FTP connections so the
+  // pickers never offer one (FTP has no exec and would crash). resolvePreselect
+  // already rejects FTP tree items because it duck-types on `.exec`.
+  return ConnectionManager.getInstance()
+    .getAllConnections()
+    .filter((c) => c.state === 'connected' && hasCapability(c, 'supportsExec'));
 }
 
 /**

@@ -252,6 +252,29 @@ describe('SearchPanel', () => {
       expect(conn2.searchFiles).toHaveBeenCalled();
     });
 
+    it('skips an FTP scope (no supportsSearch) without ever calling searchFiles', async () => {
+      // Regression: the legacy performSearch path used to call connection.searchFiles
+      // on every scope. An FTP connection has no searchFiles, so a stray FTP scope
+      // (e.g. added via searchInScope) threw a runtime TypeError. The capability guard
+      // must skip it while still searching the SSH scope.
+      const ssh = createMockConnection({ id: 'ssh1' });
+      const ftp = createMockConnection({ id: 'ftp1' });
+      (ssh.searchFiles as jest.Mock).mockResolvedValue([]);
+      (ftp.searchFiles as jest.Mock).mockResolvedValue([]);
+      (ftp as any).capabilities = {
+        type: 'ftp', supportsExec: false, supportsShell: false, supportsPortForward: false,
+        supportsNativeWatch: false, supportsSearch: false, supportsServerBackup: false, supportsSudo: false,
+      };
+
+      panel.addScope('/srv', ssh as any);
+      panel.addScope('/srv', ftp as any);
+
+      await performSearch(panel, 'hello');
+
+      expect(ssh.searchFiles).toHaveBeenCalled();
+      expect(ftp.searchFiles).not.toHaveBeenCalled();
+    });
+
     it('should pass search options to searchFiles', async () => {
       const conn = createMockConnection();
       (conn.searchFiles as jest.Mock).mockResolvedValue([]);

@@ -155,3 +155,47 @@ services:
       - ./toxiproxy.json:/config.json:ro
     depends_on:
       - slow-backend
+
+  # Server 8: FTP — port 2207 (issue #9). vsftpd (via delfer/alpine-ftp-server)
+  # with a FIXED passive port range (21000-21010) published so basic-ftp's
+  # passive-mode data connections work through Docker NAT (ADDRESS=127.0.0.1).
+  # Login is testuser/testpass; the user is chrooted, so the FTP "home" is `/`.
+  # Used by docker-ftp-fileops.test.ts. Port 2207 sits just above the
+  # slow/toxiproxy pair (2205-2206) and below ssh-manual (2215). vsftpd (unlike
+  # the pure-ftpd hardened image) permits RNFR/RNTO so rename is covered too.
+  ftp:
+    image: delfer/alpine-ftp-server
+    container_name: sshlite-test-ftp
+    ports:
+      - "2207:21"
+      - "21000-21010:21000-21010"
+    environment:
+      USERS: "testuser|testpass|/ftp/testuser"
+      ADDRESS: "127.0.0.1"
+      MIN_PORT: "21000"
+      MAX_PORT: "21010"
+
+  # Server 8b: pure-ftpd — port 2208 (issue #9). A DIFFERENT FTP implementation
+  # from vsftpd, with different LIST/MLSD output, so the basic-ftp listing parser
+  # and our IRemoteFile mapping are exercised against more than one server. TLS is
+  # enabled (TLS_CN), so this server ALSO serves the FTPS (explicit TLS) path with
+  # a self-signed cert (tests `secure` + sshLite.ftpRejectUnauthorized=false).
+  # testuser/testpass, chrooted (home `/`), passive 30000-30009. Note: the
+  # hardened image denies RNFR/RNTO, which exercises our graceful rename-failure
+  # handling (a clean FTPError, no crash).
+  ftp-pure:
+    image: stilliard/pure-ftpd:hardened
+    container_name: sshlite-test-ftp-pure
+    ports:
+      - "2208:21"
+      - "30000-30009:30000-30009"
+    environment:
+      PUBLICHOST: "127.0.0.1"
+      FTP_USER_NAME: "testuser"
+      FTP_USER_PASS: "testpass"
+      FTP_USER_HOME: "/home/testuser"
+      FTP_PASSIVE_PORTS: "30000:30009"
+      TLS_CN: "localhost"
+      TLS_ORG: "SSHLiteTest"
+      TLS_C: "US"
+      ADDED_FLAGS: "--tls=1"

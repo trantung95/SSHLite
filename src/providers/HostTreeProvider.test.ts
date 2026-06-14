@@ -65,6 +65,7 @@ import {
   UserCredentialTreeItem,
   PinnedFolderTreeItem,
   AddCredentialTreeItem,
+  ProtocolGroupTreeItem,
 } from './HostTreeProvider';
 
 describe('HostTreeProvider', () => {
@@ -77,6 +78,10 @@ describe('HostTreeProvider', () => {
     mockListCredentials.mockReturnValue([]);
     mockGetLastConnectionAttempt.mockReturnValue(undefined);
     provider = new HostTreeProvider();
+    // These suites assert server-level rendering, which lives one level below the
+    // protocol groups. Run them in flat mode so getChildren() returns servers
+    // directly; the grouped (default) behavior has its own describe block below.
+    provider.setGrouped(false);
   });
 
   afterEach(() => {
@@ -797,5 +802,72 @@ describe('HostTreeProvider', () => {
         expect(tooltipValue).toContain('Disconnected');
       });
     });
+  });
+});
+
+describe('HostTreeProvider protocol grouping (tree vs flat)', () => {
+  let provider: HostTreeProvider;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGetAllConnections.mockReturnValue([]);
+    mockListCredentials.mockReturnValue([]);
+    mockGetLastConnectionAttempt.mockReturnValue(undefined);
+    provider = new HostTreeProvider();
+  });
+
+  afterEach(() => provider.dispose());
+
+  it('defaults to grouped mode', () => {
+    expect(provider.isGrouped()).toBe(true);
+  });
+
+  it('shows both SSH and FTP groups at the root, even when empty', () => {
+    mockGetAllHosts.mockReturnValue([]);
+    const groups = provider.getChildren() as ProtocolGroupTreeItem[];
+    expect(groups).toHaveLength(2);
+    expect(groups[0]).toBeInstanceOf(ProtocolGroupTreeItem);
+    expect(groups[0].protocol).toBe('ssh');
+    expect(groups[0].label).toBe('SSH');
+    expect(groups[1].protocol).toBe('ftp');
+    expect(groups[1].label).toBe('FTP');
+    expect(groups[0].description).toBe('No hosts');
+    expect(groups[1].description).toBe('No hosts');
+  });
+
+  it('routes hosts to their protocol group (ssh default for missing connectionType)', () => {
+    mockGetAllHosts.mockReturnValue([
+      createMockHostConfig({ id: 's1', host: 'a', port: 22, name: 'A' }), // no connectionType -> ssh
+      createMockHostConfig({ id: 's2', host: 'b', port: 22, name: 'B', connectionType: 'ssh' }),
+      createMockHostConfig({ id: 'f1', host: 'c', port: 21, name: 'C', connectionType: 'ftp' }),
+    ]);
+    const groups = provider.getChildren() as ProtocolGroupTreeItem[];
+    expect(groups[0].description).toBe('2 hosts');
+    expect(groups[1].description).toBe('1 host');
+
+    const sshServers = provider.getChildren(groups[0]) as ServerTreeItem[];
+    expect(sshServers.map((s) => s.serverKey).sort()).toEqual(['a:22', 'b:22']);
+
+    const ftpServers = provider.getChildren(groups[1]) as ServerTreeItem[];
+    expect(ftpServers.map((s) => s.serverKey)).toEqual(['c:21']);
+  });
+
+  it('flat mode returns all servers directly (no group items)', () => {
+    mockGetAllHosts.mockReturnValue([
+      createMockHostConfig({ id: 's1', host: 'a', port: 22, name: 'A', connectionType: 'ssh' }),
+      createMockHostConfig({ id: 'f1', host: 'c', port: 21, name: 'C', connectionType: 'ftp' }),
+    ]);
+    provider.setGrouped(false);
+    expect(provider.isGrouped()).toBe(false);
+    const items = provider.getChildren() as ServerTreeItem[];
+    expect(items).toHaveLength(2);
+    items.forEach((i) => expect(i).toBeInstanceOf(ServerTreeItem));
+  });
+
+  it('protocol group items have stable ids', () => {
+    mockGetAllHosts.mockReturnValue([]);
+    const groups = provider.getChildren() as ProtocolGroupTreeItem[];
+    expect(groups[0].id).toBe('protocolGroup:ssh');
+    expect(groups[1].id).toBe('protocolGroup:ftp');
   });
 });

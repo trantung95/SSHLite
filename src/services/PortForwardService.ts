@@ -4,6 +4,7 @@ import { SSHConnection } from '../connection/SSHConnection';
 import { PortForwardTreeProvider } from '../providers/PortForwardTreeProvider';
 import { IPortForward, ISavedPortForwardRule } from '../types';
 import { infoLog } from '../utils/diagnosticLog';
+import { assertCapability, hasCapability } from '../utils/capabilityGuard';
 
 /**
  * Saved port forward rules indexed by hostId
@@ -147,7 +148,8 @@ export class PortForwardService {
    */
   async promptForwardPort(): Promise<void> {
     const connectionManager = ConnectionManager.getInstance();
-    const connections = connectionManager.getAllConnections();
+    // Port forwarding is SSH-only; never offer an FTP connection in the picker.
+    const connections = connectionManager.getAllConnections().filter((c) => hasCapability(c, 'supportsPortForward'));
 
     if (connections.length === 0) {
       vscode.window.showWarningMessage('No active SSH connections. Please connect first.');
@@ -239,6 +241,9 @@ export class PortForwardService {
     remoteHost: string,
     remotePort: number
   ): Promise<void> {
+    // Backstop: FTP has no port forwarding. Covers promptForwardPort,
+    // activateSavedForward, and restoreSavedForwards (all route through here).
+    assertCapability(connection, 'supportsPortForward');
     const t0 = Date.now();
     infoLog('port-forward', 'create/begin', {
       connectionId: connection.id,
@@ -330,7 +335,7 @@ export class PortForwardService {
     const connectionManager = ConnectionManager.getInstance();
     const connection = connectionManager.getConnection(connectionId);
 
-    if (connection) {
+    if (connection && hasCapability(connection, 'supportsPortForward')) {
       for (const forward of forwards) {
         try {
           await connection.stopForward(forward.localPort);
@@ -350,6 +355,11 @@ export class PortForwardService {
    * Restore saved port forwards when a connection is established
    */
   async restoreForwardsForConnection(connection: SSHConnection): Promise<void> {
+    // Fires on every Connected event (incl. FTP). FTP cannot forward ports and
+    // never has saved rules, but guard so a reused host:port:user id can't crash.
+    if (!hasCapability(connection, 'supportsPortForward')) {
+      return;
+    }
     const rules = this.getSavedRules(connection.id);
     if (rules.length === 0) {
       return;

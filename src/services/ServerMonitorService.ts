@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { SSHConnection } from '../connection/SSHConnection';
 import { TerminalService } from './TerminalService';
+import { assertCapability } from '../utils/capabilityGuard';
 
 /**
  * Zombie process info
@@ -80,6 +81,9 @@ export class ServerMonitorService {
    * Quick status check - single command for overview
    */
   async quickStatus(connection: SSHConnection): Promise<void> {
+    // Backstop: monitoring runs shell commands (exec). FTP has none — throw a clear
+    // capability error here so a future direct caller can't hit a TypeError.
+    assertCapability(connection, 'supportsExec');
     this.outputChannel.show();
     this.outputChannel.appendLine(`\n${'='.repeat(60)}`);
     this.outputChannel.appendLine(`Quick Status: ${connection.host.name} @ ${new Date().toLocaleString()}`);
@@ -164,6 +168,7 @@ export class ServerMonitorService {
    * Diagnose why server is slow
    */
   async diagnoseSlowness(connection: SSHConnection): Promise<void> {
+    assertCapability(connection, 'supportsExec');
     this.outputChannel.show();
     this.outputChannel.appendLine(`\n${'='.repeat(60)}`);
     this.outputChannel.appendLine(`Slowness Diagnosis: ${connection.host.name}`);
@@ -301,6 +306,7 @@ export class ServerMonitorService {
    * Watch server status in real-time (runs top for a few seconds)
    */
   async watchStatus(connection: SSHConnection, seconds: number = 5): Promise<void> {
+    assertCapability(connection, 'supportsExec');
     this.outputChannel.show();
     this.outputChannel.appendLine(`\n${'='.repeat(60)}`);
     this.outputChannel.appendLine(`Watching: ${connection.host.name} for ${seconds}s`);
@@ -318,6 +324,7 @@ export class ServerMonitorService {
    * Check specific service status
    */
   async checkService(connection: SSHConnection, serviceName: string): Promise<void> {
+    assertCapability(connection, 'supportsExec');
     this.outputChannel.show();
     this.outputChannel.appendLine(`\n${'='.repeat(60)}`);
     this.outputChannel.appendLine(`Service Check: ${serviceName} on ${connection.host.name}`);
@@ -344,6 +351,7 @@ export class ServerMonitorService {
    * List all running services
    */
   async listServices(connection: SSHConnection): Promise<void> {
+    assertCapability(connection, 'supportsExec');
     this.outputChannel.show();
     this.outputChannel.appendLine(`\n${'='.repeat(60)}`);
     this.outputChannel.appendLine(`Running Services: ${connection.host.name}`);
@@ -367,6 +375,7 @@ export class ServerMonitorService {
    * Check recent logs (last 50 lines of syslog)
    */
   async recentLogs(connection: SSHConnection): Promise<void> {
+    assertCapability(connection, 'supportsExec');
     this.outputChannel.show();
     this.outputChannel.appendLine(`\n${'='.repeat(60)}`);
     this.outputChannel.appendLine(`Recent Logs: ${connection.host.name}`);
@@ -394,6 +403,7 @@ export class ServerMonitorService {
    * Network diagnostics
    */
   async networkDiagnostics(connection: SSHConnection): Promise<void> {
+    assertCapability(connection, 'supportsExec');
     this.outputChannel.show();
     this.outputChannel.appendLine(`\n${'='.repeat(60)}`);
     this.outputChannel.appendLine(`Network Diagnostics: ${connection.host.name}`);
@@ -425,6 +435,7 @@ export class ServerMonitorService {
    * Fallback chain: htop -> top -> watch-based script
    */
   async watchLiveTerminal(connection: SSHConnection): Promise<void> {
+    assertCapability(connection, 'supportsShell');
     const terminalService = TerminalService.getInstance();
 
     try {
@@ -462,6 +473,7 @@ export class ServerMonitorService {
    * Open a live monitoring webview panel with auto-refresh countdown
    */
   async openLiveMonitorPanel(connection: SSHConnection): Promise<void> {
+    assertCapability(connection, 'supportsExec');
     const panel = vscode.window.createWebviewPanel(
       'sshLiteMonitor',
       `Monitor: ${connection.host.name}`,
@@ -571,6 +583,7 @@ export class ServerMonitorService {
    * @param sortBy - Sort processes by: cpu, mem, vsz, rss (default: cpu)
    */
   private async fetchServerStatus(connection: SSHConnection, sortBy: string = 'cpu', processCount: number = 10): Promise<ServerStatus> {
+    assertCapability(connection, 'supportsExec');
     // Map sort options to ps sort flags
     const sortMap: { [key: string]: string } = {
       'cpu': '-%cpu',

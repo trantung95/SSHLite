@@ -3,7 +3,7 @@ import * as path from 'path';
 import { HostService } from '../services/HostService';
 import { ConnectionManager } from '../connection/ConnectionManager';
 import { CredentialService, SavedCredential, PinnedFolder } from '../services/CredentialService';
-import { IHostConfig, ILastConnectionAttempt } from '../types';
+import { IHostConfig, ILastConnectionAttempt, ConnectionType } from '../types';
 import { formatRelativeTime } from '../utils/helpers';
 
 // Get extension path for custom icons
@@ -58,6 +58,11 @@ export class ServerTreeItem extends vscode.TreeItem {
     const hasSavedCredential = hosts.some(h => credentialService.listCredentials(h.id).length > 0);
     const isManuallyAdded = hosts.some(h => h.source === 'saved');
     const isSavedOrHasCredentials = hasSavedCredential || isManuallyAdded;
+    // FTP servers get a `.ftp` marker immediately after `connectedServer` so the
+    // shell-only `when` clauses (terminal, monitor, tools, backups, sudo) can
+    // exclude them via a `(?!\.ftp)` lookahead. Sudo never applies to FTP.
+    const isFtp = hosts.some(h => h.connectionType === 'ftp');
+    const ftpMark = isFtp ? '.ftp' : '';
 
     if (isReconnecting) {
       // Reconnecting: show spinning icon and reconnectingServer contextValue so disconnect button appears
@@ -71,7 +76,7 @@ export class ServerTreeItem extends vscode.TreeItem {
       this.description = `${serverKey} (sudo)`;
     } else if (isConnected) {
       // Use different context for saved vs config hosts so menu items work correctly
-      this.contextValue = isSavedOrHasCredentials ? 'connectedServer.saved' : 'connectedServer';
+      this.contextValue = isSavedOrHasCredentials ? `connectedServer${ftpMark}.saved` : `connectedServer${ftpMark}`;
       this.iconPath = new vscode.ThemeIcon('vm-running', new vscode.ThemeColor('charts.green'));
     } else if (lastFailedAttempt && !lastFailedAttempt.success) {
       this.contextValue = isSavedOrHasCredentials ? 'savedServer' : 'server';
@@ -223,6 +228,24 @@ export class AddCredentialTreeItem extends vscode.TreeItem {
   }
 }
 
+/**
+ * Tree item for a protocol group ("SSH" or "FTP"). Shown only in grouped (tree)
+ * view mode; servers are nested underneath their protocol. Both groups are always
+ * shown, even when empty, so the user can see where a host of each kind would go.
+ */
+export class ProtocolGroupTreeItem extends vscode.TreeItem {
+  constructor(public readonly protocol: ConnectionType, serverCount: number) {
+    super(protocol === 'ftp' ? 'FTP' : 'SSH', vscode.TreeItemCollapsibleState.Expanded);
+
+    // Stable id so VS Code preserves the group's expansion state.
+    this.id = `protocolGroup:${protocol}`;
+    this.contextValue = 'protocolGroup';
+    this.description = serverCount === 0 ? 'No hosts' : `${serverCount} host${serverCount === 1 ? '' : 's'}`;
+    this.iconPath = new vscode.ThemeIcon(protocol === 'ftp' ? 'cloud' : 'terminal');
+    this.tooltip = protocol === 'ftp' ? 'FTP / FTPS hosts' : 'SSH / SFTP hosts';
+  }
+}
+
 // Legacy exports for compatibility
 export { ServerTreeItem as HostTreeItem };
 export class CredentialTreeItem extends UserCredentialTreeItem {
@@ -236,7 +259,7 @@ export class CredentialTreeItem extends UserCredentialTreeItem {
   }
 }
 
-type TreeItemType = ServerTreeItem | UserCredentialTreeItem | AddCredentialTreeItem | PinnedFolderTreeItem;
+type TreeItemType = ProtocolGroupTreeItem | ServerTreeItem | UserCredentialTreeItem | AddCredentialTreeItem | PinnedFolderTreeItem;
 
 /**
  * Tree data provider for SSH hosts
@@ -251,6 +274,10 @@ export class HostTreeProvider implements vscode.TreeDataProvider<TreeItemType> {
 
   // Filter pattern for host tree (matches against name, host, username)
   private filterPattern: string = '';
+  // View mode: true = grouped by protocol (SSH/FTP sub-sections), false = flat
+  // list of all servers. Default grouped; the extension restores the persisted
+  // choice at startup via setGrouped().
+  private grouped: boolean = true;
   private readonly _connectionListenerDisposable: vscode.Disposable;
 
   constructor() {
@@ -295,6 +322,24 @@ export class HostTreeProvider implements vscode.TreeDataProvider<TreeItemType> {
   clearFilter(): void {
     this.filterPattern = '';
     this.refresh();
+  }
+
+  /**
+   * Switch between grouped (by protocol) and flat view. The extension persists
+   * the choice and keeps the `sshLite.hostsGrouped` context key in sync for the
+   * view-title toggle button; this just updates the model and re-renders.
+   */
+  setGrouped(grouped: boolean): void {
+    if (this.grouped === grouped) {
+      return;
+    }
+    this.grouped = grouped;
+    this.refresh();
+  }
+
+  /** Whether the tree is currently grouped by protocol. */
+  isGrouped(): boolean {
+    return this.grouped;
   }
 
   /**
@@ -350,9 +395,21 @@ export class HostTreeProvider implements vscode.TreeDataProvider<TreeItemType> {
    * Get children - synchronous for instant UI
    */
   getChildren(element?: TreeItemType): TreeItemType[] {
-    // Root level: show servers (grouped by host:port)
+    // Root level: protocol groups (tree mode) or a flat list of servers.
     if (!element) {
+      if (this.grouped) {
+        // Always show both groups, even when empty (per design).
+        return [
+          new ProtocolGroupTreeItem('ssh', this.getServerItems('ssh').length),
+          new ProtocolGroupTreeItem('ftp', this.getServerItems('ftp').length),
+        ];
+      }
       return this.getServerItems();
+    }
+
+    // Protocol group level: servers of that protocol.
+    if (element instanceof ProtocolGroupTreeItem) {
+      return this.getServerItems(element.protocol);
     }
 
     // Server level: show user credentials
@@ -372,10 +429,15 @@ export class HostTreeProvider implements vscode.TreeDataProvider<TreeItemType> {
   }
 
   /**
-   * Get server items grouped by host:port
+   * Get server items grouped by host:port. When `protocol` is given, only hosts
+   * of that connection type are included (used for the SSH/FTP sub-sections);
+   * hosts with no explicit `connectionType` count as SSH for backward compat.
    */
-  private getServerItems(): ServerTreeItem[] {
-    const hosts = this.hostService.getAllHosts();
+  private getServerItems(protocol?: ConnectionType): ServerTreeItem[] {
+    const allHosts = this.hostService.getAllHosts();
+    const hosts = protocol
+      ? allHosts.filter((h) => (h.connectionType ?? 'ssh') === protocol)
+      : allHosts;
     const connections = this.connectionManager.getAllConnections();
     const connectedIds = new Set(connections.map((c) => c.id));
 

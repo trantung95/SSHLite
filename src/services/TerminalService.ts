@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { SSHConnection } from '../connection/SSHConnection';
+import { assertCapability } from '../utils/capabilityGuard';
 import { ClientChannel } from 'ssh2';
 import { diagLog, infoLog } from '../utils/diagnosticLog';
 
@@ -101,6 +102,8 @@ export class TerminalService {
    * Multiple terminals can be opened on the same connection without re-authentication.
    */
   async createTerminal(connection: SSHConnection, preOpenedShell?: ClientChannel): Promise<vscode.Terminal> {
+    // Backstop: FTP has no interactive shell.
+    assertCapability(connection, 'supportsShell');
     // Increment terminal counter for this connection
     const currentCount = this.terminalCounters.get(connection.id) || 0;
     const terminalNumber = currentCount + 1;

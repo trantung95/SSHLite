@@ -5,6 +5,7 @@ import * as zlib from 'zlib';
 import * as crypto from 'crypto';
 import { SSHConnection } from '../connection/SSHConnection';
 import { infoLog, diagLog } from '../utils/diagnosticLog';
+import { assertCapability } from '../utils/capabilityGuard';
 
 /**
  * Client-side filename snapshot index.
@@ -101,6 +102,9 @@ export class FilenameIndexService {
     basePath: string,
     signal?: AbortSignal,
   ): Promise<{ count: number; timestamp: number } | { refused: 'too-large' | 'no-storage' | 'aborted'; limit: number }> {
+    // Backstop: the index is built with a remote find (searchFiles), unavailable on FTP.
+    assertCapability(conn, 'supportsSearch', 'Filename indexing');
+
     const dir = this.indexDir();
     if (!dir) return { refused: 'no-storage', limit: 0 };
 

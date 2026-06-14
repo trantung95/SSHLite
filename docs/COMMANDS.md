@@ -1,7 +1,7 @@
 # SSH Lite (SSH Tools) — Command Reference
 
 > Auto-generated from `package.json`. Run `npm run docs:commands` to regenerate.
-> Last updated: 2026-06-12 · Version: 0.10.1
+> Last updated: 2026-06-14 · Version: 1.0.0
 
 This document lists every command registered by SSH Lite (SSH Tools), organized by category.
 Open the Command Palette (**Ctrl+Shift+P** / **Cmd+Shift+P**) and type the command title to find it.
@@ -35,6 +35,8 @@ Open the Command Palette (**Ctrl+Shift+P** / **Cmd+Shift+P**) and type the comma
 | Rename Host | `sshLite.renameHost` | — | Tree context menu |
 | Set Tab Label | `sshLite.setTabLabel` | — | Tree context menu |
 | Refresh Hosts | `sshLite.refreshHosts` | — | View toolbar |
+| View Hosts as List | `sshLite.hostsViewAsList` | — | View toolbar |
+| View Hosts as Tree (group by protocol) | `sshLite.hostsViewAsTree` | — | View toolbar |
 | Go to Path... | `sshLite.goToPath` | `ctrl+shift+g / cmd+shift+g (Mac)` | Keybinding: ctrl+shift+g / cmd+shift+g (Mac), View toolbar |
 | Go to Parent Folder | `sshLite.goToParent` | — | View toolbar |
 | Go to Home (~) | `sshLite.goToHome` | — | View toolbar |
