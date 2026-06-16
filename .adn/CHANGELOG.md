@@ -1,5 +1,35 @@
 # Changelog
 
+## v1.0.2 - SSH key/passphrase login UX + host = server endpoint (accounts per host, in progress)
+
+Two user-facing improvements plus the groundwork for the "accounts under a host" model.
+
+### SSH key and passphrase login (complete)
+
+- **No password box when a key is set.** `SSHConnection.buildAuthConfig` legacy branch (the plain `sshLite.connect` path) used to run `creds.getOrPrompt(..., 'password', ...)` unconditionally "for fallback", so a key-based host still popped a password prompt on first connect. It now prompts for a login password ONLY when there is no private key and no SSH agent; when a key or agent is present a previously saved password is attached silently (true fallback) but the user is never interrupted.
+- **Passphrase only when the key is actually encrypted.** Encryption is now detected with ssh2's own `parseKey` (`src/connection/keyEncryption.ts` `isPrivateKeyEncrypted`) instead of the fragile PEM `ENCRYPTED` substring, so modern OpenSSH-format encrypted keys are handled too. An unencrypted key connects with no passphrase prompt; both `promptPrivateKeyAuth` and the `connectWithCredential` first-connect path respect this.
+- **Clear wrong-passphrase feedback.** A bad passphrase surfaces as a client-side "Cannot parse privateKey" error with none of the server-auth keywords, so it used to look like a generic failure. `isKeyPassphraseError` classifies it and the key branch shows "Incorrect passphrase for private key …" with a one-click "Re-enter Passphrase" retry.
+- The key picker is unified (`src/utils/keyFilePicker.ts` `pickPrivateKeyPath`): Browse / Type-a-path / Keep-current / No-key.
+- Tests: `SSHConnection.auth.test.ts`, `keyEncryption.test.ts`, `keyFilePicker.test.ts`, `SSHConnection.logs.test.ts`. Hand-test server added: `test-docker` `ssh-keys` on port 2216 (testuser/testpass, admin/adminpass, keyuser key-only, `id_rsa_encrypted` passphrase `testphrase`).
+
+### Host = server endpoint, accounts per host (in progress)
+
+- **Add Host no longer asks for a username or a key.** `HostService.promptAddHost` now collects only name, hostname, port (plus FTPS for FTP) and saves a server **endpoint** (`isEndpoint: true`, empty username). `IHostConfig.username` is kept string-typed; an endpoint stores `''` plus the flag (this avoids a codebase-wide optional-type churn and structurally prevents `${undefined}` ids and empty-username crashes).
+- **Accounts live under the host.** A new host shows as a server node with an empty account list plus the existing **Add User...** button; each account (username + password or key + passphrase) is added there and connected to individually. The host tree skips endpoint records so there is never a blank, click-to-connect row.
+- **New `src/utils/hostId.ts`** (`buildHostId` / `parseHostId`) centralises connection-id build/parse, splitting from the right so the username may be empty and the host may contain colons - which also fixes a latent **IPv6 connection-id** parsing bug across host remove/rename/set-tab-label and the connection-id display helpers.
+- **One connectability chokepoint.** `ConnectionFactory.createConnection` rejects an endpoint (no account yet), and `FTPConnection.connect` now guards a non-anonymous empty username - closing a path where an empty FTP username could be silently treated as an anonymous login.
+- Tests: `hostId.test.ts`, `HostService.endpoint.test.ts`, `ConnectionFactory.endpoint.test.ts`.
+
+### Known limitations (being finished in the next patch)
+
+- Exporting connections does not yet include bare endpoints (accounts with a username export normally); import/export endpoint support is the next step.
+- FTP's **Add User** still offers a Private Key option, which FTP does not use (SSH is unaffected).
+- The Command Palette `Connect` list still shows endpoints; selecting one is safely rejected by the chokepoint with a "use Add User" message.
+
+### Backward compatibility
+
+Existing saved hosts (each with a username) load and behave exactly as before - they render as account rows under their server. No migration. The `sshLite.hosts` settings schema now allows an optional `username` plus `isEndpoint`.
+
 ## v1.0.1 - FTP fixes (issues #14, #15, #16) + latent-bug sweep
 
 Bug-fix release addressing the first user reports against the 1.0.0 FTP feature, plus latent bugs found while investigating.
