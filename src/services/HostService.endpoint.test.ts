@@ -7,7 +7,7 @@
  * host:port. Malformed records (no username, not an endpoint) are still skipped.
  */
 
-import { setMockConfig, clearMockConfig, workspace } from '../__mocks__/vscode';
+import { setMockConfig, clearMockConfig, workspace, window } from '../__mocks__/vscode';
 
 jest.mock('fs', () => ({
   existsSync: jest.fn().mockReturnValue(false),
@@ -110,5 +110,49 @@ describe('HostService endpoints', () => {
     await service.saveHost({ name: 'Acct', host: 'srv.com', port: 22, username: 'alice' });
     const ids = service.getAllHosts().map((h) => h.id).sort();
     expect(ids).toEqual(['srv.com:22:', 'srv.com:22:alice']);
+  });
+
+  describe('promptAddHost (endpoint wizard)', () => {
+    it('SSH: saves an endpoint and NEVER prompts for a username or a key', async () => {
+      (window.showQuickPick as jest.Mock).mockResolvedValueOnce({ label: 'SSH / SFTP', value: 'ssh' });
+      (window.showInputBox as jest.Mock)
+        .mockResolvedValueOnce('My Server') // display name
+        .mockResolvedValueOnce('srv.com') // hostname
+        .mockResolvedValueOnce('22'); // port
+
+      const result = await service.promptAddHost();
+
+      expect(result?.isEndpoint).toBe(true);
+      expect(result?.username).toBe('');
+      expect(result?.id).toBe('srv.com:22:');
+      expect(result?.privateKeyPath).toBeUndefined();
+
+      // The username prompt must be gone (the reported bug).
+      const prompts = (window.showInputBox as jest.Mock).mock.calls.map((c) => c[0]?.prompt);
+      expect(prompts).not.toContain('Enter username');
+
+      // Persisted as an endpoint.
+      expect(service.getAllHosts().some((h) => h.isEndpoint && h.host === 'srv.com')).toBe(true);
+    });
+
+    it('FTP: saves an endpoint with the FTPS flag, no username/anonymous prompt', async () => {
+      (window.showQuickPick as jest.Mock)
+        .mockResolvedValueOnce({ label: 'FTP / FTPS', value: 'ftp' }) // connection type
+        .mockResolvedValueOnce({ label: 'FTPS (explicit TLS)', value: true }); // security
+      (window.showInputBox as jest.Mock)
+        .mockResolvedValueOnce('My FTP') // display name
+        .mockResolvedValueOnce('ftp.srv.com') // hostname
+        .mockResolvedValueOnce('21'); // port
+
+      const result = await service.promptAddHost();
+
+      expect(result?.isEndpoint).toBe(true);
+      expect(result?.username).toBe('');
+      expect(result?.connectionType).toBe('ftp');
+      expect(result?.secure).toBe(true);
+
+      const prompts = (window.showInputBox as jest.Mock).mock.calls.map((c) => c[0]?.prompt);
+      expect(prompts).not.toContain('Enter username');
+    });
   });
 });

@@ -5,6 +5,7 @@ import { ConnectionManager } from '../connection/ConnectionManager';
 import { CredentialService, SavedCredential, PinnedFolder } from '../services/CredentialService';
 import { IHostConfig, ILastConnectionAttempt, ConnectionType } from '../types';
 import { formatRelativeTime } from '../utils/helpers';
+import { isEndpointHost } from '../utils/hostId';
 
 // Get extension path for custom icons
 let extensionPath: string = '';
@@ -89,8 +90,9 @@ export class ServerTreeItem extends vscode.TreeItem {
       this.iconPath = new vscode.ThemeIcon('vm-outline');
     }
 
-    // Tooltip with server info + failed connection details
-    const usernames = hosts.map(h => h.username).join(', ');
+    // Tooltip with server info + failed connection details. Endpoint records have
+    // no username — filter them out so an empty server reads "(no accounts)".
+    const usernames = hosts.map(h => h.username).filter(Boolean).join(', ') || '(no accounts)';
     if (isReconnecting) {
       this.tooltip = new vscode.MarkdownString(
         `**${displayName}**\n\n` +
@@ -140,6 +142,10 @@ export class UserCredentialTreeItem extends vscode.TreeItem {
       hostConfig.username,
       hasPinnedFolders ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None
     );
+
+    // Stable, unique id so two accounts (or a future blank label) never collapse
+    // to the same implicit label-based id and hide one another.
+    this.id = `credential:${hostConfig.id}`;
 
     // Description shows credential type if saved
     if (credential) {
@@ -361,7 +367,7 @@ export class HostTreeProvider implements vscode.TreeDataProvider<TreeItemType> {
     for (const host of hosts) {
       searchStrings.push(host.name.toLowerCase());
       searchStrings.push(host.host.toLowerCase());
-      searchStrings.push(host.username.toLowerCase());
+      searchStrings.push((host.username ?? '').toLowerCase());
     }
 
     if (!hasGlobWildcards) {
@@ -506,8 +512,13 @@ export class HostTreeProvider implements vscode.TreeDataProvider<TreeItemType> {
     const connections = this.connectionManager.getAllConnections();
     const connectedIds = new Set(connections.map((c) => c.id));
 
-    // Add each username as a credential item
+    // Add each username as a credential item. An endpoint record (no account
+    // yet) is NOT an account — skip it so the server shows an empty account list
+    // plus the "Add User..." item, never a blank, click-to-connect row.
     for (const host of serverItem.hosts) {
+      if (isEndpointHost(host)) {
+        continue;
+      }
       const isConnected = connectedIds.has(host.id);
 
       // Get saved credentials for this specific host config

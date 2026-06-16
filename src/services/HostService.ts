@@ -669,51 +669,43 @@ export class HostService {
 
     const port = parseInt(portStr, 10);
 
-    const ftp = isFtp ? await this.promptFtpOptions() : { secure: undefined, anonymous: undefined, username: undefined };
-    if (isFtp && ftp === undefined) {
-      return undefined;
-    }
-
-    let username = ftp?.username;
-    let privateKeyPath: string | undefined;
-
-    if (!isFtp) {
-      username = await vscode.window.showInputBox({
-        prompt: 'Enter username',
-        value: os.userInfo().username,
-        ignoreFocusOut: true,
-      });
-      if (!username) {
+    // FTPS (TLS) is an ENDPOINT-level property (it describes the server, not the
+    // account), so it stays in the Add Host wizard. The account itself — username
+    // plus password or key+passphrase — is NOT collected here.
+    let secure: boolean | undefined;
+    if (isFtp) {
+      const securePick = await vscode.window.showQuickPick(
+        [
+          { label: 'Plain FTP', description: 'Unencrypted — credentials sent in clear text', value: false },
+          { label: 'FTPS (explicit TLS)', description: 'Encrypted control and data connection', value: true },
+        ],
+        { title: 'FTP security', placeHolder: 'Use TLS?', ignoreFocusOut: true }
+      );
+      if (!securePick) {
         return undefined;
       }
-      // Cancelling the key picker keeps the legacy behaviour: no key → password
-      // auth (it does NOT abort adding the host).
-      privateKeyPath = (await pickPrivateKeyPath({
-        title: 'Private key (optional — choose "No key" for password auth)',
-        optional: true,
-      })) || undefined;
+      secure = securePick.value;
     }
 
-    if (!username) {
-      return undefined;
-    }
-
+    // A host is saved as a server ENDPOINT (host:port, no account yet). Username
+    // and credentials are added per-account under it via "Add User...", where the
+    // user enters a password or browses a private key (with passphrase). This is
+    // why Add Host no longer asks for a username or a key.
     const hostConfig: Omit<IHostConfig, 'id' | 'source'> = {
       name,
       host,
       port,
-      username,
-      privateKeyPath,
+      username: '',
+      isEndpoint: true,
       connectionType,
-      secure: isFtp ? ftp?.secure : undefined,
-      anonymous: isFtp ? ftp?.anonymous : undefined,
+      secure: isFtp ? secure : undefined,
     };
 
     await this.saveHost(hostConfig);
 
     return {
       ...hostConfig,
-      id: `${host}:${port}:${username}`,
+      id: buildHostId({ host, port, username: '', connectionType }),
       source: 'saved',
     };
   }
