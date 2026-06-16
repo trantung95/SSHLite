@@ -4,6 +4,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { ConnectionManager } from './connection/ConnectionManager';
 import { SSHConnection, setGlobalState } from './connection/SSHConnection';
+import { isPrivateKeyEncrypted, isKeyPassphraseError } from './connection/keyEncryption';
+import { pickPrivateKeyPath } from './utils/keyFilePicker';
 import { HostService } from './services/HostService';
 import { FileService } from './services/FileService';
 import { TerminalService } from './services/TerminalService';
@@ -89,20 +91,19 @@ export function __testGetActivateFailures(): readonly string[] {
 }
 
 /**
- * Prompt the user for a private-key path and passphrase. Returns `undefined`
- * if the user cancels or if the file cannot be read. The passphrase is left
- * empty when the key isn't obviously encrypted — callers should still ask
- * the user to confirm, because OpenSSH-format encrypted keys can't be
- * detected from the PEM armor alone.
+ * Prompt the user for a private-key path, and for a passphrase ONLY when the
+ * key is actually encrypted. Returns `undefined` if the user cancels or if the
+ * file cannot be read. Encryption is detected with ssh2's own parser
+ * (`isPrivateKeyEncrypted`), so modern OpenSSH-format encrypted keys are handled
+ * too — not just the legacy PEM `ENCRYPTED` armor — which is why we no longer
+ * need to prompt unconditionally "just in case".
  */
 async function promptPrivateKeyAuth(
   options: { initialPath?: string; promptLabel: string }
 ): Promise<{ privateKeyPath: string; passphrase: string } | undefined> {
-  const keyPathInput = await vscode.window.showInputBox({
-    prompt: options.promptLabel,
-    placeHolder: '~/.ssh/id_rsa',
-    value: options.initialPath,
-    ignoreFocusOut: true,
+  const keyPathInput = await pickPrivateKeyPath({
+    title: options.promptLabel,
+    initialPath: options.initialPath,
   });
 
   if (!keyPathInput) return undefined;
@@ -113,24 +114,31 @@ async function promptPrivateKeyAuth(
     return undefined;
   }
 
-  // Sanity-check that we can read the file — fail fast with a clear error
-  // instead of letting the connect path throw later.
+  // Read the key so we can (a) fail fast with a clear error and (b) decide
+  // whether it is actually encrypted.
+  let keyData: Buffer;
   try {
-    fs.readFileSync(expanded);
+    keyData = fs.readFileSync(expanded);
   } catch (err) {
     vscode.window.showErrorMessage(`Cannot read private key: ${(err as Error).message}`);
     return undefined;
   }
 
-  const entered = await vscode.window.showInputBox({
-    prompt: `Passphrase for ${keyPathInput} (leave empty if the key has no passphrase)`,
-    password: true,
-    ignoreFocusOut: true,
-  });
-  if (entered === undefined) return undefined; // user cancelled
+  // Only ask for a passphrase when the key is genuinely encrypted. An
+  // unencrypted key needs no passphrase at all — prompting for one was a UX wart.
+  let passphrase = '';
+  if (isPrivateKeyEncrypted(keyData)) {
+    const entered = await vscode.window.showInputBox({
+      prompt: `Passphrase for ${keyPathInput}`,
+      password: true,
+      ignoreFocusOut: true,
+    });
+    if (entered === undefined) return undefined; // user cancelled
+    passphrase = entered;
+  }
 
   // Store the un-expanded path so `~` stays portable across machines.
-  return { privateKeyPath: keyPathInput, passphrase: entered };
+  return { privateKeyPath: keyPathInput, passphrase };
 }
 
 /**
@@ -3385,12 +3393,27 @@ export function activate(context: vscode.ExtensionContext): void {
             );
             return;
           }
-          const passphrase = await vscode.window.showInputBox({
-            prompt: `Passphrase for ${hostConfig.privateKeyPath} (leave empty if the key has no passphrase)`,
-            password: true,
-            ignoreFocusOut: true,
-          });
-          if (passphrase === undefined) return; // user cancelled
+          // Only ask for a passphrase when the key is ACTUALLY encrypted. An
+          // unencrypted key (the common case) must connect with NO prompt at
+          // all — popping "leave empty if the key has no passphrase" on every
+          // connect was a UX wart. If we cannot read/parse the key to decide,
+          // err on the side of asking rather than silently failing the connect.
+          let passphrase: string | undefined = '';
+          let keyEncrypted = false;
+          try {
+            keyEncrypted = isPrivateKeyEncrypted(fs.readFileSync(expanded));
+          } catch (e) {
+            log(`Could not inspect key "${hostConfig.privateKeyPath}" for encryption (${(e as Error).message}); will prompt for a passphrase to be safe`);
+            keyEncrypted = true;
+          }
+          if (keyEncrypted) {
+            passphrase = await vscode.window.showInputBox({
+              prompt: `Passphrase for ${hostConfig.privateKeyPath}`,
+              password: true,
+              ignoreFocusOut: true,
+            });
+            if (passphrase === undefined) return; // user cancelled
+          }
 
           // Reuse an existing privateKey credential for the same path instead
           // of stacking duplicates if the user cancelled a previous attempt.
@@ -3473,6 +3496,12 @@ export function activate(context: vscode.ExtensionContext): void {
         log(`Connection failed for ${hostConfig.username}@${hostConfig.host}:${hostConfig.port}: ${(error as Error).message}`);
         const errMsg = (error as Error).message;
         const isAuthError = errMsg.includes('authentication') || errMsg.includes('password') || errMsg.includes('Permission denied') || errMsg.includes('All configured authentication methods failed') || errMsg.includes('Invalid username');
+        // A wrong/empty/missing passphrase shows up as a client-side
+        // "Cannot parse privateKey: ..." error that contains none of the
+        // server-auth keywords above, so isAuthError misses it. Detect it
+        // explicitly so the key branch can show a clear "incorrect passphrase"
+        // notice with a re-enter option instead of an opaque generic failure.
+        const isPassphraseError = effectiveCredential.type === 'privateKey' && isKeyPassphraseError(errMsg);
 
         if (isAuthError && effectiveCredential.type === 'password') {
           // Authentication failed - offer to retry with new password
@@ -3518,18 +3547,24 @@ export function activate(context: vscode.ExtensionContext): void {
               }
             }
           }
-        } else if (isAuthError && effectiveCredential.type === 'privateKey') {
-          // Passphrase-protected key with the wrong (or stale) passphrase —
-          // offer to re-enter and retry, mirroring the password branch.
+        } else if (effectiveCredential.type === 'privateKey' && (isAuthError || isPassphraseError)) {
+          // Passphrase-protected key with the wrong (or stale) passphrase, or a
+          // server-side key rejection — offer to re-enter and retry. For the
+          // passphrase case show a clear, specific notice instead of the raw
+          // "Cannot parse privateKey: ..." text.
+          const keyLabel = effectiveCredential.privateKeyPath ?? 'private key';
+          const headline = isPassphraseError
+            ? `Incorrect passphrase for private key "${keyLabel}". The passphrase you entered could not decrypt the key.`
+            : `Connection failed: ${errMsg}`;
           const action = await vscode.window.showErrorMessage(
-            `Connection failed: ${errMsg}`,
+            headline,
             'Re-enter Passphrase',
             'Cancel'
           );
 
           if (action === 'Re-enter Passphrase') {
             const newPassphrase = await vscode.window.showInputBox({
-              prompt: `Passphrase for ${effectiveCredential.privateKeyPath ?? 'private key'} (leave empty if the key has no passphrase)`,
+              prompt: `Re-enter passphrase for ${keyLabel}`,
               password: true,
               ignoreFocusOut: true,
             });
@@ -3558,8 +3593,13 @@ export function activate(context: vscode.ExtensionContext): void {
                 vscode.window.setStatusBarMessage(`$(check) Connected to ${hostConfig.name}`, 3000);
                 hostTreeProvider.refresh();
               } catch (retryError) {
-                log(`Retry connection failed: ${(retryError as Error).message}`);
-                vscode.window.showErrorMessage(`Connection failed: ${(retryError as Error).message}. Verify the key passphrase.`);
+                const retryMsg = (retryError as Error).message;
+                log(`Retry connection failed: ${retryMsg}`);
+                vscode.window.showErrorMessage(
+                  isKeyPassphraseError(retryMsg)
+                    ? `Still an incorrect passphrase for private key "${keyLabel}". Please check it and try connecting again.`
+                    : `Connection failed: ${retryMsg}. Verify the key passphrase.`
+                );
               }
             }
           }

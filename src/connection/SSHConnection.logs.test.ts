@@ -44,12 +44,22 @@ jest.mock('../services/CredentialService', () => ({
       // method available" before reaching auth-methods / handler registration,
       // making these tests pass or fail by accident of the host's ~/.ssh.
       getOrPrompt: jest.fn().mockResolvedValue('test-password'),
+      // buildAuthConfig() now calls get() (no prompt) for the password fallback
+      // when a key/agent is present. Undefined == no saved password; an existing
+      // default ~/.ssh key still supplies a non-empty auth method on dev machines.
+      get: jest.fn().mockResolvedValue(undefined),
       getCredentialSecret: jest.fn().mockResolvedValue(undefined),
       listCredentials: jest.fn().mockReturnValue([]),
       deleteAll: jest.fn(),
     }),
   },
 }));
+
+// ssh2 is mocked above with only Client (no utils.parseKey). buildAuthConfig's
+// legacy path calls isPrivateKeyEncrypted on any default ~/.ssh keys the dev
+// machine happens to have; stub it to a deterministic "unencrypted" so these
+// log tests never depend on the host's key material.
+jest.mock('./keyEncryption', () => ({ isPrivateKeyEncrypted: () => false }));
 
 import { SSHConnection } from './SSHConnection';
 

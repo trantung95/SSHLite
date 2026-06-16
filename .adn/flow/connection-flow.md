@@ -127,6 +127,28 @@ try {
 5. Prompt user for password → showInputBox({ password: true })
 ```
 
+**Password prompt is a LAST RESORT (legacy/no-credential path in `buildAuthConfig`).**
+The plain `sshLite.connect` command reaches `buildAuthConfig` WITHOUT a SavedCredential.
+There, the login-password box is shown ONLY when there is no other way to
+authenticate — no private key (config or default `~/.ssh/id_*`) and no SSH agent.
+When a key or agent IS present the user is never prompted for a password; a
+previously SAVED password (`creds.get`, no prompt) is still attached silently as
+a fallback in case the key/agent is rejected.
+
+**Passphrase prompt is shown ONLY when the key is actually encrypted.** Every
+key-credential setup flow decides this via `isPrivateKeyEncrypted()`
+(`src/connection/keyEncryption.ts`), which delegates to ssh2's own
+`utils.parseKey` — the exact parser the live connection uses. The three sites:
+the legacy `buildAuthConfig` path (`sshLite.connect`), the `connectWithCredential`
+first-connect setup, and `promptPrivateKeyAuth` (the "add user with key"
+command). `connectToPinnedFolder` and auto-reconnect reuse an existing saved
+credential, so they never prompt. An unencrypted key
+connects with NO prompt at all (no password, no passphrase). This replaced an
+older `keyText.includes('ENCRYPTED')` heuristic that (a) prompted for a
+passphrase on every connect of an unencrypted key, and (b) silently MISSED
+encrypted keys in the modern OpenSSH format (cipher in the base64 body, no
+"ENCRYPTED" header). A passphrase is a separate prompt from a login password.
+
 ---
 
 ## Post-Connection Setup

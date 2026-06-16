@@ -14,6 +14,7 @@ import {
   SFTPError,
 } from '../types';
 import { expandPath } from '../utils/helpers';
+import { isPrivateKeyEncrypted } from './keyEncryption';
 import { CredentialService, SavedCredential } from '../services/CredentialService';
 import { diagLog, infoLog } from '../utils/diagnosticLog';
 import {
@@ -572,7 +573,7 @@ export class SSHConnection implements ISSHConnection {
       if (fs.existsSync(keyPath)) {
         const privateKey = fs.readFileSync(keyPath);
         privateKeys.push(privateKey);
-        if (privateKey.toString().includes('ENCRYPTED')) {
+        if (isPrivateKeyEncrypted(privateKey)) {
           const passphrase = await creds.getOrPrompt(this.id, 'passphrase', `Passphrase for ${this.host.privateKeyPath}`);
           if (passphrase) passphrases.push(passphrase);
         }
@@ -585,7 +586,7 @@ export class SSHConnection implements ISSHConnection {
       if (fs.existsSync(expanded)) {
         const privateKey = fs.readFileSync(expanded);
         privateKeys.push(privateKey);
-        if (privateKey.toString().includes('ENCRYPTED')) {
+        if (isPrivateKeyEncrypted(privateKey)) {
           const passphrase = await creds.getOrPrompt(this.id, 'passphrase', `Passphrase for ${keyPath}`);
           if (passphrase) passphrases.push(passphrase);
         }
@@ -593,7 +594,8 @@ export class SSHConnection implements ISSHConnection {
     }
 
     // Add keys if found
-    if (privateKeys.length > 0) {
+    const haveKey = privateKeys.length > 0;
+    if (haveKey) {
       authMethods.privateKey = privateKeys[0]; // ssh2 uses first key
       if (passphrases.length > 0) {
         authMethods.passphrase = passphrases[0];
@@ -605,8 +607,16 @@ export class SSHConnection implements ISSHConnection {
       authMethods.agent = process.env.SSH_AUTH_SOCK;
     }
 
-    // Get password (saved or prompt) - always include for fallback
-    const password = await creds.getOrPrompt(this.id, 'password', `Password for ${this.host.username}@${this.host.host}`);
+    // Password handling. Only PROMPT for a password when there is no other way
+    // to authenticate (no private key and no agent). When a key/agent IS
+    // present we must NOT prompt — otherwise key-based auth gets hijacked by an
+    // unnecessary password box on every first connect (the original UX bug).
+    // We still attach a *previously saved* password silently so it can serve as
+    // a genuine fallback if the key/agent is rejected, without bugging the user.
+    const haveAgent = !!authMethods.agent;
+    const password = haveKey || haveAgent
+      ? await creds.get(this.id, 'password')
+      : await creds.getOrPrompt(this.id, 'password', `Password for ${this.host.username}@${this.host.host}`);
     if (password) {
       authMethods.password = password;
     }

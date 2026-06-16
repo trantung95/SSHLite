@@ -86,6 +86,30 @@ services:
     volumes:
       - ./logs/sshlite-manual:/var/log/sshd
 
+  # Server 5b: "Key auth" - port 2216 — for hand-testing SSH private-key login
+  # from the extension UI (e.g. the "key set but still prompts password" fix).
+  # Reuses the key-auth image (Dockerfile.sshd-keys) + the generated test keys
+  # mounted read-only at /test-keys. Users:
+  #   - testuser / testpass  → password OR key (id_rsa_test / id_ed25519_test)
+  #   - keyuser              → key-ONLY, no password (proves no password prompt)
+  #   - admin / adminpass    → password only
+  # The matching PRIVATE keys live on the host at test-docker/test-keys/ — point
+  # the extension's "private key" field at one of those. id_rsa_encrypted needs
+  # passphrase "testphrase" (exercises the passphrase-only prompt path).
+  # Run `bash test-docker/generate-test-keys.sh` once before first `up`.
+  # Bring up alone: `docker compose -f test-docker/docker-compose.yml up -d --build ssh-keys`.
+  ssh-keys:
+    build:
+      context: .
+      dockerfile: Dockerfile.sshd-keys
+    container_name: sshlite-keys
+    ports:
+      - "2216:22"
+    hostname: key-auth
+    volumes:
+      - ./test-keys:/test-keys:ro
+      - ./logs/sshlite-keys:/var/log/sshd
+
   # =========================================================================
   # SLOW / LAGGY servers — for reproducing timing-sensitive bugs (high ping,
   # jitter, packet loss, periodic disconnects). Two interchangeable approaches.
