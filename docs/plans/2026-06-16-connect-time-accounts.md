@@ -195,17 +195,26 @@ git commit -m "feat(hostId): canonical build/parse helpers (IPv6-safe, endpoint-
 
 **Files:** Modify `src/types.ts:13-36`
 
-- [ ] **Step 1:** Make `username` optional and add `isEndpoint` to `IHostConfig`:
+**Decision (re-planned from evidence):** keep `username: string` (REQUIRED, typed) and store
+`''` for an endpoint, distinguished by an explicit `isEndpoint` flag. This avoids a
+codebase-wide `string | undefined` compile cascade (keeps every commit green) and structurally
+eliminates criticals B2 (`${undefined}` -> literal "undefined") and B3 (`undefined.toLowerCase()`
+crash) because the value is always a string. The flag — not emptiness — is the source of truth.
+
+- [ ] **Step 1:** Add `isEndpoint` to `IHostConfig` (keep `username: string`):
 
 ```typescript
-  /** Username for authentication. Absent on an endpoint record (no account yet). */
-  username?: string;
+  /** Username for authentication. Empty string ('') on an endpoint record. */
+  username: string;
   ...
   /** True when this record is a server endpoint (host:port) with no account yet. */
   isEndpoint?: boolean;
 ```
 
-- [ ] **Step 2:** Run `npm run compile`. Expected: TypeScript now flags every site that assumed `username: string` (HostService export types, providers' `.toLowerCase()`, etc.). This is the audit surface; record the error list — it drives Tasks 1.2, 3.x.
+- [ ] **Step 2:** Run `npm run compile`. Expected: 0 errors (no type cascade — username stays a
+string). Endpoints carry `username: ''` + `isEndpoint: true`; all guards key off `isEndpoint`.
+Note: the `?? ''` / `username || '<endpoint>'` display guards in later tasks become
+belt-and-suspenders rather than crash-preventers, but are kept for clarity and IPv6.
 
 ### Task 1.2: endpoint-aware load/save (TDD)
 

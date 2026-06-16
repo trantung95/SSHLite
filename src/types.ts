@@ -19,8 +19,10 @@ export interface IHostConfig {
   host: string;
   /** SSH port (default: 22) or FTP port (default: 21) */
   port: number;
-  /** Username for authentication */
+  /** Username for authentication. Empty string ('') on an endpoint record (no account yet). */
   username: string;
+  /** True when this record is a server endpoint (host:port) with no account yet. */
+  isEndpoint?: boolean;
   /** Path to private key file (SSH only) */
   privateKeyPath?: string;
   /** Short label for editor tab prefix (e.g. "PRD", "DEV"). When set, tabs show [label] instead of [SSH]. */

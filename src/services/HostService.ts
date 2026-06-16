@@ -5,6 +5,8 @@ import * as path from 'path';
 import SSHConfig from 'ssh-config';
 import { IHostConfig } from '../types';
 import { expandPath, validatePort } from '../utils/helpers';
+import { pickPrivateKeyPath } from '../utils/keyFilePicker';
+import { buildHostId, parseHostId } from '../utils/hostId';
 
 /**
  * Resolve a saved host's effective port, defaulting by connection type:
@@ -169,7 +171,8 @@ export class HostService {
       name: string;
       host: string;
       port?: number;
-      username: string;
+      username?: string;
+      isEndpoint?: boolean;
       privateKeyPath?: string;
       tabLabel?: string;
       connectionType?: 'ssh' | 'ftp';
@@ -179,23 +182,27 @@ export class HostService {
 
     const validHosts: IHostConfig[] = [];
     for (const host of savedHosts) {
-      // Validate required fields - skip invalid entries
-      if (!host.name || !host.host || !host.username) {
+      // Validate required fields - skip invalid entries.
+      // An endpoint record (isEndpoint:true) has no username and is allowed; a
+      // record with neither a username nor the endpoint flag is malformed -> skip.
+      if (!host.name || !host.host || (!host.username && !host.isEndpoint)) {
         const missing = [
           !host.name && 'name',
           !host.host && 'host',
-          !host.username && 'username',
+          !host.username && !host.isEndpoint && 'username',
         ].filter(Boolean).join(', ');
         console.warn(`[SSH Lite] Skipping invalid saved host: missing ${missing}. Entry: ${JSON.stringify(host)}`);
         continue;
       }
       const port = effectiveHostPort(host);
+      const username = host.username ?? '';
       validHosts.push({
-        id: `${host.host}:${port}:${host.username}`,
+        id: buildHostId({ host: host.host, port, username, connectionType: host.connectionType }),
         name: host.name,
         host: host.host,
         port,
-        username: host.username,
+        username,
+        isEndpoint: host.isEndpoint,
         privateKeyPath: host.privateKeyPath ? expandPath(host.privateKeyPath) : undefined,
         tabLabel: host.tabLabel,
         source: 'saved' as const,
@@ -216,7 +223,8 @@ export class HostService {
       name: string;
       host: string;
       port?: number;
-      username: string;
+      username?: string;
+      isEndpoint?: boolean;
       privateKeyPath?: string;
       tabLabel?: string;
       connectionType?: 'ssh' | 'ftp';
@@ -224,16 +232,18 @@ export class HostService {
       anonymous?: boolean;
     }>>('hosts', []);
 
-    // Check for duplicate
+    // Check for duplicate. Normalise username to '' so an endpoint (no username)
+    // dedups against another endpoint on the same host:port instead of stacking.
     const existingIndex = savedHosts.findIndex(
-      (h) => h.host === host.host && h.username === host.username && effectiveHostPort(h) === host.port
+      (h) => h.host === host.host && (h.username ?? '') === (host.username ?? '') && effectiveHostPort(h) === host.port
     );
 
     const newHost = {
       name: host.name,
       host: host.host,
       port: host.port,
-      username: host.username,
+      username: host.username ?? '',
+      isEndpoint: host.isEndpoint,
       privateKeyPath: host.privateKeyPath,
       tabLabel: host.tabLabel,
       connectionType: host.connectionType,
@@ -528,11 +538,10 @@ export class HostService {
       connectionType?: 'ssh' | 'ftp';
     }>>('hosts', []);
 
-    const [hostAddr, portStr, username] = hostId.split(':');
-    const port = parseInt(portStr, 10);
+    const { host: hostAddr, port, username } = parseHostId(hostId);
 
     const filtered = savedHosts.filter(
-      (h) => !(h.host === hostAddr && effectiveHostPort(h) === port && h.username === username)
+      (h) => !(h.host === hostAddr && effectiveHostPort(h) === port && (h.username ?? '') === username)
     );
 
     await config.update('hosts', filtered, vscode.ConfigurationTarget.Global);
@@ -565,11 +574,10 @@ export class HostService {
       connectionType?: 'ssh' | 'ftp';
     }>>('hosts', []);
 
-    const [hostAddr, portStr, username] = hostId.split(':');
-    const port = parseInt(portStr, 10);
+    const { host: hostAddr, port, username } = parseHostId(hostId);
 
     const host = savedHosts.find(
-      (h) => h.host === hostAddr && effectiveHostPort(h) === port && h.username === username
+      (h) => h.host === hostAddr && effectiveHostPort(h) === port && (h.username ?? '') === username
     );
 
     if (host) {
@@ -593,11 +601,10 @@ export class HostService {
       connectionType?: 'ssh' | 'ftp';
     }>>('hosts', []);
 
-    const [hostAddr, portStr, username] = hostId.split(':');
-    const port = parseInt(portStr, 10);
+    const { host: hostAddr, port, username } = parseHostId(hostId);
 
     const host = savedHosts.find(
-      (h) => h.host === hostAddr && effectiveHostPort(h) === port && h.username === username
+      (h) => h.host === hostAddr && effectiveHostPort(h) === port && (h.username ?? '') === username
     );
 
     if (host) {
@@ -679,10 +686,11 @@ export class HostService {
       if (!username) {
         return undefined;
       }
-      privateKeyPath = (await vscode.window.showInputBox({
-        prompt: 'Enter path to private key (optional, leave empty for password auth)',
-        placeHolder: '~/.ssh/id_rsa',
-        ignoreFocusOut: true,
+      // Cancelling the key picker keeps the legacy behaviour: no key → password
+      // auth (it does NOT abort adding the host).
+      privateKeyPath = (await pickPrivateKeyPath({
+        title: 'Private key (optional — choose "No key" for password auth)',
+        optional: true,
       })) || undefined;
     }
 
@@ -837,11 +845,16 @@ export class HostService {
       if (!username) {
         return undefined;
       }
-      privateKeyPath = (await vscode.window.showInputBox({
-        prompt: 'Enter path to private key (optional, leave empty for password auth)',
-        value: hostConfig.privateKeyPath || '',
-        ignoreFocusOut: true,
-      })) || undefined;
+      // Edit flow: never silently drop the existing key. The picker offers
+      // "Keep current key" as the first choice, and cancelling (undefined) also
+      // keeps it; only the explicit "No key" choice ('') removes it.
+      const pickedKey = await pickPrivateKeyPath({
+        title: 'Private key (Keep / Browse / Type, or No key for password auth)',
+        initialPath: hostConfig.privateKeyPath || '',
+        current: hostConfig.privateKeyPath || undefined,
+        optional: true,
+      });
+      privateKeyPath = pickedKey === undefined ? hostConfig.privateKeyPath : (pickedKey || undefined);
     }
 
     // Remove old host

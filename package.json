@@ -1603,7 +1603,11 @@
               },
               "username": {
                 "type": "string",
-                "description": "Username (use 'anonymous' for anonymous FTP)"
+                "description": "Username (use 'anonymous' for anonymous FTP). Absent on an endpoint record (no account yet)."
+              },
+              "isEndpoint": {
+                "type": "boolean",
+                "description": "True when this record is a server endpoint (host:port) with no account yet; accounts are added under it via 'Add User...'."
               },
               "privateKeyPath": {
                 "type": "string",
@@ -1629,8 +1633,7 @@
             },
             "required": [
               "name",
-              "host",
-              "username"
+              "host"
             ]
           }
         },
