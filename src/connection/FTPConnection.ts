@@ -15,6 +15,7 @@ import {
 } from '../types';
 import { CredentialService, SavedCredential } from '../services/CredentialService';
 import { diagLog, infoLog } from '../utils/diagnosticLog';
+import { parseFtpModifiedTime } from './ftpDate';
 
 /**
  * FTP / FTPS connection — a protocol-agnostic IConnection sibling of SSHConnection
@@ -387,7 +388,10 @@ export class FTPConnection implements IConnection {
       path: path.posix.join(basePath, item.name),
       isDirectory: item.isDirectory,
       size: item.size,
-      modifiedTime: item.modifiedAt ? item.modifiedAt.getTime() : 0,
+      // basic-ftp only fills `modifiedAt` for MLSD servers; LIST-mode servers
+      // (the common case) leave it undefined and expose only `rawModifiedAt`.
+      // Parse the raw string so timestamps don't collapse to 0 = 1970 (issue #15).
+      modifiedTime: parseFtpModifiedTime(item.modifiedAt, item.rawModifiedAt) ?? 0,
       owner: item.user,
       group: item.group,
       permissions: item.permissions ? this.formatPermissions(item.permissions) : undefined,

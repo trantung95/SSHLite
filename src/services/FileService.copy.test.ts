@@ -393,16 +393,57 @@ describe('FileService - remote copy/paste', () => {
     });
   });
 
-  describe('copyRemoteSameHost (issue #9)', () => {
-    it('rejects with a clear message over FTP (no shell cp)', async () => {
-      const ftpConn = {
-        ...mockSrcConnection,
-        capabilities: { ...mockSrcConnection.capabilities, type: 'ftp', supportsExec: false },
-      };
+  describe('copyRemoteSameHost over FTP (issue #14)', () => {
+    const makeFtpConn = () => ({
+      ...mockSrcConnection,
+      capabilities: { ...mockSrcConnection.capabilities, type: 'ftp', supportsExec: false },
+    });
+
+    it('copies a single file client-side (download + re-upload), no shell cp', async () => {
+      const ftpConn = makeFtpConn();
+      mockReadFile.mockResolvedValueOnce(Buffer.from('php contents'));
+
+      await service.copyRemoteSameHost(ftpConn as any, '/www/index.php', '/www/index (copy).php', false);
+
+      expect(mockExec).not.toHaveBeenCalled();
+      expect(mockReadFile).toHaveBeenCalledWith('/www/index.php');
+      expect(mockWriteFile).toHaveBeenCalledWith('/www/index (copy).php', expect.any(Buffer));
+      const written = mockWriteFile.mock.calls[0][1] as Buffer;
+      expect(written.toString()).toBe('php contents');
+    });
+
+    it('copies a folder recursively over FTP (mkdir + per-file read/write)', async () => {
+      const ftpConn = makeFtpConn();
+      // dest mkdir, then one file inside the folder
+      mockListFiles.mockResolvedValueOnce([
+        { name: 'a.txt', path: '/src/dir/a.txt', isDirectory: false, size: 3, modifiedTime: 0, connectionId: 'src-1' },
+      ]);
+      mockReadFile.mockResolvedValueOnce(Buffer.from('aaa'));
+
+      await service.copyRemoteSameHost(ftpConn as any, '/src/dir', '/dest/dir', true);
+
+      expect(mockExec).not.toHaveBeenCalled();
+      expect(mockMkdir).toHaveBeenCalledWith('/dest/dir');
+      expect(mockReadFile).toHaveBeenCalledWith('/src/dir/a.txt');
+      expect(mockWriteFile).toHaveBeenCalledWith('/dest/dir/a.txt', expect.any(Buffer));
+    });
+
+    it('refuses to copy a folder into its own subtree (no infinite recursion)', async () => {
+      const ftpConn = makeFtpConn();
+      await expect(
+        service.copyRemoteSameHost(ftpConn as any, '/data', '/data/backup', true)
+      ).rejects.toThrow(/into itself/i);
+      expect(mockMkdir).not.toHaveBeenCalled();
+    });
+
+    it('records a failed audit entry and rethrows when the copy fails', async () => {
+      const ftpConn = makeFtpConn();
+      mockReadFile.mockRejectedValueOnce(new Error('550 permission denied'));
+
       await expect(
         service.copyRemoteSameHost(ftpConn as any, '/a', '/b', false)
-      ).rejects.toThrow(/not supported/i);
-      expect(mockExec).not.toHaveBeenCalled();
+      ).rejects.toThrow(/550 permission denied/);
+      expect(mockAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'copy', success: false }));
     });
   });
 });

@@ -7,6 +7,18 @@ import { IHostConfig } from '../types';
 import { expandPath, validatePort } from '../utils/helpers';
 
 /**
+ * Resolve a saved host's effective port, defaulting by connection type:
+ * FTP → 21, SSH → 22. A saved host may omit `port` (it relies on the default),
+ * and `loadSavedHosts` builds the host id with this same type-aware default —
+ * so any port comparison against a parsed id MUST use this helper too, or an
+ * FTP host on the default port 21 silently fails to match (id says 21, a plain
+ * `port || 22` says 22). See issue cluster around FTP host management.
+ */
+export function effectiveHostPort(h: { port?: number; connectionType?: 'ssh' | 'ftp' }): number {
+  return h.port || (h.connectionType === 'ftp' ? 21 : 22);
+}
+
+/**
  * Service for managing SSH host configurations
  * Loads from both ~/.ssh/config and VS Code settings
  */
@@ -177,12 +189,12 @@ export class HostService {
         console.warn(`[SSH Lite] Skipping invalid saved host: missing ${missing}. Entry: ${JSON.stringify(host)}`);
         continue;
       }
-      const isFtp = host.connectionType === 'ftp';
+      const port = effectiveHostPort(host);
       validHosts.push({
-        id: `${host.host}:${host.port || (isFtp ? 21 : 22)}:${host.username}`,
+        id: `${host.host}:${port}:${host.username}`,
         name: host.name,
         host: host.host,
-        port: host.port || (isFtp ? 21 : 22),
+        port,
         username: host.username,
         privateKeyPath: host.privateKeyPath ? expandPath(host.privateKeyPath) : undefined,
         tabLabel: host.tabLabel,
@@ -214,7 +226,7 @@ export class HostService {
 
     // Check for duplicate
     const existingIndex = savedHosts.findIndex(
-      (h) => h.host === host.host && h.username === host.username && (h.port || 22) === host.port
+      (h) => h.host === host.host && h.username === host.username && effectiveHostPort(h) === host.port
     );
 
     const newHost = {
@@ -289,7 +301,7 @@ export class HostService {
       } = {
         name: h.name,
         host: h.host,
-        port: h.port || (isFtp ? 21 : 22),
+        port: effectiveHostPort(h),
         username: h.username,
       };
       if (h.privateKeyPath) {
@@ -442,11 +454,10 @@ export class HostService {
       if (!h || !h.name || !h.host || !h.username) {
         continue;
       }
-      const isFtp = h.connectionType === 'ftp';
       const entry: SavedHostEntry = {
         name: h.name,
         host: h.host,
-        port: h.port || (isFtp ? 21 : 22),
+        port: effectiveHostPort(h),
         username: h.username,
       };
       if (h.privateKeyPath) {
@@ -476,8 +487,11 @@ export class HostService {
 
     // merge: upsert by host:port:username, preserve everything else.
     const merged = config.get<Array<Record<string, unknown>>>('hosts', []).slice();
-    const keyOf = (h: { host: unknown; port?: unknown; username: unknown }): string =>
-      `${h.host}:${(h.port as number) || 22}:${h.username}`;
+    const keyOf = (h: { host: unknown; port?: unknown; username: unknown; connectionType?: unknown }): string =>
+      `${h.host}:${effectiveHostPort({
+        port: h.port as number | undefined,
+        connectionType: h.connectionType as 'ssh' | 'ftp' | undefined,
+      })}:${h.username}`;
     const indexByKey = new Map<string, number>();
     merged.forEach((h, i) => indexByKey.set(keyOf(h as any), i));
 
@@ -511,13 +525,14 @@ export class HostService {
       port?: number;
       username: string;
       privateKeyPath?: string;
+      connectionType?: 'ssh' | 'ftp';
     }>>('hosts', []);
 
     const [hostAddr, portStr, username] = hostId.split(':');
     const port = parseInt(portStr, 10);
 
     const filtered = savedHosts.filter(
-      (h) => !(h.host === hostAddr && (h.port || 22) === port && h.username === username)
+      (h) => !(h.host === hostAddr && effectiveHostPort(h) === port && h.username === username)
     );
 
     await config.update('hosts', filtered, vscode.ConfigurationTarget.Global);
@@ -547,13 +562,14 @@ export class HostService {
       username: string;
       privateKeyPath?: string;
       tabLabel?: string;
+      connectionType?: 'ssh' | 'ftp';
     }>>('hosts', []);
 
     const [hostAddr, portStr, username] = hostId.split(':');
     const port = parseInt(portStr, 10);
 
     const host = savedHosts.find(
-      (h) => h.host === hostAddr && (h.port || 22) === port && h.username === username
+      (h) => h.host === hostAddr && effectiveHostPort(h) === port && h.username === username
     );
 
     if (host) {
@@ -574,13 +590,14 @@ export class HostService {
       username: string;
       privateKeyPath?: string;
       tabLabel?: string;
+      connectionType?: 'ssh' | 'ftp';
     }>>('hosts', []);
 
     const [hostAddr, portStr, username] = hostId.split(':');
     const port = parseInt(portStr, 10);
 
     const host = savedHosts.find(
-      (h) => h.host === hostAddr && (h.port || 22) === port && h.username === username
+      (h) => h.host === hostAddr && effectiveHostPort(h) === port && h.username === username
     );
 
     if (host) {

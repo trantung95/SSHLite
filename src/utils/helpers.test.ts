@@ -273,6 +273,11 @@ describe('helpers', () => {
       expect(formatRelativeTime(NOW - 365 * 24 * 60 * 60 * 1000)).toBe('1y ago');
       expect(formatRelativeTime(NOW - 2 * 365 * 24 * 60 * 60 * 1000)).toBe('2y ago');
     });
+
+    it('should render 0 / unknown as empty, not "56y ago" (issue #15)', () => {
+      expect(formatRelativeTime(0)).toBe('');
+      expect(formatRelativeTime(NaN)).toBe('');
+    });
   });
 
   describe('formatDateTime', () => {
@@ -284,10 +289,9 @@ describe('helpers', () => {
       expect(result.length).toBeGreaterThan(0);
     });
 
-    it('should handle zero timestamp (epoch)', () => {
-      const result = formatDateTime(0);
-      expect(typeof result).toBe('string');
-      expect(result.length).toBeGreaterThan(0);
+    it('should render 0 / unknown as "Unknown" (issue #15, not 1/1/1970)', () => {
+      expect(formatDateTime(0)).toBe('Unknown');
+      expect(formatDateTime(NaN)).toBe('Unknown');
     });
   });
 });

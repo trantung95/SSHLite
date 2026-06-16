@@ -191,4 +191,57 @@ describe('FileService over real FTP (issue #9)', () => {
     await conn.deleteFile(src);
     await conn2.deleteFile(dest);
   });
+
+  // issue #14: same-server copy used to throw "Copy on the same FTP server is
+  // not supported." It is now a client-mediated download + re-upload.
+  it('copyRemoteSameHost copies a file on the SAME FTP server (issue #14)', async () => {
+    const src = p(`same-${Date.now()}.php`);
+    const body = Buffer.from('<?php echo "index"; ?>');
+    await conn.writeFile(src, body);
+    const dest = p(`same-copy-${Date.now()}.php`);
+
+    await service.copyRemoteSameHost(conn as never, src, dest, false);
+
+    expect(await conn.fileExists(dest)).toBe(true);
+    expect((await conn.readFile(dest)).toString()).toBe(body.toString());
+    // Original must survive a copy.
+    expect(await conn.fileExists(src)).toBe(true);
+
+    await conn.deleteFile(src);
+    await conn.deleteFile(dest);
+  });
+
+  it('copyRemoteSameHost copies a folder recursively on the SAME FTP server (issue #14)', async () => {
+    const dir = p(`samedir-${Date.now()}`);
+    await conn.mkdir(dir);
+    await conn.writeFile(`${dir}/a.txt`, Buffer.from('aaa'));
+    await conn.writeFile(`${dir}/b.txt`, Buffer.from('bbb'));
+    const destDir = p(`samedir-copy-${Date.now()}`);
+
+    await service.copyRemoteSameHost(conn as never, dir, destDir, true);
+
+    expect(await conn.fileExists(`${destDir}/a.txt`)).toBe(true);
+    expect((await conn.readFile(`${destDir}/b.txt`)).toString()).toBe('bbb');
+
+    await service.deleteRemotePath(conn as never, dir, true);
+    await service.deleteRemotePath(conn as never, destDir, true);
+  });
+
+  // issue #15: a freshly-written file must list with a real recent mtime, not
+  // 0 / 1970 ("56 years ago"). vsftpd answers LIST, so this exercises the
+  // rawModifiedAt parser end-to-end.
+  it('listFiles returns a real recent modifiedTime, not 1970 (issue #15)', async () => {
+    const name = `mtime-${Date.now()}.txt`;
+    await conn.writeFile(p(name), Buffer.from('now'));
+
+    const listed = (await conn.listFiles(base || '/')).find((f) => f.name === name);
+    expect(listed).toBeDefined();
+    expect(listed!.modifiedTime).toBeGreaterThan(0);
+    // Within the last day (LIST has no timezone, so allow a generous window).
+    const ageMs = Date.now() - listed!.modifiedTime;
+    expect(ageMs).toBeLessThan(2 * 24 * 60 * 60 * 1000);
+    expect(ageMs).toBeGreaterThan(-2 * 24 * 60 * 60 * 1000);
+
+    await conn.deleteFile(p(name));
+  });
 });

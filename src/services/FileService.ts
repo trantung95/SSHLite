@@ -4578,9 +4578,46 @@ export class FileService {
     isDirectory: boolean
   ): Promise<void> {
     if (!connection.capabilities.supportsExec) {
-      // Same-host copy uses `cp` over a shell; FTP has none. Copy/cut/paste is
-      // hidden for FTP in the menus, so this only guards the keyboard path.
-      throw new Error('Copy on the same FTP server is not supported.');
+      // FTP has no shell `cp`. Do a client-mediated copy instead: download each
+      // file and re-upload it under the new name on the SAME connection (issue
+      // #14). Reuse the cross-host helpers with src === dest — FTPConnection
+      // serializes every op through its internal queue, so read→write on one
+      // connection cannot race. Folders recurse via listFiles + mkdir.
+      // Guard against copying a folder into its own subtree (e.g. /data → /data/x):
+      // the recursive copy would re-list the just-created dest and loop forever.
+      // SSH's `cp -r` refuses this; the FTP streaming path must too.
+      if (isDirectory && (destPath === srcPath || destPath.startsWith(srcPath.replace(/\/?$/, '/')))) {
+        throw new Error('Cannot copy a folder into itself.');
+      }
+      try {
+        if (isDirectory) {
+          await this.copyFolderCrossHost(connection, srcPath, connection, destPath);
+        } else {
+          await this.copyFileCrossHost(connection, srcPath, connection, destPath);
+        }
+        this.auditService.log({
+          action: 'copy',
+          connectionId: connection.id,
+          hostName: connection.host.name,
+          username: connection.host.username,
+          remotePath: srcPath,
+          localPath: destPath,
+          success: true,
+        });
+      } catch (error) {
+        const err = error as Error;
+        this.auditService.log({
+          action: 'copy',
+          connectionId: connection.id,
+          hostName: connection.host.name,
+          username: connection.host.username,
+          remotePath: srcPath,
+          success: false,
+          error: err.message,
+        });
+        throw err;
+      }
+      return;
     }
     const srcEsc = this.escapePathForShell(srcPath);
     const destEsc = this.escapePathForShell(destPath);
@@ -5096,6 +5133,14 @@ export class FileService {
     fileName: string,
     retryFn: (password: string) => Promise<void>
   ): Promise<boolean> {
+    // Backstop: sudo escalation needs a shell — FTP has none. Every caller
+    // already gates on `capabilities.supportsSudo`, but guarding here too means
+    // a future caller that forgets cannot reach connection.enableSudoMode(),
+    // which FTPConnection does not implement (would be a TypeError). Return
+    // "not handled" so the original permission error surfaces unchanged.
+    if (!hasCapability(connection, 'supportsSudo')) {
+      return false;
+    }
     const action = await this.promptSudoAction(fileName, connection.host.name);
     if (!action) { return false; }
 

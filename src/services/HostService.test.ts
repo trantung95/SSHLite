@@ -30,7 +30,21 @@ jest.mock('ssh-config', () => ({
   DIRECTIVE: 1,
 }));
 
-import { HostService } from './HostService';
+import { HostService, effectiveHostPort } from './HostService';
+
+describe('effectiveHostPort', () => {
+  it('defaults to 22 for SSH / unspecified type', () => {
+    expect(effectiveHostPort({})).toBe(22);
+    expect(effectiveHostPort({ connectionType: 'ssh' })).toBe(22);
+  });
+  it('defaults to 21 for FTP', () => {
+    expect(effectiveHostPort({ connectionType: 'ftp' })).toBe(21);
+  });
+  it('honours an explicit port regardless of type', () => {
+    expect(effectiveHostPort({ port: 2121, connectionType: 'ftp' })).toBe(2121);
+    expect(effectiveHostPort({ port: 2222, connectionType: 'ssh' })).toBe(2222);
+  });
+});
 
 function resetHostService(): HostService {
   (HostService as any)._instance = undefined;
@@ -224,6 +238,21 @@ describe('HostService', () => {
       const hosts = workspace.getConfiguration('sshLite').get('hosts') as any[];
       expect(hosts).toHaveLength(1);
       expect(hosts[0].name).toBe('Server2');
+    });
+
+    it('removes an FTP host saved without an explicit port (default 21)', async () => {
+      // The saved entry omits port; loadSavedHosts builds the id as host:21:user
+      // for FTP, so removeHost must match port 21 — not the SSH default 22.
+      setMockConfig('sshLite.hosts', [
+        { name: 'Ftp', host: '10.0.0.9', username: 'u', connectionType: 'ftp' },
+        { name: 'Keep', host: '10.0.0.10', port: 22, username: 'admin' },
+      ]);
+
+      await service.removeHost('10.0.0.9:21:u');
+
+      const hosts = workspace.getConfiguration('sshLite').get('hosts') as any[];
+      expect(hosts).toHaveLength(1);
+      expect(hosts[0].name).toBe('Keep');
     });
   });
 

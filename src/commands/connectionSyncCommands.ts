@@ -6,14 +6,14 @@ import {
   ConnectionsExport,
 } from '../services/ConnectionPortabilityService';
 import { GoogleDriveSyncService } from '../services/GoogleDriveSyncService';
-import { HostService } from '../services/HostService';
+import { HostService, effectiveHostPort } from '../services/HostService';
 import { CredentialService } from '../services/CredentialService';
 import { ConnectionImportPanel, ImportSide, ImportDiffRow } from '../webviews/ConnectionImportPanel';
 import { infoLog } from '../utils/diagnosticLog';
 
 /** Stable connection id used for conflict detection and credential keying. */
-function hostId(h: { host: string; port?: number; username: string }): string {
-  return `${h.host}:${h.port || 22}:${h.username}`;
+function hostId(h: { host: string; port?: number; username: string; connectionType?: 'ssh' | 'ftp' }): string {
+  return `${h.host}:${effectiveHostPort(h)}:${h.username}`;
 }
 
 /**
@@ -158,7 +158,7 @@ async function applyImportFlow(
         id,
         incoming: {
           name: h.name,
-          detail: `${h.username}@${h.host}:${h.port || 22}`,
+          detail: `${h.username}@${h.host}:${effectiveHostPort(h)}`,
           keyPath: h.privateKeyPath,
           credentialCount: creds.length,
           pinnedCount: creds.reduce((n, c) => n + (c.pinnedFolders?.length || 0), 0),

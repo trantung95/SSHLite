@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.0.1 - FTP fixes (issues #14, #15, #16) + latent-bug sweep
+
+Bug-fix release addressing the first user reports against the 1.0.0 FTP feature, plus latent bugs found while investigating.
+
+### Reported issues
+
+- **#14 — "Copy on the same FTP server is not supported."** Same-host copy/paste threw because FTP has no shell `cp`. It is now a client-mediated copy: download then re-upload under the new name on the same connection (folders recurse via `listFiles` + `mkdir`), reusing the existing cross-host copy helpers with src === dest (the FTP serialization queue prevents races). Copying a folder into its own subtree is refused (would recurse forever). Copy/cut/paste are now exposed in the FTP context menu (`package.json` `when` clauses dropped the `(?!\.ftp)` lookahead); keybindings already worked. `src/services/FileService.ts` `copyRemoteSameHost`.
+- **#15 — FTP timestamps all show "56 years ago" (1970).** basic-ftp only fills `modifiedAt` for MLSD servers; LIST-mode servers (the common case) expose only `rawModifiedAt`, so the old `modifiedAt ? … : 0` mapping collapsed every file to the epoch. New pure parser `src/connection/ftpDate.ts` → `parseFtpModifiedTime` handles Unix recent (`Mon D HH:MM`, with year-rollover), Unix old (`Mon D YYYY`), and DOS (`MM-DD-YY HH:MMam`) formats, rejecting impossible dates. Defense-in-depth: `formatRelativeTime`/`formatDateTime` render `0`/`NaN` as blank/`Unknown`, not 1970. Bonus: `SSHConnection.sudoListFiles` stored `getTime() / 1000` (seconds) into a milliseconds field — same 1970 class of bug for sudo-listed files — now fixed.
+- **#16 — `sshLite.expandAll` → "command 'list.expandRecursively' not found".** That built-in command only exists in VS Code 1.94+, but `engines.vscode` is `^1.85.0`. New `src/utils/treeExpand.ts` runs the native command when present and falls back to a first-level expand (`TreeView.reveal`, available since 1.40) only on the "not found" error — so the button never throws and does not double-expand on newer versions.
+
+### Latent bugs fixed (found during investigation)
+
+- **`saveAsRoot` / `saveAsUser` / `newFileAsRoot` crashed on FTP files** via the command palette — they called `connection.sudoWriteFile`, which `FTPConnection` does not implement. Guarded at the handler with `ensureCapability(connection, 'supportsSudo', …)`.
+- **FTP host management on the default port 21** — `HostService.removeHost`/`renameHost`/`setTabLabel`/`saveHost`, the import-merge `keyOf`, `connectionSyncCommands.hostId`, and `FilenameIndexService.hostKey` all hard-coded `port || 22`. An FTP host saved without an explicit port has id `host:21:user`, so these silently failed to match (remove/rename did nothing; import created duplicates). New shared `effectiveHostPort(h)` helper (`HostService.ts`) returns 21 for FTP / 22 for SSH; all sites now use it.
+- **`handlePermissionDenied` backstop** — added a `supportsSudo` guard so a future caller that forgets the existing capability check still cannot call `enableSudoMode` on an FTP connection.
+
+### Notes
+
+- Same-host FTP copy buffers each file fully in memory (via `readFile` → `writeFile`), identical to the existing cross-host FTP copy. A size/streaming guard for very large files is a possible follow-up but was left out to keep behaviour consistent with the shipped cross-host path.
+
 ## v1.0.0 - FTP / FTPS support (issue #9); first stable release
 
 First stable (1.0) release. FTP is now a second connection type alongside SSH/SFTP, for file browsing and transfer only, with nothing installed on the remote (LITE). The hosts view also gained an optional SSH/FTP grouped tree, adding two commands (`sshLite.hostsViewAsList` / `sshLite.hostsViewAsTree`, the List/Tree toggle); command count 115 -> 117. All existing SSH connection configs, saved hosts, settings, and keybindings load and work unchanged - the new `connectionType` host field is optional and absence means `'ssh'`, so there is no migration.

@@ -74,6 +74,11 @@ export function formatFileSize(bytes: number): string {
  * Uses local time for display
  */
 export function formatRelativeTime(timestamp: number): string {
+  // 0 / NaN means "unknown" (e.g. an FTP LIST date that could not be parsed).
+  // Render nothing rather than "56y ago" for the 1970 epoch (issue #15).
+  if (!timestamp || Number.isNaN(timestamp)) {
+    return '';
+  }
   const now = Date.now();
   const diff = now - timestamp;
 
@@ -112,6 +117,11 @@ export function formatRelativeTime(timestamp: number): string {
  * Full date/time in local timezone
  */
 export function formatDateTime(timestamp: number): string {
+  // 0 / NaN means "unknown" (e.g. an unparseable FTP LIST date); avoid showing
+  // a misleading "1/1/1970" in tooltips (issue #15).
+  if (!timestamp || Number.isNaN(timestamp)) {
+    return 'Unknown';
+  }
   const date = new Date(timestamp);
   return date.toLocaleString();
 }

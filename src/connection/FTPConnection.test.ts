@@ -131,6 +131,22 @@ describe('FTPConnection', () => {
       expect(out[1]).toMatchObject({ path: '/data/b.txt', isDirectory: false, owner: 'u', group: 'g' });
     });
 
+    it('parses rawModifiedAt for LIST-mode servers instead of 1970 (issue #15)', async () => {
+      // basic-ftp leaves modifiedAt undefined for LIST servers and exposes only
+      // rawModifiedAt. The old code collapsed that to 0 = "56 years ago".
+      mockList.mockResolvedValueOnce([
+        { name: 'recent.txt', isDirectory: false, size: 5, modifiedAt: undefined, rawModifiedAt: 'Jun 11 14:35' },
+        { name: 'old.txt', isDirectory: false, size: 5, modifiedAt: undefined, rawModifiedAt: 'Mar 3 2021' },
+        { name: 'nodate.txt', isDirectory: false, size: 5, modifiedAt: undefined, rawModifiedAt: undefined },
+      ]);
+      const conn = await connected();
+      const out = await conn.listFiles('/data');
+      const byName = Object.fromEntries(out.map((f) => [f.name, f.modifiedTime]));
+      expect(byName['recent.txt']).toBeGreaterThan(0);
+      expect(new Date(byName['old.txt']).getFullYear()).toBe(2021);
+      expect(byName['nodate.txt']).toBe(0); // genuinely unknown stays 0 (rendered blank)
+    });
+
     it("listFiles resolves '~' to the cached login dir", async () => {
       const conn = await connected();
       await conn.listFiles('~');

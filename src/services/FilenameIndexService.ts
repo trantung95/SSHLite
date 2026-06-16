@@ -6,6 +6,7 @@ import * as crypto from 'crypto';
 import { SSHConnection } from '../connection/SSHConnection';
 import { infoLog, diagLog } from '../utils/diagnosticLog';
 import { assertCapability } from '../utils/capabilityGuard';
+import { effectiveHostPort } from './HostService';
 
 /**
  * Client-side filename snapshot index.
@@ -60,7 +61,7 @@ export class FilenameIndexService {
 
   /** Stable per-host key so a snapshot survives reconnects (id changes each connect). */
   static hostKey(conn: SSHConnection): string {
-    return `${conn.host.host}:${conn.host.port || 22}:${conn.host.username}`;
+    return `${conn.host.host}:${effectiveHostPort(conn.host)}:${conn.host.username}`;
   }
 
   private snapshotKey(conn: SSHConnection, basePath: string): string {

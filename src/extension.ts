@@ -46,6 +46,7 @@ import { setDiagOutputChannel, refreshDiagEnabled, infoLog } from './utils/diagn
 import { setTabPrefixMode, TabPrefixMode } from './utils/connectionPrefix';
 import { resolveTreeSelection } from './utils/treeSelection';
 import { ensureCapability, hasCapability, ConnectionCapabilityKey } from './utils/capabilityGuard';
+import { expandAllInViews, expandFirstLevelInViews, ExpandableTreeView } from './utils/treeExpand';
 
 let outputChannel: vscode.OutputChannel;
 
@@ -901,6 +902,12 @@ export function activate(context: vscode.ExtensionContext): void {
       );
       return;
     }
+    // Save as root/user runs `sudo` over a shell — not available over FTP.
+    // Guard here so the palette path shows a friendly message instead of a
+    // "connection.sudoWriteFile is not a function" TypeError.
+    if (!ensureCapability(connection, 'supportsSudo', 'Saving as root/another user')) {
+      return;
+    }
     await fileService.saveAsRootCommand(connection, mapping, editor.document.getText(), runAsUser);
   };
 
@@ -1136,6 +1143,12 @@ export function activate(context: vscode.ExtensionContext): void {
         connection = item.connection;
         parentPath = item.file.path;
       } else {
+        return;
+      }
+
+      // sudo needs a shell — FTP has none. Guard the palette/programmatic path
+      // so it shows a friendly message instead of a sudoWriteFile TypeError.
+      if (!ensureCapability(connection, 'supportsSudo', 'Creating a file as root')) {
         return;
       }
 
@@ -2144,7 +2157,19 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // State 0 → 1: Expand all tree nodes recursively
     vscode.commands.registerCommand('sshLite.expandAll', async () => {
-      await vscode.commands.executeCommand('list.expandRecursively');
+      // `list.expandRecursively` only exists in VS Code 1.94+ (engines floor is
+      // 1.85), so on older hosts it rejects with "command not found" (issue #16).
+      // expandAllInViews falls back to a first-level expand instead of throwing.
+      const treeViews: ExpandableTreeView[] = [
+        { view: hostTreeView, provider: hostTreeProvider },
+        { view: fileTreeView, provider: fileTreeProvider },
+        { view: activityTreeView, provider: activityTreeProvider },
+        { view: portForwardTreeView, provider: portForwardTreeProvider },
+      ];
+      await expandAllInViews(
+        (command) => vscode.commands.executeCommand(command),
+        treeViews,
+      );
       vscode.commands.executeCommand('setContext', 'sshLite.hosts.expandState', 1);
       vscode.commands.executeCommand('setContext', 'sshLite.fileExplorer.expandState', 1);
       vscode.commands.executeCommand('setContext', 'sshLite.activity.expandState', 1);
@@ -2156,23 +2181,13 @@ export function activate(context: vscode.ExtensionContext): void {
       await vscode.commands.executeCommand('list.collapseAll');
 
       // Expand top-level items one level in each tree view
-      const treeViews = [
+      const treeViews: ExpandableTreeView[] = [
         { view: hostTreeView, provider: hostTreeProvider },
         { view: fileTreeView, provider: fileTreeProvider },
         { view: activityTreeView, provider: activityTreeProvider },
         { view: portForwardTreeView, provider: portForwardTreeProvider },
       ];
-      for (const { view, provider } of treeViews) {
-        if (!view) continue; // tree view may have failed to register (see safeStep at activate)
-        try {
-          const topItems = await Promise.resolve(provider.getChildren());
-          if (topItems) {
-            for (const item of topItems) {
-              try { await view.reveal(item as any, { expand: 1, select: false, focus: false }); } catch { /* item may not be revealable */ }
-            }
-          }
-        } catch { /* provider may fail */ }
-      }
+      await expandFirstLevelInViews(treeViews);
 
       vscode.commands.executeCommand('setContext', 'sshLite.hosts.expandState', 2);
       vscode.commands.executeCommand('setContext', 'sshLite.fileExplorer.expandState', 2);

@@ -2,7 +2,7 @@
   "name": "ssh-lite",
   "displayName": "SSH Lite (SSH Tools)",
   "description": "A visual SSH client for VS Code. Browse, edit, monitor, manage services - by clicking, not typing vi/systemctl/crontab. Nothing installed on the remote server. Perfect for VPS, cloud servers (AWS/Azure/GCP), and Linux administration.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "hybr8",
   "engines": {
     "vscode": "^1.85.0"
@@ -1494,17 +1494,17 @@
         },
         {
           "command": "sshLite.copyRemoteItem",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^(file|folder)(?!\\.ftp)/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^(file|folder)/",
           "group": "2_clipboard@1"
         },
         {
           "command": "sshLite.cutRemoteItem",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^(file|folder)(?!\\.ftp)/",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^(file|folder)/",
           "group": "2_clipboard@2"
         },
         {
           "command": "sshLite.pasteRemoteItem",
-          "when": "view == sshLite.fileExplorer && viewItem =~ /^(folder|connection)(?!\\.ftp)/ && sshLite.hasClipboard",
+          "when": "view == sshLite.fileExplorer && viewItem =~ /^(folder|connection)/ && sshLite.hasClipboard",
           "group": "2_clipboard@3"
         },
         {

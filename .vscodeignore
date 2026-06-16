@@ -13,6 +13,11 @@ vsc-extension-quickstart.md
 **/*.ts
 !out/**/*.d.ts
 *.vsix
+out/**/*.test.js
+out/**/__tests__/**
+out/**/__mocks__/**
+out/integration/**
+test/**
 .git/**
 .claude-workflow.md
 .claude/**

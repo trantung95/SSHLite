@@ -34,10 +34,13 @@ Both implement a protocol-agnostic `IConnection` interface, so the file tree, ed
 | Sudo | yes | no |
 | Port forwarding | yes | no |
 | Snippets, run-script, push public key, remote diff | yes | no |
-| Copy/cut/paste, index folder | yes | no |
+| Copy / cut / paste (same-host and cross-host) | yes | yes (issue #14) |
+| Index folder for filename search | yes | no |
 | Native (inotify/fswatch) file watch | yes | no (falls back to polling) |
 
 Recursive directory delete works over FTP because it walks the tree with `listFiles` + `deleteFile` (no shell `rm -rf`).
+
+Copy/cut/paste over FTP (issue #14): cut/move uses FTP `rename`; copy is client-mediated — the file is downloaded then re-uploaded under the new name on the same connection (folders recurse via `listFiles` + `mkdir`). There is no FTP server-side copy command, so this is the only correct approach. A copy of a folder into its own subtree is refused (it would recurse forever, unlike SSH `cp -r` which the shell blocks).
 
 ## FTP options
 
@@ -59,6 +62,10 @@ Recursive directory delete works over FTP because it walks the tree with `listFi
 | `rename` | `client.rename(from, to)` |
 | `stat` / `fileExists` | list the parent directory and match the basename |
 | `resolveHomePath` | cached `client.pwd()` |
+
+### Modification times (issue #15)
+
+basic-ftp only fills `FileInfo.modifiedAt` (a real `Date`) when the server answers the machine-readable **MLSD** command. Most FTP/FTPS servers answer the older **LIST** command, where basic-ftp leaves `modifiedAt` undefined and exposes only `rawModifiedAt` (a human string like `"Jun 11 14:35"`, `"Mar 3 2021"`, or the DOS `"06-16-24 10:30AM"`). The old mapping fell back to `0` = 1 Jan 1970, so every LIST-mode file rendered as "56 years ago". `src/connection/ftpDate.ts` → `parseFtpModifiedTime` now parses `rawModifiedAt` (Unix recent/old, DOS) into Unix ms, returning `undefined` (rendered blank) only when nothing is parseable. LIST dates carry no timezone, so they are interpreted in the client's local time — the same limitation every FTP client has. As defense-in-depth, `formatRelativeTime`/`formatDateTime` render `0`/`NaN` as blank/`Unknown` rather than 1970.
 
 ## listFiles on a missing directory (SSH parity)
 
@@ -101,7 +108,7 @@ Search and exec calls that run DIRECTLY on the connection (FileTreeProvider deep
 - `src/__tests__/ftp-menu-gating.test.ts` — audits that every shell-only menu entry excludes `.ftp` and that no inline icon slot collides.
 - `src/integration/docker-ftp-fileops.test.ts` — quick smoke against the vsftpd container (port 2207): full file round-trip including rename and concurrent serialization.
 - `src/integration/docker-ftp-servers.test.ts` — FTPConnection MATRIX across multiple real server implementations: vsftpd (delfer, port 2207, not chrooted, rename allowed), pure-ftpd (stilliard, port 2208, chrooted home `/`, rename denied so the graceful FTPError path is covered), and pure-ftpd over explicit FTPS/TLS (self-signed cert + `ftpRejectUnauthorized=false`). Catches LIST/MLSD parsing, path, and rename differences mocks cannot.
-- `src/integration/docker-ftp-fileservice.test.ts` — the REAL `FileService` driven against live FTP: a >1MB `openRemoteFile` (proves it routes to `readFile`, not the SFTP-only chunked path that crashed), `downloadFileTo`, `deleteRemote` (file + non-empty directory), `createFolder`/`createFile`, `deleteRemotePath` (recursive), and `copyRemoteCrossHost` between two FTP hosts.
+- `src/integration/docker-ftp-fileservice.test.ts` — the REAL `FileService` driven against live FTP: a >1MB `openRemoteFile` (proves it routes to `readFile`, not the SFTP-only chunked path that crashed), `downloadFileTo`, `deleteRemote` (file + non-empty directory), `createFolder`/`createFile`, `deleteRemotePath` (recursive), `copyRemoteCrossHost` between two FTP hosts, `copyRemoteSameHost` on one FTP host (file + recursive folder, issue #14), and `listFiles` returning a real recent `modifiedTime` (not 1970, issue #15).
 - `src/utils/capabilityGuard.test.ts` — the guard helpers (`hasCapability` lenient rule, `ensureCapability` warn+false, `assertCapability` throw).
 - `src/__tests__/ftp-capability-guards.test.ts` — feeds each guarded service sink an FTP-capability connection and asserts it throws `/not available over FTP/i` (proving the SSH-only method is never reached, i.e. no TypeError).
 - `src/integration/docker-ftp-stress.test.ts` — edge-case matrix over vsftpd + pure-ftpd: 0-byte / 8 MB binary / full-0..255-byte / UTF-8 payloads, filenames with spaces+unicode, deep nested mkdir, 25 concurrent write+read pairs verified byte-for-byte (LITE no-data-loss), overwrite-in-place, the missing-dir-vs-empty-dir contract, every error branch (read/stat/list/delete of a missing path), reconnect, operate-after-disconnect, and connection-level failures (wrong password to `AuthenticationError`, dead port, empty hostname).

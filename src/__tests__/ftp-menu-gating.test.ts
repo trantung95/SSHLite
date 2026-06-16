@@ -16,10 +16,14 @@ const SSH_ONLY = new Set([
   'sshLite.pushPubKeyToHost', 'sshLite.searchInScope', 'sshLite.indexFolder',
   'sshLite.openServerBackupFolder', 'sshLite.showAllBackups', 'sshLite.showFileBackups',
   'sshLite.showServerBackups', 'sshLite.showBackupLogs', 'sshLite.showChanges',
-  'sshLite.newFileAsRoot', 'sshLite.pasteRemoteItem', 'sshLite.copyRemoteItem',
-  'sshLite.cutRemoteItem', 'sshLite.diffWithLocal', 'sshLite.enableSudoMode',
-  'sshLite.showProperties',
+  'sshLite.newFileAsRoot', 'sshLite.diffWithLocal', 'sshLite.enableSudoMode',
+  'sshLite.disableSudoMode', 'sshLite.showProperties',
 ]);
+
+// Copy/cut/paste are NOW supported over FTP (issue #14): same-host copy is
+// client-mediated (download+re-upload), cut uses FTP rename, and cross-host
+// already streamed via readFile/writeFile. They must therefore appear on FTP
+// rows, so they are intentionally NOT in SSH_ONLY above.
 
 type MenuEntry = { command: string; when?: string; group?: string };
 const menus: MenuEntry[] = (pkg as any).contributes.menus['view/item/context'];

@@ -1660,7 +1660,10 @@ export class SSHConnection implements ISSHConnection {
         path: filePath,
         isDirectory,
         size: parseInt(sizeStr, 10),
-        modifiedTime: new Date(dateStr).getTime() / 1000,
+        // getTime() already returns Unix ms — IRemoteFile.modifiedTime is ms.
+        // The old `/ 1000` produced seconds, collapsing every sudo-listed file
+        // to ~1970 in the tree (same "56 years ago" class of bug as issue #15).
+        modifiedTime: new Date(dateStr).getTime(),
         accessTime: 0,
         owner: `${owner}:${group}`,
         permissions: perms,
