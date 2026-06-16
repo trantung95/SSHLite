@@ -14,6 +14,7 @@ import {
   SFTPError,
 } from '../types';
 import { expandPath } from '../utils/helpers';
+import { buildHostId } from '../utils/hostId';
 import { isPrivateKeyEncrypted } from './keyEncryption';
 import { CredentialService, SavedCredential } from '../services/CredentialService';
 import { diagLog, infoLog } from '../utils/diagnosticLog';
@@ -206,7 +207,7 @@ export class SSHConnection implements ISSHConnection {
   public readonly onFileChange = this._onFileChange.event;
 
   constructor(public readonly host: IHostConfig, credential?: SavedCredential) {
-    this.id = `${host.host}:${host.port}:${host.username}`;
+    this.id = buildHostId(host);
     this._credential = credential;
   }
 
@@ -239,7 +240,10 @@ export class SSHConnection implements ISSHConnection {
    */
   async resolveHomePath(): Promise<string> {
     const home = (await this.exec('echo ~')).trim();
-    return home || `/home/${this.host.username}`;
+    if (home) return home;
+    // Fallback only when the shell could not expand ~. Never build `/home/`
+    // (the shared parent of all home dirs) from an empty username.
+    return this.host.username ? `/home/${this.host.username}` : '/';
   }
 
   /** Whether sudo mode is active for this connection */

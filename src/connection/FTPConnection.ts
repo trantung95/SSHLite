@@ -15,6 +15,7 @@ import {
 } from '../types';
 import { CredentialService, SavedCredential } from '../services/CredentialService';
 import { diagLog, infoLog } from '../utils/diagnosticLog';
+import { buildHostId } from '../utils/hostId';
 import { parseFtpModifiedTime } from './ftpDate';
 
 /**
@@ -52,7 +53,7 @@ export class FTPConnection implements IConnection {
   public readonly onFileChange = this._onFileChange.event;
 
   constructor(public readonly host: IHostConfig, credential?: SavedCredential) {
-    this.id = `${host.host}:${host.port}:${host.username}`;
+    this.id = buildHostId(host);
     this._credential = credential;
   }
 
@@ -88,6 +89,12 @@ export class FTPConnection implements IConnection {
     }
     if (!this.host.host || this.host.host.trim() === '') {
       throw new ConnectionError('Invalid host configuration: hostname is missing or empty.');
+    }
+    // A non-anonymous FTP login needs a username. Without this guard an endpoint
+    // (or any username-less record) would call client.access({ user: '' }), which
+    // many servers silently treat as an anonymous login — a wrong, surprising auth.
+    if (this.host.anonymous !== true && (!this.host.username || this.host.username.trim() === '')) {
+      throw new ConnectionError('Invalid host configuration: username is missing or empty.');
     }
 
     this.setState(ConnectionState.Connecting);

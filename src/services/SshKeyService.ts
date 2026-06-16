@@ -92,7 +92,11 @@ export class SshKeyService {
       throw new Error('Public key file is empty');
     }
 
-    const home = (await connection.exec('echo $HOME')).trim() || `/home/${connection.host.username}`;
+    const homeRaw = (await connection.exec('echo $HOME')).trim();
+    const home = homeRaw || (connection.host.username ? `/home/${connection.host.username}` : '');
+    if (!home) {
+      throw new Error('Cannot resolve remote home directory (empty $HOME and no username)');
+    }
     const sshDir = `${home}/.ssh`;
     const authFile = `${sshDir}/authorized_keys`;
     const escSshDir = this.esc(sshDir);
