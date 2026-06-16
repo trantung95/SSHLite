@@ -47,6 +47,22 @@ Consequences the user wants to remove:
 4. **FTP included.** FTP hosts also become endpoints with accounts added via Add User
    (password-only; FTP has no key/passphrase). A reminder hook plus a parity test keep SSH
    and FTP auth/endpoint flows consistent in both directions.
+5. **One connectability chokepoint (audit-driven).** Endpoints are rejected at a single
+   boundary (`ConnectionManager.connect` / `ConnectionFactory.createConnection`) and
+   `FTPConnection.connect` gets the empty-username guard `SSHConnection` already has. This
+   neutralises the entire "connected path" class of bugs at once.
+6. **Endpoint persists; it is filtered, not deleted.** Adding the first account does not delete
+   the endpoint record. Guards ensure it never appears as a connectable/selectable item.
+7. **ids normalise username to `''`, never `undefined`.** All id build/parse goes through the
+   new `src/utils/hostId.ts` helpers so an endpoint id is `host:port:` (never the literal
+   `host:port:undefined`), and parsing is right-anchored (IPv6-safe).
+
+**Full-source audit:** a 5-agent scan of the entire `src/` tree produced the consolidated,
+de-duplicated implementation checklist in the companion file
+`2026-06-16-connect-time-accounts-audit.md` (8 root-cause guards G1-G8, every call site, and
+four newly-found criticals B1-B4: FTP silent anonymous login, `"undefined"` id interpolation,
+a `matchesFilter` crash, and the VS Code settings schema). The audit is authoritative for the
+implementation; sections 4.6 and 4.8 below summarise it.
 
 ## 4. Design
 
@@ -142,6 +158,13 @@ must be mirrored to the other. Deliverables:
    This is the hard enforcement; the hook is the soft, in-editor nudge.
 
 ### 4.8 Export / Import and ID hardening (HIGH RISK — explicit handling)
+
+> The full-source audit (companion `...-audit.md`) supersedes and extends this section.
+> Guards G1 (id helpers), G2 (persistence guards), and G7 (export/import correctness) there
+> cover the export/import surface in full, including the audit-only finding that
+> `connectionSyncCommands.ts` builds ids with its own local `hostId()` whose `${undefined}`
+> output breaks endpoint conflict detection (critical). The 12 failure modes below are the
+> original first pass, retained for context.
 
 An adversarial pass over export/import surfaced 12 failure modes when an endpoint record
 flows through the persistence and portability layers. The blockers and their guards:
