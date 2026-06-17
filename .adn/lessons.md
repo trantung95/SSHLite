@@ -636,3 +636,18 @@ LESSONS:
 2. Menus hide via `when` clauses, but keybindings, the command palette, and programmatic calls BYPASS them. A feature that is "hidden for FTP" in `package.json` is still reachable - guard in CODE (`ensureCapability` at the handler, `assertCapability` at the service sink), never rely on menu gating for correctness. (issue #14 was hit via Ctrl+V; the saveAsRoot crash via the palette.)
 3. Don't trust a sub-agent's bug list wholesale - verify each against the real code. Of 9 "latent bugs" reported, 2 were non-bugs (symlink DELE is correct; recursive dir-delete matches SSH `rm -rf`) and 1 (handlePermissionDenied) was already guarded at every caller (kept as a cheap backstop, not billed as a live fix).
 4. Inject `now` into any date parser so year-rollover / relative-time logic is deterministic under test, and reject calendar overflow explicitly (`new Date(2025, 1, 29)` silently becomes Mar 1 - round-trip the components and return undefined if they don't match).
+
+---
+
+## 2026-06-17 - FTP "550 ... operation failed" is a SERVER refusal, not our bug (issue #17)
+
+A user on shared hosting reported three errors at once (screenshot only, no body text): "FTP delete failed: 550 Delete operation failed.", "FTP read failed: 550 Failed to open file.", "FTP delete failed: 550 Remove directory operation failed." The tree listed files fine but every file op failed.
+
+Reproduced on docker vsftpd (`src/integration/docker-ftp-permission.test.ts`) with root-owned fixtures planted via `docker exec`: a directory chmod 755 owned by root (FTP user can LIST + enter) whose contents the FTP user cannot delete (DELE -> "550 Delete operation failed."), read (RETR of a 0600 file -> "550 Failed to open file."), or rmdir (RMD in a non-writable parent -> "550 Remove directory operation failed."). All three exact messages matched the screenshot; a file the FTP user OWNS deletes cleanly (control).
+
+Fix is NOT functional - the server legitimately refuses (no FTP client could override, and FTP has no sudo). `describeFtpFailure(label, error)` in `FTPConnection` classifies reply code 550 (via `error.code`, the numeric code basic-ftp's FTPError sets) and appends a permission/ownership explanation while keeping the raw server text. Applied once in `runOp`, so every op (delete/read/write/rename/mkdir/list/stat) benefits.
+
+LESSONS:
+1. FTP reply-code taxonomy is the reliable signal, not the message text (which is server-specific): 530 = auth (already mapped), 550 = access/permission/not-found, 553 = filename not allowed. Classify on `error.code`, never on substring-matching the human reply. vsftpd's DELE-fail vs RMD-fail messages differ ("Delete operation failed." vs "Remove directory operation failed.") - both are 550, so code-based gating catches both.
+2. "LIST works but every mutation 550s" = the account can browse but not modify (files owned by another user / non-writable parent), the classic shared-hosting layout, NOT a path bug. Prove it by checking that the SAME path lists fine and that an OWNED item deletes - if so, the server is refusing and the honest fix is a transparent, actionable message, not code that pretends to make a forbidden op succeed.
+3. When the issue body is just a screenshot, READ the screenshot (download the GitHub user-attachments asset with curl, copy into the repo dir so the path is a Windows path, open with the image reader) - it carried THREE errors, not just the one in the title, which together pinned the root cause to permissions rather than any single failing command.

@@ -1,5 +1,5 @@
-import { FTPConnection } from './FTPConnection';
-import { ConnectionState, AuthenticationError, IHostConfig } from '../types';
+import { FTPConnection, describeFtpFailure } from './FTPConnection';
+import { ConnectionState, AuthenticationError, FTPError, IHostConfig } from '../types';
 import { window } from '../__mocks__/vscode';
 
 // --- basic-ftp mock (var-hoisted per @swc/jest rules) ---
@@ -177,6 +177,26 @@ describe('FTPConnection', () => {
       expect(mockRemoveDir).toHaveBeenCalledWith('/data/sub');
     });
 
+    // issue #17: a 550 reply ("Delete operation failed." / "Failed to open file."
+    // / "Remove directory operation failed.") is the server REFUSING the op, almost
+    // always a permission/ownership issue on shared hosting. The opaque raw reply
+    // must be turned into an actionable message, and a retry is pointless (no sudo
+    // over FTP), while the original server text stays visible (true data).
+    it('deleteFile wraps a 550 with a permission-aware, actionable message (issue #17)', async () => {
+      const conn = await connected();
+      mockList.mockResolvedValueOnce([file('test2222.php', false)]); // statRaw says it's a file -> DELE
+      mockRemove.mockRejectedValueOnce(Object.assign(new Error('550 Delete operation failed.'), { code: 550 }));
+
+      const err = await conn.deleteFile('/data/test2222.php').then(
+        () => { throw new Error('expected rejection'); },
+        (e) => e as Error
+      );
+      expect(err).toBeInstanceOf(FTPError);
+      expect(err.message).toContain('550 Delete operation failed.'); // raw server text preserved
+      expect(err.message).toMatch(/permission/i);                    // actionable explanation
+      expect(err.message).toMatch(/shared hosting/i);
+    });
+
     it('mkdir ensures the dir then restores the working directory', async () => {
       const conn = await connected();
       await conn.mkdir('/data/new');
@@ -305,5 +325,43 @@ describe('FTPConnection', () => {
       await expect(conn.listFiles('/x')).rejects.toThrow();
       expect(conn.state).toBe(ConnectionState.Connected);
     });
+  });
+});
+
+// issue #17 — the pure error-classifier behind every wrapped FTP op error.
+describe('describeFtpFailure', () => {
+  it('keeps the label + raw reply and appends a permission hint for code 550', () => {
+    const msg = describeFtpFailure('delete', Object.assign(new Error('550 Delete operation failed.'), { code: 550 }));
+    expect(msg).toContain('FTP delete failed: 550 Delete operation failed.');
+    expect(msg).toMatch(/permission/i);
+    expect(msg).toMatch(/shared hosting/i);
+    expect(msg).toMatch(/no way to elevate/i);
+  });
+
+  it('applies to every op label that can surface a 550 (read, removeDir, write)', () => {
+    for (const [label, raw] of [
+      ['read', '550 Failed to open file.'],
+      ['delete', '550 Remove directory operation failed.'],
+      ['write', '550 Could not create file.'],
+    ] as const) {
+      const msg = describeFtpFailure(label, Object.assign(new Error(raw), { code: 550 }));
+      expect(msg).toContain(`FTP ${label} failed: ${raw}`);
+      expect(msg).toMatch(/permission/i);
+    }
+  });
+
+  it('does NOT add the hint for non-550 errors (transient / connection drops)', () => {
+    const fin = describeFtpFailure('list', new Error('Server sent FIN packet unexpectedly'));
+    expect(fin).toBe('FTP list failed: Server sent FIN packet unexpectedly');
+    expect(fin).not.toMatch(/permission/i);
+
+    // 553 (filename not allowed) is a different class — no permission hint.
+    const c553 = describeFtpFailure('rename', Object.assign(new Error('553 Could not create file.'), { code: 553 }));
+    expect(c553).toBe('FTP rename failed: 553 Could not create file.');
+    expect(c553).not.toMatch(/permission/i);
+  });
+
+  it('falls back to String(error) when there is no message', () => {
+    expect(describeFtpFailure('stat', 'boom')).toBe('FTP stat failed: boom');
   });
 });

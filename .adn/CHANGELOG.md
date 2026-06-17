@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.0.3 - Transparent FTP 550 errors (issue #17)
+
+A user on shared hosting reported three errors at once while the file tree listed fine: "FTP delete failed: 550 Delete operation failed.", "FTP read failed: 550 Failed to open file.", and "FTP delete failed: 550 Remove directory operation failed."
+
+### Root cause (reproduced, not assumed)
+
+FTP reply code 550 ("requested action not taken; file unavailable") is the access / permission / not-found class. On shared hosting the FTP account can `LIST` a directory but cannot modify its contents because the files are owned by another account (the web server) or the parent folder is not writable, so the server refuses every mutation with a 550 while browsing keeps working. Reproduced on a real vsftpd server with root-owned fixtures: `DELE` of a file in a non-writable parent gives "550 Delete operation failed.", `RETR` of a 0600 file gives "550 Failed to open file.", and `RMD` in a non-writable parent gives "550 Remove directory operation failed." - all three matched the report, while a file the FTP user owns deletes cleanly. SSH Lite passes correct paths (the matching `LIST` succeeds with the same path) and FTP has no `sudo`, so this is the server legitimately refusing, not a path or code bug.
+
+### Fix (message-only, honest)
+
+- New `describeFtpFailure(label, error)` in `FTPConnection` classifies reply code 550 (via the numeric `error.code` that basic-ftp's FTPError sets) and appends a permission / ownership explanation while preserving the server's own message (true data). Non-550 errors keep the plain `FTP <label> failed: <message>` wrapper. Applied once in `runOp`, so every FTP operation (delete / read / write / rename / mkdir / list / stat) benefits.
+- `FileService.deleteRemote` already skips the sudo-retry branch for FTP because `capabilities.supportsSudo` is false, so there is no misleading sudo prompt.
+- This does not (and cannot) make a server-forbidden operation succeed; the FTP server still decides what the account may do.
+
+### Tests
+
+- Unit: `FTPConnection.test.ts` - a `describeFtpFailure` suite (550 vs non-550, every op label, message-less errors) plus a `deleteFile` 550 case.
+- Integration: `src/integration/docker-ftp-permission.test.ts` - reproduces all three 550 conditions against real vsftpd with root-owned fixtures planted via `docker exec`, asserts the classified messages, and confirms an owned file still deletes (no false positives).
+
 ## v1.0.2 - SSH key/passphrase login UX + host = server endpoint (accounts per host, in progress)
 
 Two user-facing improvements plus the groundwork for the "accounts under a host" model.

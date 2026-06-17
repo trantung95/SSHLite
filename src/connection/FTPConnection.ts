@@ -19,6 +19,29 @@ import { buildHostId } from '../utils/hostId';
 import { parseFtpModifiedTime } from './ftpDate';
 
 /**
+ * Build the user-facing message for a failed FTP operation (issue #17).
+ *
+ * FTP reply code 550 ("Requested action not taken; file unavailable") is the
+ * access/permission/not-found class: the server refused the operation. On shared
+ * hosting the FTP account can usually LIST a directory but cannot delete/read/
+ * remove its contents because they are owned by another account (the web server)
+ * or the parent folder is not writable. The raw reply ("550 Delete operation
+ * failed.") is opaque, and unlike SSH there is no sudo to elevate over FTP, so a
+ * retry will keep failing. Surface an actionable explanation while preserving the
+ * server's own message (true data). Non-550 errors keep the plain wrapper.
+ *
+ * `error.code` is the numeric FTP reply code set by basic-ftp's FTPError.
+ */
+export function describeFtpFailure(label: string, error: unknown): string {
+  const raw = (error as Error)?.message || String(error);
+  const base = `FTP ${label} failed: ${raw}`;
+  if ((error as { code?: unknown })?.code === 550) {
+    return `${base} This usually means your FTP account lacks permission on the file or its parent folder (common on shared hosting, where files are often owned by another account), or the item no longer exists. FTP has no way to elevate permissions like SSH sudo.`;
+  }
+  return base;
+}
+
+/**
  * FTP / FTPS connection — a protocol-agnostic IConnection sibling of SSHConnection
  * backed by the pure-JS `basic-ftp` library. Supports plain FTP, explicit FTPS
  * (TLS) and anonymous login.
@@ -338,9 +361,14 @@ export class FTPConnection implements IConnection {
         infoLog('ftp-connect', 'socket-close-detected-on-op', { connectionId: this.id, label });
         this.setState(ConnectionState.Disconnected);
       }
+      // `FTPError` here is OUR class (src/types.ts), NOT basic-ftp's homonymous
+      // class. Errors WE threw inside the op (e.g. statRaw's 'No such directory')
+      // are re-thrown as-is; basic-ftp's raw errors (a different class, carrying a
+      // numeric `.code` reply code) fall through to describeFtpFailure, which reads
+      // that `.code` to classify 550 refusals (issue #17).
       throw error instanceof FTPError || error instanceof ConnectionError
         ? error
-        : new FTPError(`FTP ${label} failed: ${(error as Error).message}`, error as Error);
+        : new FTPError(describeFtpFailure(label, error), error as Error);
     }
   }
 
