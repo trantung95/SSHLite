@@ -42,6 +42,12 @@ var mockCompleteActivity = jest.fn();
 var mockFailActivity = jest.fn();
 var mockCancelActivity = jest.fn();
 
+// FileService move/transfer mocks (issue #18 — file drag-and-drop move)
+var mockMoveRemoteSameHost = jest.fn().mockResolvedValue(undefined);
+var mockCopyRemoteCrossHost = jest.fn().mockResolvedValue(undefined);
+var mockDeleteRemotePath = jest.fn().mockResolvedValue(undefined);
+var mockNextCopyName = jest.fn((name: string) => name);
+
 // --- jest.mock calls ---
 
 jest.mock('../connection/ConnectionManager', () => {
@@ -61,6 +67,10 @@ jest.mock('../services/FileService', () => {
     get onOpenFilesChanged() { return mockOnOpenFilesChanged.event; },
     get onFileLoadingChanged() { return mockOnFileLoadingChanged.event; },
     preloadFrequentFiles: jest.fn().mockResolvedValue(undefined),
+    get moveRemoteSameHost() { return mockMoveRemoteSameHost; },
+    get copyRemoteCrossHost() { return mockCopyRemoteCrossHost; },
+    get deleteRemotePath() { return mockDeleteRemotePath; },
+    get nextCopyName() { return mockNextCopyName; },
   };
   return { FileService: { getInstance: jest.fn().mockReturnValue(instance) } };
 });
@@ -1395,6 +1405,183 @@ describe('ParentFolderTreeItem', () => {
 
     expect(item.parentPath).toBe('/home');
     expect(item.currentPath).toBe('/home');
+  });
+});
+
+// ============================================================================
+// File drag-and-drop MOVE (issue #18: "no move file")
+//
+// Before the fix, handleDrag only serialized ConnectionTreeItem (connection
+// reorder) and handleDrop only read the connection mime — so dragging a file
+// or folder wrote no transfer data and the drop was a silent no-op. These
+// tests pin the drag-to-move behaviour, including the cross-server case the
+// reporter demonstrated (e-clothes.ru -> diapic.ru).
+// ============================================================================
+
+const FILE_MIME = 'application/vnd.code.tree.sshlite.file';
+const CONNECTION_MIME = 'application/vnd.code.tree.sshlite.connection';
+
+function basename(p: string): string {
+  return p.substring(p.lastIndexOf('/') + 1);
+}
+
+function makeDataTransfer(): any {
+  return new (vscode as any).DataTransfer();
+}
+
+function setFileTransfer(dt: any, entries: unknown): void {
+  dt.set(FILE_MIME, new (vscode as any).DataTransferItem(entries));
+}
+
+describe('FileTreeProvider - file drag-and-drop move (issue #18)', () => {
+  let provider: FileTreeProvider;
+  let connA: any;
+  let connB: any;
+
+  beforeEach(() => {
+    mockGetConnection.mockReset();
+    mockGetAllConnections.mockReset().mockReturnValue([]);
+    mockGetAllConnectionsWithReconnecting.mockReset().mockReturnValue({ active: [], reconnecting: [] });
+    mockEnqueue.mockReset().mockResolvedValue(undefined);
+    mockMoveRemoteSameHost.mockReset().mockResolvedValue(undefined);
+    mockCopyRemoteCrossHost.mockReset().mockResolvedValue(undefined);
+    mockDeleteRemotePath.mockReset().mockResolvedValue(undefined);
+    mockNextCopyName.mockReset().mockImplementation((name: string) => name);
+    (vscode.window.showWarningMessage as jest.Mock).mockReset().mockResolvedValue(undefined);
+    (vscode.window.showErrorMessage as jest.Mock).mockReset().mockResolvedValue(undefined);
+
+    connA = createMockConnection({ id: 'conn-A' });
+    connA.host.name = 'serverA';
+    connA.listFiles.mockResolvedValue([]);
+    connB = createMockConnection({ id: 'conn-B' });
+    connB.host.name = 'serverB';
+    connB.listFiles.mockResolvedValue([]);
+
+    mockGetConnection.mockImplementation((id: string) =>
+      id === 'conn-A' ? connA : id === 'conn-B' ? connB : undefined);
+    mockGetAllConnections.mockReturnValue([connA, connB]);
+
+    provider = new FileTreeProvider();
+  });
+
+  afterEach(() => provider.dispose());
+
+  function fileItem(conn: any, p: string, isDir = false): FileTreeItem {
+    return new FileTreeItem(
+      createMockRemoteFile(basename(p), { path: p, isDirectory: isDir, connectionId: conn.id }),
+      conn as any
+    );
+  }
+
+  it('handleDrag serializes dragged files into the file mime (was a silent no-op)', () => {
+    const dt = makeDataTransfer();
+    provider.handleDrag([fileItem(connA, '/home/a.txt')], dt, {} as any);
+    const item = dt.get(FILE_MIME);
+    expect(item).toBeDefined();
+    expect(item.value).toEqual([
+      { connectionId: 'conn-A', remotePath: '/home/a.txt', isDirectory: false, name: 'a.txt' },
+    ]);
+  });
+
+  it('handleDrag still serializes connection items for reordering (no regression)', () => {
+    const dt = makeDataTransfer();
+    provider.handleDrag([new ConnectionTreeItem(connA as any)], dt, {} as any);
+    expect(dt.get(CONNECTION_MIME)?.value).toEqual(['conn-A']);
+    expect(dt.get(FILE_MIME)).toBeUndefined();
+  });
+
+  it('handleDrop moves a file into a folder on the SAME host via rename', async () => {
+    const dt = makeDataTransfer();
+    setFileTransfer(dt, [{ connectionId: 'conn-A', remotePath: '/src/a.txt', isDirectory: false, name: 'a.txt' }]);
+    await provider.handleDrop(fileItem(connA, '/dst', true), dt, {} as any);
+    expect(mockMoveRemoteSameHost).toHaveBeenCalledWith(connA, '/src/a.txt', '/dst/a.txt');
+    expect(mockCopyRemoteCrossHost).not.toHaveBeenCalled();
+    expect(mockDeleteRemotePath).not.toHaveBeenCalled();
+  });
+
+  it('handleDrop moves a file ACROSS hosts via copy + delete (issue #18 repro)', async () => {
+    const dt = makeDataTransfer();
+    setFileTransfer(dt, [{
+      connectionId: 'conn-A', remotePath: '/e/public_html/index-copy.html', isDirectory: false, name: 'index-copy.html',
+    }]);
+    await provider.handleDrop(fileItem(connB, '/d/public_html/test', true), dt, {} as any);
+    expect(mockCopyRemoteCrossHost).toHaveBeenCalledWith(
+      connA, '/e/public_html/index-copy.html', connB, '/d/public_html/test/index-copy.html', false, expect.anything()
+    );
+    expect(mockDeleteRemotePath).toHaveBeenCalledWith(connA, '/e/public_html/index-copy.html', false);
+    expect(mockMoveRemoteSameHost).not.toHaveBeenCalled();
+  });
+
+  it('handleDrop onto a connection node moves into that connection current folder', async () => {
+    provider.setCurrentPath('conn-B', '/var/www');
+    const dt = makeDataTransfer();
+    setFileTransfer(dt, [{ connectionId: 'conn-A', remotePath: '/src/a.txt', isDirectory: false, name: 'a.txt' }]);
+    await provider.handleDrop(new ConnectionTreeItem(connB as any, '/var/www'), dt, {} as any);
+    expect(mockCopyRemoteCrossHost).toHaveBeenCalledWith(
+      connA, '/src/a.txt', connB, '/var/www/a.txt', false, expect.anything()
+    );
+  });
+
+  it('handleDrop onto a file moves into that file containing folder', async () => {
+    const dt = makeDataTransfer();
+    setFileTransfer(dt, [{ connectionId: 'conn-A', remotePath: '/src/a.txt', isDirectory: false, name: 'a.txt' }]);
+    await provider.handleDrop(fileItem(connB, '/dst/readme.md', false), dt, {} as any);
+    expect(mockCopyRemoteCrossHost).toHaveBeenCalledWith(
+      connA, '/src/a.txt', connB, '/dst/a.txt', false, expect.anything()
+    );
+  });
+
+  it('handleDrop is a no-op when dropping a file into the folder it already lives in', async () => {
+    const dt = makeDataTransfer();
+    setFileTransfer(dt, [{ connectionId: 'conn-A', remotePath: '/dst/a.txt', isDirectory: false, name: 'a.txt' }]);
+    await provider.handleDrop(fileItem(connA, '/dst', true), dt, {} as any);
+    expect(mockMoveRemoteSameHost).not.toHaveBeenCalled();
+    expect(mockCopyRemoteCrossHost).not.toHaveBeenCalled();
+  });
+
+  it('handleDrop refuses to move a folder into its own descendant', async () => {
+    const dt = makeDataTransfer();
+    setFileTransfer(dt, [{ connectionId: 'conn-A', remotePath: '/a/b', isDirectory: true, name: 'b' }]);
+    await provider.handleDrop(fileItem(connA, '/a/b/c', true), dt, {} as any);
+    expect(mockMoveRemoteSameHost).not.toHaveBeenCalled();
+    expect(vscode.window.showWarningMessage).toHaveBeenCalled();
+  });
+
+  it('handleDrop with no destination does not move (and is not a connection reorder)', async () => {
+    const dt = makeDataTransfer();
+    setFileTransfer(dt, [{ connectionId: 'conn-A', remotePath: '/src/a.txt', isDirectory: false, name: 'a.txt' }]);
+    await provider.handleDrop(undefined, dt, {} as any);
+    expect(mockMoveRemoteSameHost).not.toHaveBeenCalled();
+    expect(mockCopyRemoteCrossHost).not.toHaveBeenCalled();
+  });
+
+  it('handleDrop refreshes destination and source folders after a cross-host move', async () => {
+    const refreshSpy = jest.spyOn(provider, 'refreshFolder');
+    const dt = makeDataTransfer();
+    setFileTransfer(dt, [{ connectionId: 'conn-A', remotePath: '/src/a.txt', isDirectory: false, name: 'a.txt' }]);
+    await provider.handleDrop(fileItem(connB, '/dst', true), dt, {} as any);
+    expect(refreshSpy).toHaveBeenCalledWith('conn-B', '/dst');
+    expect(refreshSpy).toHaveBeenCalledWith('conn-A', '/src');
+  });
+
+  it('handleDrop onto the ".." parent row moves into the parent path', async () => {
+    const dt = makeDataTransfer();
+    setFileTransfer(dt, [{ connectionId: 'conn-A', remotePath: '/a/b/c.txt', isDirectory: false, name: 'c.txt' }]);
+    await provider.handleDrop(new ParentFolderTreeItem(connA as any, '/a'), dt, {} as any);
+    expect(mockMoveRemoteSameHost).toHaveBeenCalledWith(connA, '/a/b/c.txt', '/a/c.txt');
+  });
+
+  it('handleDrop moves items from multiple source connections in one drop', async () => {
+    const dt = makeDataTransfer();
+    setFileTransfer(dt, [
+      { connectionId: 'conn-A', remotePath: '/x/a.txt', isDirectory: false, name: 'a.txt' },
+      { connectionId: 'conn-B', remotePath: '/y/b.txt', isDirectory: false, name: 'b.txt' },
+    ]);
+    // Drop onto a folder on conn-B: the conn-A item is cross-host, the conn-B item is same-host.
+    await provider.handleDrop(fileItem(connB, '/dst', true), dt, {} as any);
+    expect(mockCopyRemoteCrossHost).toHaveBeenCalledWith(connA, '/x/a.txt', connB, '/dst/a.txt', false, expect.anything());
+    expect(mockDeleteRemotePath).toHaveBeenCalledWith(connA, '/x/a.txt', false);
+    expect(mockMoveRemoteSameHost).toHaveBeenCalledWith(connB, '/y/b.txt', '/dst/b.txt');
   });
 });
 

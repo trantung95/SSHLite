@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.0.4 - Drag-and-drop file move (issue #18)
+
+A user posted a screen recording titled "no move file": they dragged `index-copy.html` from one server's folder (`e-clothes.ru/public_html/`) onto a `test` folder on a **different** server (`diapic.ru/public_html/test/`) in the SSH Lite explorer, several times, and nothing happened - no move, no error, no notification. Refreshing the destination confirmed the file never arrived; the source was untouched.
+
+### Root cause (reproduced, not assumed)
+
+`FileTreeProvider` is its own `TreeDragAndDropController`, but it only ever supported **connection reordering**. `dragMimeTypes`/`dropMimeTypes` listed a single connection MIME type; `handleDrag` filtered the source down to `ConnectionTreeItem` and, for a dragged `FileTreeItem`, set **no transfer data at all**; `handleDrop` only read the connection MIME and early-returned when it was absent. So dragging any file or folder was a complete silent no-op - drag-to-move had never been implemented. The reporter's drag was additionally cross-server, but even a same-server file drag did nothing.
+
+### Fix
+
+- New `application/vnd.code.tree.sshlite.file` drag/drop MIME type carried alongside the existing connection MIME, so a file drag is never confused with a connection reorder. `handleDrag` now serializes dragged files/folders (`connectionId`, `remotePath`, `isDirectory`, `name`); `handleDrop` routes a file payload to the new `handleFileDrop` and otherwise falls through to connection reorder.
+- `handleFileDrop` reuses the **same `FileService` primitives as cut+paste**: same-host = `moveRemoteSameHost` (SFTP/FTP `rename`); cross-host = `copyRemoteCrossHost` then `deleteRemotePath` on the source (a copy that cannot delete its source warns but keeps the destination).
+- `resolveDropDestination`: folder → into it; connection node → its current folder (resolved absolute); file → the file's parent folder; `..` → the parent path; empty space → a status-bar hint and no move.
+- Guards (LITE data-correctness): dropping into the folder the item already lives in is a no-op; moving a folder into itself or a descendant warns and is skipped; destination name clashes go through `nextCopyName` (keep both, never overwrite).
+- Feedback - the whole point of the report - replaces the silent no-op: a cancellable `withProgress` notification, per-item error toasts, a `$(check) Moved …` status message, and a refresh of the destination plus every source folder. Every step logs via `infoLog('file-tree-dnd', …)`.
+
+### Tests
+
+- Unit: `FileTreeProvider.test.ts` ("issue #18") - `handleDrag` serializes file vs connection payloads; `handleDrop` performs same-host rename, cross-host copy+delete, connection-node and file targets, the no-op and folder-into-descendant guards, and refreshes both ends. Added `DataTransfer`/`DataTransferItem` to the vscode mock.
+- Integration: `src/integration/docker-ssh-dnd-move.test.ts` - drives the real `FileTreeProvider.handleDrag` -> `handleDrop` against real ssh2 servers and asserts the file actually relocated: same-host move, cross-host move (the reporter scenario), cross-host folder move, and the no-op guard.
+
 ## v1.0.3 - Transparent FTP 550 errors (issue #17)
 
 A user on shared hosting reported three errors at once while the file tree listed fine: "FTP delete failed: 550 Delete operation failed.", "FTP read failed: 550 Failed to open file.", and "FTP delete failed: 550 Remove directory operation failed."

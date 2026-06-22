@@ -9,6 +9,7 @@ import { FolderHistoryService } from '../services/FolderHistoryService';
 import { FileService } from '../services/FileService';
 import { PriorityQueueService, PreloadPriority } from '../services/PriorityQueueService';
 import { ActivityService } from '../services/ActivityService';
+import { infoLog } from '../utils/diagnosticLog';
 
 // Get extension path for custom icons
 let extensionPath: string = '';
@@ -359,15 +360,33 @@ type TreeItem = ConnectionTreeItem | ReconnectingConnectionTreeItem | FileTreeIt
 const CONNECTION_MIME_TYPE = 'application/vnd.code.tree.sshlite.connection';
 
 /**
+ * MIME type for drag and drop of remote files/folders (issue #18 — drag to move).
+ * Distinct from the connection mime so a file drag is never confused with a
+ * connection reorder.
+ */
+const FILE_MIME_TYPE = 'application/vnd.code.tree.sshlite.file';
+
+/**
+ * Serialized payload for a dragged file/folder. Mirrors ClipboardEntry so the
+ * move path matches cut+paste exactly (same-host rename, cross-host copy+delete).
+ */
+interface DraggedFileEntry {
+  connectionId: string;
+  remotePath: string;
+  isDirectory: boolean;
+  name: string;
+}
+
+/**
  * Tree data provider for remote file explorer with drag-drop support
  */
 export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vscode.TreeDragAndDropController<TreeItem> {
   private readonly _onDidChangeTreeData = new vscode.EventEmitter<TreeItem | undefined | void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
-  // Drag and drop configuration
-  readonly dropMimeTypes = [CONNECTION_MIME_TYPE];
-  readonly dragMimeTypes = [CONNECTION_MIME_TYPE];
+  // Drag and drop configuration: connections (reorder) + files/folders (move, issue #18)
+  readonly dropMimeTypes = [CONNECTION_MIME_TYPE, FILE_MIME_TYPE];
+  readonly dragMimeTypes = [CONNECTION_MIME_TYPE, FILE_MIME_TYPE];
 
   private connectionManager: ConnectionManager;
   private folderHistoryService: FolderHistoryService;
@@ -1690,32 +1709,53 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   }
 
   /**
-   * Handle drag start - only allow dragging connection items
+   * Handle drag start. Connections carry their IDs (for reorder); files/folders
+   * carry a serialized payload so they can be dropped onto a folder/connection to
+   * MOVE them (issue #18 — previously a file drag set no data and was a no-op).
    */
   handleDrag(
     source: readonly TreeItem[],
     dataTransfer: vscode.DataTransfer,
     _token: vscode.CancellationToken
   ): void | Thenable<void> {
-    // Only allow dragging connection items
+    // Connection items → reorder payload
     const connectionItems = source.filter((item) => item instanceof ConnectionTreeItem);
-    if (connectionItems.length === 0) {
-      return;
+    if (connectionItems.length > 0) {
+      const connectionIds = connectionItems.map((item) => (item as ConnectionTreeItem).connection.id);
+      dataTransfer.set(CONNECTION_MIME_TYPE, new vscode.DataTransferItem(connectionIds));
     }
 
-    // Store connection IDs in the data transfer
-    const connectionIds = connectionItems.map((item) => (item as ConnectionTreeItem).connection.id);
-    dataTransfer.set(CONNECTION_MIME_TYPE, new vscode.DataTransferItem(connectionIds));
+    // File/folder items → move payload (issue #18)
+    const fileItems = source.filter((item) => item instanceof FileTreeItem) as FileTreeItem[];
+    if (fileItems.length > 0) {
+      const entries: DraggedFileEntry[] = fileItems.map((f) => ({
+        connectionId: f.connection.id,
+        remotePath: f.file.path,
+        isDirectory: f.file.isDirectory,
+        name: f.file.name,
+      }));
+      dataTransfer.set(FILE_MIME_TYPE, new vscode.DataTransferItem(entries));
+      infoLog('file-tree-dnd', 'drag-files', { count: entries.length });
+    }
   }
 
   /**
-   * Handle drop - reorder connections
+   * Handle drop. A file/folder payload moves the dragged items into the drop
+   * target (issue #18); otherwise a connection payload reorders connections.
    */
   handleDrop(
     target: TreeItem | undefined,
     dataTransfer: vscode.DataTransfer,
     _token: vscode.CancellationToken
   ): void | Thenable<void> {
+    // File/folder move takes precedence when a file payload is present. A mixed
+    // selection (a connection and a file dragged together) is treated as a file
+    // move — a connection has no remote path to move, so it is simply ignored.
+    const fileTransfer = dataTransfer.get(FILE_MIME_TYPE);
+    if (fileTransfer) {
+      return this.handleFileDrop(fileTransfer.value as DraggedFileEntry[], target);
+    }
+
     const transferItem = dataTransfer.get(CONNECTION_MIME_TYPE);
     if (!transferItem) {
       return;
@@ -1776,6 +1816,167 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     // Update order and refresh
     this.connectionOrder = newOrder;
     this.refresh();
+  }
+
+  /**
+   * Resolve the folder a file drop should move into (issue #18).
+   * - Connection node → the connection's currently shown folder (absolute).
+   * - Folder → that folder.
+   * - File → the file's containing folder.
+   * - Parent folder ("..") → the parent path.
+   * Returns undefined for any other / empty target so the caller can prompt.
+   */
+  private resolveDropDestination(
+    target: TreeItem | undefined
+  ): { connection: SSHConnection; folder: string } | undefined {
+    if (target instanceof ConnectionTreeItem) {
+      return { connection: target.connection, folder: this.resolveCurrentPathSync(target.connection.id) };
+    }
+    if (target instanceof FileTreeItem) {
+      const folder = target.file.isDirectory
+        ? target.file.path
+        : path.posix.dirname(target.file.path) || '/';
+      return { connection: target.connection, folder };
+    }
+    if (target instanceof ParentFolderTreeItem) {
+      return { connection: target.connection, folder: target.parentPath };
+    }
+    return undefined;
+  }
+
+  /**
+   * Move dragged files/folders into the drop target (issue #18: "no move file").
+   * Reuses the same FileService primitives as cut+paste: same-host = rename,
+   * cross-host = copy then delete source. Gives progress + error/status feedback
+   * (the original bug was a completely silent no-op) and refreshes both ends.
+   */
+  private async handleFileDrop(
+    entries: DraggedFileEntry[],
+    target: TreeItem | undefined
+  ): Promise<void> {
+    if (!entries || entries.length === 0) {
+      return;
+    }
+
+    const dest = this.resolveDropDestination(target);
+    if (!dest) {
+      vscode.window.setStatusBarMessage('$(info) Drop onto a folder or connection to move files', 3000);
+      infoLog('file-tree-dnd', 'drop-no-target', { count: entries.length });
+      return;
+    }
+    const { connection: destConnection, folder: destFolder } = dest;
+
+    // Filter out no-ops (already in this folder) and illegal moves (folder into itself).
+    const moves: DraggedFileEntry[] = [];
+    for (const entry of entries) {
+      const sameHost = entry.connectionId === destConnection.id;
+      const srcParent = path.posix.dirname(entry.remotePath) || '/';
+      if (sameHost && srcParent === destFolder) {
+        continue; // dropping into the folder it already lives in
+      }
+      if (
+        sameHost && entry.isDirectory &&
+        (destFolder === entry.remotePath || destFolder.startsWith(entry.remotePath + '/'))
+      ) {
+        vscode.window.showWarningMessage(`Cannot move "${entry.name}" into itself`);
+        continue;
+      }
+      moves.push(entry);
+    }
+
+    if (moves.length === 0) {
+      infoLog('file-tree-dnd', 'drop-noop', { destFolder });
+      return;
+    }
+
+    // Resolve every source connection up front (a stale connection aborts the drop).
+    const sourceConnections = new Map<string, SSHConnection>();
+    for (const entry of moves) {
+      if (!sourceConnections.has(entry.connectionId)) {
+        const conn = this.connectionManager.getConnection(entry.connectionId);
+        if (!conn) {
+          vscode.window.showErrorMessage(`Source connection no longer active for ${entry.name}`);
+          return;
+        }
+        sourceConnections.set(entry.connectionId, conn);
+      }
+    }
+
+    // Existing names at the destination → conflict-safe rename (keep both, never
+    // overwrite). Matches cut+paste; honours "never sacrifice data correctness".
+    const existing = await destConnection.listFiles(destFolder).catch(() => []);
+    const existingNames = new Set(existing.map((e) => e.name));
+
+    infoLog('file-tree-dnd', 'drop-move-start', {
+      count: moves.length,
+      destConn: destConnection.id,
+      destFolder,
+    });
+
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Moving to ${destConnection.host.name}:${destFolder}`,
+        cancellable: true,
+      },
+      async (progress, token) => {
+        const movedSources: Array<{ connId: string; srcPath: string }> = [];
+        let done = 0;
+
+        for (const entry of moves) {
+          if (token.isCancellationRequested) {
+            break;
+          }
+          const srcConn = sourceConnections.get(entry.connectionId)!;
+          const sameHost = srcConn.id === destConnection.id;
+          const destName = this.fileService.nextCopyName(entry.name, existingNames);
+          existingNames.add(destName);
+          const destPath = destFolder.endsWith('/') ? `${destFolder}${destName}` : `${destFolder}/${destName}`;
+
+          progress.report({ message: `${done + 1}/${moves.length}: ${entry.name}` });
+
+          try {
+            if (sameHost) {
+              await this.fileService.moveRemoteSameHost(srcConn, entry.remotePath, destPath);
+            } else {
+              await this.fileService.copyRemoteCrossHost(
+                srcConn, entry.remotePath, destConnection, destPath, entry.isDirectory, token
+              );
+              try {
+                await this.fileService.deleteRemotePath(srcConn, entry.remotePath, entry.isDirectory);
+              } catch (delErr) {
+                vscode.window.showWarningMessage(
+                  `Moved ${entry.name} to destination, but failed to remove the source copy: ${(delErr as Error).message}`
+                );
+              }
+            }
+            movedSources.push({ connId: srcConn.id, srcPath: entry.remotePath });
+            done++;
+            infoLog('file-tree-dnd', 'drop-move-ok', { name: entry.name, destPath, sameHost });
+          } catch (err) {
+            infoLog('file-tree-dnd', 'drop-move-fail', { name: entry.name, error: (err as Error).message });
+            vscode.window.showErrorMessage(`Failed to move ${entry.name}: ${(err as Error).message}`);
+          }
+        }
+
+        // Refresh the destination and every distinct source folder so the move is visible.
+        this.refreshFolder(destConnection.id, destFolder);
+        const refreshed = new Set<string>();
+        for (const { connId, srcPath } of movedSources) {
+          const srcParent = path.posix.dirname(srcPath) || '/';
+          const key = `${connId} ${srcParent}`;
+          if (!refreshed.has(key)) {
+            refreshed.add(key);
+            this.refreshFolder(connId, srcParent);
+          }
+        }
+
+        if (done > 0) {
+          const label = done === 1 ? moves[0].name : `${done} items`;
+          vscode.window.setStatusBarMessage(`$(check) Moved ${label} to ${destFolder}`, 3000);
+        }
+      }
+    );
   }
 
   /**

@@ -60,6 +60,12 @@ key with no argument): `F2` rename, `Ctrl/Cmd+C` copy, `Ctrl/Cmd+X` cut,
 dialog (with backup), so a stray keypress cannot delete without confirmation —
 LITE data-correctness holds.
 
+**Drag to move (issue #18)**: dragging a file/folder onto another folder,
+connection node, or `..` moves it there — same-host via `rename`, cross-host via
+copy+delete. This is a third way to invoke a move (alongside `Ctrl/Cmd+X` then
+`Ctrl/Cmd+V` and the right-click **Move** command) and shares the same
+`FileService` move primitives. See `features/tree-providers.md` → "Drag & Drop".
+
 **Image files (issue #12)**: `isImageFile()` (`src/types/progressive.ts`, `IMAGE_EXTENSIONS`:
 jpg/jpeg/png/gif/svg/webp/bmp/ico/tiff/tif) branches `openRemoteFile()` into
 `openImageFile()` BEFORE the progressive-download check: the image is downloaded in

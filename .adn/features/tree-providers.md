@@ -124,6 +124,25 @@ Inline button on `..` row → navigates to `/` with auto-expand down to current 
 
 State 0 (collapsed) → 1 (fully expanded) → 2 (first level only) → 0. Context key: `sshLite.fileExplorer.expandState`.
 
+### Drag & Drop (`handleDrag` / `handleDrop`)
+
+`FileTreeProvider` is its own `TreeDragAndDropController`, registered on the `sshLite.fileExplorer` view. Two payloads are carried on distinct MIME types so a file drag is never confused with a connection reorder:
+
+| MIME type | Source items | Drop behaviour |
+|-----------|--------------|----------------|
+| `application/vnd.code.tree.sshlite.connection` | `ConnectionTreeItem` | Reorder connections (`connectionOrder`) |
+| `application/vnd.code.tree.sshlite.file` | `FileTreeItem` (files **and** folders) | **Move** the dragged item(s) into the drop target (issue #18) |
+
+**File/folder move** (`handleFileDrop`) reuses the exact same `FileService` primitives as cut+paste, so behaviour is identical to a cut followed by a paste:
+
+- **Same host** → `moveRemoteSameHost` (SFTP/FTP `rename`, zero data transfer).
+- **Cross host** → `copyRemoteCrossHost` then `deleteRemotePath` on the source (a copy that fails to delete the source warns but keeps the destination).
+- **Destination resolution** (`resolveDropDestination`): drop on a folder → into it; on a connection node → into its current folder (resolved absolute); on a file → into the file's parent folder; on `..` → the parent path; on empty space → status-bar hint, no move.
+- **Guards**: dropping into the folder the item already lives in is a no-op; moving a folder into itself or a descendant warns and is skipped; name conflicts at the destination use `nextCopyName` (keep both, never overwrite).
+- **Feedback** (the original bug was a silent no-op): a cancellable `withProgress` notification during the move, per-item error toasts, a `$(check) Moved …` status message, and a refresh of both the destination and every source folder. All steps log via `infoLog('file-tree-dnd', …)`.
+
+Tests: `FileTreeProvider.test.ts` ("issue #18", mocked wiring/guards) + `src/integration/docker-ssh-dnd-move.test.ts` (real same-host / cross-host / folder move end-to-end).
+
 ### Tree Item Properties
 
 `FileTreeItem`: `file`, `connection`, `shouldBeExpanded`, `isOpenInTab`, `isHighlighted`, `isLoading`, `isFiltered`, `isEmptyAfterFilter`. Drag & drop via `dragAndDropController`, `canSelectMany: true`.

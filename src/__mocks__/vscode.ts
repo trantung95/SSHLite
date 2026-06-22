@@ -232,6 +232,28 @@ export enum ProgressLocation {
   Notification = 15
 }
 
+// Drag-and-drop data transfer (tree views). Mirrors the subset of the VS Code
+// API that FileTreeProvider.handleDrag/handleDrop use.
+export class DataTransferItem {
+  constructor(public readonly value: unknown) {}
+  asString(): Promise<string> {
+    return Promise.resolve(typeof this.value === 'string' ? this.value : JSON.stringify(this.value));
+  }
+  asFile(): undefined { return undefined; }
+}
+
+export class DataTransfer {
+  private _map = new Map<string, DataTransferItem>();
+  set(mimeType: string, item: DataTransferItem): void { this._map.set(mimeType, item); }
+  get(mimeType: string): DataTransferItem | undefined { return this._map.get(mimeType); }
+  forEach(cb: (item: DataTransferItem, mimeType: string) => void): void {
+    this._map.forEach((v, k) => cb(v, k));
+  }
+  *[Symbol.iterator](): Iterator<[string, DataTransferItem]> {
+    yield* this._map.entries();
+  }
+}
+
 // ViewColumn enum
 export enum ViewColumn {
   Active = -1,
