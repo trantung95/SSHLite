@@ -17,10 +17,13 @@ Coverage target: 95%+ on new/changed code.
 | Category | Location | Runner |
 |----------|----------|--------|
 | Unit | `src/**/*.test.ts` | `npx jest --no-coverage` |
+| Manifest | `src/__tests__/manifest/*.test.ts` | `npx jest --no-coverage` |
 | Docker Integration | `src/integration/docker-ssh.test.ts` | `npx jest --testPathPattern=docker` |
 | Multi-OS | `src/integration/multios-*.test.ts` | `npx jest --testPathPattern=multios` |
 | Multi-Server | `src/integration/multi-server.test.ts` | `npx jest --testPathPattern=multi-server` |
 | Cross-service | `src/integration/port-forward-persistence.test.ts` | `npx jest --no-coverage` |
+
+**Manifest regression net**: when a bug lives in a `package.json` constant that VS Code reads at install/activation time (not reproducible on a docker SSH server), assert the shipped manifest value directly. Example: `src/__tests__/manifest/extensionKind.test.ts` reads `package.json` and asserts `extensionKind` deep-equals `["ui"]` — the net for the v1.0.5 "host list empty inside a Remote-SSH window" regression (`.adn/lessons.md` "2026-06-22"). Behavioural tests that *mock* `extensionKind` cannot catch the manifest value drifting; assert the constant itself.
 
 ## Mock Architecture
 

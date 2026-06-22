@@ -4217,12 +4217,14 @@ export function activate(context: vscode.ExtensionContext): void {
     failedNames: [..._activateFailures],
   });
 
-  // v0.8.17: if SSH Lite somehow ended up on the workspace extension host
-  // inside a Remote-SSH session (despite preferring "ui" in extensionKind),
-  // file dialogs browse the remote filesystem — not the user's local machine,
-  // breaking both downloads and uploads. Surface a one-time hint so the user
-  // can re-install in local, and tell FileService so the upload command can
-  // warn at the point of action (v0.8.18).
+  // Defensive fallback (v0.8.17): if SSH Lite were ever placed on the workspace
+  // extension host inside a Remote-SSH session, file dialogs would browse the
+  // remote filesystem — not the user's local machine — breaking both downloads
+  // and uploads. Since v1.0.5 the manifest declares extensionKind ["ui"] only,
+  // so VS Code can no longer place it there and this branch effectively never
+  // fires; it is kept as insurance. Surface a one-time hint so the user can
+  // re-install in local, and tell FileService so the upload command can warn at
+  // the point of action (v0.8.18).
   const onRemoteWorkspaceHost = isOnRemoteWorkspaceHost(context);
   safeStep('remote-ssh-host-flag', () =>
     fileService.setRemoteWorkspaceHost(onRemoteWorkspaceHost),

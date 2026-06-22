@@ -5,6 +5,23 @@ Add new entries as bugs are found, mistakes are made, or better approaches are d
 
 ---
 
+## 2026-06-22 - `extensionKind` must be `["ui"]` only for an SSH client; `"workspace"` re-opened the "host list empty in a Remote-SSH window" bug
+
+**Applies to all client OSes** — Windows, macOS, Linux. This is about *which extension host* SSH Lite runs in, not the user's OS.
+
+**What happened**: A user's colleague used VS Code's built-in Remote-SSH to open a server. In their **local** VS Code, SSH Lite listed saved hosts and Add Host worked; inside the **Remote-SSH window**, SSH Lite showed **no host list and could not add a host**. This was a recurrence of the v0.8.17 placement bug (the 2026-05-22 entry below) — a backward-compatibility regression, the worst kind for a host-config extension.
+
+**Root cause**: SSH Lite's host list lives in VS Code user settings (`getConfiguration('sshLite').get('hosts')`, written with `ConfigurationTarget.Global`) and it reads `~/.ssh/config` via `os.homedir()` — both only meaningful on the user's own machine. `package.json` declared `extensionKind: ["ui", "workspace"]`. The `"workspace"` entry only makes the local (UI) host *preferred*, not *enforced*. Any copy that ended up on the remote workspace extension host — installed via the Marketplace "Install in SSH: \<host\>" button, or carried over from before v0.8.17 when "workspace" was the default — reads the **server's** settings (empty) and the **server's** home, so the local host list is invisible and Add Host writes to the wrong scope.
+
+**Why one user hit it and another didn't**: identical build. The symptom depends on per-user, per-machine install state — only the colleague had a Remote-SSH window whose *active* SSH Lite copy lived on the server. "Works on my machine" proves nothing about extension-host placement; it is decided by where each user installed the copy, not by the vsix.
+
+**Lesson**:
+- For an extension whose configuration/identity lives on the user's machine (SSH/FTP clients, anything reading local `~/.ssh`, local secrets, or `ConfigurationTarget.Global`), declare `extensionKind: ["ui"]` — **a lone `"ui"`, never `["ui","workspace"]`**. A *preference* is not *enforcement*: as long as `"workspace"` is allowed, a remote-host copy can be the active instance and will read the wrong machine's state. The "chained SSH from a remote server" use case `"workspace"` was meant to enable is fundamentally incompatible with "saved hosts always visible" — drop it.
+- **A backward-compat regression test belongs at the manifest level too.** `src/__tests__/manifest/extensionKind.test.ts` reads `package.json` and asserts `extensionKind` deep-equals `["ui"]` and never contains `"workspace"`. Behavioural unit tests that *mock* `extensionKind` (like `extension.activate.test.ts`) cannot catch a manifest value drifting — assert the shipped manifest constant directly.
+- `extensionKind` placement is decided by VS Code from the manifest at install time; it is **not** reproducible on a docker SSH server. Don't expect a docker/chaos test to cover it — the manifest unit test is the regression net. On upgrade, VS Code re-evaluates `extensionKind` and self-heals existing remote-host installs, so the fix reaches already-affected users automatically.
+
+---
+
 ## 2026-06-16 - Making a positional-composite-key field optional is a whole-codebase change, not a type tweak
 
 **Context**: design to make `IHostConfig.username` optional (an "endpoint" host = `host:port` with no account yet, accounts added later via "Add User"). A 5-agent full-source audit found the change ripples far past `types.ts`. Reusable gotchas for ANY time a field that participates in a composite id/key (`a:b:c`) becomes optional or gains an empty/sentinel value:
@@ -367,7 +384,7 @@ Brought a curated slice of `D:\CT\Repos\3in1`'s AI-doc infrastructure into SSH L
 
 **Lesson** (mandatory checks for any future feature touching save/open dialogs OR extension hosts):
 
-- **Declare `extensionKind` explicitly** for any extension whose semantic is "talk to remote servers from where the user actually sits". For SSH-client-type extensions like SSH Lite, `["ui", "workspace"]` (UI preferred, workspace allowed for chained SSH) is the right shape. Never rely on VS Code's default placement — it varies by VS Code version and remote backend.
+- **Declare `extensionKind` explicitly** for any extension whose semantic is "talk to remote servers from where the user actually sits". Never rely on VS Code's default placement — it varies by VS Code version and remote backend. **CORRECTION (2026-06-22): the value first chosen here, `["ui", "workspace"]`, was wrong and caused this bug to recur — see the 2026-06-22 entry below. The correct value for SSH Lite is exactly `["ui"]`.** `["ui","workspace"]` only makes the local host *preferred*, not enforced; a copy on the workspace (remote) extension host could still be the active instance, and there the host list (local settings) and `~/.ssh/config` (local home) are invisible. For an SSH client whose config lives on the user's machine, allow only `["ui"]`.
 - **Never call `fs.writeFileSync(uri.fsPath, …)`** (or `fs.readFileSync(uri.fsPath)`, `fs.mkdirSync`, etc.) on a URI returned by `showSaveDialog` / `showOpenDialog`. The URI scheme is **not** guaranteed to be `file:` — it can be `vscode-remote:`, `vscode-vfs:` (GitHub Codespaces, virtual workspaces), `untitled:`, or any registered `FileSystemProvider` scheme. Use `vscode.workspace.fs.{readFile,writeFile,createDirectory,delete,stat,readDirectory}` — they dispatch via the URI provider system and respect the scheme. `vscode.workspace.fs.createDirectory` is idempotent; drop the `if (!fs.existsSync(...)) fs.mkdirSync(...)` guard.
 - **Use `vscode.Uri.joinPath(baseUri, ...segments)`** to build child URIs inside a folder dialog result. `path.join(folderUri.fsPath, name)` produces a *string*, dropping the scheme — when you later feed that string back into a URI you lose `vscode-remote:` / `vscode-vfs:`.
 - **Surface a one-time hint** when an extension lands on the wrong host. Detection combo: `vscode.env.remoteName === 'ssh-remote'` plus `context.extension.extensionKind === vscode.ExtensionKind.Workspace`. Offer "Install in Local" + a dismissible "Don't show again" backed by a settings key (`sshLite.suppressLocalInstallHint`). "Download failed silently to a path I've never heard of" is a hostile experience; the user does not know which host the extension ran on.

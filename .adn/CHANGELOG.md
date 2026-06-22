@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.0.5 - Host list invisible inside a Remote-SSH window (extensionKind regression)
+
+A user's colleague installed the latest version and, using VS Code's built-in Remote-SSH extension, connected to a server. On their **local** VS Code, SSH Lite listed saved hosts and Add Host worked. Inside the **Remote-SSH window** (VS Code attached to the server), SSH Lite showed **no host list and could not add a host**. The same symptom had been fixed once before in v0.8.17 - it had silently regressed, which is exactly the backward-compatibility failure a host-config extension must not have.
+
+### Root cause (recurrence of the v0.8.17 placement bug)
+
+SSH Lite's saved host list lives in VS Code user settings (`getConfiguration('sshLite').get('hosts')`, written with `ConfigurationTarget.Global`) and it reads the local SSH config (`~/.ssh/config`) via `os.homedir()` - both only meaningful on the user's **own machine**. `package.json` declared `extensionKind: ["ui", "workspace"]`. The `"workspace"` entry only made VS Code *prefer* the local (UI) host; it still **allowed** SSH Lite to run on the remote (workspace) extension host. Any copy that ended up there - installed via the Marketplace "Install in SSH: \<host\>" button, or carried over from before v0.8.17 when "workspace" was the default placement - reads the **server's** settings (empty) and the **server's** home directory. Result: the user's local host list is invisible and Add Host writes to the wrong scope. A *preference* is not *enforcement*; the door was still open.
+
+This was not a storage-layer regression (the host-storage code never changed). It was purely an extension-placement issue, and it depended on per-user, per-machine install state - which is why one colleague hit it while another user on the same build did not: only the colleague had a Remote-SSH window whose active SSH Lite copy lived on the server.
+
+### Fix
+
+- `extensionKind` is now exactly `["ui"]`. VS Code always runs SSH Lite on the user's local machine, even inside a Remote-SSH window (the Marketplace shows "Install in Local", the same model as the PDF Viewer and other UI-only extensions). The remote-host copy can no longer be the active instance, so the host list shown is always the user's local one.
+- **Self-healing for affected users**: on upgrade, VS Code re-evaluates `extensionKind` and removes / relocates any workspace-host install. The colleague's broken Remote-SSH window starts using the local copy after the update; saved hosts in local settings were never touched.
+- **Trade-off**: this drops the rare "chained SSH" use case (running SSH Lite's UI *from* a remote server to a third machine). That capability is fundamentally incompatible with "your saved hosts are always visible" - a workspace-host instance genuinely cannot read the local machine's settings - and it is what re-opened this bug. To reach a server from another server, open a local VS Code window and let SSH Lite connect directly.
+- The `isOnRemoteWorkspaceHost()` detection, the one-time "Install in Local" activation hint, and the upload point-of-action warning are kept as a **defensive fallback**. With `["ui"]` they effectively never fire, but they cost nothing and still help if a future VS Code build ever places the extension on the workspace host against the manifest.
+
+### Tests
+
+- Unit: `src/__tests__/manifest/extensionKind.test.ts` asserts the manifest declares exactly `["ui"]` and never contains `"workspace"` again - the test that would have caught the regression. The existing `src/extension.activate.test.ts` hint tests still pass (they mock `extensionKind` directly, exercising the defensive fallback logic).
+- Docker / chaos do not apply here: this is install-time extension-host placement decided by VS Code from the manifest, not runtime SSH/SFTP behaviour reproducible on a server.
+
 ## v1.0.4 - Drag-and-drop file move (issue #18)
 
 A user posted a screen recording titled "no move file": they dragged `index-copy.html` from one server's folder (`e-clothes.ru/public_html/`) onto a `test` folder on a **different** server (`diapic.ru/public_html/test/`) in the SSH Lite explorer, several times, and nothing happened - no move, no error, no notification. Refreshing the destination confirmed the file never arrived; the source was untouched.

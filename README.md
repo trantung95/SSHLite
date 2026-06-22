@@ -76,7 +76,7 @@ Reads `~/.ssh/config`. Supports SSH keys (RSA / Ed25519 / ECDSA, encrypted), age
 
 ## Remote-SSH compatibility
 
-SSH Lite prefers to run on **your local machine** — Windows, macOS, or Linux — even when VS Code is connected to a remote workspace via the built-in Remote-SSH extension. When you install SSH Lite from the Marketplace inside a Remote-SSH session, you will see the **Install in Local** button on the extension page — click it. SSH Lite then connects to remote servers directly from your local machine and downloads files to your local home directory:
+SSH Lite **always runs on your local machine** — Windows, macOS, or Linux — even when VS Code is connected to a remote workspace via the built-in Remote-SSH extension. When you install SSH Lite from the Marketplace inside a Remote-SSH session, you will see the **Install in Local** button on the extension page — click it. SSH Lite then connects to remote servers directly from your local machine and downloads files to your local home directory:
 
 - **Windows**: `C:\Users\<you>\...`
 - **macOS**: `/Users/<you>/...`
@@ -84,16 +84,17 @@ SSH Lite prefers to run on **your local machine** — Windows, macOS, or Linux �
 
 Side-by-side use works without surprises: keep your Remote-SSH editing session on remote server **A**, and use SSH Lite to browse, download from, terminal into, and port-forward from any number of other servers **B**, **C**, **D** — all from your own machine. File browsing, editing, terminals, port forwards, search, snippets, cron, diffs, and the rest of the SSH Tools suite all operate over SSH Lite's own SSH/SFTP connections, independent of where the VS Code workspace lives or which OS you run VS Code on.
 
-Two edge cases worth knowing:
+One edge case worth knowing:
 
 - **Port forwards bind to your local machine.** A process running inside the Remote-SSH workspace (e.g. `curl` in the Remote-SSH terminal) cannot reach the forwarded port. Use VS Code's built-in Remote-SSH port forwarding for that direction.
-- **Chained SSH (rare).** If you specifically want to run SSH Lite *from* the remote server to a third server, install SSH Lite on the workspace host as well. SSH Lite will detect this and show a one-time hint pointing you back to Install in Local; dismiss it with the `sshLite.suppressLocalInstallHint` setting.
+
+Because SSH Lite always runs on your local machine, VS Code never runs it on the remote server itself — so your saved hosts and Add Host always work in any window, and there is no "wrong host" pitfall. (To reach a server from another server, open a normal local VS Code window and let SSH Lite connect to it directly.)
 
 ## Release Notes
 
-**1.0.4** - **Drag a file to move it** (issue #18). You can now drag a file or folder in the SSH Lite explorer and drop it onto another folder, a connection, or the **..** parent row to move it there - including **between two different servers** (the file is copied to the destination, then removed from the source). Previously a drag did nothing at all: no move, no error, no feedback, which looked like the move feature was broken. Now you get a progress notification while it moves, the tree refreshes on both ends so you can see the result, and a few safety rules apply - dropping a file back into the folder it already lives in does nothing, you cannot drop a folder into itself, and a name clash at the destination keeps both files instead of overwriting. Moving by drag does exactly what cut-and-paste does, just faster.
+**1.0.5** - **Fix: your saved hosts now always appear inside a Remote-SSH window.** If you used VS Code's built-in Remote-SSH to open a server and then opened SSH Lite there, it could show an empty host list and refuse to add hosts - even though your normal local VS Code worked fine. The cause: SSH Lite could end up running on the remote server instead of on your own machine, and from the server it cannot see the host list that lives on your machine. SSH Lite now always runs on your local machine in every window (inside a Remote-SSH session you will see "Install in Local" on the extension page), so the host list and Add Host work everywhere. If you were affected, just update - VS Code moves SSH Lite back to your machine automatically and your saved hosts were never lost. (Trade-off: running SSH Lite's interface *from* a remote server to a third machine - "chained SSH" - is no longer supported; open a local window and connect directly instead.)
 
-**1.0.3** - Clearer FTP errors when the server refuses an action (issue #17). On shared hosting your FTP account can often browse a folder but not delete, open, or remove items inside it, because those files belong to another account (for example, files created by the web server) or the folder is not writable. SSH Lite used to show only the server's cryptic "550 ... operation failed". It now explains the likely cause - a permission or ownership issue, and that FTP (unlike SSH) has no way to elevate permissions - while still showing the server's own message. This is a message-only change: the FTP server still decides what your account is allowed to do.
+**1.0.4** - **Drag a file to move it** (issue #18). You can now drag a file or folder in the SSH Lite explorer and drop it onto another folder, a connection, or the **..** parent row to move it there - including **between two different servers** (the file is copied to the destination, then removed from the source). Previously a drag did nothing at all: no move, no error, no feedback, which looked like the move feature was broken. Now you get a progress notification while it moves, the tree refreshes on both ends so you can see the result, and a few safety rules apply - dropping a file back into the folder it already lives in does nothing, you cannot drop a folder into itself, and a name clash at the destination keeps both files instead of overwriting. Moving by drag does exactly what cut-and-paste does, just faster.
 
 [Full changelog](https://github.com/trantung95/SSHLite/blob/master/.adn/CHANGELOG.md)
 
