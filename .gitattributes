@@ -5,3 +5,6 @@
 *.sh text eol=lf
 Dockerfile* text eol=lf
 entrypoint* text eol=lf
+
+# Vendored font licenses intentionally preserve upstream whitespace.
+.agents/skills/canvas-design/** -whitespace

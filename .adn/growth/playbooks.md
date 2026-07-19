@@ -1,6 +1,6 @@
 # Growth Playbooks
 
-Step-by-step recipes for extending SSH Lite. After completing any playbook, update `.adn/` docs (see `CLAUDE.md` mapping table).
+Step-by-step recipes for extending SSH Lite. After completing any playbook, update `.adn/` docs (see `AGENTS.md` mapping table).
 
 ---
 

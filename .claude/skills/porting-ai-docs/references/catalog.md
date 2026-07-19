@@ -1,4 +1,6 @@
-# 3in1 -> SSH Lite port catalog
+# Historical 3in1 -> SSH Lite port catalog
+
+> This is a historical migration record, not a live upstream synchronization source. The source repository is not available in this workspace. Current cross-assistant conventions are defined in `AGENTS.md` and `docs/AI-COMPATIBILITY.md`.
 
 The concrete classification of every AI-doc artifact in `D:\CT\Repos\3in1`, and what was done with it for SSH Lite. Use this to re-run the port, extend it, or re-sync after 3in1 changes. Method is in `../SKILL.md`.
 

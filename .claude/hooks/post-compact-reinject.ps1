@@ -1,10 +1,10 @@
 # PostCompact hook - anti-drift re-injection after context compaction
-# Re-injects .claude/critical-rules.md + key CLAUDE.md sections + restores _context_checkpoint.md.
+# Re-injects .claude/critical-rules.md + key AGENTS.md sections + restores _context_checkpoint.md.
 # Stdout becomes injected context for the post-compact conversation.
 
 $ErrorActionPreference = 'Stop'
 
-# UTF-8 stdout so Unicode in CLAUDE.md content survives the codepage default
+# UTF-8 stdout so Unicode in AGENTS.md content survives the codepage default
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -17,8 +17,8 @@ try {
     exit 0
 }
 
-$projectRoot = if ($env:CLAUDE_PROJECT_DIR) { $env:CLAUDE_PROJECT_DIR } else { 'D:\CT\Repos\SSHLite' }
-$claudeMdFile = Join-Path $projectRoot 'CLAUDE.md'
+$projectRoot = if ($env:CLAUDE_PROJECT_DIR) { $env:CLAUDE_PROJECT_DIR } else { (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path }
+$agentsFile = Join-Path $projectRoot 'AGENTS.md'
 $criticalFile = Join-Path $projectRoot '.claude\critical-rules.md'
 $checkpointFile = Join-Path $projectRoot '.claude\_context_checkpoint.md'
 
@@ -36,9 +36,9 @@ if (Test-Path $criticalFile) {
     ""
 }
 
-# CLAUDE.md LITE Principles + AI Behavior + Git Workflow sections
-if (Test-Path $claudeMdFile) {
-    $lines = Get-Content $claudeMdFile -Encoding UTF8
+# AGENTS.md LITE Principles + AI Behavior + Git Workflow sections
+if (Test-Path $agentsFile) {
+    $lines = Get-Content $agentsFile -Encoding UTF8
 
     function Extract-Section {
         # From a header line (SimpleMatch on $StartHeader) up to the next "## " header.
@@ -55,7 +55,7 @@ if (Test-Path $claudeMdFile) {
     foreach ($hdr in @('## LITE Principles', '## AI Behavior', '## Git Workflow')) {
         $sec = Extract-Section -AllLines $lines -StartHeader $hdr
         if ($sec) {
-            "## CLAUDE.md $($hdr.TrimStart('# ')) (re-injected)"
+            "## AGENTS.md $($hdr.TrimStart('# ')) (re-injected)"
             $sec -join "`n"
             ""
         }
@@ -73,7 +73,7 @@ if (Test-Path $checkpointFile) {
 **Action after this re-inject:**
 1. Re-read the above sections - they are the load-bearing rules that may have been summarized away during compaction
 2. Confirm the file/area in flight from the checkpoint above
-3. Continue work; keep the LITE principles and no-em-dash rule in force
+3. Continue work; keep the LITE principles in force
 
 </post-compact-reinject>
 "@

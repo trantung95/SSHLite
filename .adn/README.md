@@ -59,5 +59,5 @@ The `.adn/` folder allows any AI assistant (or new developer) to fully understan
 - All file paths use forward slashes in documentation (even on Windows)
 - Connection ID format: `${host}:${port}:${username}` (e.g., `192.168.1.100:22:root`)
 - All services are singletons accessed via `getInstance()`
-- LITE principle: minimize server resources and UI complexity (see `CLAUDE.md`)
-- UI / visual work: invoke the vendored `frontend-design` skill (webview UI) and `canvas-design` skill (static art, NPC mascot, fonts) under `.claude/skills/`. See `CLAUDE.md` -> "Webview / UI & Visual Design Skills"
+- LITE principle: minimize server resources and UI complexity (see `AGENTS.md`)
+- UI / visual work: invoke the vendored `frontend-design` skill (webview UI) and `canvas-design` skill (static art, NPC mascot, fonts) under `.agents/skills/`. See `AGENTS.md` -> "Webview / UI & Visual Design Skills"

@@ -1,6 +1,6 @@
 # SSH Lite - core rules (always injected)
 
-These are the load-bearing rules for working in SSH Lite, distilled from `CLAUDE.md` (LITE Principles + AI Behavior). They are injected on every prompt and into every sub-agent so they survive context drift and fresh sub-agent contexts. This is a solo-managed repo: these are strong defaults and good judgement, not a compliance gate. When one conflicts with an explicit user instruction, the user wins.
+These are the load-bearing rules for working in SSH Lite, distilled from `AGENTS.md` (LITE Principles + AI Behavior). They are injected on every prompt and into every sub-agent so they survive context drift and fresh sub-agent contexts. This is a solo-managed repo: these are strong defaults and good judgement, not a compliance gate. When one conflicts with an explicit user instruction, the user wins.
 
 ## LITE (Lightweight, Intentional, Transparent, Efficient - never sacrifice data correctness)
 
@@ -24,10 +24,10 @@ These are the load-bearing rules for working in SSH Lite, distilled from `CLAUDE
 - Services are singletons via `getInstance()`. Init order matters (credentialService.initialize first).
 - Tree item `id` must be stable (never encode dynamic state). `contextValue` must match the `package.json` `when` clause.
 - Use `normalizeLocalPath()` for all local-path Map lookups. Use `CommandGuard` for significant SSH operations.
-- Tree inline icons: an icon shared across rows occupies the same `inline@N` slot on every row (see CLAUDE.md "Tree Inline Icon Order").
+- Tree inline icons: an icon shared across rows occupies the same `inline@N` slot on every row (see AGENTS.md "Tree Inline Icon Order").
 - Pervasive diagnostic logging via `src/utils/diagnosticLog.ts` (`infoLog` / `diagLog`) into the single SSH Lite output channel. No `console.log`, no second channel, no logging in hot loops at `infoLog` level.
 
 ## Output style
 
 - Expand abbreviations on first use.
-- Record reusable lessons in `.adn/lessons.md` and reusable patterns in `CLAUDE.md` in the same response you discover them.
+- Record reusable lessons in `.adn/lessons.md` and reusable patterns in `AGENTS.md` in the same response you discover them.

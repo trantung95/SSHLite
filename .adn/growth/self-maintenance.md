@@ -7,7 +7,7 @@ Rules and checklists for keeping SSH Lite consistent.
 - [ ] `npm run compile` — 0 errors
 - [ ] `npx jest --no-coverage` — all pass
 - [ ] New public methods have tests
-- [ ] `.adn/` docs updated (see `CLAUDE.md` mapping)
+- [ ] `.adn/` docs updated (see `AGENTS.md` mapping)
 - [ ] No `console.log` — use `log()`
 - [ ] LITE principles respected
 - [ ] Backward compatibility maintained

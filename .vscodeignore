@@ -21,6 +21,7 @@ test/**
 .git/**
 .claude-workflow.md
 .claude/**
+.agents/**
 test-docker/**
 jest.*.config.js
 jest.config.js

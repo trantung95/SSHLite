@@ -1,12 +1,12 @@
 # UserPromptSubmit hook - anti-drift context injection for SSH Lite
 #   Mechanism 1 (always-inject): inject .claude/critical-rules.md every prompt
-#   Mechanism 2 (threshold refresh): re-inject CLAUDE.md "LITE Principles" past turn 30 or 30 min idle
+#   Mechanism 2 (threshold refresh): re-inject AGENTS.md "LITE Principles" past turn 30 or 30 min idle
 #   Mechanism 3 (lazy lessons): grep .adn/lessons.md for dated entries matching the prompt's keywords
 # Stdout becomes injected context for the new prompt.
 
 $ErrorActionPreference = 'Stop'
 
-# UTF-8 output so Unicode in critical-rules.md / CLAUDE.md / lessons.md survives PowerShell 5.1's default codepage stdout
+# UTF-8 output so Unicode in critical-rules.md / AGENTS.md / lessons.md survives PowerShell 5.1's default codepage stdout
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -19,11 +19,11 @@ try {
     exit 0
 }
 
-$projectRoot = if ($env:CLAUDE_PROJECT_DIR) { $env:CLAUDE_PROJECT_DIR } else { 'D:\CT\Repos\SSHLite' }
+$projectRoot = if ($env:CLAUDE_PROJECT_DIR) { $env:CLAUDE_PROJECT_DIR } else { (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path }
 $stateFile = Join-Path $projectRoot '.claude\_session_state.json'
 $criticalFile = Join-Path $projectRoot '.claude\critical-rules.md'
 $lessonsFile = Join-Path $projectRoot '.adn\lessons.md'
-$claudeMdFile = Join-Path $projectRoot 'CLAUDE.md'
+$agentsFile = Join-Path $projectRoot 'AGENTS.md'
 
 # Load / increment session state (used here for the refresh threshold and by pre-compact-backup)
 $state = if (Test-Path $stateFile) {
@@ -54,14 +54,14 @@ if (Test-Path $criticalFile) {
     "</critical-rules>"
 }
 
-# Mechanism 2: threshold refresh - re-inject the single most load-bearing CLAUDE.md section past turn 30 OR 30 min idle
+# Mechanism 2: threshold refresh - re-inject the single most load-bearing AGENTS.md section past turn 30 OR 30 min idle
 $shouldRefresh = ($state.turnCount -gt 30) -or ($minutesSinceLastInject -gt 30)
-if ($shouldRefresh -and (Test-Path $claudeMdFile)) {
-    $lines = Get-Content $claudeMdFile -Encoding UTF8
+if ($shouldRefresh -and (Test-Path $agentsFile)) {
+    $lines = Get-Content $agentsFile -Encoding UTF8
     $lite = Get-MdSection -AllLines $lines -StartHeader '## LITE Principles'
     if ($lite) {
         "<context-refresh-after-$($state.turnCount)-turns>"
-        "# CLAUDE.md LITE Principles re-injected (anti-drift, turn $($state.turnCount), $([Math]::Round($minutesSinceLastInject)) min since last refresh):"
+        "# AGENTS.md LITE Principles re-injected (anti-drift, turn $($state.turnCount), $([Math]::Round($minutesSinceLastInject)) min since last refresh):"
         ""
         $lite -join "`n"
         "</context-refresh-after-$($state.turnCount)-turns>"

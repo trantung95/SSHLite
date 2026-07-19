@@ -1,5 +1,5 @@
 # SubagentStart hook - inject .claude/critical-rules.md into every dispatched sub-agent's initial context
-# Catches built-in agents (Explore / Plan / general-purpose) that start without CLAUDE.md / lessons.md / skills loaded.
+# Catches built-in agents (Explore / Plan / general-purpose) that start without AGENTS.md / lessons.md / skills loaded.
 # Stdout becomes injected context for the sub-agent.
 
 $ErrorActionPreference = 'Stop'
@@ -17,7 +17,7 @@ try {
     exit 0
 }
 
-$projectRoot = if ($env:CLAUDE_PROJECT_DIR) { $env:CLAUDE_PROJECT_DIR } else { 'D:\CT\Repos\SSHLite' }
+$projectRoot = if ($env:CLAUDE_PROJECT_DIR) { $env:CLAUDE_PROJECT_DIR } else { (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path }
 $criticalFile = Join-Path $projectRoot '.claude\critical-rules.md'
 
 if (-not (Test-Path $criticalFile)) {
@@ -27,7 +27,7 @@ if (-not (Test-Path $criticalFile)) {
 @"
 <sub-agent-critical-rules-inject>
 
-You are a sub-agent dispatched from an SSH Lite main conversation. You start FRESH without CLAUDE.md / lessons.md / skills loaded. The following project rules should guide your work. If the dispatch prompt contradicts them, flag the contradiction.
+You are a sub-agent dispatched from an SSH Lite main conversation. You start fresh without AGENTS.md / lessons.md / skills loaded. The following project rules should guide your work. If the dispatch prompt contradicts them, flag the contradiction.
 
 "@
 

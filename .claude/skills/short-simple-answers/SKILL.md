@@ -15,4 +15,4 @@ Always answer in short, simple language.
 - Code and technical answers can still be precise - just skip every word that is not load-bearing.
 - Drafted commit messages, issue replies, and PR text follow the same rule: say the actionable thing, cut the rest.
 
-**Note:** This is about chat length and density. It does NOT override `no-shorthand` (which is about expanding abbreviations and giving a reader enough evidence in shared docs) - the two coexist: short in chat, complete in reader-facing docs. And `no-em-dash` still applies even in a one-line answer.
+**Note:** This is about chat length and density. It does NOT override `no-shorthand` (which is about expanding abbreviations and giving a reader enough evidence in shared docs) - the two coexist: short in chat, complete in reader-facing docs.

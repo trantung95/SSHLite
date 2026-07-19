@@ -12,7 +12,7 @@ try {
     exit 0
 }
 
-$projectRoot = if ($env:CLAUDE_PROJECT_DIR) { $env:CLAUDE_PROJECT_DIR } else { 'D:\CT\Repos\SSHLite' }
+$projectRoot = if ($env:CLAUDE_PROJECT_DIR) { $env:CLAUDE_PROJECT_DIR } else { (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path }
 $checkpointFile = Join-Path $projectRoot '.claude\_context_checkpoint.md'
 $stateFile = Join-Path $projectRoot '.claude\_session_state.json'
 
@@ -55,7 +55,7 @@ $recentBlock
 $transcriptSummary
 
 ## Next-turn priorities (for me-after-compaction to resume)
-- Re-read .claude/critical-rules.md (LITE Principles + Working method) - re-injected by PostCompact hook
+- Re-read AGENTS.md (LITE Principles + Working method) - re-injected by PostCompact hook
 - Re-read the matching .adn/ doc for the area in flight
 - Continue from where the transcript left off
 

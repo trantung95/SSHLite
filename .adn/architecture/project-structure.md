@@ -11,7 +11,8 @@ SSHLite/
   package.json                            # Extension manifest, commands, settings, menus
   tsconfig.json                           # TypeScript config (ES2022, CommonJS)
   jest.config.js                          # Jest test config (unit tests)
-  CLAUDE.md                               # AI assistant entry point
+  AGENTS.md                               # Canonical AI assistant entry point
+  CLAUDE.md                               # Claude Code compatibility entry point
   .adn/                                   # Deep documentation (this folder)
   src/
     extension.ts                          # Activation, command registration, wiring (~2877 lines)
