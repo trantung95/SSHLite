@@ -6,7 +6,7 @@
  * docs/COMMANDS.md — a user-facing guide to every command in SSH Lite (SSH Tools).
  *
  * Run: node scripts/generate-commands-doc.js
- * Auto-run: configured as a Claude Code hook on package.json saves (see .claude/settings.json)
+ * Auto-run: configured by Codex and Claude Code post-edit hooks on package.json saves.
  */
 
 const fs = require('fs');

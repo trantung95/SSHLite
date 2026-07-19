@@ -13,6 +13,7 @@ SSHLite/
   jest.config.js                          # Jest test config (unit tests)
   AGENTS.md                               # Canonical AI assistant entry point
   CLAUDE.md                               # Claude Code compatibility entry point
+  .codex/                                 # Trusted Codex project hooks and adapters
   .adn/                                   # Deep documentation (this folder)
   src/
     extension.ts                          # Activation, command registration, wiring (~2877 lines)

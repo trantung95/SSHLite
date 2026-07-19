@@ -5,6 +5,12 @@ Add new entries as bugs are found, mistakes are made, or better approaches are d
 
 ---
 
+## 2026-07-19 - Codex hook adapters must use Codex JSON and keep helper output off standard output
+
+Codex project hooks belong in `.codex/hooks.json` and may use the same lifecycle names as Claude Code, but they are not binary-compatible. Codex command hooks receive JSON through standard input and hook-visible output must be valid JSON; a helper command such as `node scripts/generate-commands-doc.js` writing to standard output corrupts the hook response. Send helper output to `Out-Null` or standard error, then emit only the documented Codex response object. Do not use `CLAUDE_PROJECT_DIR`: resolve the repository from the hook script location or `git rev-parse --show-toplevel`. Codex `PostCompact` does not expose the Claude transcript payload, so persist only documented fields such as `turn_id` and `trigger` and use a reminder rather than claiming full context reinjection.
+
+---
+
 ## 2026-06-22 - `extensionKind` must be `["ui"]` only for an SSH client; `"workspace"` re-opened the "host list empty in a Remote-SSH window" bug
 
 **Applies to all client OSes** — Windows, macOS, Linux. This is about *which extension host* SSH Lite runs in, not the user's OS.

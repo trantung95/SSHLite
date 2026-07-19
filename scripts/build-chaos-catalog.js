@@ -6,7 +6,7 @@
  * from .adn/features/, .adn/flow/, and package.json.
  *
  * Run: node scripts/build-chaos-catalog.js
- * Auto-run: configured as a Claude Code hook on .adn/features/*.md saves (see .claude/settings.json)
+ * Auto-run: configured by Codex and Claude Code post-edit hooks on matching .adn saves.
  *
  * Parsing logic must stay in lock-step with src/chaos/catalog/builder.ts
  * (the TypeScript version used at test time). The drift test in

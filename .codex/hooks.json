@@ -1,0 +1,88 @@
+{
+  "description": "SSH Lite Codex lifecycle hooks. Review and trust these hooks with /hooks after cloning the repository.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.codex/hooks/session-start.js\"",
+            "commandWindows": "powershell.exe -NoProfile -Command \"& node (Join-Path (git rev-parse --show-toplevel) '.codex/hooks/session-start.js')\"",
+            "timeout": 10,
+            "statusMessage": "Loading SSH Lite guidance"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.codex/hooks/prompt-context-injector.js\"",
+            "commandWindows": "powershell.exe -NoProfile -Command \"& node (Join-Path (git rev-parse --show-toplevel) '.codex/hooks/prompt-context-injector.js')\"",
+            "timeout": 10,
+            "statusMessage": "Loading relevant SSH Lite lessons"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "apply_patch|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.codex/hooks/post-edit-regenerate.js\"",
+            "commandWindows": "powershell.exe -NoProfile -Command \"& node (Join-Path (git rev-parse --show-toplevel) '.codex/hooks/post-edit-regenerate.js')\"",
+            "timeout": 30,
+            "statusMessage": "Refreshing generated SSH Lite documentation"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.codex/hooks/pre-compact-backup.js\"",
+            "commandWindows": "powershell.exe -NoProfile -Command \"& node (Join-Path (git rev-parse --show-toplevel) '.codex/hooks/pre-compact-backup.js')\"",
+            "timeout": 30,
+            "statusMessage": "Saving SSH Lite context checkpoint"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.codex/hooks/post-compact-reminder.js\"",
+            "commandWindows": "powershell.exe -NoProfile -Command \"& node (Join-Path (git rev-parse --show-toplevel) '.codex/hooks/post-compact-reminder.js')\"",
+            "timeout": 10,
+            "statusMessage": "Restoring SSH Lite context reminder"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.codex/hooks/subagent-rules-inject.js\"",
+            "commandWindows": "powershell.exe -NoProfile -Command \"& node (Join-Path (git rev-parse --show-toplevel) '.codex/hooks/subagent-rules-inject.js')\"",
+            "timeout": 10,
+            "statusMessage": "Loading SSH Lite subagent guidance"
+          }
+        ]
+      }
+    ]
+  }
+}

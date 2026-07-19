@@ -20,6 +20,7 @@ Require-Path (Join-Path $repoRoot 'CLAUDE.md')
 Require-Path (Join-Path $repoRoot '.adn')
 Require-Path (Join-Path $repoRoot '.agents/skills')
 Require-Path (Join-Path $repoRoot '.claude/settings.json')
+Require-Path (Join-Path $repoRoot '.codex/hooks.json')
 
 $requiredSkills = @(
     'auto-document-reusable',
@@ -70,6 +71,32 @@ catch {
     $failures.Add("Invalid Claude Code settings JSON: $($_.Exception.Message)")
 }
 
+try {
+    $codexHooks = Get-Content -Raw (Join-Path $repoRoot '.codex/hooks.json') | ConvertFrom-Json
+    foreach ($event in @('SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PreCompact', 'PostCompact', 'SubagentStart')) {
+        if (-not $codexHooks.hooks.$event) { $failures.Add("Codex hook event is missing: $event") }
+        foreach ($group in @($codexHooks.hooks.$event)) {
+            foreach ($hook in @($group.hooks)) {
+                if (-not $hook.command -or -not $hook.commandWindows) {
+                    $failures.Add("Codex hook must define command and commandWindows: $event")
+                }
+                elseif ($hook.command -notmatch '\bnode\b' -or $hook.commandWindows -notmatch '\bnode\b') {
+                    $failures.Add("Codex hook must use the project Node.js runtime: $event")
+                }
+            }
+        }
+    }
+}
+catch {
+    $failures.Add("Invalid Codex hooks JSON: $($_.Exception.Message)")
+}
+
+Get-ChildItem -Path (Join-Path $repoRoot '.codex/hooks') -File -Recurse | ForEach-Object {
+    if ((Get-Content -Raw -LiteralPath $_.FullName) -match 'CLAUDE_[A-Z_]+') {
+        $failures.Add("Codex hook depends on a Claude-specific environment variable: $($_.FullName)")
+    }
+}
+
 $agentsText = Get-Content -Raw (Join-Path $repoRoot 'AGENTS.md')
 $claudeText = Get-Content -Raw (Join-Path $repoRoot 'CLAUDE.md')
 if ($agentsText -notmatch 'AI assistant compatibility') {
@@ -77,10 +104,6 @@ if ($agentsText -notmatch 'AI assistant compatibility') {
 }
 if ($claudeText -notmatch '@AGENTS\.md') {
     $failures.Add('CLAUDE.md does not import the canonical AGENTS.md instructions.')
-}
-$trackedCodex = @(& git -C $repoRoot ls-files -- '.codex')
-if ($trackedCodex.Count -gt 0) {
-    $failures.Add('Obsolete project-level .codex automation is tracked. Use AGENTS.md and documented native integrations instead.')
 }
 
 if ($failures.Count -gt 0) {

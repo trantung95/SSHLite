@@ -59,7 +59,7 @@ When bumping the version (e.g. "update to 0.8.0"), change **in this order**:
 - After changing command titles, categories, or keybindings
 - After any change to `contributes.menus` or `contributes.keybindings`
 
-The Claude Code hook at `.claude/settings.json` handles automatic regeneration during Claude-assisted edits. Other assistants must run `npm run docs:commands` before committing.
+Codex hooks at `.codex/hooks.json` and the Claude Code hook at `.claude/settings.json` regenerate this documentation after matching edits. Other assistants must run `npm run docs:commands` before committing.
 
 ## Project Structure
 
@@ -207,8 +207,8 @@ Pervasive logging in every new code path — entry, exit, state transitions, err
 `AGENTS.md` is the canonical instruction file for every assistant. The committed AI assistant compatibility contract is `docs/AI-COMPATIBILITY.md`; run `powershell -NoProfile -File scripts/verify-ai-infra.ps1` after changing this infrastructure.
 
 - `.agents/skills/` contains the portable, repository-shared skills, including `porting-ai-docs`, documentation discipline, writing, and design skills.
-- `CLAUDE.md` imports this file. `.claude/` contains only Claude Code-native settings, hooks, and skill copies.
-- Do not commit a project-level `.codex/` hook copy unless its schema and event support have been verified for the installed Codex runtime.
+- `.codex/` contains verified Codex hook configuration and Node.js adapters. Trust its command hooks with `/hooks` after cloning.
+- `CLAUDE.md` imports this file. `.claude/` contains Claude Code-native settings, hooks, and skill copies.
 - To bring more infrastructure over from another repo, invoke the `porting-ai-docs` skill and update the compatibility map.
 
 ## AI Doc Auto-Sync (CRITICAL)

@@ -55,6 +55,7 @@ media/
 .claude/_session_state.json
 .claude/_context_checkpoint.md
 
-# Codex runtime files are user-local. Project guidance and shared skills are
-# committed through AGENTS.md and .agents/ rather than a copied hook config.
-.codex/
+# Project-level Codex hooks are committed. Their session state is local.
+.codex/_session_state.json
+.codex/_context_checkpoint.md
+.codex_hook_report/
