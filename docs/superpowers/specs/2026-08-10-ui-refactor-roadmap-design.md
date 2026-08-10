@@ -5,6 +5,11 @@
 - **Các phiên bản dự kiến:** 1.0.6 đến 1.0.10
 - **Trạng thái:** Đã duyệt hướng hình ảnh và phạm vi; cần duyệt mockup trước mỗi đợt implement
 
+## Nhật ký duyệt mockup
+
+- **2026-08-10 — Đã duyệt:** nền tảng native sidebar 1.0.6, gồm hướng A2, mật độ icon không thấp hơn 1.0.5, thứ tự action nhất quán, inline slot cố định, mockup mặc định theo hệ thống và chế độ Sáng/Tối để review.
+- **Tiếp theo:** duyệt state chi tiết của SSH Hosts, Remote Files, Activity, Port Forwards và native dialog/feedback trước khi viết implementation plan 1.0.6.
+
 ## Mục tiêu
 
 Refactor và thiết kế lại toàn bộ Giao diện người dùng (UI) của SSH Lite mà không làm người dùng hiện tại bị ngợp. Mỗi phiên bản chỉ thay đổi một khu vực lớn, giữ vị trí quen thuộc và luồng thao tác cốt lõi, đồng thời áp dụng một hệ thống hình ảnh và tương tác nhất quán cho mọi màn hình.
