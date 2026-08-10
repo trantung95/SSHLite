@@ -734,3 +734,12 @@ LESSONS:
 1. Hai action khác chức năng đứng cạnh nhau phải phân biệt được bằng glyph, không chỉ bằng tooltip.
 2. Dùng `search` cho màn hình tìm kiếm, `remote-explorer` cho tìm trực tiếp trên máy chủ và `filter` hình phễu cho lọc tệp.
 3. Action cây phải dùng `expand-all`, `fold-down` hoặc `collapse-all` theo trạng thái hiện tại; tránh một icon gộp “mở rộng hoặc thu gọn”.
+
+## 2026-08-10 - Xóa danh sách hoạt động không hủy tác vụ
+
+`sshLite.clearActivities` gọi `ActivityService.clearAll()`, chỉ xóa các mục theo dõi khỏi bộ nhớ. Callback hủy không được gọi, vì vậy tác vụ Secure Shell (SSH) đang chạy vẫn tiếp tục nhưng biến mất khỏi bảng Hoạt động.
+
+LESSONS:
+1. Không dùng copy hoặc tooltip khiến “Xóa hoạt động” bị hiểu thành “Hủy hoạt động”.
+2. Tooltip phải nói rõ việc xóa chỉ bỏ mục khỏi danh sách và tác vụ đang chạy vẫn tiếp tục.
+3. Nếu sau này đổi hành vi, phải tách rõ `cancelAll()` và `clearAll()`; không âm thầm ghép hai thao tác có hậu quả khác nhau.

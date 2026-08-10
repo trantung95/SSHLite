@@ -10,7 +10,8 @@
 - **2026-08-10 — Đã duyệt:** nền tảng native sidebar 1.0.6, gồm hướng A2, số lượng action icon hiển thị bằng chính xác phiên bản 1.0.5, thứ tự action nhất quán, inline slot cố định, mockup mặc định theo hệ thống và chế độ Sáng/Tối để review.
 - **2026-08-10 — Đã duyệt:** năm state SSH Hosts gồm bình thường, đã kết nối, kết nối lại, lỗi và rỗng; header luôn 6 action icon, inline action lần lượt 0/3/1/0/0 đúng bằng phiên bản 1.0.5.
 - **2026-08-10 — Đã duyệt:** Remote Files dùng “Tìm kiếm nâng cao” cho màn hình Search đầy đủ và “Quét sâu theo bộ lọc” cho filename deep scan; hai action dùng glyph riêng, giữ nguyên số icon và tooltip giải thích dữ liệu tìm, phạm vi cùng nơi hiển thị kết quả.
-- **Tiếp theo:** duyệt state chi tiết của Remote Files, Activity, Port Forwards và native dialog/feedback trước khi viết implementation plan 1.0.6.
+- **2026-08-10 — Đã duyệt:** năm state Remote Files gồm mặc định, đang lọc, loading, upload lỗi và thư mục rỗng; header giữ 10 icon ở trạng thái thường, 11 khi filter active và inline action giữ 5/4/4.
+- **Tiếp theo:** duyệt state chi tiết của Activity, Port Forwards và native dialog/feedback trước khi viết implementation plan 1.0.6.
 
 ## Mục tiêu
 
