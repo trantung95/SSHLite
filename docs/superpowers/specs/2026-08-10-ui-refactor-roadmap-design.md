@@ -88,6 +88,8 @@ Mỗi screen/module phải có:
 - default, hover, focus, selected, disabled, loading, empty, success, warning, error và destructive state áp dụng cho màn hình đó;
 - chú thích icon cũ, icon mới, vị trí, lý do đổi và ảnh hưởng đến thói quen người dùng.
 
+Công cụ duyệt mockup dùng ba chế độ hiển thị: **Theo hệ thống** là mặc định, bên cạnh **Sáng** và **Tối**. Đây là control phục vụ review mockup; giao diện sản phẩm vẫn theo Visual Studio Code theme variable và không thêm một theme switch riêng.
+
 ### Bước 3: So sánh xuyên màn hình
 
 Một board riêng phải đặt các screen cạnh nhau để kiểm tra:
