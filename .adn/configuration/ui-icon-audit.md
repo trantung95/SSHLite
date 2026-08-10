@@ -22,13 +22,14 @@ Danh sách icon còn được đối chiếu với [source Visual Studio Code 1.
 2. Cùng hành động dùng cùng icon ở mọi màn hình và mọi menu.
 3. Hai action đứng cạnh nhau không được dùng cùng glyph nếu chức năng khác nhau; tooltip không đủ để sửa một toolbar khó phân biệt bằng mắt.
 4. `filter` hình phễu dùng thống nhất cho mọi thao tác lọc tệp hoặc tên tệp.
-5. `search` dành cho màn hình tìm kiếm; `remote-explorer` giữ cho thao tác tìm trực tiếp trên máy chủ theo bộ lọc để không tạo hai kính lúp cạnh nhau.
+5. `search` dành cho “Tìm kiếm nâng cao”; `remote-explorer` dành cho “Quét sâu theo bộ lọc” để hai action khác nhau cả glyph lẫn tooltip.
 6. `expand-all`, `fold-down`, `collapse-all` biểu thị đúng action kế tiếp theo trạng thái cây; không dùng icon gộp “mở rộng hoặc thu gọn”.
 7. `trash` chỉ dùng khi dữ liệu thật sự bị xóa; `close` hoặc `clear-all` dùng cho đóng, bỏ lọc hoặc dọn danh sách.
 8. `add` dùng để tạo đối tượng; trạng thái active không dùng cùng ngôn ngữ với thao tác tạo.
 9. Không dùng icon dành riêng cho debugger, máy ảo hoặc cloud nếu ngữ cảnh thực tế rộng hơn.
 10. Mọi icon phải tồn tại từ Visual Studio Code 1.85.2; không dựa riêng vào catalog mới nhất.
 11. Màu chỉ bổ sung nghĩa. Trạng thái vẫn phải có label, description hoặc tooltip.
+12. Tooltip của action dễ nhầm phải nói rõ đối tượng tìm, phạm vi thực thi và nơi hiển thị kết quả; không chỉ lặp lại command title.
 
 ## Kết quả command icon
 
@@ -67,7 +68,7 @@ Danh sách icon còn được đối chiếu với [source Visual Studio Code 1.
 | Filter clear dùng `close` | Giữ | Dấu nhân là cách phổ biến để xóa nội dung filter mà không ám chỉ xóa dữ liệu. |
 | Delete dữ liệu dùng `trash` | Giữ | Host lưu, credential, saved forward, temp file và backup thật sự bị xóa. |
 | Cancel activity dùng `stop`; cancel all dùng `stop-circle` | Giữ | Cùng họ nghĩa nhưng đủ phân biệt phạm vi một item và toàn bộ. |
-| Search toolbar dùng `search`; tìm trên máy chủ dùng `remote-explorer` | Giữ | Hai action khác nhau đứng cạnh nhau phải có glyph khác nhau; `remote-explorer` vừa giữ ngữ cảnh máy chủ vừa tránh hai kính lúp. |
+| “Tìm kiếm nâng cao” dùng `search`; “Quét sâu theo bộ lọc” dùng `remote-explorer` | Giữ | Hai action khác nhau đứng cạnh nhau phải khác cả glyph lẫn tooltip; tên mới nói rõ một bên mở màn hình tìm kiếm đầy đủ, một bên quét tên tệp theo bộ lọc hiện tại. |
 | Lọc tệp dùng `filter` | Giữ | Phễu là hình lọc quen thuộc và là Codicon Visual Studio Code dùng cho filter. |
 | Mở rộng/thu gọn cây dùng `expand-all`, `fold-down`, `collapse-all` | Giữ | Icon đổi theo action kế tiếp của trạng thái hiện tại; không dùng một glyph gộp mơ hồ. |
 

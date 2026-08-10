@@ -9,6 +9,7 @@
 
 - **2026-08-10 — Đã duyệt:** nền tảng native sidebar 1.0.6, gồm hướng A2, số lượng action icon hiển thị bằng chính xác phiên bản 1.0.5, thứ tự action nhất quán, inline slot cố định, mockup mặc định theo hệ thống và chế độ Sáng/Tối để review.
 - **2026-08-10 — Đã duyệt:** năm state SSH Hosts gồm bình thường, đã kết nối, kết nối lại, lỗi và rỗng; header luôn 6 action icon, inline action lần lượt 0/3/1/0/0 đúng bằng phiên bản 1.0.5.
+- **2026-08-10 — Đã duyệt:** Remote Files dùng “Tìm kiếm nâng cao” cho màn hình Search đầy đủ và “Quét sâu theo bộ lọc” cho filename deep scan; hai action dùng glyph riêng, giữ nguyên số icon và tooltip giải thích dữ liệu tìm, phạm vi cùng nơi hiển thị kết quả.
 - **Tiếp theo:** duyệt state chi tiết của Remote Files, Activity, Port Forwards và native dialog/feedback trước khi viết implementation plan 1.0.6.
 
 ## Mục tiêu
@@ -44,7 +45,8 @@ Hướng luồng nhiều bước đã bị loại vì thay đổi cấu trúc qu
 8. **Diagnostic tập trung một chỗ.** Mọi tương tác webview mới tiếp tục gửi structured log về duy nhất output channel SSH Lite.
 9. **Không implement trước khi duyệt mockup.** Mỗi màn hình và zone phải có mockup đúng state, đúng breakpoint và được người dùng duyệt.
 10. **Không thay đổi số lượng icon đang hiển thị.** Mỗi toolbar, row và state phải giữ đúng số action icon đang thấy ở cùng ngữ cảnh trong phiên bản 1.0.5: không tăng, không giảm. Được đổi icon và sắp xếp lại để bảo đảm tính nhất quán giữa module và screen; không được thêm action mới hoặc đẩy action đang hiện vào overflow chỉ để giao diện trông gọn hơn.
-11. **Action liền kề phải phân biệt bằng mắt.** Lọc tệp dùng phễu `filter`; mở Search dùng `search`; tìm trực tiếp trên máy chủ dùng `remote-explorer`. Mở rộng và thu gọn dùng `expand-all`, `fold-down`, `collapse-all` theo đúng action kế tiếp của trạng thái cây, không dùng một icon gộp mơ hồ.
+11. **Action liền kề phải phân biệt bằng mắt và tên.** “Lọc tệp” dùng phễu `filter`; “Tìm kiếm nâng cao” dùng `search`; “Quét sâu theo bộ lọc” dùng `remote-explorer`. Mở rộng và thu gọn dùng `expand-all`, `fold-down`, `collapse-all` theo đúng action kế tiếp của trạng thái cây, không dùng một icon gộp mơ hồ.
+12. **Tooltip phải giải thích hành vi.** Với action dễ nhầm, tooltip phải nói rõ đối tượng được tìm, phạm vi thực thi và nơi hiển thị kết quả; không được chỉ lặp lại tên action.
 
 ## Inventory giao diện hiện tại
 
