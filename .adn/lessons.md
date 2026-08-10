@@ -743,3 +743,12 @@ LESSONS:
 1. Không dùng copy hoặc tooltip khiến “Xóa hoạt động” bị hiểu thành “Hủy hoạt động”.
 2. Tooltip phải nói rõ việc xóa chỉ bỏ mục khỏi danh sách và tác vụ đang chạy vẫn tiếp tục.
 3. Nếu sau này đổi hành vi, phải tách rõ `cancelAll()` và `clearAll()`; không âm thầm ghép hai thao tác có hậu quả khác nhau.
+
+## 2026-08-10 - Expand/collapse phải có cấu trúc để điều khiển
+
+Port Forwards phiên bản 1.0.5 là danh sách phẳng nhưng vẫn hiện action expand/collapse theo shared tree toolbar, nên action gần như không có hiệu quả nhìn thấy.
+
+LESSONS:
+1. Không giữ control mở rộng/thu gọn trên một danh sách không có node con chỉ để đạt consistency hình thức.
+2. Khi phải giữ đúng số action icon để bảo toàn thói quen, tạo cấu trúc có nghĩa — ở đây là nhóm rule theo máy chủ — để action hiện có điều khiển state thật.
+3. Kiểm tra consistency gồm cả hiệu quả của action, không chỉ icon, slot và tooltip.
