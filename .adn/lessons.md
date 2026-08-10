@@ -11,6 +11,24 @@ Add new entries as bugs are found, mistakes are made, or better approaches are d
 
 ---
 
+## 2026-08-10 - PowerShell verification commands must stop the script before commit
+
+PowerShell continues to the next statement after a native command returns a nonzero exit code. A script that runs `git diff --cached --check; git commit` can therefore commit known whitespace errors. After each required native verification, inspect `$LASTEXITCODE` and `throw` or `exit` before any commit, packaging, or release action.
+
+---
+
+## 2026-08-10 - User Interface redesign must audit every icon, module, and zone
+
+The SSH Lite User Interface (UI) redesign is not a cosmetic pass. Preserve familiar locations and core workflows so releases do not overwhelm existing users, but audit every command icon, title action, inline action, context action, module layout, and state. Each version must include structural refactoring where inline HyperText Markup Language (HTML), Cascading Style Sheets (CSS), or rendering logic prevents consistent tokens, reusable components, responsive behavior, accessibility, and focused tests. TODO items must be nested by version, screen or module, zone, and then icon, interaction, state, and test. Cross-screen layout and component patterns must pass one consistency gate before each release.
+
+---
+
+## 2026-08-10 - Version roadmaps must continue the verified release sequence
+
+Before assigning version numbers to a roadmap, read the current version from `package.json` and inspect recent headings in `.adn/CHANGELOG.md` to confirm the repository's release cadence. SSH Lite was at `1.0.5` and was releasing patch versions, so a phased User Interface (UI) roadmap must continue with `1.0.6`, `1.0.7`, and later patch versions unless the scope explicitly requires a minor-version change.
+
+---
+
 ## 2026-07-19 - Codex hook adapters must use Codex JSON and keep helper output off standard output
 
 Codex project hooks belong in `.codex/hooks.json` and may use the same lifecycle names as Claude Code, but they are not binary-compatible. Codex command hooks receive JSON through standard input and hook-visible output must be valid JSON; a helper command such as `node scripts/generate-commands-doc.js` writing to standard output corrupts the hook response. Send helper output to `Out-Null` or standard error, then emit only the documented Codex response object. Do not use `CLAUDE_PROJECT_DIR`: resolve the repository from the hook script location or `git rev-parse --show-toplevel`. Codex `PostCompact` does not expose the Claude transcript payload, so persist only documented fields such as `turn_id` and `trigger` and use a reminder rather than claiming full context reinjection.
