@@ -82,6 +82,7 @@ Danh sách icon còn được đối chiếu với [source Visual Studio Code 1.
 - Search/filter đứng trước action đặc thù của row.
 - Open, terminal, refresh, disconnect và monitor giữ đúng slot canonical trong `AGENTS.md`.
 - Row thiếu action không được kéo icon phía sau sang slot trước.
+- Không giảm số icon đang hiển thị trên toolbar hoặc row so với phiên bản 1.0.5. Có thể đổi thứ tự để action cùng nghĩa dùng cùng slot xuyên module; không được lấy tính nhất quán làm lý do giấu action đang hiện vào overflow.
 - Amber chỉ dùng cho nhận diện SSH hoặc ngữ cảnh đặc biệt đã có label; không dùng cho parent navigation.
 - Green, yellow và red phải đi cùng text hoặc tooltip tương ứng active, warning và error.
 - Destructive action chỉ dùng red khi hành động có thể làm mất dữ liệu; không tô red cho unpin, close hoặc clear filter.
