@@ -350,7 +350,7 @@ Mỗi zone phải trả lời:
 - Remote Files với default, filter, loading, upload failure và empty folder state;
 - Activity với running, success, failed, cancelled và empty state;
 - Port Forwards với active, saved inactive, disconnected và empty state;
-- title toolbar và inline action ở normal, hover, selected, disabled và narrow width;
+- title toolbar và inline action ở normal, hover, selected và disabled; không cần mockup biến thể sidebar hẹp riêng;
 - board đối chiếu mọi icon/slot giữa bốn tree module.
 
 ## Phiên bản 1.0.7: Search module
