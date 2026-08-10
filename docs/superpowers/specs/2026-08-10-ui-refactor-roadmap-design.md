@@ -7,7 +7,7 @@
 
 ## Nhật ký duyệt mockup
 
-- **2026-08-10 — Đã duyệt:** nền tảng native sidebar 1.0.6, gồm hướng A2, mật độ icon không thấp hơn 1.0.5, thứ tự action nhất quán, inline slot cố định, mockup mặc định theo hệ thống và chế độ Sáng/Tối để review.
+- **2026-08-10 — Đã duyệt:** nền tảng native sidebar 1.0.6, gồm hướng A2, số lượng action icon hiển thị bằng chính xác phiên bản 1.0.5, thứ tự action nhất quán, inline slot cố định, mockup mặc định theo hệ thống và chế độ Sáng/Tối để review.
 - **Tiếp theo:** duyệt state chi tiết của SSH Hosts, Remote Files, Activity, Port Forwards và native dialog/feedback trước khi viết implementation plan 1.0.6.
 
 ## Mục tiêu
@@ -42,7 +42,7 @@ Hướng luồng nhiều bước đã bị loại vì thay đổi cấu trúc qu
 7. **Accessibility là một phần của component contract.** Keyboard access, visible focus, contrast, tín hiệu không phụ thuộc màu, reduced motion và narrow-width behavior đều là acceptance criteria.
 8. **Diagnostic tập trung một chỗ.** Mọi tương tác webview mới tiếp tục gửi structured log về duy nhất output channel SSH Lite.
 9. **Không implement trước khi duyệt mockup.** Mỗi màn hình và zone phải có mockup đúng state, đúng breakpoint và được người dùng duyệt.
-10. **Không giảm icon đang hiển thị.** Mỗi toolbar và row phải giữ ít nhất số action icon đang thấy ở phiên bản hiện tại. Được sắp xếp lại để bảo đảm tính nhất quán giữa module và screen; không được chủ động đẩy action đang hiện vào overflow chỉ để giao diện trông gọn hơn.
+10. **Không thay đổi số lượng icon đang hiển thị.** Mỗi toolbar, row và state phải giữ đúng số action icon đang thấy ở cùng ngữ cảnh trong phiên bản 1.0.5: không tăng, không giảm. Được đổi icon và sắp xếp lại để bảo đảm tính nhất quán giữa module và screen; không được thêm action mới hoặc đẩy action đang hiện vào overflow chỉ để giao diện trông gọn hơn.
 
 ## Inventory giao diện hiện tại
 
@@ -360,7 +360,7 @@ Mỗi zone phải trả lời:
 - Port Forwards với active, saved inactive, disconnected và empty state;
 - title toolbar và inline action ở normal, hover, selected và disabled; không cần mockup biến thể sidebar hẹp riêng;
 - board đối chiếu mọi icon/slot giữa bốn tree module.
-- parity board chứng minh số icon hiển thị theo từng toolbar và từng loại row không thấp hơn phiên bản 1.0.5.
+- parity board chứng minh số icon hiển thị theo từng toolbar, từng loại row và từng state bằng chính xác phiên bản 1.0.5.
 
 ## Phiên bản 1.0.7: Search module
 

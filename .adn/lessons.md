@@ -719,3 +719,9 @@ LESSONS:
 1. Khi thêm hoặc đổi command icon, kiểm tra identifier với source/tag của phiên bản Visual Studio Code tối thiểu; catalog web mới nhất không chứng minh khả năng tương thích ngược.
 2. Icon audit phải kiểm tra cả ngữ nghĩa và compatibility. Một icon hợp nghĩa nhưng không tồn tại ở engine floor có thể hiện trống hoặc sai trên máy người dùng cũ.
 3. Không nâng engine floor chỉ để lấy icon mới. Ưu tiên Codicon tương đương đã tồn tại hoặc giữ icon cũ có label và tooltip rõ.
+## 2026-08-10 - `rg` trên Windows không mở rộng wildcard trong path argument
+
+Lệnh `rg ... content/v106-*.html` thất bại với lỗi path syntax trên Windows vì wildcard trong path argument không được shell mở rộng như Bash.
+
+LESSONS:
+1. Dùng `rg -g 'v106-*.html' <pattern> <directory>` hoặc truyền directory rồi lọc bằng `-g`; không đặt wildcard trực tiếp trong path argument trên PowerShell.
