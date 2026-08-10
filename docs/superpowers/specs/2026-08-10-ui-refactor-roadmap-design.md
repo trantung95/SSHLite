@@ -3,7 +3,7 @@
 - **Ngày:** 2026-08-10
 - **Phiên bản hiện tại:** 1.0.5
 - **Các phiên bản dự kiến:** 1.0.6 đến 1.0.10
-- **Trạng thái:** Đã duyệt hướng hình ảnh và phạm vi; cần duyệt mockup trước mỗi đợt implement
+- **Trạng thái:** Đã duyệt toàn bộ thiết kế và mockup 1.0.6; sẵn sàng viết implementation plan
 
 ## Nhật ký duyệt mockup
 
@@ -13,7 +13,8 @@
 - **2026-08-10 — Đã duyệt:** năm state Remote Files gồm mặc định, đang lọc, loading, upload lỗi và thư mục rỗng; header giữ 10 icon ở trạng thái thường, 11 khi filter active và inline action giữ 5/4/4.
 - **2026-08-10 — Đã duyệt:** năm state Activity gồm đang chạy, hoàn tất, lỗi, đã hủy và rỗng; header giữ 4 icon, nhóm máy chủ và tác vụ cancellable giữ 1 inline action, tác vụ đã kết thúc giữ 0.
 - **2026-08-10 — Đã duyệt:** năm state Port Forwards gồm đang chạy, đã lưu, mất kết nối, khôi phục lỗi và rỗng; rule nhóm theo máy chủ để expand/collapse có tác dụng thật, header giữ 2 icon, active rule giữ 1 inline action và saved rule giữ 2.
-- **Tiếp theo:** duyệt native dialog/feedback trước khi viết implementation plan 1.0.6.
+- **2026-08-10 — Đã duyệt:** sáu pattern native dialog/feedback gồm chọn máy chủ, nhập cổng, xác nhận xóa, tiến trình, thành công và lỗi; mỗi pattern dùng copy tiếng Việt trong mockup để review, còn implementation giữ ngôn ngữ sản phẩm nhất quán với bản hiện tại.
+- **Tiếp theo:** viết và duyệt implementation plan 1.0.6 trước khi sửa source.
 
 ## Mục tiêu
 
