@@ -725,3 +725,12 @@ Lệnh `rg ... content/v106-*.html` thất bại với lỗi path syntax trên W
 
 LESSONS:
 1. Dùng `rg -g 'v106-*.html' <pattern> <directory>` hoặc truyền directory rồi lọc bằng `-g`; không đặt wildcard trực tiếp trong path argument trên PowerShell.
+
+## 2026-08-10 - Action liền kề cần glyph khác nhau
+
+Mockup Remote Files đặt `showSearch` và `searchServerForFilter` cạnh nhau nhưng cùng dùng kính lúp. Tooltip khác nhau vẫn buộc người dùng dừng lại và rê chuột để phân biệt.
+
+LESSONS:
+1. Hai action khác chức năng đứng cạnh nhau phải phân biệt được bằng glyph, không chỉ bằng tooltip.
+2. Dùng `search` cho màn hình tìm kiếm, `remote-explorer` cho tìm trực tiếp trên máy chủ và `filter` hình phễu cho lọc tệp.
+3. Action cây phải dùng `expand-all`, `fold-down` hoặc `collapse-all` theo trạng thái hiện tại; tránh một icon gộp “mở rộng hoặc thu gọn”.

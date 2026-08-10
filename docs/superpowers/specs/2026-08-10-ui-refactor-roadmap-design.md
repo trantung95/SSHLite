@@ -44,6 +44,7 @@ Hướng luồng nhiều bước đã bị loại vì thay đổi cấu trúc qu
 8. **Diagnostic tập trung một chỗ.** Mọi tương tác webview mới tiếp tục gửi structured log về duy nhất output channel SSH Lite.
 9. **Không implement trước khi duyệt mockup.** Mỗi màn hình và zone phải có mockup đúng state, đúng breakpoint và được người dùng duyệt.
 10. **Không thay đổi số lượng icon đang hiển thị.** Mỗi toolbar, row và state phải giữ đúng số action icon đang thấy ở cùng ngữ cảnh trong phiên bản 1.0.5: không tăng, không giảm. Được đổi icon và sắp xếp lại để bảo đảm tính nhất quán giữa module và screen; không được thêm action mới hoặc đẩy action đang hiện vào overflow chỉ để giao diện trông gọn hơn.
+11. **Action liền kề phải phân biệt bằng mắt.** Lọc tệp dùng phễu `filter`; mở Search dùng `search`; tìm trực tiếp trên máy chủ dùng `remote-explorer`. Mở rộng và thu gọn dùng `expand-all`, `fold-down`, `collapse-all` theo đúng action kế tiếp của trạng thái cây, không dùng một icon gộp mơ hồ.
 
 ## Inventory giao diện hiện tại
 

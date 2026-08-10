@@ -20,21 +20,25 @@ Danh sách icon còn được đối chiếu với [source Visual Studio Code 1.
 
 1. Icon mô tả hành động hoặc đối tượng chính, không mô tả chi tiết phụ.
 2. Cùng hành động dùng cùng icon ở mọi màn hình và mọi menu.
-3. `trash` chỉ dùng khi dữ liệu thật sự bị xóa; `close` hoặc `clear-all` dùng cho đóng, bỏ lọc hoặc dọn danh sách.
-4. `add` dùng để tạo đối tượng; trạng thái active không dùng cùng ngôn ngữ với thao tác tạo.
-5. Không dùng icon dành riêng cho debugger, máy ảo hoặc cloud nếu ngữ cảnh thực tế rộng hơn.
-6. Mọi icon phải tồn tại từ Visual Studio Code 1.85.2; không dựa riêng vào catalog mới nhất.
-7. Màu chỉ bổ sung nghĩa. Trạng thái vẫn phải có label, description hoặc tooltip.
+3. Hai action đứng cạnh nhau không được dùng cùng glyph nếu chức năng khác nhau; tooltip không đủ để sửa một toolbar khó phân biệt bằng mắt.
+4. `filter` hình phễu dùng thống nhất cho mọi thao tác lọc tệp hoặc tên tệp.
+5. `search` dành cho màn hình tìm kiếm; `remote-explorer` giữ cho thao tác tìm trực tiếp trên máy chủ theo bộ lọc để không tạo hai kính lúp cạnh nhau.
+6. `expand-all`, `fold-down`, `collapse-all` biểu thị đúng action kế tiếp theo trạng thái cây; không dùng icon gộp “mở rộng hoặc thu gọn”.
+7. `trash` chỉ dùng khi dữ liệu thật sự bị xóa; `close` hoặc `clear-all` dùng cho đóng, bỏ lọc hoặc dọn danh sách.
+8. `add` dùng để tạo đối tượng; trạng thái active không dùng cùng ngôn ngữ với thao tác tạo.
+9. Không dùng icon dành riêng cho debugger, máy ảo hoặc cloud nếu ngữ cảnh thực tế rộng hơn.
+10. Mọi icon phải tồn tại từ Visual Studio Code 1.85.2; không dựa riêng vào catalog mới nhất.
+11. Màu chỉ bổ sung nghĩa. Trạng thái vẫn phải có label, description hoặc tooltip.
 
 ## Kết quả command icon
 
 - 117 command đã được kiểm tra.
 - 67 Codicon khác nhau đang được dùng.
-- 103 command giữ nguyên icon.
-- 14 command nên đổi icon.
+- 104 command giữ nguyên icon.
+- 13 command nên đổi icon.
 - `$(import)` là icon duy nhất hiện không tồn tại trong Visual Studio Code 1.85.2.
 
-### 14 thay đổi đề xuất
+### 13 thay đổi đề xuất
 
 | Command | Hiện tại | Đề xuất | Lý do |
 |---|---|---|---|
@@ -51,7 +55,6 @@ Danh sách icon còn được đối chiếu với [source Visual Studio Code 1.
 | `sshLite.showBackupLogs` | `list-flat` | `output` | Màn hình hiển thị log/output, không phải đổi kiểu tree thành danh sách phẳng. |
 | `sshLite.showServerBackups` | `server` | `archive` | Đối tượng đang mở là bộ backup; phạm vi server đã có trong row và label. |
 | `sshLite.manageRemoteService` | `server-environment` | `gear` | Service management là cấu hình/vận hành; `server-environment` dễ bị hiểu thành biến môi trường. |
-| `sshLite.searchServerForFilter` | `remote-explorer` | `search` | Hành động thực là search. `remote-explorer` mô tả nơi chốn, không mô tả thao tác. |
 
 ### Những lựa chọn dễ gây tranh luận nhưng giữ nguyên
 
@@ -64,6 +67,9 @@ Danh sách icon còn được đối chiếu với [source Visual Studio Code 1.
 | Filter clear dùng `close` | Giữ | Dấu nhân là cách phổ biến để xóa nội dung filter mà không ám chỉ xóa dữ liệu. |
 | Delete dữ liệu dùng `trash` | Giữ | Host lưu, credential, saved forward, temp file và backup thật sự bị xóa. |
 | Cancel activity dùng `stop`; cancel all dùng `stop-circle` | Giữ | Cùng họ nghĩa nhưng đủ phân biệt phạm vi một item và toàn bộ. |
+| Search toolbar dùng `search`; tìm trên máy chủ dùng `remote-explorer` | Giữ | Hai action khác nhau đứng cạnh nhau phải có glyph khác nhau; `remote-explorer` vừa giữ ngữ cảnh máy chủ vừa tránh hai kính lúp. |
+| Lọc tệp dùng `filter` | Giữ | Phễu là hình lọc quen thuộc và là Codicon Visual Studio Code dùng cho filter. |
+| Mở rộng/thu gọn cây dùng `expand-all`, `fold-down`, `collapse-all` | Giữ | Icon đổi theo action kế tiếp của trạng thái hiện tại; không dùng một glyph gộp mơ hồ. |
 
 ## Kết quả ThemeIcon trong native tree
 
@@ -90,7 +96,7 @@ Danh sách icon còn được đối chiếu với [source Visual Studio Code 1.
 ## Kiểm chứng bắt buộc khi implement
 
 1. Thêm test đọc toàn bộ `contributes.commands` và xác nhận icon identifier tồn tại trong catalog tương thích với Visual Studio Code tối thiểu.
-2. Thêm test cố định mapping cho 14 command thay đổi để tránh icon drift.
+2. Thêm test cố định mapping cho 13 command thay đổi để tránh icon drift.
 3. Kiểm tra mọi `view/title` và `view/item/context` để một command dùng cùng icon và đúng inline slot ở mọi row.
 4. Kiểm tra thủ công dark theme, light theme, hover, selected, disabled, loading, warning và error.
 5. Kiểm tra tooltip và label bằng tiếng Anh trong sản phẩm rõ nghĩa ngay cả khi icon bị product icon theme thay đổi.
