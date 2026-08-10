@@ -8,7 +8,8 @@
 ## Nhật ký duyệt mockup
 
 - **2026-08-10 — Đã duyệt:** nền tảng native sidebar 1.0.6, gồm hướng A2, số lượng action icon hiển thị bằng chính xác phiên bản 1.0.5, thứ tự action nhất quán, inline slot cố định, mockup mặc định theo hệ thống và chế độ Sáng/Tối để review.
-- **Tiếp theo:** duyệt state chi tiết của SSH Hosts, Remote Files, Activity, Port Forwards và native dialog/feedback trước khi viết implementation plan 1.0.6.
+- **2026-08-10 — Đã duyệt:** năm state SSH Hosts gồm bình thường, đã kết nối, kết nối lại, lỗi và rỗng; header luôn 6 action icon, inline action lần lượt 0/3/1/0/0 đúng bằng phiên bản 1.0.5.
+- **Tiếp theo:** duyệt state chi tiết của Remote Files, Activity, Port Forwards và native dialog/feedback trước khi viết implementation plan 1.0.6.
 
 ## Mục tiêu
 
