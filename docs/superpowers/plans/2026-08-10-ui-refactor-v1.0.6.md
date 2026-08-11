@@ -415,8 +415,17 @@ it.each([
   expect(`${item.description} ${item.tooltip}`).toContain(text);
 });
 
-it('states that clearing tracking does not cancel operations', () => {
-  expect(ActivityService.prototype.clearAll).not.toBe(ActivityService.prototype.cancelAll);
+it('clears tracking without cancelling running operations', () => {
+  const onCancel = jest.fn();
+  service.startActivity('download', 'conn1', 'Server1', 'Download app.log', {
+    cancellable: true,
+    onCancel,
+  });
+
+  service.clearAll();
+
+  expect(service.getAllActivities()).toHaveLength(0);
+  expect(onCancel).not.toHaveBeenCalled();
 });
 ```
 
