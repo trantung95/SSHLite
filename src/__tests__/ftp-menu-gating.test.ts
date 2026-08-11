@@ -28,6 +28,14 @@ const SSH_ONLY = new Set([
 type MenuEntry = { command: string; when?: string; group?: string };
 const menus: MenuEntry[] = (pkg as any).contributes.menus['view/item/context'];
 
+const canonicalInlineSlots = new Map([
+  ['sshLite.searchInScope', 'inline@1'],
+  ['sshLite.filterFileNames', 'inline@2'],
+  ['sshLite.clearFilenameFilter', 'inline@2'],
+  ['sshLite.openTerminalHere', 'inline@3'],
+  ['sshLite.refreshItem', 'inline@4'],
+]);
+
 // Entries whose `when` targets a base contextValue an FTP row could carry.
 const targetsFtpCapableRow = (when: string): boolean =>
   /viewItem =~ \/\^\(?(connection|file|folder|connectedServer)/.test(when);
@@ -83,6 +91,28 @@ describe('FTP menu gating (issue #9)', () => {
         }
         slots.set(e.group, e.command);
       }
+    }
+  });
+
+  it('keeps shared file-explorer row commands in their canonical inline slots', () => {
+    for (const [command, expectedSlot] of canonicalInlineSlots) {
+      const slots = [...new Set(menus
+        .filter(entry => entry.command === command
+          && entry.when?.includes('sshLite.fileExplorer')
+          && entry.group?.startsWith('inline@'))
+        .map(entry => entry.group!))];
+      expect(slots).toEqual([expectedSlot]);
+    }
+
+    const slotsByCommand = new Map<string, Set<string>>();
+    for (const entry of menus) {
+      if (!entry.when?.includes('sshLite.fileExplorer') || !entry.group?.startsWith('inline@')) continue;
+      const slots = slotsByCommand.get(entry.command) ?? new Set<string>();
+      slots.add(entry.group);
+      slotsByCommand.set(entry.command, slots);
+    }
+    for (const slots of slotsByCommand.values()) {
+      expect(slots.size).toBe(1);
     }
   });
 });

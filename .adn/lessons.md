@@ -794,3 +794,10 @@ LESSONS:
 1. Không giữ control mở rộng/thu gọn trên một danh sách không có node con chỉ để đạt consistency hình thức.
 2. Khi phải giữ đúng số action icon để bảo toàn thói quen, tạo cấu trúc có nghĩa — ở đây là nhóm rule theo máy chủ — để action hiện có điều khiển state thật.
 3. Kiểm tra consistency gồm cả hiệu quả của action, không chỉ icon, slot và tooltip.
+
+## 2026-08-11 - Jest không dùng `toHaveLength` cho JavaScript `Set`
+
+Một cổng regression gom slot inline theo command bằng JavaScript `Set`. Matcher `toHaveLength` của Jest chỉ nhận giá trị có property `length`; `Set` dùng `size`.
+
+LESSONS:
+1. Khi assert số phần tử của JavaScript `Set` hoặc `Map`, dùng `expect(collection.size).toBe(...)`; chỉ dùng `toHaveLength` cho array hoặc object có `length`.

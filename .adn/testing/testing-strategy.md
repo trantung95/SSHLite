@@ -25,6 +25,10 @@ Coverage target: 95%+ on new/changed code.
 
 **Manifest regression net**: when a bug lives in a `package.json` constant that VS Code reads at install/activation time (not reproducible on a docker SSH server), assert the shipped manifest value directly. Example: `src/__tests__/manifest/extensionKind.test.ts` reads `package.json` and asserts `extensionKind` deep-equals `["ui"]` — the net for the v1.0.5 "host list empty inside a Remote-SSH window" regression (`.adn/lessons.md` "2026-06-22"). Behavioural tests that *mock* `extensionKind` cannot catch the manifest value drifting; assert the constant itself.
 
+### Native tree interface regression gate
+
+`src/__tests__/ui-manifest-contract.test.ts` verifies every shipped command icon against the 66 Codicons supported by the minimum Visual Studio Code 1.85.2 version, including the full 117-command manifest rather than only recent icon edits. `src/__tests__/ftp-menu-gating.test.ts` checks File Explorer inline-slot collisions and preserves canonical shared slots: search `inline@1`, filename filter `inline@2`, terminal `inline@3`, refresh `inline@4`. Context-menu overflow groups such as `1_actions@N` are intentionally excluded because they do not render inline icons.
+
 ## Mock Architecture
 
 - **VS Code mock**: `src/__mocks__/vscode.ts` — mocks `window`, `workspace`, `EventEmitter`, `Uri`, `commands`. Configured via `moduleNameMapper: { '^vscode$': '<rootDir>/src/__mocks__/vscode.ts' }`

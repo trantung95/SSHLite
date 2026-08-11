@@ -181,7 +181,7 @@ describe('ActivityTreeProvider', () => {
       const item = new ActivityTreeItem(createActivity({ status }));
 
       expect((item.iconPath as vscode.ThemeIcon).id).toBe(icon);
-      expect(`${item.description} ${item.tooltip}`).toContain(text);
+      expect(`${item.description} ${(item.tooltip as vscode.MarkdownString).value}`).toContain(text);
     });
 
     it('should show completed status after completion', () => {

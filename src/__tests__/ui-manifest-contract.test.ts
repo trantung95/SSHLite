@@ -1,5 +1,18 @@
 import manifest from '../../package.json';
 
+const minimumSupportedIcons = new Set([
+  'add', 'archive', 'arrow-circle-down', 'arrow-up', 'bug', 'calendar', 'clear-all',
+  'clippy', 'close', 'cloud-download', 'cloud-upload', 'collapse-all', 'copy',
+  'dashboard', 'database', 'debug-disconnect', 'diff', 'edit', 'expand-all', 'export',
+  'feedback', 'file', 'filter', 'fold-down', 'folder-library', 'folder-opened', 'gear',
+  'go-to-file', 'heart', 'history', 'home', 'info', 'key', 'link', 'list-flat',
+  'list-tree', 'move', 'new-file', 'new-folder', 'output', 'person', 'pin', 'play',
+  'plug', 'pulse', 'refresh', 'remote-explorer', 'root-folder', 'run', 'save',
+  'search', 'search-stop', 'server-process', 'shield', 'sign-in', 'sign-out', 'star',
+  'stop', 'stop-circle', 'symbol-snippet', 'symbol-variable', 'tag', 'target',
+  'terminal', 'terminal-bash', 'trash',
+]);
+
 const expectedIcons: Record<string, string> = {
   'sshLite.importConnections': '$(arrow-circle-down)',
   'sshLite.forwardPort': '$(add)',
@@ -70,6 +83,14 @@ describe('UI manifest contract', () => {
   it('uses the approved command icon mapping', () => {
     expect(Object.fromEntries(Object.keys(expectedIcons).map(id => [id, commands.get(id)?.icon])))
       .toEqual(expectedIcons);
+  });
+
+  it('uses only Codicons supported by VS Code 1.85.2 for every command', () => {
+    expect(manifest.contributes.commands).toHaveLength(117);
+    for (const command of manifest.contributes.commands) {
+      const id = command.icon?.match(/^\$\(([^)]+)\)$/)?.[1];
+      expect(id && minimumSupportedIcons.has(id)).toBe(true);
+    }
   });
 
   it('keeps adjacent Remote Files actions visually and verbally distinct', () => {

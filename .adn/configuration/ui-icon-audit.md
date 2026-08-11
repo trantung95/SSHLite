@@ -4,7 +4,7 @@
 - **Phiên bản sản phẩm:** 1.0.5
 - **Phiên bản Visual Studio Code tối thiểu:** 1.85.0
 - **Phạm vi:** 117 command icon và các ThemeIcon trong bốn native tree module
-- **Trạng thái:** đề xuất thiết kế để duyệt; chưa implement
+- **Trạng thái:** đã triển khai; regression gate kiểm tra manifest ở cấp Visual Studio Code tối thiểu
 
 ## Nguồn chuẩn
 
@@ -34,14 +34,14 @@ Danh sách icon còn được đối chiếu với [source Visual Studio Code 1.
 ## Kết quả command icon
 
 - 117 command đã được kiểm tra.
-- 67 Codicon khác nhau đang được dùng.
+- 66 Codicon khác nhau đang được dùng.
 - 104 command giữ nguyên icon.
-- 13 command nên đổi icon.
-- `$(import)` là icon duy nhất hiện không tồn tại trong Visual Studio Code 1.85.2.
+- 13 command đã đổi icon.
+- `$(import)` là icon duy nhất trước thay đổi không tồn tại trong Visual Studio Code 1.85.2.
 
-### 13 thay đổi đề xuất
+### 13 thay đổi đã triển khai
 
-| Command | Hiện tại | Đề xuất | Lý do |
+| Command | Trước thay đổi | Đã triển khai | Lý do |
 |---|---|---|---|
 | `sshLite.importConnections` | `import` | `arrow-circle-down` | `import` không có trong Visual Studio Code 1.85.2; mũi tên đi vào là ẩn dụ import quen thuộc và tương thích. |
 | `sshLite.forwardPort` | `arrow-right` | `add` | Đây là thao tác tạo port forward. Visual Studio Code cũng dùng dấu cộng cho hành động forward port. |
@@ -72,9 +72,15 @@ Danh sách icon còn được đối chiếu với [source Visual Studio Code 1.
 | Lọc tệp dùng `filter` | Giữ | Phễu là hình lọc quen thuộc và là Codicon Visual Studio Code dùng cho filter. |
 | Mở rộng/thu gọn cây dùng `expand-all`, `fold-down`, `collapse-all` | Giữ | Icon đổi theo action kế tiếp của trạng thái hiện tại; không dùng một glyph gộp mơ hồ. |
 
+## Cổng chống tái phát
+
+1. `src/__tests__/ui-manifest-contract.test.ts` đọc đủ 117 command và chỉ chấp nhận 66 Codicon đã xác nhận tồn tại trong Visual Studio Code 1.85.2. Test cũng khóa 13 icon đã đổi để tránh thay đổi nghĩa action ngoài ý muốn.
+2. `src/__tests__/ftp-menu-gating.test.ts` chặn collision `inline@N` trên từng Remote Files row và xác nhận các action dùng chung luôn giữ slot canonical: search `@1`, filter `@2`, terminal `@3`, refresh `@4`.
+3. Các entry context-menu overflow như `1_actions@N` không phải inline slot. Chúng không làm thay đổi số lượng hoặc thứ tự icon hiển thị trên row.
+
 ## Kết quả ThemeIcon trong native tree
 
-| Module và zone | Hiện tại | Đề xuất | Lý do |
+| Module và zone | Trước thay đổi | Đã triển khai | Lý do |
 |---|---|---|---|
 | SSH Hosts · host row | `vm`, `vm-running`, `vm-outline` | `server` với màu và description theo trạng thái | Secure Shell (SSH) host có thể là máy vật lý, container, router hoặc máy ảo; `vm` quá hẹp. |
 | Remote Files · connection root | custom VM icon hoặc `vm-active` | `remote` | Row đại diện kết nối remote, không phải loại máy. |
