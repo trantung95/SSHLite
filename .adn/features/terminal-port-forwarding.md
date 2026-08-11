@@ -121,7 +121,10 @@ The serialized write queue keeps ownership across disposal and reactivation.
 Each queued write captures its extension lifecycle generation and the exact
 extension context that owns the write. A completion from a disposed lifecycle
 cannot replace reactivated in-memory rules, and the next lifecycle write waits
-behind the pending write before persisting its own snapshot. The
+behind the pending write before persisting its own snapshot. Creation also
+captures the tree provider and lifecycle generation that own its row; a stale
+rollback may stop its own listener but cannot remove a same-key row rendered by
+a replacement provider after reactivation. The
 `sshLite.savedPortForwards` schema is unchanged.
 
 ### Data Types

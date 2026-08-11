@@ -381,6 +381,69 @@ describe('PortForwardService', () => {
   });
 
   describe('persistence', () => {
+    it('does not remove a current lifecycle tree row when a queued create is cancelled after reactivation', async () => {
+      let releaseBlockingWrite!: () => void;
+      let markBlockingWriteStarted!: () => void;
+      let markOldRowAdded!: () => void;
+      const blockingWriteGate = new Promise<void>((resolve) => {
+        releaseBlockingWrite = resolve;
+      });
+      const blockingWriteStarted = new Promise<void>((resolve) => {
+        markBlockingWriteStarted = resolve;
+      });
+      const oldRowAdded = new Promise<void>((resolve) => {
+        markOldRowAdded = resolve;
+      });
+      const oldContext = {
+        globalState: {
+          get: jest.fn(),
+          update: jest.fn(async () => {
+            markBlockingWriteStarted();
+            await blockingWriteGate;
+          }),
+        },
+      } as any;
+      const newContext = {
+        globalState: {
+          get: jest.fn(),
+          update: jest.fn(async () => undefined),
+        },
+      } as any;
+      const oldProvider = {
+        addForward: jest.fn(() => markOldRowAdded()),
+        removeForward: jest.fn(),
+      };
+      const currentRows = new Set<string>();
+      const currentProvider = {
+        addForward: jest.fn((connectionId: string, localPort: number) => {
+          currentRows.add(`${connectionId}:${localPort}`);
+        }),
+        removeForward: jest.fn((localPort: number, connectionId: string) => {
+          currentRows.delete(`${connectionId}:${localPort}`);
+        }),
+      };
+      const connection = createMockConnection();
+
+      service.initialize(oldContext);
+      service.setTreeProvider(oldProvider as any);
+      const blockingWrite = service.saveRule('blocking:22:user', 9000, 'localhost', 9000);
+      await blockingWriteStarted;
+      const oldCreate = service.forwardPort(connection as any, 3000, 'localhost', 3000);
+      await oldRowAdded;
+
+      service.dispose();
+      service.initialize(newContext);
+      service.setTreeProvider(currentProvider as any);
+      currentProvider.addForward(connection.id, 3000);
+
+      releaseBlockingWrite();
+      await blockingWrite;
+      await oldCreate;
+
+      expect(currentRows).toContain(`${connection.id}:3000`);
+      expect(currentProvider.removeForward).not.toHaveBeenCalled();
+    });
+
     it('keeps a disposed lifecycle write from overwriting reactivated state', async () => {
       let releaseOldWrite!: () => void;
       let markOldWriteStarted!: () => void;

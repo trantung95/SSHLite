@@ -187,19 +187,20 @@ File Transfer Protocol (FTP) dùng icon protocol group `cloud` trong source 1.0.
 | 40 | `ActivityTreeProvider` | `TypeGroupTreeItem` | connect | `plug` | `default foreground` |
 | 41 | `ActivityTreeProvider` | `TypeGroupTreeItem` | disconnect | `debug-disconnect` | `default foreground` |
 | 42 | `ActivityTreeProvider` | `TypeGroupTreeItem` | reveal | `target` | `default foreground` |
-| 43 | `ActivityTreeProvider` | `ActivityTreeItem` | running | `sync~spin` | `default foreground` |
-| 44 | `ActivityTreeProvider` | `ActivityTreeItem` | completed | `check` | `charts.green` |
-| 45 | `ActivityTreeProvider` | `ActivityTreeItem` | cancelled | `circle-slash` | `charts.yellow` |
-| 46 | `ActivityTreeProvider` | `ActivityTreeItem` | failed | `error` | `charts.red` |
-| 47 | `ActivityTreeProvider` | `ActivityTreeItem` | fallback by activity type | `dynamic type mapping above` | `default foreground` |
-| 48 | `ActivityTreeProvider` | `NoActivitiesTreeItem` | empty | `check-all` | `charts.green` |
-| 49 | `PortForwardTreeProvider` | `PortForwardServerGroupTreeItem` | server group | `server` | `default foreground` |
-| 50 | `PortForwardTreeProvider` | `PortForwardTreeItem` | active rule | `arrow-swap` | `charts.blue` |
-| 51 | `PortForwardTreeProvider` | `NoPortForwardsTreeItem` | empty | `info` | `default foreground` |
-| 52 | `PortForwardTreeProvider` | `SavedForwardTreeItem` | restore failed | `arrow-swap` | `charts.red` |
-| 53 | `PortForwardTreeProvider` | `SavedForwardTreeItem` | saved, stopped, or disconnected | `arrow-swap` | `disabledForeground` |
+| 43 | `ActivityTreeProvider` | `TypeGroupTreeItem` | defensive unknown type fallback | `circle-outline` | `default foreground` |
+| 44 | `ActivityTreeProvider` | `ActivityTreeItem` | running | `sync~spin` | `default foreground` |
+| 45 | `ActivityTreeProvider` | `ActivityTreeItem` | completed | `check` | `charts.green` |
+| 46 | `ActivityTreeProvider` | `ActivityTreeItem` | cancelled | `circle-slash` | `charts.yellow` |
+| 47 | `ActivityTreeProvider` | `ActivityTreeItem` | failed | `error` | `charts.red` |
+| 48 | `ActivityTreeProvider` | `ActivityTreeItem` | fallback by activity type | `dynamic type mapping above` | `default foreground` |
+| 49 | `ActivityTreeProvider` | `NoActivitiesTreeItem` | empty | `check-all` | `charts.green` |
+| 50 | `PortForwardTreeProvider` | `PortForwardServerGroupTreeItem` | server group | `server` | `default foreground` |
+| 51 | `PortForwardTreeProvider` | `PortForwardTreeItem` | active rule | `arrow-swap` | `charts.blue` |
+| 52 | `PortForwardTreeProvider` | `NoPortForwardsTreeItem` | empty | `info` | `default foreground` |
+| 53 | `PortForwardTreeProvider` | `SavedForwardTreeItem` | restore failed | `arrow-swap` | `charts.red` |
+| 54 | `PortForwardTreeProvider` | `SavedForwardTreeItem` | saved, stopped, or disconnected | `arrow-swap` | `disabledForeground` |
 
-**Đối soát:** 53/53 mapping state được inventory; mapping icon asset tùy chỉnh là 0.
+**Đối soát:** 54/54 mapping state được inventory; mapping icon asset tùy chỉnh là 0.
 
 ## Mười ba command icon thay đổi so với 1.0.5
 

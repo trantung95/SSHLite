@@ -58,6 +58,12 @@ LESSONS:
 
 ---
 
+## 2026-08-11 - Asynchronous rollback must not use a lifecycle-replaced collaborator
+
+A port-forward creation could add a row, wait behind a persistence write, then resume after extension disposal and reactivation. Its failure handler read the mutable current tree provider and could remove a same-key row owned by the new lifecycle. Capture the collaborator and lifecycle generation when the operation starts, and apply rollback only while both still match the current lifecycle. A stale operation may clean up resources it owns, but it must never mutate replacement interface state.
+
+---
+
 ## 2026-08-11 - Quote the upstream revision expression in PowerShell
 
 PowerShell can interpret `@{upstream}` as hashtable syntax when it appears unquoted in a Git revision expression, causing Git to receive a corrupted argument. Use an explicit remote branch such as `origin/master`, or quote the complete expression as `'HEAD...@{upstream}'`, when checking branch divergence.

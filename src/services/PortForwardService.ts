@@ -343,15 +343,17 @@ export class PortForwardService {
     let treeRowMutationAttempted = false;
     let persistenceCompleted = false;
     let failureStage: 'listener' | 'tree' | 'persistence' | 'feedback' = 'listener';
+    const operationLifecycleGeneration = this.lifecycleGeneration;
+    const operationTreeProvider = this.treeProvider;
     try {
       await connection.forwardPort(localPort, remoteHost, remotePort);
       listenerStarted = true;
       failureStage = 'tree';
 
       // Update tree provider
-      if (this.treeProvider) {
+      if (operationTreeProvider) {
         treeRowMutationAttempted = true;
-        this.treeProvider.addForward(connection.id, localPort, remoteHost, remotePort);
+        operationTreeProvider.addForward(connection.id, localPort, remoteHost, remotePort);
       }
 
       // Auto-save the rule for persistence
@@ -378,8 +380,13 @@ export class PortForwardService {
       if (listenerStarted && !persistenceCompleted) {
         try {
           await connection.stopForward(localPort);
-          if (treeRowMutationAttempted && this.treeProvider) {
-            this.treeProvider.removeForward(localPort, connection.id);
+          if (
+            treeRowMutationAttempted &&
+            operationTreeProvider &&
+            operationLifecycleGeneration === this.lifecycleGeneration &&
+            operationTreeProvider === this.treeProvider
+          ) {
+            operationTreeProvider.removeForward(localPort, connection.id);
           }
           retrySafe = true;
           infoLog('port-forward', 'create-rollback-completed', {
