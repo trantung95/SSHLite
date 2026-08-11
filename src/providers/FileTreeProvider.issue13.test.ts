@@ -181,6 +181,10 @@ describe('FileTreeProvider — issue #13: failed directory load must not loop', 
       const children = await provider.getChildren(connItem);
       expect(children).toHaveLength(1);
       expect(children[0]).toBeInstanceOf(LoadErrorTreeItem);
+      expect((children[0].iconPath as vscode.ThemeIcon).id).toBe('error');
+      expect(children[0].contextValue).toBe('loadError');
+      expect(children[0].label).toContain('Permission denied');
+      expect(String(children[0].tooltip)).toContain('refresh');
       await flushAsync();
     }
 
@@ -301,5 +305,40 @@ describe('FileTreeProvider — issue #13: failed directory load must not loop', 
       await flushAsync();
     }
     expect(mockConn.listFiles.mock.calls.length).toBe(callsAfterFailure);
+  });
+
+  it('keeps cached rows visible while an explicit folder refresh loads and then fails', async () => {
+    mockConn = createMockConnection({ id: 'conn-1' });
+    const cachedFile = createMockRemoteFile('app.log', {
+      path: '/var/log/app.log',
+      connectionId: 'conn-1',
+    });
+    mockConn.listFiles.mockResolvedValue([cachedFile]);
+    mockGetConnection.mockReturnValue(mockConn);
+    mockGetAllConnections.mockReturnValue([mockConn]);
+    mockGetAllConnectionsWithReconnecting.mockReturnValue({ active: [mockConn], reconnecting: [] });
+
+    const folder = createMockRemoteFile('log', {
+      path: '/var/log',
+      isDirectory: true,
+      connectionId: 'conn-1',
+    });
+    const folderItem = new FileTreeItem(folder, mockConn as any);
+
+    expect((await provider.getChildren(folderItem))[0]).toBeInstanceOf(LoadingTreeItem);
+    await flushAsync();
+    expect((await provider.getChildren(folderItem)).some((item) => item instanceof FileTreeItem)).toBe(true);
+
+    mockConn.listFiles.mockRejectedValue(new Error('Permission denied'));
+    provider.refreshFolder('conn-1', '/var/log');
+
+    const refreshing = await provider.getChildren(folderItem);
+    expect(refreshing.some((item) => item instanceof FileTreeItem)).toBe(true);
+    expect(refreshing.some((item) => item instanceof LoadingTreeItem)).toBe(true);
+
+    await flushAsync();
+    const failed = await provider.getChildren(folderItem);
+    expect(failed.some((item) => item instanceof FileTreeItem)).toBe(true);
+    expect(failed.some((item) => item instanceof LoadErrorTreeItem)).toBe(true);
   });
 });

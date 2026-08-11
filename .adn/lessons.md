@@ -5,6 +5,17 @@ Add new entries as bugs are found, mistakes are made, or better approaches are d
 
 ---
 
+## 2026-08-11 - Folder refresh must preserve the last successful listing until replacement succeeds
+
+Deleting a directory cache entry before starting an explicit refresh made the tree discard valid rows during loading and after a transient listing failure. The safer pattern is stale-while-refresh: keep the last successful rows visible, add a path-specific loading row while the forced request runs, replace the cache only on success, and add an error row beside the cached data on failure.
+
+LESSONS:
+1. A refresh is not permission to erase known-good user data before replacement data exists.
+2. Track pending forced refreshes separately from cached listings so normal cache reads and explicit reloads retain distinct semantics.
+3. Regression tests must assert the old rows remain visible during both loading and failure, not only that the error stops retrying.
+
+---
+
 ## 2026-08-11 - Chaos setup can fail before tests when an Ubuntu mirror serves inconsistent indexes
 
 `npm run test:chaos` can fail in `Dockerfile.ubuntu` during `apt-get update` with `Hash Sum mismatch` and exit code 100. This is an Advanced Package Tool (APT) mirror or intermediary-cache consistency failure during container build, before Jest or any SSH Lite scenario starts; do not attribute it to the code change under test. Re-run the affected Docker build with plain progress to capture the exact package-index error, then retry after the mirror converges. Report chaos as infrastructure-blocked until an actual scenario runs.

@@ -477,6 +477,23 @@ describe('FileTreeProvider - multi-filter state management', () => {
     jest.useRealTimers();
   });
 
+  it('filters only cached rows until deep scan is explicitly requested', async () => {
+    const mockConn = createMockConnection({ id: 'conn-1' });
+    mockConn.searchFiles.mockResolvedValue([]);
+    mockGetAllConnections.mockReturnValue([mockConn]);
+
+    provider.setFilter('*.log');
+    expect(mockConn.searchFiles).not.toHaveBeenCalled();
+
+    await provider.searchServerForFilter();
+
+    expect(mockConn.searchFiles).toHaveBeenCalledWith(
+      '~',
+      '*.log',
+      expect.objectContaining({ searchContent: false })
+    );
+  });
+
   describe('hasFilenameFilter / isFilteredFolder', () => {
     it('should report no filter when empty', () => {
       expect(provider.hasFilenameFilter()).toBe(false);

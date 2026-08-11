@@ -11,10 +11,10 @@ import { PriorityQueueService, PreloadPriority } from '../services/PriorityQueue
 import { ActivityService } from '../services/ActivityService';
 import { infoLog } from '../utils/diagnosticLog';
 
-// Get extension path for custom icons
-let extensionPath: string = '';
-export function setFileTreeExtensionPath(extPath: string): void {
-  extensionPath = extPath;
+// Retained for activation compatibility; Remote Files now uses native ThemeIcon
+// presentation so product icon themes can style connection roots consistently.
+export function setFileTreeExtensionPath(_extPath: string): void {
+  // No custom file icon assets are needed.
 }
 
 /**
@@ -59,15 +59,7 @@ export class ConnectionTreeItem extends vscode.TreeItem {
     // FTP connections get a `.ftp` suffix so package.json `when` clauses can hide
     // shell-only actions (terminal, search, monitor, sudo, server backups) for them.
     this.contextValue = connection.capabilities.type === 'ftp' ? 'connection.ftp' : 'connection';
-    // Use custom SVG icon with green color baked in (persists when selected)
-    if (extensionPath) {
-      this.iconPath = {
-        light: vscode.Uri.file(path.join(extensionPath, 'images', 'vm-connected.svg')),
-        dark: vscode.Uri.file(path.join(extensionPath, 'images', 'vm-connected.svg')),
-      };
-    } else {
-      this.iconPath = new vscode.ThemeIcon('vm-active', new vscode.ThemeColor('charts.green'));
-    }
+    this.iconPath = new vscode.ThemeIcon('remote', new vscode.ThemeColor('charts.green'));
   }
 }
 
@@ -85,7 +77,7 @@ export class ReconnectingConnectionTreeItem extends vscode.TreeItem {
 
     // Unique ID for VS Code to preserve expand/collapse state
     this.id = `connection:${connectionId}`;
-    this.description = `${host.username}@${host.host} - Reconnecting (${attempts})...`;
+    this.description = `${host.username}@${host.host} - Reconnecting (${attempts})... - ${currentPath}`;
     this.contextValue = 'reconnecting';
     // Use spinning sync icon to show reconnecting status
     this.iconPath = new vscode.ThemeIcon('sync~spin', new vscode.ThemeColor('charts.yellow'));
@@ -115,8 +107,7 @@ export class ParentFolderTreeItem extends vscode.TreeItem {
     this.id = `parent:${connection.id}:${parentPath}`;
     this.description = 'Go to parent folder';
     this.contextValue = 'parentFolder';
-    // Use arrow-up icon with charts.yellow color for high visibility (priority #1 action)
-    this.iconPath = new vscode.ThemeIcon('arrow-up', new vscode.ThemeColor('charts.yellow'));
+    this.iconPath = new vscode.ThemeIcon('arrow-up');
     this.tooltip = new vscode.MarkdownString('**⬆️ Go to parent folder**\n\n`' + parentPath + '`');
     this.command = {
       command: 'sshLite.goToPath',
@@ -179,23 +170,22 @@ export class FileTreeItem extends vscode.TreeItem {
     } else if (isLoading) {
       // Show spinning icon when loading data from server
       this.iconPath = new vscode.ThemeIcon('sync~spin');
-    } else if (isOpenInTab) {
-      // Show eye icon with green color for files open in editor tabs
-      this.iconPath = new vscode.ThemeIcon('eye', new vscode.ThemeColor('charts.green'));
     } else if (isHighlighted) {
       this.iconPath = new vscode.ThemeIcon('file', new vscode.ThemeColor('charts.yellow'));
     } else if (isEmptyAfterFilter) {
       this.iconPath = new vscode.ThemeIcon('file', new vscode.ThemeColor('disabledForeground'));
     } else {
-      this.iconPath = vscode.ThemeIcon.File;
+      this.iconPath = new vscode.ThemeIcon('file');
     }
 
     // Format description: size + relative modified time (grayed out by VS Code)
     // Note: VS Code tree item descriptions don't render codicons, so we only use text
-    // The icon itself already indicates open/loading state
+    // Loading uses the spinner; open files keep their file icon and add text below.
     const sizeStr = file.isDirectory ? '' : formatFileSize(file.size);
     const timeStr = formatRelativeTime(file.modifiedTime);
-    if (isFiltered && filterPattern) {
+    if (isLoading) {
+      this.description = `Loading ${file.path}...`;
+    } else if (isFiltered && filterPattern) {
       // Show filter pattern + match count in description for filtered folders
       this.description = matchCount > 0 ? `[filter: ${filterPattern}] (${matchCount})` : `[filter: ${filterPattern}]`;
     } else if (file.isDirectory && matchCount > 0) {
@@ -205,6 +195,9 @@ export class FileTreeItem extends vscode.TreeItem {
       this.description = file.isDirectory
         ? timeStr
         : `${sizeStr}  ${timeStr}`;
+    }
+    if (isOpenInTab && !isLoading) {
+      this.description = `${this.description || ''}  Open`.trim();
     }
 
     // Tooltip with more details including times, owner, and permissions
@@ -437,12 +430,16 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   // Cleared on explicit refresh, navigation, or cache clear (reconnect).
   private failedLoads: Map<string, string> = new Map();
 
+  // Explicit folder refreshes keep the last successful listing visible while a
+  // replacement load runs. The request is consumed by the next getChildren().
+  private pendingDirectoryRefreshes: Set<string> = new Set();
+
   // Filename filters for tree highlighting (multiple simultaneous filters supported)
   // Key: "connectionId:basePath"
   private activeFilters: Map<string, ActiveFilter> = new Map();
   private onFilterClearedCallback?: () => void;
 
-  // Live update tracking: files currently open in editor tabs (show eye icon)
+  // Live update tracking: files currently open in editor tabs (show Open description)
   private openFilePaths: Set<string> = new Set();
 
   // Loading state tracking: files currently being loaded/refreshed from server
@@ -509,10 +506,10 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       }
     });
 
-    // Subscribe to open files changes (for live-update eye icon on all open tab files)
+    // Subscribe to open files changes (for live-update Open descriptions)
     // NOTE: We only update state tracking here - NO full tree refresh
     // Full tree refreshes on every tab switch cause expansion state loss for multi-server trees.
-    // The eye icon will appear when VS Code re-renders the item (on scroll, expand, or next refresh)
+    // The Open description appears when VS Code re-renders the item.
     this.fileService.onOpenFilesChanged((openFiles) => {
       this.openFilePaths = openFiles;
       // Do NOT refresh tree - full refresh causes expansion state loss across multiple connections
@@ -669,12 +666,18 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
           this.failedLoads.delete(key);
         }
       }
+      for (const key of this.pendingDirectoryRefreshes) {
+        if (key.startsWith(prefix)) {
+          this.pendingDirectoryRefreshes.delete(key);
+        }
+      }
       this.deepFilterResults.delete(connectionId);
       // Re-derived cheaply on next reveal; clear for consistency with the cache.
       this.resolvedHomePaths.delete(connectionId);
     } else {
       this.directoryCache.clear();
       this.failedLoads.clear();
+      this.pendingDirectoryRefreshes.clear();
       this.deepFilterResults.clear();
       this.resolvedHomePaths.clear();
     }
@@ -1078,6 +1081,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   refresh(clearCache: boolean = false): void {
     if (clearCache) {
       this.directoryCache.clear();
+      this.pendingDirectoryRefreshes.clear();
     }
     // Full refresh is an explicit user action: retry all failed loads (issue #13).
     this.failedLoads.clear();
@@ -1152,12 +1156,15 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
   /**
    * Refresh a specific folder by path
-   * Clears cache and triggers targeted refresh for the affected connection
+   * Preserves cached rows while loading a replacement, then triggers a targeted refresh
    */
   refreshFolder(connectionId: string, folderPath: string): void {
-    // Clear cache for this folder
     const key = this.getCacheKey(connectionId, folderPath);
-    this.directoryCache.delete(key);
+    // Preserve the previous successful listing while its replacement loads.
+    // With no cache, getChildren() follows the normal first-load path.
+    if (this.directoryCache.has(key)) {
+      this.pendingDirectoryRefreshes.add(key);
+    }
     // Explicit refresh: allow a previously failed directory to be retried (issue #13).
     this.failedLoads.delete(key);
 
@@ -1325,8 +1332,17 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       // Check cache first - if cached, no loading indicator needed
       const cached = this.getCached(element.connection.id, currentPath);
       if (cached) {
-        this.loadingItems.delete(loadingKey);
+        if (this.pendingDirectoryRefreshes.delete(loadingKey) && !this.loadingItems.has(loadingKey)) {
+          this.loadingItems.add(loadingKey);
+          this.loadDirectoryAndRefresh(element.connection, currentPath, element);
+        }
         const items = this.buildDirectoryItems(element.connection, currentPath, cached);
+        const failedMessage = this.failedLoads.get(loadingKey);
+        if (failedMessage !== undefined) {
+          items.push(new LoadErrorTreeItem(failedMessage, loadingKey));
+        } else if (this.loadingItems.has(loadingKey)) {
+          items.push(new LoadingTreeItem(`Loading ${currentPath}...`, loadingKey));
+        }
         // Clear pending auto-expand paths after they've been consumed by buildDirectoryItems
         // (child getChildren calls will also read them before this clears)
         setTimeout(() => this.pendingAutoExpandPaths.delete(element.connection.id), 500);
@@ -1337,7 +1353,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
       // If already loading, show loading placeholder
       if (this.loadingItems.has(loadingKey)) {
-        return [new LoadingTreeItem('Loading...', loadingKey)];
+        return [new LoadingTreeItem(`Loading ${currentPath}...`, loadingKey)];
       }
 
       // Last load failed: show error item, do NOT auto-retry (issue #13).
@@ -1349,7 +1365,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       // Start loading in background and return loading placeholder immediately
       this.loadingItems.add(loadingKey);
       this.loadDirectoryAndRefresh(element.connection, currentPath, element);
-      return [new LoadingTreeItem('Loading...', loadingKey)];
+      return [new LoadingTreeItem(`Loading ${currentPath}...`, loadingKey)];
     }
 
     // Reconnecting connection level: show cached directory files (read-only)
@@ -1381,13 +1397,16 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       // Check cache first
       const cached = this.getCached(element.connection.id, element.file.path);
       if (cached) {
-        this.loadingItems.delete(loadingKey);
+        if (this.pendingDirectoryRefreshes.delete(loadingKey) && !this.loadingItems.has(loadingKey)) {
+          this.loadingItems.add(loadingKey);
+          this.loadDirectoryAndRefresh(element.connection, element.file.path, element);
+        }
         // Apply global filter and per-folder filename filter
         const filteredFiles = cached.filter((file) =>
           this.matchesFilter(file) && this.matchesFilenameFilter(element.connection.id, file));
         // Check for pending auto-expand paths (consumed once)
         const autoExpandPaths = this.pendingAutoExpandPaths.get(element.connection.id);
-        const items = filteredFiles.map((file) => {
+        const items: TreeItem[] = filteredFiles.map((file) => {
           const isFolderFiltered = file.isDirectory && this.isFilteredFolder(element.connection.id, file.path);
           const isEmpty = this.isEmptyAfterFilter(element.connection.id, file.path, file.isDirectory);
           // Auto-expand folders on the pending expand path
@@ -1409,6 +1428,12 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
             activeFilter?.maxResults || 0
           );
         });
+        const failedMessage = this.failedLoads.get(loadingKey);
+        if (failedMessage !== undefined) {
+          items.push(new LoadErrorTreeItem(failedMessage, loadingKey));
+        } else if (this.loadingItems.has(loadingKey)) {
+          items.push(new LoadingTreeItem(`Loading ${element.file.path}...`, loadingKey));
+        }
         // Notify any pending reveal() waits that these files are now visible in the tree
         this.notifyVisible(element.connection.id, cached);
         // Preload subdirectories in background (throttled per connection+path)
@@ -1418,7 +1443,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
 
       // If already loading, show loading placeholder
       if (this.loadingItems.has(loadingKey)) {
-        return [new LoadingTreeItem('Loading...', loadingKey)];
+        return [new LoadingTreeItem(`Loading ${element.file.path}...`, loadingKey)];
       }
 
       // Last load failed: show error item, do NOT auto-retry (issue #13).
@@ -1430,7 +1455,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       // Start loading in background and return loading placeholder immediately
       this.loadingItems.add(loadingKey);
       this.loadDirectoryAndRefresh(element.connection, element.file.path, element);
-      return [new LoadingTreeItem('Loading...', loadingKey)];
+      return [new LoadingTreeItem(`Loading ${element.file.path}...`, loadingKey)];
     }
 
     return [];
@@ -2807,6 +2832,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     this.preloadQueue.clear();
     this.loadingItems.clear();
     this.failedLoads.clear();
+    this.pendingDirectoryRefreshes.clear();
     this.expandedFolders.clear();
     this.connectionTreeItemRefs.clear();
     this.resolvedHomePaths.clear();

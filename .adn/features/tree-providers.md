@@ -95,6 +95,16 @@ sshLite.fileExplorer → ConnectionTreeItem → ParentFolderTreeItem (..)
 
 Failures are cleared (allowing a retry) only on explicit user actions: `refresh()`, `refreshItem()`, `refreshFolder()`, `setCurrentPath()` (navigation), `clearCache()` (reconnect), and `dispose()`. A successful reload also clears the entry. Regression tests: `FileTreeProvider.issue13.test.ts`.
 
+### Remote Files Presentation States
+
+- **Default:** a connected Secure Shell (SSH) or File Transfer Protocol (FTP) root uses the native `remote` ThemeIcon with a green state color and keeps the account, host, and current path in its description. The parent row keeps `arrow-up` with the Visual Studio Code theme's default foreground.
+- **Filtered:** cached rows are filtered immediately without a server call. An explicit Deep Scan calls `searchFiles`; recursive result completeness, `filterMaxResults`, and limit-reached behavior are unchanged. Folder and connection descriptions keep the active pattern and match count.
+- **Loading:** a directory with no cached listing uses `sync~spin` and names the path, such as `Loading /var/log...`. Existing cached rows remain visible. A file refresh also uses `sync~spin` and puts the full remote path in the description.
+- **Open file:** the row keeps its `file` ThemeIcon and adds `Open` to the description. It does not replace the file type with an eye icon.
+- **Failed listing:** `LoadErrorTreeItem` uses `error`, includes the server reason, and directs recovery through the existing refresh action. Other cached directory data remains intact; the provider does not auto-retry or add another inline action.
+- **Upload failure:** the remote row and cached server data remain unchanged. `SSHFileDecorationProvider` marks the local editor file with a red failure badge and `FileService` reports the failed save; saving again performs the existing retry flow.
+- **Empty folder:** a loaded child directory with no entries returns `[]`, allowing Visual Studio Code to render its native empty tree state without an error-like placeholder or a new action.
+
 ### Filter System
 
 **Content Filter** (`sshLite.filterFiles`): grep file contents on server, flat list, limit `filterMaxResults`.

@@ -121,8 +121,10 @@ import {
   FileTreeProvider,
   FileTreeItem,
   ConnectionTreeItem,
+  ReconnectingConnectionTreeItem,
   ParentFolderTreeItem,
   LoadingTreeItem,
+  LoadErrorTreeItem,
 } from './FileTreeProvider';
 
 // ============================================================================
@@ -875,6 +877,42 @@ describe('FileTreeProvider - Change 7: Show Tree From Root', () => {
   });
 
   describe('getChildren(FileTreeItem) - auto-expand logic', () => {
+    it('returns no placeholder rows for an empty folder', async () => {
+      const mockConn = createMockConnection({ id: 'conn-1' });
+      mockConn.listFiles.mockResolvedValue([]);
+      await provider.loadAncestorDirs(mockConn as any, '/empty');
+
+      const emptyFolder = new FileTreeItem(
+        createMockRemoteFile('empty', {
+          path: '/empty',
+          isDirectory: true,
+          connectionId: 'conn-1',
+        }),
+        mockConn as any
+      );
+
+      expect(await provider.getChildren(emptyFolder)).toEqual([]);
+    });
+
+    it('names the directory path while its listing loads', async () => {
+      const mockConn = createMockConnection({ id: 'conn-1' });
+      mockConn.listFiles.mockReturnValue(new Promise(() => undefined));
+      const folder = new FileTreeItem(
+        createMockRemoteFile('log', {
+          path: '/var/log',
+          isDirectory: true,
+          connectionId: 'conn-1',
+        }),
+        mockConn as any
+      );
+
+      const children = await provider.getChildren(folder);
+
+      expect(children).toHaveLength(1);
+      expect(children[0]).toBeInstanceOf(LoadingTreeItem);
+      expect(children[0].label).toBe('Loading /var/log...');
+    });
+
     it('should auto-expand folders on the expand path', async () => {
       const mockConn = createMockConnection({ id: 'conn-1' });
       mockGetConnection.mockReturnValue(mockConn);
@@ -1405,6 +1443,56 @@ describe('ParentFolderTreeItem', () => {
 
     expect(item.parentPath).toBe('/home');
     expect(item.currentPath).toBe('/home');
+  });
+
+  it('uses the default foreground for parent navigation', () => {
+    const mockConn = createMockConnection({ id: 'conn-1' });
+    const item = new ParentFolderTreeItem(mockConn as any, '/home', '/home/user');
+
+    expect((item.iconPath as vscode.ThemeIcon).id).toBe('arrow-up');
+    expect((item.iconPath as vscode.ThemeIcon).color).toBeUndefined();
+  });
+});
+
+describe('FileTreeProvider - Remote Files presentation', () => {
+  it('uses a remote icon and path description for a connected root', () => {
+    const connection = createMockConnection({ id: 'conn-1' });
+    const item = new ConnectionTreeItem(connection as any, '/var');
+
+    expect((item.iconPath as vscode.ThemeIcon).id).toBe('remote');
+    expect(item.description).toContain('/var');
+  });
+
+  it('keeps reconnecting state and current path visible', () => {
+    const connection = createMockConnection({ id: 'conn-1' });
+    const item = new ReconnectingConnectionTreeItem(
+      connection.id,
+      connection.host,
+      '/var',
+      2
+    );
+
+    expect(item.description).toContain('Reconnecting');
+    expect(item.description).toContain('/var');
+  });
+
+  it('distinguishes open, loading, and failed rows without replacing the file type', () => {
+    const connection = createMockConnection({ id: 'conn-1' });
+    const file = createMockRemoteFile('app.log', {
+      path: '/var/app.log',
+      isDirectory: false,
+      connectionId: connection.id,
+    });
+    const open = new FileTreeItem(file, connection as any, false, true);
+    const loading = new FileTreeItem(file, connection as any, false, false, true);
+    const failed = new LoadErrorTreeItem('Permission denied', 'conn-1:/var');
+
+    expect((open.iconPath as vscode.ThemeIcon).id).toBe('file');
+    expect(open.description).toContain('Open');
+    expect((loading.iconPath as vscode.ThemeIcon).id).toBe('sync~spin');
+    expect(loading.description).toContain('/var/app.log');
+    expect(failed.contextValue).toBe('loadError');
+    expect(failed.label).toContain('Permission denied');
   });
 });
 
