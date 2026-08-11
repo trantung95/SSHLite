@@ -801,3 +801,11 @@ Một cổng regression gom slot inline theo command bằng JavaScript `Set`. Ma
 
 LESSONS:
 1. Khi assert số phần tử của JavaScript `Set` hoặc `Map`, dùng `expect(collection.size).toBe(...)`; chỉ dùng `toHaveLength` cho array hoặc object có `length`.
+
+## 2026-08-11 - Cổng Codicon và inline menu phải giữ ngữ nghĩa đầy đủ
+
+Codicon có modifier như `$(sync~spin)`, nhưng catalog compatibility lưu base identifier. Một parity test chỉ so command với `inline@N` có thể bỏ lọt action bị chuyển sang row khác.
+
+LESSONS:
+1. Trước khi so Codicon với supported set, tách base identifier trước modifier `~`; modifier chỉ thay đổi cách vẽ, không đổi khả năng tương thích của Codicon gốc.
+2. Cổng inline menu phải so chính xác command, điều kiện `when` của row, và group. Kiểm tra slot riêng lẻ không phát hiện được action bị chuyển connection, folder hoặc file mà vẫn giữ cùng `inline@N`.

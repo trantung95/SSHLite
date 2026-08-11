@@ -36,6 +36,35 @@ const canonicalInlineSlots = new Map([
   ['sshLite.refreshItem', 'inline@4'],
 ]);
 
+const canonicalInlineEntries: ReadonlyArray<readonly [string, string, string]> = [
+  ['sshLite.searchInScope', 'view == sshLite.fileExplorer && viewItem =~ /^connection(?!\\.ftp)/', 'inline@1'],
+  ['sshLite.searchInScope', 'view == sshLite.fileExplorer && viewItem =~ /^file(?!\\.ftp)/', 'inline@1'],
+  ['sshLite.searchInScope', 'view == sshLite.fileExplorer && viewItem =~ /^folder(?!\\.ftp)/', 'inline@1'],
+  ['sshLite.filterFileNames', 'view == sshLite.fileExplorer && viewItem =~ /^connection(\\.ftp)?$/', 'inline@2'],
+  ['sshLite.filterFileNames', 'view == sshLite.fileExplorer && viewItem =~ /^folder(\\.ftp)?$/', 'inline@2'],
+  ['sshLite.clearFilenameFilter', 'view == sshLite.fileExplorer && viewItem =~ /^connection(\\.ftp)?\\.filtered$/', 'inline@2'],
+  ['sshLite.clearFilenameFilter', 'view == sshLite.fileExplorer && viewItem =~ /^folder(\\.ftp)?\\.filtered$/', 'inline@2'],
+  ['sshLite.openFile', 'view == sshLite.fileExplorer && viewItem =~ /^file/', 'inline@2'],
+  ['sshLite.disconnect', 'view == sshLite.fileExplorer && viewItem =~ /^(connection|reconnecting)/', 'inline@3'],
+  ['sshLite.openTerminalHere', 'view == sshLite.fileExplorer && viewItem =~ /^file(?!\\.ftp)/', 'inline@3'],
+  ['sshLite.openTerminalHere', 'view == sshLite.fileExplorer && viewItem =~ /^folder(?!\\.ftp)/', 'inline@3'],
+  ['sshLite.openTerminal', 'view == sshLite.fileExplorer && viewItem =~ /^connection(?!\\.ftp)/', 'inline@4'],
+  ['sshLite.refreshItem', 'view == sshLite.fileExplorer && viewItem =~ /^file/', 'inline@4'],
+  ['sshLite.refreshItem', 'view == sshLite.fileExplorer && viewItem =~ /^folder/', 'inline@4'],
+  ['sshLite.monitor', 'view == sshLite.fileExplorer && viewItem =~ /^connection(?!\\.ftp)/', 'inline@5'],
+];
+
+const sortEntries = (entries: ReadonlyArray<readonly string[]>) =>
+  [...entries].sort((left, right) => left.join('\0').localeCompare(right.join('\0')));
+
+const hasCanonicalInlineEntries = (entries: MenuEntry[]): boolean => {
+  const actual = entries
+    .filter(entry => entry.when?.includes('sshLite.fileExplorer') && entry.group?.startsWith('inline@'))
+    .map(entry => [entry.command, entry.when!, entry.group!] as const);
+  const expected = canonicalInlineEntries;
+  return JSON.stringify(sortEntries(actual)) === JSON.stringify(sortEntries(expected));
+};
+
 // Entries whose `when` targets a base contextValue an FTP row could carry.
 const targetsFtpCapableRow = (when: string): boolean =>
   /viewItem =~ \/\^\(?(connection|file|folder|connectedServer)/.test(when);
@@ -95,6 +124,7 @@ describe('FTP menu gating (issue #9)', () => {
   });
 
   it('keeps shared file-explorer row commands in their canonical inline slots', () => {
+    expect(hasCanonicalInlineEntries(menus)).toBe(true);
     for (const [command, expectedSlot] of canonicalInlineSlots) {
       const slots = [...new Set(menus
         .filter(entry => entry.command === command
@@ -114,5 +144,15 @@ describe('FTP menu gating (issue #9)', () => {
     for (const slots of slotsByCommand.values()) {
       expect(slots.size).toBe(1);
     }
+  });
+
+  it('detects a shared command moved from its canonical File Explorer row', () => {
+    const moved = menus.map(entry => entry.command === 'sshLite.searchInScope'
+      && entry.when === 'view == sshLite.fileExplorer && viewItem =~ /^connection(?!\\.ftp)/'
+      && entry.group === 'inline@1'
+      ? { ...entry, when: 'view == sshLite.fileExplorer && viewItem =~ /^file(?!\\.ftp)/' }
+      : entry);
+
+    expect(hasCanonicalInlineEntries(moved)).toBe(false);
   });
 });

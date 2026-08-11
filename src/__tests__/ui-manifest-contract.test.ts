@@ -11,7 +11,11 @@ const minimumSupportedIcons = new Set([
   'search', 'search-stop', 'server-process', 'shield', 'sign-in', 'sign-out', 'star',
   'stop', 'stop-circle', 'symbol-snippet', 'symbol-variable', 'tag', 'target',
   'terminal', 'terminal-bash', 'trash',
+  'sync',
 ]);
+
+const baseCodiconId = (icon?: string): string | undefined =>
+  icon?.match(/^\$\(([^)]+)\)$/)?.[1].split('~')[0];
 
 const expectedIcons: Record<string, string> = {
   'sshLite.importConnections': '$(arrow-circle-down)',
@@ -88,9 +92,15 @@ describe('UI manifest contract', () => {
   it('uses only Codicons supported by VS Code 1.85.2 for every command', () => {
     expect(manifest.contributes.commands).toHaveLength(117);
     for (const command of manifest.contributes.commands) {
-      const id = command.icon?.match(/^\$\(([^)]+)\)$/)?.[1];
+      const id = baseCodiconId(command.icon);
       expect(id && minimumSupportedIcons.has(id)).toBe(true);
     }
+  });
+
+  it('accepts a supported Codicon with a spin modifier', () => {
+    const id = baseCodiconId('$(sync~spin)');
+    expect(id).toBe('sync');
+    expect(id && minimumSupportedIcons.has(id)).toBe(true);
   });
 
   it('keeps adjacent Remote Files actions visually and verbally distinct', () => {
