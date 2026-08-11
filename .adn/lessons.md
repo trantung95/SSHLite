@@ -15,6 +15,7 @@ LESSONS:
 3. Regression tests must assert the old rows remain visible during both loading and failure, not only that the error stops retrying.
 4. A title-bar refresh that clears a cached failure must also queue its replacement load; otherwise it hides the error without recovering connection-root rows that have no inline refresh action.
 5. Consume a pending refresh only after confirming no load is active. A refresh requested during an active load must remain queued so the older response cannot become the final visible snapshot.
+6. Keep state-only redraw and explicit remote recovery as separate provider operations. Reusing a retrying refresh from cached-only filter changes silently turns local presentation work into server input/output.
 
 ---
 

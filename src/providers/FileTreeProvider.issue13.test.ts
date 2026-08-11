@@ -371,7 +371,7 @@ describe('FileTreeProvider — issue #13: failed directory load must not loop', 
     mockConn.listFiles.mockResolvedValue([newFile]);
     const callsBeforeTitleRefresh = mockConn.listFiles.mock.calls.length;
 
-    provider.refresh();
+    provider.retryFailedLoads();
     const retrying = await provider.getChildren(connItem);
 
     expect(retrying.some((item) => item instanceof FileTreeItem)).toBe(true);
@@ -444,5 +444,47 @@ describe('FileTreeProvider — issue #13: failed directory load must not loop', 
     const finalRows = await provider.getChildren(folderItem);
     expect(finalRows.some((item) => item instanceof FileTreeItem && item.file.path === '/var/log/fresh.log')).toBe(true);
     expect(finalRows.some((item) => item instanceof FileTreeItem && item.file.path === '/var/log/stale.log')).toBe(false);
+  });
+
+  it('keeps setFilter and clearFilter cached-only when a cached directory has failed', async () => {
+    mockConn = createMockConnection({ id: 'conn-1' });
+    const cachedFile = createMockRemoteFile('app.log', {
+      path: '/app.log',
+      connectionId: 'conn-1',
+    });
+    mockConn.listFiles.mockResolvedValue([cachedFile]);
+    mockGetConnection.mockReturnValue(mockConn);
+    mockGetAllConnections.mockReturnValue([mockConn]);
+    mockGetAllConnectionsWithReconnecting.mockReturnValue({ active: [mockConn], reconnecting: [] });
+
+    provider.setCurrentPath('conn-1', '/');
+    await flushAsync();
+    const connectionItem = (await provider.getChildren())[0] as ConnectionTreeItem;
+    expect((await provider.getChildren(connectionItem)).some((item) => item instanceof FileTreeItem)).toBe(true);
+
+    mockConn.listFiles.mockRejectedValue(new Error('Permission denied'));
+    provider.refreshFolder('conn-1', '/');
+    await provider.getChildren(connectionItem);
+    await flushAsync();
+    expect((await provider.getChildren(connectionItem)).some((item) => item instanceof LoadErrorTreeItem)).toBe(true);
+
+    const listCallsBeforeFilter = mockConn.listFiles.mock.calls.length;
+    provider.setFilter('*.log');
+    const filteredRows = await provider.getChildren(connectionItem);
+    await flushAsync();
+
+    expect(mockConn.listFiles).toHaveBeenCalledTimes(listCallsBeforeFilter);
+    expect(mockConn.searchFiles).not.toHaveBeenCalled();
+    expect(filteredRows.some((item) => item instanceof LoadingTreeItem)).toBe(false);
+    expect(filteredRows.some((item) => item instanceof LoadErrorTreeItem)).toBe(true);
+
+    provider.clearFilter();
+    const clearedRows = await provider.getChildren(connectionItem);
+    await flushAsync();
+
+    expect(mockConn.listFiles).toHaveBeenCalledTimes(listCallsBeforeFilter);
+    expect(mockConn.searchFiles).not.toHaveBeenCalled();
+    expect(clearedRows.some((item) => item instanceof LoadingTreeItem)).toBe(false);
+    expect(clearedRows.some((item) => item instanceof LoadErrorTreeItem)).toBe(true);
   });
 });

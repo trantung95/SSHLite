@@ -1082,16 +1082,21 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     if (clearCache) {
       this.directoryCache.clear();
       this.pendingDirectoryRefreshes.clear();
-    } else {
-      for (const loadingKey of this.failedLoads.keys()) {
-        if (this.directoryCache.has(loadingKey)) {
-          this.pendingDirectoryRefreshes.add(loadingKey);
-        }
+    }
+    this._onDidChangeTreeData.fire();
+  }
+
+  /**
+   * Retry failed directory loads from an explicit user recovery action.
+   */
+  retryFailedLoads(): void {
+    for (const loadingKey of this.failedLoads.keys()) {
+      if (this.directoryCache.has(loadingKey)) {
+        this.pendingDirectoryRefreshes.add(loadingKey);
       }
     }
-    // Full refresh is an explicit user action: retry all failed loads (issue #13).
     this.failedLoads.clear();
-    this._onDidChangeTreeData.fire();
+    this.refresh();
   }
 
   /**

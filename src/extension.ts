@@ -2155,7 +2155,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     vscode.commands.registerCommand('sshLite.refreshFiles', () => {
-      fileTreeProvider.refresh();
+      fileTreeProvider.retryFailedLoads();
     }),
 
     // 3-state expand/collapse rotation: Expand All → First Level → Collapse All

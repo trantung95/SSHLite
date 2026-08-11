@@ -93,7 +93,7 @@ sshLite.fileExplorer → ConnectionTreeItem → ParentFolderTreeItem (..)
 
 `failedLoads: Map<string, string>` — key: `${connectionId}:${remotePath}`, value: error message. When a background directory listing fails, `loadDirectoryAndRefresh()` records the failure **before** firing the tree refresh. The re-entered `getChildren()` renders a `LoadErrorTreeItem` (contextValue `loadError`, id `loadError:${key}`) instead of starting the load again. Without this, a failing directory caused an infinite load → fail → notify → refresh → load loop that froze VS Code and spammed "Failed to list directory" notifications.
 
-Failures are cleared (allowing a retry) only on explicit user actions: `refresh()`, `refreshItem()`, `refreshFolder()`, `setCurrentPath()` (navigation), `clearCache()` (reconnect), and `dispose()`. For failed paths with cached rows, the title-bar `refresh()` queues a replacement load before clearing the error so connection roots recover without an inline refresh action. A successful reload also clears the entry. Regression tests: `FileTreeProvider.issue13.test.ts`.
+Failures are cleared (allowing a retry) only on explicit user actions: `retryFailedLoads()` (the title-bar refresh), `refreshItem()`, `refreshFolder()`, `setCurrentPath()` (navigation), `clearCache()` (reconnect), and `dispose()`. For failed paths with cached rows, `retryFailedLoads()` queues a replacement load before clearing the error so connection roots recover without an inline refresh action. The generic `refresh()` only redraws state; filename filter changes use it without listing or searching the server. A successful reload also clears the entry. Regression tests: `FileTreeProvider.issue13.test.ts`.
 
 ### Remote Files Presentation States
 
