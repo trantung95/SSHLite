@@ -65,10 +65,18 @@ export class ServerTreeItem extends vscode.TreeItem {
     const isFtp = hosts.some(h => h.connectionType === 'ftp');
     const ftpMark = isFtp ? '.ftp' : '';
 
+    const stateColor = isReconnecting
+      ? new vscode.ThemeColor('charts.yellow')
+      : isConnected
+        ? new vscode.ThemeColor('charts.green')
+        : lastFailedAttempt && !lastFailedAttempt.success
+          ? new vscode.ThemeColor('charts.orange')
+          : undefined;
+
     if (isReconnecting) {
-      // Reconnecting: show spinning icon and reconnectingServer contextValue so disconnect button appears
+      // Reconnecting: preserve reconnectingServer contextValue so disconnect button appears.
       this.contextValue = isSavedOrHasCredentials ? 'reconnectingServer.saved' : 'reconnectingServer';
-      this.iconPath = new vscode.ThemeIcon('sync~spin', new vscode.ThemeColor('charts.yellow'));
+      this.iconPath = new vscode.ThemeIcon('server', stateColor);
     } else if (isConnected && isSudoMode) {
       // Connected with sudo mode active — shield icon
       const base = isSavedOrHasCredentials ? 'connectedServer.saved' : 'connectedServer';
@@ -78,16 +86,16 @@ export class ServerTreeItem extends vscode.TreeItem {
     } else if (isConnected) {
       // Use different context for saved vs config hosts so menu items work correctly
       this.contextValue = isSavedOrHasCredentials ? `connectedServer${ftpMark}.saved` : `connectedServer${ftpMark}`;
-      this.iconPath = new vscode.ThemeIcon('vm-running', new vscode.ThemeColor('charts.green'));
+      this.iconPath = new vscode.ThemeIcon('server', stateColor);
     } else if (lastFailedAttempt && !lastFailedAttempt.success) {
       this.contextValue = isSavedOrHasCredentials ? 'savedServer' : 'server';
-      this.iconPath = new vscode.ThemeIcon('vm-outline', new vscode.ThemeColor('charts.orange'));
+      this.iconPath = new vscode.ThemeIcon('server', stateColor);
     } else if (isSavedOrHasCredentials) {
       this.contextValue = 'savedServer';
-      this.iconPath = new vscode.ThemeIcon('vm');
+      this.iconPath = new vscode.ThemeIcon('server', stateColor);
     } else {
       this.contextValue = 'server';
-      this.iconPath = new vscode.ThemeIcon('vm-outline');
+      this.iconPath = new vscode.ThemeIcon('server', stateColor);
     }
 
     // Tooltip with server info + failed connection details. Endpoint records have
@@ -95,18 +103,19 @@ export class ServerTreeItem extends vscode.TreeItem {
     const usernames = hosts.map(h => h.username).filter(Boolean).join(', ') || '(no accounts)';
     if (isReconnecting) {
       this.tooltip = new vscode.MarkdownString(
-        `**${displayName}**\n\n` +
+          `**${displayName}**\n\n` +
           `- Server: ${serverKey}\n` +
           `- Users: ${usernames}\n` +
-          `- Status: Reconnecting...`
+          `- Status: Reconnecting`
       );
     } else if (!isConnected && lastFailedAttempt && !lastFailedAttempt.success) {
       const ago = formatRelativeTime(lastFailedAttempt.timestamp);
       this.tooltip = new vscode.MarkdownString(
-        `**${displayName}** \u26A0\uFE0F\n\n` +
+        `**${displayName}**\n\n` +
           `- Server: ${serverKey}\n` +
           `- Users: ${usernames}\n` +
-          `- Status: Last connection failed ${ago}\n` +
+          `- Status: Connection failed\n` +
+          `- Last attempt: ${ago}\n` +
           `- Error: ${lastFailedAttempt.errorMessage || 'Unknown error'}`
       );
     } else {
@@ -124,6 +133,20 @@ export class ServerTreeItem extends vscode.TreeItem {
    */
   get primaryHost(): IHostConfig {
     return this.hosts[0];
+  }
+}
+
+/**
+ * Quiet, actionable root item shown when no Secure Shell (SSH) or File Transfer Protocol (FTP) hosts exist.
+ */
+export class NoHostsTreeItem extends vscode.TreeItem {
+  readonly contextValue = 'noHosts';
+
+  constructor() {
+    super('No SSH hosts yet', vscode.TreeItemCollapsibleState.None);
+    this.id = 'hosts:empty';
+    this.iconPath = new vscode.ThemeIcon('server');
+    this.description = 'Use Add Host to create or import a connection';
   }
 }
 
@@ -247,7 +270,7 @@ export class ProtocolGroupTreeItem extends vscode.TreeItem {
     this.id = `protocolGroup:${protocol}`;
     this.contextValue = 'protocolGroup';
     this.description = serverCount === 0 ? 'No hosts' : `${serverCount} host${serverCount === 1 ? '' : 's'}`;
-    this.iconPath = new vscode.ThemeIcon(protocol === 'ftp' ? 'cloud' : 'terminal');
+    this.iconPath = new vscode.ThemeIcon(protocol === 'ftp' ? 'cloud' : 'remote');
     this.tooltip = protocol === 'ftp' ? 'FTP / FTPS hosts' : 'SSH / SFTP hosts';
   }
 }
@@ -265,7 +288,7 @@ export class CredentialTreeItem extends UserCredentialTreeItem {
   }
 }
 
-type TreeItemType = ProtocolGroupTreeItem | ServerTreeItem | UserCredentialTreeItem | AddCredentialTreeItem | PinnedFolderTreeItem;
+type TreeItemType = NoHostsTreeItem | ProtocolGroupTreeItem | ServerTreeItem | UserCredentialTreeItem | AddCredentialTreeItem | PinnedFolderTreeItem;
 
 /**
  * Tree data provider for SSH hosts
@@ -403,14 +426,17 @@ export class HostTreeProvider implements vscode.TreeDataProvider<TreeItemType> {
   getChildren(element?: TreeItemType): TreeItemType[] {
     // Root level: protocol groups (tree mode) or a flat list of servers.
     if (!element) {
+      const allHosts = this.hostService.getAllHosts();
+      if (allHosts.length === 0) {
+        return [new NoHostsTreeItem()];
+      }
       if (this.grouped) {
-        // Always show both groups, even when empty (per design).
         return [
-          new ProtocolGroupTreeItem('ssh', this.getServerItems('ssh').length),
-          new ProtocolGroupTreeItem('ftp', this.getServerItems('ftp').length),
+          new ProtocolGroupTreeItem('ssh', this.getServerItems('ssh', allHosts).length),
+          new ProtocolGroupTreeItem('ftp', this.getServerItems('ftp', allHosts).length),
         ];
       }
-      return this.getServerItems();
+      return this.getServerItems(undefined, allHosts);
     }
 
     // Protocol group level: servers of that protocol.
@@ -439,8 +465,7 @@ export class HostTreeProvider implements vscode.TreeDataProvider<TreeItemType> {
    * of that connection type are included (used for the SSH/FTP sub-sections);
    * hosts with no explicit `connectionType` count as SSH for backward compat.
    */
-  private getServerItems(protocol?: ConnectionType): ServerTreeItem[] {
-    const allHosts = this.hostService.getAllHosts();
+  private getServerItems(protocol?: ConnectionType, allHosts: IHostConfig[] = this.hostService.getAllHosts()): ServerTreeItem[] {
     const hosts = protocol
       ? allHosts.filter((h) => (h.connectionType ?? 'ssh') === protocol)
       : allHosts;

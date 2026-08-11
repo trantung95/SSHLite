@@ -65,6 +65,7 @@ import {
   UserCredentialTreeItem,
   PinnedFolderTreeItem,
   AddCredentialTreeItem,
+  NoHostsTreeItem,
   ProtocolGroupTreeItem,
 } from './HostTreeProvider';
 
@@ -89,9 +90,14 @@ describe('HostTreeProvider', () => {
   });
 
   describe('root level (getChildren with no element)', () => {
-    it('should return empty array when no hosts', () => {
+    it('shows a quiet actionable empty state', () => {
       const items = provider.getChildren();
-      expect(items).toEqual([]);
+      expect(items).toHaveLength(1);
+      expect(items[0]).toBeInstanceOf(NoHostsTreeItem);
+      expect(items[0].label).toBe('No SSH hosts yet');
+      expect(items[0].description).toContain('Add Host');
+      expect((items[0].iconPath as any).id).toBe('server');
+      expect(items[0].id).toBe('hosts:empty');
     });
 
     it('should group hosts by host:port', () => {
@@ -149,7 +155,7 @@ describe('HostTreeProvider', () => {
       expect(items[0].id).toBe('server:10.0.0.1:22');
     });
 
-    it('should show vm-running icon when connected', () => {
+    it('renders connected host with server icon and explicit state text', () => {
       // Host id must match connection id format (host:port:username) for lookup
       const host = createMockHostConfig({ id: '10.0.0.1:22:user', host: '10.0.0.1', port: 22, username: 'user', name: 'S1' });
       const mockConn = { id: '10.0.0.1:22:user', state: ConnectionState.Connected };
@@ -158,7 +164,9 @@ describe('HostTreeProvider', () => {
 
       const items = provider.getChildren() as ServerTreeItem[];
       expect(items[0].contextValue).toBe('connectedServer.saved');
-      expect((items[0].iconPath as any).id).toBe('vm-running');
+      expect((items[0].iconPath as any).id).toBe('server');
+      expect((items[0].iconPath as any).color.id).toBe('charts.green');
+      expect((items[0].tooltip as any).value).toContain('Status: Connected');
     });
 
     it('should show shield icon when connected with sudo mode active', () => {
@@ -185,22 +193,22 @@ describe('HostTreeProvider', () => {
 
       const items = provider.getChildren() as ServerTreeItem[];
       expect(items[0].contextValue).not.toContain('sudo');
-      expect((items[0].iconPath as any).id).toBe('vm-running');
+      expect((items[0].iconPath as any).id).toBe('server');
 
       mockGetConnection.mockReturnValue(undefined);
     });
 
-    it('should show vm icon when has saved credentials', () => {
+    it('should use neutral server icon when has saved credentials', () => {
       const host = createMockHostConfig({ id: 'h1' });
       mockGetAllHosts.mockReturnValue([host]);
       mockListCredentials.mockReturnValue([createMockCredential()]);
 
       const items = provider.getChildren() as ServerTreeItem[];
       expect(items[0].contextValue).toBe('savedServer');
-      expect((items[0].iconPath as any).id).toBe('vm');
+      expect((items[0].iconPath as any).id).toBe('server');
     });
 
-    it('should show vm-outline icon when SSH config host disconnected with no credentials', () => {
+    it('should use neutral server icon when SSH config host disconnected with no credentials', () => {
       // SSH config hosts (source: 'ssh-config') without credentials show as 'server'
       const host = createMockHostConfig({ id: 'h1', source: 'ssh-config' });
       mockGetAllHosts.mockReturnValue([host]);
@@ -208,10 +216,10 @@ describe('HostTreeProvider', () => {
 
       const items = provider.getChildren() as ServerTreeItem[];
       expect(items[0].contextValue).toBe('server');
-      expect((items[0].iconPath as any).id).toBe('vm-outline');
+      expect((items[0].iconPath as any).id).toBe('server');
     });
 
-    it('should show vm icon when saved host disconnected with no credentials', () => {
+    it('should use neutral server icon when saved host disconnected with no credentials', () => {
       // Manually added hosts (source: 'saved') without credentials show as 'savedServer'
       const host = createMockHostConfig({ id: 'h1', source: 'saved' });
       mockGetAllHosts.mockReturnValue([host]);
@@ -219,7 +227,7 @@ describe('HostTreeProvider', () => {
 
       const items = provider.getChildren() as ServerTreeItem[];
       expect(items[0].contextValue).toBe('savedServer');
-      expect((items[0].iconPath as any).id).toBe('vm');
+      expect((items[0].iconPath as any).id).toBe('server');
     });
 
     it('should expose primaryHost', () => {
@@ -557,11 +565,25 @@ describe('HostTreeProvider', () => {
     };
 
     describe('ServerTreeItem unit tests', () => {
-      it('should show orange vm-outline icon when lastFailedAttempt is present', () => {
+      it('renders reconnecting and failed hosts with explicit text', () => {
+        const hosts = [createMockHostConfig({ id: 'h1', host: '10.0.0.1', port: 22, name: 'S1' })];
+        const reconnecting = new ServerTreeItem('10.0.0.1:22', hosts, false, undefined, true);
+        const failed = new ServerTreeItem('10.0.0.1:22', hosts, false, failedAttempt);
+
+        expect((reconnecting.iconPath as any).id).toBe('server');
+        expect((reconnecting.iconPath as any).color.id).toBe('charts.yellow');
+        expect((reconnecting.tooltip as any).value).toContain('Status: Reconnecting');
+        expect((failed.iconPath as any).id).toBe('server');
+        expect((failed.iconPath as any).color.id).toBe('charts.orange');
+        expect((failed.tooltip as any).value).toContain('Status: Connection failed');
+        expect((failed.tooltip as any).value).toContain('Connection refused');
+      });
+
+      it('should show orange server icon when lastFailedAttempt is present', () => {
         const hosts = [createMockHostConfig({ id: 'h1', host: '10.0.0.1', port: 22, name: 'S1' })];
         const item = new ServerTreeItem('10.0.0.1:22', hosts, false, failedAttempt);
 
-        expect((item.iconPath as any).id).toBe('vm-outline');
+        expect((item.iconPath as any).id).toBe('server');
         expect((item.iconPath as any).color.id).toBe('charts.orange');
       });
 
@@ -570,9 +592,8 @@ describe('HostTreeProvider', () => {
         const item = new ServerTreeItem('10.0.0.1:22', hosts, false, failedAttempt);
 
         const tooltipValue = (item.tooltip as any).value;
-        expect(tooltipValue).toContain('Last connection failed');
+        expect(tooltipValue).toContain('Status: Connection failed');
         expect(tooltipValue).toContain('Connection refused');
-        expect(tooltipValue).toContain('\u26A0\uFE0F'); // warning emoji in title
       });
 
       it('should include time ago in failed tooltip', () => {
@@ -636,20 +657,20 @@ describe('HostTreeProvider', () => {
         expect(item.contextValue).toBe('server');
       });
 
-      it('should show normal vm-outline icon when no lastFailedAttempt (ssh-config host)', () => {
+      it('should show neutral server icon when no lastFailedAttempt (ssh-config host)', () => {
         const host = createMockHostConfig({ id: 'h1', host: '10.0.0.1', port: 22, name: 'S1', source: 'ssh-config' });
         mockListCredentials.mockReturnValue([]);
         const item = new ServerTreeItem('10.0.0.1:22', [host], false);
 
-        expect((item.iconPath as any).id).toBe('vm-outline');
+        expect((item.iconPath as any).id).toBe('server');
         expect((item.iconPath as any).color).toBeUndefined();
       });
 
-      it('should show normal vm icon when no lastFailedAttempt (saved host)', () => {
+      it('should show neutral server icon when no lastFailedAttempt (saved host)', () => {
         const host = createMockHostConfig({ id: 'h1', host: '10.0.0.1', port: 22, name: 'S1', source: 'saved' });
         const item = new ServerTreeItem('10.0.0.1:22', [host], false);
 
-        expect((item.iconPath as any).id).toBe('vm');
+        expect((item.iconPath as any).id).toBe('server');
         expect((item.iconPath as any).color).toBeUndefined();
       });
 
@@ -659,8 +680,7 @@ describe('HostTreeProvider', () => {
 
         const tooltipValue = (item.tooltip as any).value;
         expect(tooltipValue).toContain('Disconnected');
-        expect(tooltipValue).not.toContain('Last connection failed');
-        expect(tooltipValue).not.toContain('\u26A0\uFE0F');
+        expect(tooltipValue).not.toContain('Status: Connection failed');
       });
     });
 
@@ -678,7 +698,7 @@ describe('HostTreeProvider', () => {
 
         expect(mockGetLastAttempt).toHaveBeenCalledWith('h1');
         expect(items).toHaveLength(1);
-        expect((items[0].iconPath as any).id).toBe('vm-outline');
+        expect((items[0].iconPath as any).id).toBe('server');
         expect((items[0].iconPath as any).color.id).toBe('charts.orange');
       });
 
@@ -758,7 +778,7 @@ describe('HostTreeProvider', () => {
         // Should NOT call getLastConnectionAttempt for connected servers
         expect(mockGetLastAttempt).not.toHaveBeenCalled();
         // Should show connected icon, not orange
-        expect((items[0].iconPath as any).id).toBe('vm-running');
+        expect((items[0].iconPath as any).id).toBe('server');
         expect((items[0].iconPath as any).color.id).toBe('charts.green');
       });
 
@@ -780,7 +800,7 @@ describe('HostTreeProvider', () => {
         const items = provider.getChildren() as ServerTreeItem[];
 
         // Successful attempt should not trigger orange icon
-        expect((items[0].iconPath as any).id).toBe('vm-outline');
+        expect((items[0].iconPath as any).id).toBe('server');
         expect((items[0].iconPath as any).color).toBeUndefined();
       });
 
@@ -796,7 +816,7 @@ describe('HostTreeProvider', () => {
 
         const items = provider.getChildren() as ServerTreeItem[];
 
-        expect((items[0].iconPath as any).id).toBe('vm-outline');
+        expect((items[0].iconPath as any).id).toBe('server');
         expect((items[0].iconPath as any).color).toBeUndefined();
         const tooltipValue = (items[0].tooltip as any).value;
         expect(tooltipValue).toContain('Disconnected');
@@ -822,17 +842,11 @@ describe('HostTreeProvider protocol grouping (tree vs flat)', () => {
     expect(provider.isGrouped()).toBe(true);
   });
 
-  it('shows both SSH and FTP groups at the root, even when empty', () => {
+  it('shows the empty state instead of protocol groups when no hosts exist', () => {
     mockGetAllHosts.mockReturnValue([]);
-    const groups = provider.getChildren() as ProtocolGroupTreeItem[];
-    expect(groups).toHaveLength(2);
-    expect(groups[0]).toBeInstanceOf(ProtocolGroupTreeItem);
-    expect(groups[0].protocol).toBe('ssh');
-    expect(groups[0].label).toBe('SSH');
-    expect(groups[1].protocol).toBe('ftp');
-    expect(groups[1].label).toBe('FTP');
-    expect(groups[0].description).toBe('No hosts');
-    expect(groups[1].description).toBe('No hosts');
+    const items = provider.getChildren();
+    expect(items).toHaveLength(1);
+    expect(items[0]).toBeInstanceOf(NoHostsTreeItem);
   });
 
   it('routes hosts to their protocol group (ssh default for missing connectionType)', () => {
@@ -844,6 +858,8 @@ describe('HostTreeProvider protocol grouping (tree vs flat)', () => {
     const groups = provider.getChildren() as ProtocolGroupTreeItem[];
     expect(groups[0].description).toBe('2 hosts');
     expect(groups[1].description).toBe('1 host');
+    expect((groups[0].iconPath as any).id).toBe('remote');
+    expect((groups[1].iconPath as any).id).toBe('cloud');
 
     const sshServers = provider.getChildren(groups[0]) as ServerTreeItem[];
     expect(sshServers.map((s) => s.serverKey).sort()).toEqual(['a:22', 'b:22']);
@@ -865,7 +881,7 @@ describe('HostTreeProvider protocol grouping (tree vs flat)', () => {
   });
 
   it('protocol group items have stable ids', () => {
-    mockGetAllHosts.mockReturnValue([]);
+    mockGetAllHosts.mockReturnValue([createMockHostConfig({ id: 's1', host: 'a', port: 22, name: 'A' })]);
     const groups = provider.getChildren() as ProtocolGroupTreeItem[];
     expect(groups[0].id).toBe('protocolGroup:ssh');
     expect(groups[1].id).toBe('protocolGroup:ftp');

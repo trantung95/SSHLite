@@ -11,7 +11,7 @@ Covers `HostTreeProvider`, `FileTreeProvider`, and `FileDecorationProvider`.
 
 ## HostTreeProvider (`src/providers/HostTreeProvider.ts`)
 
-The view is titled **Hosts** (not "SSH Hosts") because it holds both SSH and FTP hosts.
+The view is titled **Hosts** (not "Secure Shell (SSH) Hosts") because it holds both Secure Shell (SSH) and File Transfer Protocol (FTP) hosts.
 
 ### Tree Hierarchy
 
@@ -20,6 +20,12 @@ Grouped (tree) mode, the default:
 ```
 sshLite.hosts → ProtocolGroupTreeItem (SSH / FTP) → ServerTreeItem → UserCredentialTreeItem → PinnedFolderTreeItem
                                                                                             └─ AddCredentialTreeItem
+```
+
+When there are no hosts, either view mode instead shows:
+
+```
+sshLite.hosts → NoHostsTreeItem ("No SSH hosts yet")
 ```
 
 Flat (list) mode skips the protocol layer:
@@ -31,7 +37,7 @@ sshLite.hosts → ServerTreeItem → UserCredentialTreeItem → PinnedFolderTree
 
 ### View mode: grouped by protocol vs flat (issue #9)
 
-The root either shows two **ProtocolGroupTreeItem** nodes ("SSH" and "FTP") with servers nested underneath, or a flat list of all servers. Both groups are always shown, even when empty (description reads "No hosts"), so the user can see where each host type lands. A host with no explicit `connectionType` counts as SSH (backward compat).
+When at least one host exists, the root either shows two **ProtocolGroupTreeItem** nodes ("SSH" and "FTP") with servers nested underneath, or a flat list of all servers. The empty root uses `NoHostsTreeItem` instead of empty protocol groups. A host with no explicit `connectionType` counts as SSH (backward compatibility).
 
 - Toggle: view-title buttons `sshLite.hostsViewAsList` (shown when grouped) and `sshLite.hostsViewAsTree` (shown when flat), gated by the context key `sshLite.hostsGrouped`.
 - The choice is persisted in `globalState` under `sshLite.hostsGrouped` (default `true`) and restored at activation, which also seeds the context key. `HostTreeProvider.setGrouped()` / `isGrouped()` hold the in-memory flag; `getServerItems(protocol?)` filters hosts to a protocol for each group.
@@ -40,8 +46,9 @@ The root either shows two **ProtocolGroupTreeItem** nodes ("SSH" and "FTP") with
 
 | Class | contextValue | When Shown |
 |-------|-------------|------------|
+| NoHostsTreeItem | `noHosts` | Root when no hosts exist |
 | ProtocolGroupTreeItem | `protocolGroup` | Root, grouped mode only (SSH/FTP) |
-| ServerTreeItem | `server`, `savedServer`, `connectedServer.saved` | Always |
+| ServerTreeItem | `server`, `savedServer`, `connectedServer`, `connectedServer.ftp`, `connectedServer.saved`, `connectedServer.sudo`, `connectedServer.saved.sudo`, `reconnectingServer`, `reconnectingServer.saved` | Always |
 | UserCredentialTreeItem | `credential`, `credentialConnected` | Under servers |
 | PinnedFolderTreeItem | `pinnedFolder`, `pinnedFolderConnected` | Under credentials |
 | AddCredentialTreeItem | `addCredential` | Under servers |
@@ -54,12 +61,16 @@ The root either shows two **ProtocolGroupTreeItem** nodes ("SSH" and "FTP") with
 
 ### Icons & Connection State
 
-| State | Icon | Color |
-|-------|------|-------|
-| Connected | `vm-running` | Green |
-| Last failed | `vm-outline` | Orange (rich tooltip with error + time ago) |
-| Saved | `vm` | Gray |
-| SSH config only | `vm-outline` | Gray |
+Host rows keep the `server` icon as their stable identity. Color supplements, never replaces, state text in the tooltip. Secure Shell protocol groups use `remote`; File Transfer Protocol groups use `cloud`.
+
+| State | Icon | Color | Tooltip state |
+|-------|------|-------|---------------|
+| Connected | `server` | `charts.green` | `Status: Connected` |
+| Reconnecting | `server` | `charts.yellow` | `Status: Reconnecting` |
+| Connection failed | `server` | `charts.orange` | `Status: Connection failed`, error, and relative attempt time |
+| Saved or disconnected | `server` | Default foreground | `Status: Disconnected` |
+| Sudo mode | `shield` | `charts.yellow` | `Status: Connected` |
+| No hosts | `server` | Default foreground | `No SSH hosts yet` — `Use Add Host to create or import a connection` |
 
 Failed connection stored via `connectionManager.saveLastConnectionAttempt()` in globalState. Cleared on successful reconnect.
 
