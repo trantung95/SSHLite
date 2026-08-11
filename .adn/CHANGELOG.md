@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.0.6 - Remote-SSH activation blocked by a remote audit path
+
+A user running Visual Studio Code on local Ubuntu connected to a Linux server with the built-in Remote-SSH extension. SSH Lite worked in the local window, but the Remote-SSH window stayed on **Activating** and showed no saved hosts. SSH Lite was installed locally, its manifest already forced the user-interface extension host, and restarting Visual Studio Code did not help. Setting `sshLite.auditLogPath` to the local `/tmp/ssh-lite-audit.json` immediately restored activation. Although that report used Linux at both ends, the same invalid remote-path handling could affect local Windows, macOS, or Linux clients.
+
+### Root cause
+
+SSH Lite correctly ran on the local Ubuntu machine. However, `AuditService.getLogFilePath()` accepted the first workspace folder's `uri.fsPath` without checking its Uniform Resource Identifier (URI) scheme. In a Remote-SSH window that URI uses the `vscode-remote:` scheme, so the path names a folder on the server, not a folder available to local Node.js filesystem calls.
+
+`FileService` creates `AuditService` early during activation. The audit service tried to create or read `<remote-workspace>/.vscode/ssh-lite-audit.json` through the local filesystem before tree providers were registered. When the corresponding path did not exist locally, activation stopped and the host tree never loaded. The hosts remained safely stored; the failure only prevented the interface from reaching them.
+
+The earlier `platform=linux` log was not proof that SSH Lite ran on the server because both machines used Linux. `process.platform` reports only the operating system of the active extension host, not whether that host is local or remote.
+
+### Fix
+
+- A workspace-relative audit path is used only when the workspace URI scheme is `file:`.
+- Remote-SSH and all other virtual workspaces fall back to the local `~/.ssh-lite/audit.json` path.
+- A user-configured `sshLite.auditLogPath` remains the highest-priority location.
+- An always-on diagnostic event records when a non-file workspace is skipped and local-home storage is selected.
+
+### Tests and verification
+
+- Added regression tests for a `vscode-remote:` workspace, a normal local `file:` workspace, and the custom-path override. The tests verify the actual path passed to the filesystem write.
+- The focused audit service suite passes all 23 tests; the full unit suite passes all 1,963 tests across 108 suites.
+- TypeScript compilation and linting pass with no errors. Existing lint warnings are unchanged.
+- Chaos setup was attempted but stopped before any SSH Lite scenario because the Ubuntu package mirror returned an Advanced Package Tool (APT) `Hash Sum mismatch` while building the test container. This external container-image failure is unrelated to the extension change.
+
 ## v1.0.5 - Host list invisible inside a Remote-SSH window (extensionKind regression)
 
 A user's colleague installed the latest version and, using VS Code's built-in Remote-SSH extension, connected to a server. On their **local** VS Code, SSH Lite listed saved hosts and Add Host worked. Inside the **Remote-SSH window** (VS Code attached to the server), SSH Lite showed **no host list and could not add a host**. The same symptom had been fixed once before in v0.8.17 - it had silently regressed, which is exactly the backward-compatibility failure a host-config extension must not have.

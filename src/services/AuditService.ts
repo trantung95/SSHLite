@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { infoLog } from '../utils/diagnosticLog';
 
 /**
  * Audit action types
@@ -64,9 +65,11 @@ export class AuditService {
       return customPath;
     }
 
-    // Default to extension storage or workspace
+    // Keep audit logs beside normal local workspaces. A UI extension inside a
+    // Remote-SSH window receives a vscode-remote: workspace URI; its fsPath is
+    // the server path and must never be passed to the local Node.js fs module.
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (workspaceFolder) {
+    if (workspaceFolder?.uri.scheme === 'file') {
       const vscodePath = path.join(workspaceFolder.uri.fsPath, '.vscode');
       if (!fs.existsSync(vscodePath)) {
         fs.mkdirSync(vscodePath, { recursive: true });
@@ -74,7 +77,14 @@ export class AuditService {
       return path.join(vscodePath, 'ssh-lite-audit.json');
     }
 
-    // Fallback to home directory
+    if (workspaceFolder) {
+      infoLog('audit-service', 'workspace-storage-skipped', {
+        scheme: workspaceFolder.uri.scheme,
+        fallback: 'local-home',
+      });
+    }
+
+    // No workspace or a non-file workspace: use storage on this extension host.
     const sshLitePath = path.join(os.homedir(), '.ssh-lite');
     if (!fs.existsSync(sshLitePath)) {
       fs.mkdirSync(sshLitePath, { recursive: true });

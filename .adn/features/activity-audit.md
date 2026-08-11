@@ -1,6 +1,6 @@
 # Activity & Audit
 
-Covers `CommandGuard` (activity tracking middleware), `ActivityService` (operation tracking), and `AuditService` (JSON line logging).
+Covers `CommandGuard` (activity tracking middleware), `ActivityService` (operation tracking), and `AuditService` (JavaScript Object Notation array logging).
 
 ---
 
@@ -127,7 +127,7 @@ sshLite.activity
 
 ## AuditService (`src/services/AuditService.ts`)
 
-Logs all file operations to a local JSON Lines file for audit trail.
+Logs all file operations to a local JavaScript Object Notation (JSON) array file for an audit trail.
 
 ### Audit Entry Format
 
@@ -150,8 +150,11 @@ interface AuditEntry {
 
 ### Audit Log Location
 
-Default: `~/.ssh-lite/audit.jsonl`
-Custom: `sshLite.auditLogPath` setting
+- Local `file:` workspace: `<workspace>/.vscode/ssh-lite-audit.json`
+- Remote-SSH, virtual, or no workspace: `~/.ssh-lite/audit.json` on the extension host
+- Custom: `sshLite.auditLogPath` setting; overrides both defaults
+
+`AuditService` never passes a non-`file:` workspace URI's `fsPath` to the raw Node.js filesystem. In a Remote-SSH window that path belongs to the server, while this user interface extension runs locally; using it as a local path can abort activation before the tree providers register.
 
 ### Commands
 

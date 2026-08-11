@@ -179,6 +179,9 @@ FileService
   ├─ uses: PriorityQueueService (preload queue)
   └─ uses: CommandGuard (activity tracking)
 
+AuditService
+  └─ stores beside local `file:` workspaces; falls back to the extension host's home for Remote-SSH and other non-file workspace schemes
+
 CommandGuard
   └─ uses: ActivityService (start/complete/fail activities)
 

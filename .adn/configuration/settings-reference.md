@@ -154,7 +154,7 @@ File opened → size > progressiveDownloadThreshold (1MB)?
 |---------|------|---------|-----|-------------|
 | `sshLite.tempFileRetentionHours` | `number` | `504` | `0` | Auto-delete temp files older than N hours. Default: 504 = 21 days. **0 = disabled** |
 | `sshLite.diffTempRetentionHours` | `number` | `24` | -- | Auto-delete orphaned `sshlite-diff-*` temp directories (from "Diff with Local") older than N hours. Swept by `HousekeepingService` at activation and on FileService's hourly cleanup timer. The "Diff with Local" feature already removes its own temp dir when the diff tab closes; this is the safety net for any left behind |
-| `sshLite.auditLogPath` | `string` | `""` | — | Custom audit log path. Empty = default location |
+| `sshLite.auditLogPath` | `string` | `""` | — | Custom local audit log path. Empty uses `<workspace>/.vscode/ssh-lite-audit.json` for a local `file:` workspace, or `~/.ssh-lite/audit.json` for Remote-SSH, virtual, and no-workspace windows |
 
 ---
 

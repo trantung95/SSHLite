@@ -7,7 +7,10 @@
  * The file I/O is mocked to avoid actual disk writes.
  */
 
-import { workspace } from '../__mocks__/vscode';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { clearMockConfig, setMockConfig, Uri, workspace } from '../__mocks__/vscode';
 
 // Mock fs module
 jest.mock('fs', () => ({
@@ -17,7 +20,11 @@ jest.mock('fs', () => ({
   mkdirSync: jest.fn(),
 }));
 
-import { AuditService, AuditEntry } from './AuditService';
+import { AuditService } from './AuditService';
+
+const mutableWorkspace = workspace as unknown as {
+  workspaceFolders: Array<{ uri: Uri; name: string; index: number }>;
+};
 
 function resetAuditService(): AuditService {
   (AuditService as any)._instance = undefined;
@@ -28,8 +35,74 @@ describe('AuditService', () => {
   let service: AuditService;
 
   beforeEach(() => {
+    clearMockConfig();
     jest.clearAllMocks();
+    mutableWorkspace.workspaceFolders = [];
     service = resetAuditService();
+  });
+
+  describe('audit log storage', () => {
+    it('uses local home storage for a Remote-SSH workspace instead of raw fs on its remote path', () => {
+      mutableWorkspace.workspaceFolders = [{
+        uri: Uri.parse('vscode-remote://ssh-remote+example/home/remote/project'),
+        name: 'project',
+        index: 0,
+      }];
+      jest.clearAllMocks();
+
+      const remoteService = resetAuditService();
+      remoteService.log({
+        action: 'download',
+        connectionId: 'remote-connection',
+        hostName: 'Remote server',
+        username: 'user',
+        remotePath: '/home/remote/file.txt',
+        success: true,
+      });
+
+      const localAuditDirectory = path.join(os.homedir(), '.ssh-lite');
+      const remoteWorkspaceDirectory = path.join('/home/remote/project', '.vscode');
+      const localAuditFile = path.join(localAuditDirectory, 'audit.json');
+      const remoteWorkspaceAuditFile = path.join(remoteWorkspaceDirectory, 'ssh-lite-audit.json');
+      expect(fs.mkdirSync).toHaveBeenCalledWith(localAuditDirectory, { recursive: true });
+      expect(fs.mkdirSync).not.toHaveBeenCalledWith(remoteWorkspaceDirectory, { recursive: true });
+      expect(fs.writeFileSync).toHaveBeenCalledWith(localAuditFile, expect.any(String));
+      expect(fs.writeFileSync).not.toHaveBeenCalledWith(remoteWorkspaceAuditFile, expect.any(String));
+    });
+
+    it('keeps audit logs beside a local file workspace', () => {
+      const localWorkspaceDirectory = path.join(os.tmpdir(), 'ssh-lite-local-workspace');
+      mutableWorkspace.workspaceFolders = [{
+        uri: Uri.file(localWorkspaceDirectory),
+        name: 'local-workspace',
+        index: 0,
+      }];
+      jest.clearAllMocks();
+
+      const localService = resetAuditService();
+      localService.clearLogs();
+
+      expect(fs.writeFileSync).toHaveBeenCalledWith(
+        path.join(localWorkspaceDirectory, '.vscode', 'ssh-lite-audit.json'),
+        expect.any(String),
+      );
+    });
+
+    it('keeps a custom audit log path as the highest-priority override', () => {
+      const customAuditFile = path.join(os.tmpdir(), 'custom-ssh-lite-audit.json');
+      setMockConfig('sshLite.auditLogPath', customAuditFile);
+      mutableWorkspace.workspaceFolders = [{
+        uri: Uri.parse('vscode-remote://ssh-remote+example/home/remote/project'),
+        name: 'project',
+        index: 0,
+      }];
+      jest.clearAllMocks();
+
+      const customService = resetAuditService();
+      customService.clearLogs();
+
+      expect(fs.writeFileSync).toHaveBeenCalledWith(customAuditFile, expect.any(String));
+    });
   });
 
   describe('getInstance', () => {

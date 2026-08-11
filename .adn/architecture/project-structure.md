@@ -46,8 +46,8 @@ SSHLite/
       TerminalService.test.ts             # Terminal tests
       PortForwardService.ts               # Local/remote port forwarding
       PortForwardService.test.ts          # Port forward tests
-      AuditService.ts                     # JSON line audit logging
-      AuditService.test.ts                # Audit tests
+      AuditService.ts                     # Scheme-safe local JSON audit logging
+      AuditService.test.ts                # Audit and Remote-SSH storage tests
       ActivityService.ts                  # Operation tracking, grouping
       ActivityService.test.ts             # Activity tests
       ServerMonitorService.ts             # Server diagnostics (quick status, watch)
