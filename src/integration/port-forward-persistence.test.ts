@@ -33,13 +33,18 @@ jest.mock('../connection/ConnectionManager', () => {
 
 // Mock HostService
 var mockGetAllHosts = jest.fn().mockReturnValue([]);
-jest.mock('../services/HostService', () => ({
-  HostService: {
-    getInstance: jest.fn().mockImplementation(() => ({
-      get getAllHosts() { return mockGetAllHosts; },
-    })),
-  },
-}));
+jest.mock('../services/HostService', () => {
+  const { EventEmitter } = require('../__mocks__/vscode');
+  const mockOnDidChangeHosts = new EventEmitter();
+  return {
+    HostService: {
+      getInstance: jest.fn().mockImplementation(() => ({
+        get getAllHosts() { return mockGetAllHosts; },
+        onDidChangeHosts: mockOnDidChangeHosts.event,
+      })),
+    },
+  };
+});
 
 import { PortForwardService } from '../services/PortForwardService';
 import {

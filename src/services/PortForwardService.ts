@@ -21,7 +21,7 @@ export class PortForwardService {
   private treeProvider: PortForwardTreeProvider | null = null;
   private context: vscode.ExtensionContext | null = null;
   private savedRules: SavedPortForwardIndex = {};
-  private readonly restoreFailures = new Map<string, string>();
+  private readonly restoreFailures = new Map<string, Map<string, string>>();
   private readonly STORAGE_KEY = 'sshLite.savedPortForwards';
 
   private constructor() {}
@@ -90,16 +90,28 @@ export class PortForwardService {
 
   /** Get the current-session restore failure for a saved rule. */
   getRestoreFailure(hostId: string, ruleId: string): string | undefined {
-    return this.restoreFailures.get(this.restoreFailureKey(hostId, ruleId));
+    return this.restoreFailures.get(hostId)?.get(ruleId);
   }
 
   /** Clear the current-session restore failure for a saved rule. */
   clearRestoreFailure(hostId: string, ruleId: string): void {
-    this.restoreFailures.delete(this.restoreFailureKey(hostId, ruleId));
+    const hostFailures = this.restoreFailures.get(hostId);
+    if (!hostFailures) {
+      return;
+    }
+    hostFailures.delete(ruleId);
+    if (hostFailures.size === 0) {
+      this.restoreFailures.delete(hostId);
+    }
   }
 
-  private restoreFailureKey(hostId: string, ruleId: string): string {
-    return `${hostId}:${ruleId}`;
+  private setRestoreFailure(hostId: string, ruleId: string, message: string): void {
+    let hostFailures = this.restoreFailures.get(hostId);
+    if (!hostFailures) {
+      hostFailures = new Map<string, string>();
+      this.restoreFailures.set(hostId, hostFailures);
+    }
+    hostFailures.set(ruleId, message);
   }
 
   /**
@@ -404,7 +416,7 @@ export class PortForwardService {
         restored++;
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        this.restoreFailures.set(this.restoreFailureKey(connection.id, rule.id), errorMessage);
+        this.setRestoreFailure(connection.id, rule.id, errorMessage);
         failures.push({ ruleId: rule.id, localPort: rule.localPort, errorMessage });
         failed++;
       }
@@ -458,6 +470,15 @@ export class PortForwardService {
    * Dispose of resources
    */
   dispose(): void {
-    // Port forwards are cleaned up when connections are disconnected
+    const restoreFailureCount = Array.from(this.restoreFailures.values())
+      .reduce((total, failures) => total + failures.size, 0);
+    infoLog('port-forward', 'dispose', {
+      restoreFailureCount,
+      savedHostCount: Object.keys(this.savedRules).length,
+    });
+    this.restoreFailures.clear();
+    this.savedRules = {};
+    this.treeProvider = null;
+    this.context = null;
   }
 }

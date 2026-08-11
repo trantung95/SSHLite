@@ -115,6 +115,8 @@ src/
 - `normalizeLocalPath()` for all local file path Map lookups
 - `CommandGuard` for significant SSH operations
 - Stable tree item `id` (never include dynamic state)
+- Build composite runtime keys and tree identifiers with nested maps or structured encoding. Never concatenate backward-compatible identifiers with a delimiter; Internet Protocol version 6 hosts and legacy identifiers may already contain that delimiter.
+- A cached tree snapshot that depends on another service must subscribe to that service's authoritative change event, invalidate once per change, and dispose the subscription with the provider.
 
 ## Codebase Memory (codebase-memory-mcp)
 

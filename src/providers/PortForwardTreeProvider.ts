@@ -5,9 +5,10 @@ import { IPortForward, ISavedPortForwardRule } from '../types';
 import { PortForwardService } from '../services/PortForwardService';
 import { HostService } from '../services/HostService';
 import { parseHostId } from '../utils/hostId';
+import { hasCapability } from '../utils/capabilityGuard';
 
 type PortForwardRuleTreeItem = PortForwardTreeItem | SavedForwardTreeItem;
-type PortForwardTreeElement = PortForwardServerGroupTreeItem | PortForwardRuleTreeItem;
+type PortForwardTreeElement = PortForwardServerGroupTreeItem | PortForwardRuleTreeItem | NoPortForwardsTreeItem;
 
 interface PortForwardHostSnapshot {
   group: PortForwardServerGroupTreeItem;
@@ -65,6 +66,18 @@ export class PortForwardTreeItem extends vscode.TreeItem {
   }
 }
 
+/** Explicit empty state for the Port Forwards view. */
+export class NoPortForwardsTreeItem extends vscode.TreeItem {
+  readonly contextValue = 'noPortForwards';
+
+  constructor() {
+    super('No port forwards', vscode.TreeItemCollapsibleState.None);
+    this.id = 'port-forwards-empty';
+    this.description = 'Create one from the toolbar';
+    this.iconPath = new vscode.ThemeIcon('info');
+  }
+}
+
 /**
  * Tree item representing a saved but inactive port forward rule.
  */
@@ -75,7 +88,8 @@ export class SavedForwardTreeItem extends vscode.TreeItem {
     public readonly hostName: string,
     public readonly hostAddress: string,
     hostConnected = false,
-    restoreFailure?: string
+    restoreFailure?: string,
+    portForwardAvailable = hostConnected
   ) {
     const remoteTarget = rule.remoteHost === 'localhost' ? hostName : rule.remoteHost;
     const remoteDisplay = `${remoteTarget}:${rule.remotePort}`;
@@ -85,11 +99,13 @@ export class SavedForwardTreeItem extends vscode.TreeItem {
       vscode.TreeItemCollapsibleState.None
     );
 
-    this.id = `saved:${hostId}:${rule.id}`;
+    this.id = `saved:${JSON.stringify([hostId, rule.id])}`;
     this.description = restoreFailure
       ? `Restore failed · ${restoreFailure}`
       : hostConnected
-        ? 'Saved · stopped'
+        ? portForwardAvailable
+          ? 'Saved · stopped'
+          : 'Port forwarding unavailable'
         : 'Host disconnected';
     this.contextValue = 'savedForward';
     this.iconPath = new vscode.ThemeIcon(
@@ -100,7 +116,9 @@ export class SavedForwardTreeItem extends vscode.TreeItem {
     const status = restoreFailure
       ? `Restore failed: ${restoreFailure}`
       : hostConnected
-        ? 'Saved and stopped'
+        ? portForwardAvailable
+          ? 'Saved and stopped'
+          : 'Port forwarding unavailable for this connection'
         : 'Host disconnected';
     this.tooltip = new vscode.MarkdownString(
       `**Saved Port Forward**\n\n` +
@@ -123,15 +141,19 @@ export class PortForwardTreeProvider implements vscode.TreeDataProvider<PortForw
   private readonly connectionManager: ConnectionManager;
   private readonly forwards: Map<string, IPortForward> = new Map();
   private readonly groupItems = new Map<string, PortForwardServerGroupTreeItem>();
+  private readonly emptyItem = new NoPortForwardsTreeItem();
+  private readonly connectionChangeDisposable: vscode.Disposable;
+  private readonly hostChangeDisposable: vscode.Disposable;
   private hostSnapshots: Map<string, PortForwardHostSnapshot> | undefined;
 
   constructor() {
     this.connectionManager = ConnectionManager.getInstance();
 
-    this.connectionManager.onDidChangeConnections(() => {
+    this.connectionChangeDisposable = this.connectionManager.onDidChangeConnections(() => {
       this.cleanupDisconnectedForwards();
       this.refresh();
     });
+    this.hostChangeDisposable = HostService.getInstance().onDidChangeHosts(() => this.refresh());
   }
 
   /** Refresh the tree view. */
@@ -167,7 +189,11 @@ export class PortForwardTreeProvider implements vscode.TreeDataProvider<PortForw
 
   /** Clean up forwards for disconnected connections. */
   private cleanupDisconnectedForwards(): void {
-    const connectedIds = new Set(this.connectionManager.getAllConnections().map((connection) => connection.id));
+    const connectedIds = new Set(
+      this.connectionManager.getAllConnections()
+        .filter((connection) => hasCapability(connection, 'supportsPortForward'))
+        .map((connection) => connection.id)
+    );
 
     for (const [id, forward] of this.forwards) {
       if (!connectedIds.has(forward.connectionId)) {
@@ -186,9 +212,10 @@ export class PortForwardTreeProvider implements vscode.TreeDataProvider<PortForw
     const snapshots = this.getHostSnapshots();
 
     if (!element) {
-      return Array.from(snapshots.values())
+      const groups = Array.from(snapshots.values())
         .map((snapshot) => snapshot.group)
         .sort((left, right) => left.hostName.localeCompare(right.hostName));
+      return groups.length > 0 ? groups : [this.emptyItem];
     }
 
     if (element instanceof PortForwardServerGroupTreeItem) {
@@ -227,7 +254,8 @@ export class PortForwardTreeProvider implements vscode.TreeDataProvider<PortForw
     const activeByHost = new Map<string, IPortForward[]>();
 
     for (const forward of this.forwards.values()) {
-      if (!connectionMap.has(forward.connectionId)) {
+      const connection = connectionMap.get(forward.connectionId);
+      if (!connection || !hasCapability(connection, 'supportsPortForward')) {
         continue;
       }
       const active = activeByHost.get(forward.connectionId) ?? [];
@@ -243,6 +271,7 @@ export class PortForwardTreeProvider implements vscode.TreeDataProvider<PortForw
 
     for (const hostId of hostIds) {
       const connection = connectionMap.get(hostId);
+      const portForwardAvailable = Boolean(connection && hasCapability(connection, 'supportsPortForward'));
       const configuredHost = hostMap.get(hostId);
       const activeForwards = activeByHost.get(hostId) ?? [];
       const activeKeys = new Set(activeForwards.map((forward) => this.forwardKey(forward)));
@@ -264,7 +293,8 @@ export class PortForwardTreeProvider implements vscode.TreeDataProvider<PortForw
           hostName,
           hostAddress,
           Boolean(connection),
-          portForwardService.getRestoreFailure(hostId, rule.id)
+          portForwardService.getRestoreFailure(hostId, rule.id),
+          portForwardAvailable
         )),
       ];
       const description = `${activeForwards.length} active · ${savedRules.length} saved`;
@@ -298,6 +328,8 @@ export class PortForwardTreeProvider implements vscode.TreeDataProvider<PortForw
 
   /** Dispose of resources. */
   dispose(): void {
+    this.connectionChangeDisposable.dispose();
+    this.hostChangeDisposable.dispose();
     this.hostSnapshots = undefined;
     this.groupItems.clear();
     this._onDidChangeTreeData.dispose();

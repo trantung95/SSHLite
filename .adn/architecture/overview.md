@@ -199,6 +199,11 @@ FileTreeProvider
   ├─ uses: FileService (file mappings, upload state)
   └─ uses: CommandGuard (list files)
 
+PortForwardTreeProvider
+  ├─ uses: ConnectionManager (port-forward-capable connections and lifecycle events)
+  ├─ uses: PortForwardService (active, saved, and runtime restore-failure state)
+  └─ uses: HostService (`onDidChangeHosts` invalidates cached host metadata)
+
 HousekeepingService
   ├─ uses: FileService (registerCleanupHook → rides hourly timer; cleanupOldTempFiles)
   └─ removes: orphaned sshlite-diff-* temp dirs (safety net for RemoteDiffService)

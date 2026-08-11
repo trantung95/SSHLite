@@ -128,7 +128,7 @@ Rules are saved to `context.globalState` under key `sshLite.savedPortForwards`, 
 - **Auto-restore**: On `ConnectionState.Connected` event, saved rules are restored via `restoreForwardsForConnection()`
 - **Deduplication**: Rules are deduped by `localPort + remoteHost + remotePort` within a host
 - **Initialization**: `portForwardService.initialize(context)` loads saved rules on activation
-- **Restore failure state**: A failed auto-restore remains visible with its error reason for the current extension session. The failure registry is memory-only and is never written to `globalState`; the saved-rule format remains backward-compatible.
+- **Restore failure state**: A failed auto-restore remains visible with its error reason for the current extension session. The failure registry is a nested in-memory map keyed separately by host identifier and rule identifier, so delimiter-bearing backward-compatible values remain distinct. It is never written to `globalState`; the saved-rule format remains backward-compatible. Service disposal clears the failure registry, cached saved rules, extension context, and tree-provider reference before normal reactivation reloads persisted rules.
 
 ### Forward Lifecycle
 
@@ -176,13 +176,13 @@ sshLite.portForwards
        │
        └─ SavedForwardTreeItem       (inactive)
             label: "localhost:8080 → host:8080"
-            description: "Saved · stopped", "Host disconnected", or
-                         "Restore failed · reason"
+            description: "Saved · stopped", "Host disconnected",
+                         "Port forwarding unavailable", or "Restore failed · reason"
             contextValue: "savedForward"
             actions: play, delete
 ```
 
-Root groups are the union of connected servers with active forwards and every server identifier with saved rules. A removed host therefore keeps an orphan group keyed by its original `hostId`; no saved rule disappears from the tree. Active rows render before inactive saved rows. `getParent()` returns the cached group with stable identifier `port-forward-server:<hostId>` so reveal and expand/collapse operations keep a stable hierarchy.
+Root groups are the union of port-forward-capable connected servers with active forwards and every server identifier with saved rules. A removed host therefore keeps an orphan group keyed by its original `hostId`; no saved rule disappears from the tree. A same-identifier File Transfer Protocol connection does not make a saved rule startable. Active rows render before inactive saved rows. `getParent()` returns the cached group with stable identifier `port-forward-server:<hostId>` so reveal and expand/collapse operations keep a stable hierarchy. Saved rows use `saved:<JSON tuple>` identifiers, preserving the stored rule identifier while preventing composite-key collisions.
 
 Restore batches log one `restore/begin` event and one `restore/complete` event through the SSH Lite output channel. The completion payload includes counts and failed rule reasons without logging inside the per-rule loop.
 

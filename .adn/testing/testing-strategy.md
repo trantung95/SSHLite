@@ -115,17 +115,17 @@ Discovers: invariant violations, output anomalies, resource leaks, OS-specific b
 | Function | Unit | Integration | E2E |
 |----------|------|-------------|-----|
 | `getInstance()` | [x] singleton | — | — |
-| `initialize(context)` | [x] load/empty globalState | [x] cross-instance persistence | [ ] real context |
+| `initialize(context)` | [x] load/empty globalState and normal dispose/reactivate lifecycle | [x] cross-instance persistence | [ ] real context |
 | `forwardPort(conn, local, host, remote)` | [x] success/fail/save/tree | [x] tree+rule reflect | [ ] real tunnel |
 | `stopForward(forward)` | [x] stop/remove/warn/error/keepRule | — | [ ] real stop |
 | `deactivateAllForwardsForConnection(id)` | [x] stop all/noop/keepRules | [x] tree 0 active, rules persist | [ ] real disconnect |
-| `restoreForwardsForConnection(conn)` | [x] restore/multi/partial/empty/failure reason/clear on success/runtime-only state | [x] full lifecycle, multi-server, failed row remains visible | [ ] real reconnect |
+| `restoreForwardsForConnection(conn)` | [x] restore/multi/partial/empty/failure reason/clear on success/runtime-only state/collision-safe host-rule identity | [x] full lifecycle, multi-server, failed row remains visible | [ ] real reconnect |
 | `saveRule(hostId, ...)` | [x] save/dedup/different/return | [x] survives restart | — |
 | `deleteSavedRule(hostId, ruleId)` | [x] delete/refresh/cleanup/clear restore failure | [x] not restored | — |
 | `activateSavedForward(hostId, ruleId)` | [x] activate/warn noRule/warn noConn/clear restore failure | [x] manual activate, no-conn warning | — |
 | `getSavedRules(hostId)` | [x] return/empty | — | — |
 | `getHostIdsWithSavedRules()` | [x] returns all | — | — |
-| `getRestoreFailure(hostId, ruleId)` | [x] failed restore reason/success clear/delete clear/new-instance empty | [x] failed row reason | — |
+| `getRestoreFailure(hostId, ruleId)` | [x] failed restore reason/success clear/delete clear/dispose clear/new-instance empty/Internet Protocol version 6 plus legacy identifier isolation | [x] failed row reason | — |
 | `clearRestoreFailure(hostId, ruleId)` | [x] observed through success and delete behavior | [x] failed row removed by lifecycle | — |
 | `promptForwardPort()` | [x] warn/pick/cancel/prompt | — | — |
 
@@ -135,9 +135,10 @@ Discovers: invariant violations, output anomalies, resource leaks, OS-specific b
 |----------|------|-------------|
 | `addForward / removeForward` | [x] add/multi, remove by port+conn | — |
 | `getForwardsForConnection(id)` | [x] empty/filter | — |
-| `getChildren(element?)` | [x] empty/host groups/active-first/disconnected/saved/dedup/orphan/restore failure/snapshot reuse | [x] active↔saved↔restored lifecycle and failed reason |
+| `getChildren(element?)` | [x] explicit empty row/host groups/active-first/disconnected/unavailable/saved/dedup/orphan/restore failure/snapshot reuse/host rename and removal invalidation | [x] active↔saved↔restored lifecycle and failed reason |
 | `getParent(element)` | [x] active and saved rows return stable server group | [x] grouped lifecycle |
-| `cleanupDisconnectedForwards()` | [x] remove disconnected, keep connected | — |
+| `cleanupDisconnectedForwards()` | [x] remove disconnected or incapable, keep capable connected | — |
+| `dispose()` | [x] releases host and connection event subscriptions | — |
 
 ### Integration Test Flows
 

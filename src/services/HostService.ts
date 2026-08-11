@@ -7,6 +7,7 @@ import { IHostConfig } from '../types';
 import { expandPath, validatePort } from '../utils/helpers';
 import { pickPrivateKeyPath } from '../utils/keyFilePicker';
 import { buildHostId, parseHostId } from '../utils/hostId';
+import { diagLog } from '../utils/diagnosticLog';
 
 /**
  * Resolve a saved host's effective port, defaulting by connection type:
@@ -26,6 +27,8 @@ export function effectiveHostPort(h: { port?: number; connectionType?: 'ssh' | '
  */
 export class HostService {
   private static _instance: HostService;
+  private readonly _onDidChangeHosts = new vscode.EventEmitter<void>();
+  readonly onDidChangeHosts = this._onDidChangeHosts.event;
 
   // Cache for SSH config hosts (parsed once, invalidated manually)
   private sshConfigHostsCache: IHostConfig[] | null = null;
@@ -160,6 +163,7 @@ export class HostService {
   invalidateCache(): void {
     this.sshConfigHostsCache = null;
     this.sshConfigMtime = 0;
+    this.notifyHostsChanged('ssh-config-cache-invalidated');
   }
 
   /**
@@ -258,6 +262,7 @@ export class HostService {
     }
 
     await config.update('hosts', savedHosts, vscode.ConfigurationTarget.Global);
+    this.notifyHostsChanged(existingIndex >= 0 ? 'saved-host-updated' : 'saved-host-added');
   }
 
   /**
@@ -492,6 +497,7 @@ export class HostService {
 
     if (mode === 'replace') {
       await config.update('hosts', sanitized, vscode.ConfigurationTarget.Global);
+      this.notifyHostsChanged('saved-hosts-import-replaced');
       return { added: sanitized.length, updated: 0 };
     }
 
@@ -521,6 +527,7 @@ export class HostService {
     }
 
     await config.update('hosts', merged, vscode.ConfigurationTarget.Global);
+    this.notifyHostsChanged('saved-hosts-import-merged');
     return { added, updated };
   }
 
@@ -545,6 +552,9 @@ export class HostService {
     );
 
     await config.update('hosts', filtered, vscode.ConfigurationTarget.Global);
+    if (filtered.length !== savedHosts.length) {
+      this.notifyHostsChanged('saved-host-removed');
+    }
   }
 
   /**
@@ -583,6 +593,7 @@ export class HostService {
     if (host) {
       host.name = newName;
       await config.update('hosts', savedHosts, vscode.ConfigurationTarget.Global);
+      this.notifyHostsChanged('saved-host-renamed');
     }
   }
 
@@ -614,7 +625,13 @@ export class HostService {
         delete host.tabLabel;
       }
       await config.update('hosts', savedHosts, vscode.ConfigurationTarget.Global);
+      this.notifyHostsChanged('saved-host-tab-label-changed');
     }
+  }
+
+  private notifyHostsChanged(reason: string): void {
+    diagLog('host-service', 'hosts-changed', { reason });
+    this._onDidChangeHosts.fire();
   }
 
   /**

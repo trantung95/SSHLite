@@ -262,6 +262,7 @@ Tree item `contextValue` determines which menu items appear. These values are ma
 | `portForwardServerGroup` | Server group containing active or saved rules |
 | `forward` | Active port forward |
 | `savedForward` | Saved inactive, disconnected, or restore-failed rule |
+| `noPortForwards` | Explicit empty row with no item action |
 
 ---
 

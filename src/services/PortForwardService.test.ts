@@ -509,6 +509,50 @@ describe('PortForwardService', () => {
       expect(freshService.getRestoreFailure(mockConn.id, rule.id)).toBeUndefined();
     });
 
+    it('keeps IPv6 host and colon-bearing legacy rule restore failures distinct', async () => {
+      const firstHostId = '::1:22:a';
+      const secondHostId = '::1:22:a:23:b';
+      const firstRule = { id: '23:b:c', localPort: 3000, remoteHost: 'localhost', remotePort: 3000 };
+      const secondRule = { id: 'c', localPort: 4000, remoteHost: 'localhost', remotePort: 4000 };
+      mockGlobalStateStore['sshLite.savedPortForwards'] = {
+        [firstHostId]: [firstRule],
+        [secondHostId]: [secondRule],
+      };
+      service.initialize(mockContext);
+      const firstConnection = createMockConnection({ id: firstHostId });
+      const secondConnection = createMockConnection({ id: secondHostId });
+      (firstConnection.forwardPort as jest.Mock).mockRejectedValueOnce(new Error('First failure'));
+      (secondConnection.forwardPort as jest.Mock).mockRejectedValueOnce(new Error('Second failure'));
+
+      await service.restoreForwardsForConnection(firstConnection as any);
+      await service.restoreForwardsForConnection(secondConnection as any);
+
+      expect(service.getRestoreFailure(firstHostId, firstRule.id)).toBe('First failure');
+      expect(service.getRestoreFailure(secondHostId, secondRule.id)).toBe('Second failure');
+    });
+
+    it('clears runtime state and stale references across dispose and reactivation', async () => {
+      service.initialize(mockContext);
+      const connection = createMockConnection();
+      const rule = await service.saveRule(connection.id, 8080, 'localhost', 3000);
+      (connection.forwardPort as jest.Mock).mockRejectedValueOnce(new Error('Address already in use'));
+      await service.restoreForwardsForConnection(connection as any);
+      expect(service.getRestoreFailure(connection.id, rule.id)).toBe('Address already in use');
+
+      mockRefresh.mockClear();
+      mockGlobalState.update.mockClear();
+      service.dispose();
+      await service.deleteSavedRule(connection.id, rule.id);
+
+      expect(service.getRestoreFailure(connection.id, rule.id)).toBeUndefined();
+      expect(mockRefresh).not.toHaveBeenCalled();
+      expect(mockGlobalState.update).not.toHaveBeenCalled();
+
+      service.initialize(mockContext);
+      expect(service.getSavedRules(connection.id)).toHaveLength(1);
+      expect(service.getRestoreFailure(connection.id, rule.id)).toBeUndefined();
+    });
+
     it('should do nothing when no saved rules', async () => {
       service.initialize(mockContext);
       const mockConn = createMockConnection();

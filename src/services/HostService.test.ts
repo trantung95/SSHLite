@@ -254,6 +254,81 @@ describe('HostService', () => {
       expect(hosts).toHaveLength(1);
       expect(hosts[0].name).toBe('Keep');
     });
+
+    it('fires onDidChangeHosts after a host is removed', async () => {
+      setMockConfig('sshLite.hosts', [
+        { name: 'Server1', host: '10.0.0.1', port: 22, username: 'admin' },
+      ]);
+      const listener = jest.fn();
+      service.onDidChangeHosts(listener);
+
+      await service.removeHost('10.0.0.1:22:admin');
+
+      expect(listener).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('onDidChangeHosts', () => {
+    it('fires after a host is added or updated', async () => {
+      const listener = jest.fn();
+      service.onDidChangeHosts(listener);
+
+      await service.saveHost({
+        name: 'Server', host: '10.0.0.1', port: 22, username: 'admin',
+      });
+      await service.saveHost({
+        name: 'Server renamed', host: '10.0.0.1', port: 22, username: 'admin',
+      });
+
+      expect(listener).toHaveBeenCalledTimes(2);
+    });
+
+    it('fires after a host is renamed', async () => {
+      setMockConfig('sshLite.hosts', [
+        { name: 'Old name', host: '10.0.0.1', port: 22, username: 'admin' },
+      ]);
+      const listener = jest.fn();
+      service.onDidChangeHosts(listener);
+
+      await service.renameHost('10.0.0.1:22:admin', 'New name');
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(service.getAllHosts()[0].name).toBe('New name');
+    });
+
+    it('fires after a host tab label changes', async () => {
+      setMockConfig('sshLite.hosts', [
+        { name: 'Server', host: '10.0.0.1', port: 22, username: 'admin' },
+      ]);
+      const listener = jest.fn();
+      service.onDidChangeHosts(listener);
+
+      await service.setTabLabel('10.0.0.1:22:admin', 'Operations');
+
+      expect(listener).toHaveBeenCalledTimes(1);
+    });
+
+    it('fires after saved hosts are merged or replaced by import', async () => {
+      const listener = jest.fn();
+      service.onDidChangeHosts(listener);
+      const imported = [
+        { name: 'Imported', host: '10.0.0.2', port: 22, username: 'deploy' },
+      ];
+
+      await service.importSavedHosts(imported, 'merge');
+      await service.importSavedHosts(imported, 'replace');
+
+      expect(listener).toHaveBeenCalledTimes(2);
+    });
+
+    it('fires when the SSH config cache is invalidated', () => {
+      const listener = jest.fn();
+      service.onDidChangeHosts(listener);
+
+      service.invalidateCache();
+
+      expect(listener).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('removeHostFromSSHConfig', () => {
