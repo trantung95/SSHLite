@@ -48,7 +48,7 @@ When at least one host exists, the root either shows two **ProtocolGroupTreeItem
 |-------|-------------|------------|
 | NoHostsTreeItem | `noHosts` | Root when no hosts exist |
 | ProtocolGroupTreeItem | `protocolGroup` | Root, grouped mode only (SSH/FTP) |
-| ServerTreeItem | `server`, `savedServer`, `connectedServer`, `connectedServer.ftp`, `connectedServer.saved`, `connectedServer.sudo`, `connectedServer.saved.sudo`, `reconnectingServer`, `reconnectingServer.saved` | Always |
+| ServerTreeItem | `server`, `savedServer`, `connectedServer`, `connectedServer.ftp`, `connectedServer.saved`, `connectedServer.ftp.saved`, `connectedServer.sudo`, `connectedServer.saved.sudo`, `reconnectingServer`, `reconnectingServer.saved` | Always |
 | UserCredentialTreeItem | `credential`, `credentialConnected` | Under servers |
 | PinnedFolderTreeItem | `pinnedFolder`, `pinnedFolderConnected` | Under credentials |
 | AddCredentialTreeItem | `addCredential` | Under servers |
