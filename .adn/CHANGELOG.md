@@ -1,6 +1,16 @@
 # Changelog
 
-## v1.0.6 - Remote-SSH activation blocked by a remote audit path
+## v1.0.6 - Clearer native controls and reliable Remote-SSH activation
+
+Click through the native SSH sidebar with clearer host and remote-file states, distinct search and filename-filter actions, port forwards grouped by host, readable activity progress, and confirmations that make the outcome clear before an operation runs. The visible action density remains unchanged, preserving familiar click targets and keyboard access.
+
+### User interface changes
+
+- Saved Secure Shell (SSH) and File Transfer Protocol (FTP) hosts now present connection state more clearly. Remote files expose loading, filtered, empty, and error states without losing queued refreshes or filename-filter text.
+- Port forwards group by host so expand and collapse controls operate on real nested items. Activity rows distinguish queued, running, completed, failed, and cancelled work; clearing the list still does not cancel active work.
+- Native confirmations and notifications clarify destructive outcomes and failure recovery. Adjacent search and filter actions use distinct icons, while existing action positions remain stable.
+
+### Remote-SSH activation fix
 
 A user running Visual Studio Code on local Ubuntu connected to a Linux server with the built-in Remote-SSH extension. SSH Lite worked in the local window, but the Remote-SSH window stayed on **Activating** and showed no saved hosts. SSH Lite was installed locally, its manifest already forced the user-interface extension host, and restarting Visual Studio Code did not help. Setting `sshLite.auditLogPath` to the local `/tmp/ssh-lite-audit.json` immediately restored activation. Although that report used Linux at both ends, the same invalid remote-path handling could affect local Windows, macOS, or Linux clients.
 
@@ -25,6 +35,12 @@ The earlier `platform=linux` log was not proof that SSH Lite ran on the server b
 - The focused audit service suite passes all 23 tests; the full unit suite passes all 1,963 tests across 108 suites.
 - TypeScript compilation and linting pass with no errors. Existing lint warnings are unchanged.
 - Chaos setup was attempted but stopped before any SSH Lite scenario because the Ubuntu package mirror returned an Advanced Package Tool (APT) `Hash Sum mismatch` while building the test container. This external container-image failure is unrelated to the extension change.
+
+### Compatibility and user interface verification coverage
+
+- The extension still contributes 117 commands. Manifest-contract coverage pins command and action parity, inline menu positions, valid Codicon syntax, and compatibility with the declared Visual Studio Code 1.85.0 minimum.
+- Focused provider, service, extension, and native-feedback tests cover host/file state changes, deferred refreshes, cache-only filters, activity lifecycle boundaries, grouped port-forward persistence, native confirmation paths, and menu gating.
+- Manual Visual Studio Code graphical checks for dark and light themes, keyboard navigation, hover, selected, disabled, loading, empty, warning, and error states remain a release follow-up; this changelog does not claim that manual evidence.
 
 ## v1.0.5 - Host list invisible inside a Remote-SSH window (extensionKind regression)
 
