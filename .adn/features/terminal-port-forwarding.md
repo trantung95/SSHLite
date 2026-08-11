@@ -99,9 +99,11 @@ sshLite.forwardPort command:
 ```
 
 The three native Visual Studio Code steps use consistent titles. Port validation
-accepts integers from 1 through 65535 and rejects local ports already forwarded
-by any active connection. Success feedback states the complete route and that the
-rule was saved. A failed interactive creation explains the reason and gives
+accepts only American Standard Code for Information Interchange (ASCII) decimal
+digits representing integers from 1 through 65535. It rejects surrounding
+whitespace, signs, hexadecimal notation, exponent notation, decimals, and local
+ports already forwarded by any active connection. Success feedback states the
+complete route and that the rule was saved. A failed interactive creation explains the reason and gives
 stage-specific recovery: another local port for bind conflicts, storage access
 for persistence failures, or connection recovery for connection failures.
 `Retry` appears only when retrying is safe; saved-rule activation and automatic
@@ -111,7 +113,8 @@ Saved-rule writes use a candidate snapshot: in-memory state changes only after
 `globalState.update()` succeeds. Writes are serialized so simultaneous forward
 creation cannot overwrite another saved rule. If persistence fails after the
 local listener starts, creation stops that listener and removes its tree row before offering
-`Retry`. If listener rollback fails, the error omits `Retry` and directs the
+`Retry`. The rollback also removes a tree row when adding it mutated provider
+state before a refresh notification failed. If listener rollback fails, the error omits `Retry` and directs the
 user to stop the active forward first.
 
 ### Data Types
@@ -168,8 +171,9 @@ Forward created → listening on localPort → traffic tunneled → rule auto-sa
 ```
 
 The delete confirmation names the local route, destination, persistence
-consequence, and the boundary that no server data is deleted. A custom
-destination host remains visible instead of being replaced by the SSH server name.
+consequence, and the boundary that no server data is deleted. It states that the
+rule will not restore on future connections unless recreated. A custom destination
+host remains visible instead of being replaced by the Secure Shell (SSH) server name.
 
 ### Commands
 

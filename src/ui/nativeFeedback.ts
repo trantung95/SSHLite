@@ -12,8 +12,12 @@ export function validatePort(
     return 'Enter a port';
   }
 
+  if (!/^[0-9]+$/.test(value)) {
+    return 'Port must be between 1 and 65535';
+  }
+
   const port = Number(value);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+  if (port < 1 || port > 65535) {
     return 'Port must be between 1 and 65535';
   }
 
@@ -26,5 +30,6 @@ export function validatePort(
 
 /** Format an error so the action, reason, and recovery stay visible together. */
 export function formatErrorMessage(action: string, reason: string, recovery: string): string {
-  return `${action} failed: ${reason}. ${recovery}.`;
+  const punctuate = (text: string): string => /[.!?]$/.test(text) ? text : `${text}.`;
+  return `${action} failed: ${punctuate(reason)} ${punctuate(recovery)}`;
 }

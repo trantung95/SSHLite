@@ -308,7 +308,7 @@ export class PortForwardService {
       remotePort,
     });
     let listenerStarted = false;
-    let treeRowAdded = false;
+    let treeRowMutationAttempted = false;
     let persistenceCompleted = false;
     let failureStage: 'listener' | 'tree' | 'persistence' | 'feedback' = 'listener';
     try {
@@ -318,8 +318,8 @@ export class PortForwardService {
 
       // Update tree provider
       if (this.treeProvider) {
+        treeRowMutationAttempted = true;
         this.treeProvider.addForward(connection.id, localPort, remoteHost, remotePort);
-        treeRowAdded = true;
       }
 
       // Auto-save the rule for persistence
@@ -346,7 +346,7 @@ export class PortForwardService {
       if (listenerStarted && !persistenceCompleted) {
         try {
           await connection.stopForward(localPort);
-          if (treeRowAdded && this.treeProvider) {
+          if (treeRowMutationAttempted && this.treeProvider) {
             this.treeProvider.removeForward(localPort, connection.id);
           }
           retrySafe = true;

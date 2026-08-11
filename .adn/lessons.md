@@ -16,6 +16,10 @@ LESSONS:
 2. Validate a local listening port against forwards from every active connection because the local bind namespace is shared across servers.
 3. Destructive confirmation copy must name the scope and consequence separately. Deleting a saved forward removes persistence but does not delete server data.
 4. Offer `Retry` for a multi-stage action only after rollback succeeds. Persist a candidate snapshot before replacing in-memory state so durable-write failure cannot leave the interface claiming one state while restart restores another.
+5. Validate numeric syntax before conversion. JavaScript `Number()` accepts whitespace, signs, hexadecimal notation, and exponent notation that a decimal-only native input must reject.
+6. Mark an external mutation as attempted before calling an operation that mutates state and then emits a refresh event. If the refresh listener throws, rollback must still remove the partially added state before offering `Retry`.
+7. Permanent-action copy must describe all future sessions, not only the next session, and state how the user can recreate the deleted item.
+8. Sentence-formatting helpers must preserve existing terminal punctuation instead of appending a second mark.
 
 ---
 

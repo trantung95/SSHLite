@@ -16,11 +16,16 @@ describe('nativeFeedback', () => {
     ['65536', 'Port must be between 1 and 65535'],
     ['1.5', 'Port must be between 1 and 65535'],
     ['8080abc', 'Port must be between 1 and 65535'],
+    [' 8080 ', 'Port must be between 1 and 65535'],
+    ['0x50', 'Port must be between 1 and 65535'],
+    ['1e3', 'Port must be between 1 and 65535'],
+    ['+80', 'Port must be between 1 and 65535'],
+    ['-80', 'Port must be between 1 and 65535'],
   ])('validates port %p', (value, message) => {
     expect(validatePort(value)).toBe(message);
   });
 
-  it.each(['1', '65535', ' 8080 '])('accepts integer port %p', (value) => {
+  it.each(['1', '65535', '8080'])('accepts integer port %p', (value) => {
     expect(validatePort(value)).toBeNull();
   });
 
@@ -37,6 +42,18 @@ describe('nativeFeedback', () => {
       )
     ).toBe(
       'Create port forward failed: Address already in use. Choose another local port and try again.'
+    );
+  });
+
+  it('does not duplicate existing sentence punctuation', () => {
+    expect(
+      formatErrorMessage(
+        'Create port forward',
+        'Address already in use.',
+        'Choose another local port and try again!'
+      )
+    ).toBe(
+      'Create port forward failed: Address already in use. Choose another local port and try again!'
     );
   });
 });

@@ -263,7 +263,7 @@ describe('native command feedback', () => {
 
       expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
         'Delete saved rule localhost:8080 → Production:3000? ' +
-          'It will not restore on the next connection. No server data will be deleted.',
+          'It will not restore on future connections unless recreated. No server data will be deleted.',
         { modal: true },
         'Delete Saved Rule'
       );

@@ -302,7 +302,7 @@ export async function handleDeleteSavedForward(
   });
   const confirm = await vscode.window.showWarningMessage(
     `Delete saved rule localhost:${item.rule.localPort} → ${remoteTarget}:${item.rule.remotePort}? ` +
-      'It will not restore on the next connection. No server data will be deleted.',
+      'It will not restore on future connections unless recreated. No server data will be deleted.',
     { modal: true },
     'Delete Saved Rule'
   );

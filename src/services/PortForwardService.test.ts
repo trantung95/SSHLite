@@ -143,6 +143,33 @@ describe('PortForwardService', () => {
       );
     });
 
+    it('removes a partially added tree row before offering Retry', async () => {
+      const mockConn = createMockConnection();
+      const treeRows = new Set<string>();
+      const partialTreeProvider = {
+        addForward: jest.fn((connectionId: string, localPort: number) => {
+          treeRows.add(`${connectionId}:${localPort}`);
+          throw new Error('Tree refresh failed');
+        }),
+        removeForward: jest.fn((localPort: number, connectionId: string) => {
+          treeRows.delete(`${connectionId}:${localPort}`);
+        }),
+      };
+      service.setTreeProvider(partialTreeProvider as any);
+
+      await service.forwardPort(mockConn as any, 3000, 'localhost', 3000, {
+        interactiveCreate: true,
+      });
+
+      expect(treeRows.size).toBe(0);
+      expect(mockConn.stopForward).toHaveBeenCalledWith(3000);
+      expect(partialTreeProvider.removeForward).toHaveBeenCalledWith(3000, mockConn.id);
+      expect(window.showErrorMessage).toHaveBeenCalledWith(
+        'Create port forward failed: Tree refresh failed. Refresh the Port Forwards view and try again.',
+        'Retry'
+      );
+    });
+
     it('should auto-save rule on success', async () => {
       service.initialize(mockContext);
       const mockConn = createMockConnection();
