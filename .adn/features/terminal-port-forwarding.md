@@ -6,7 +6,7 @@ Covers `TerminalService` and `PortForwardService`.
 
 ## TerminalService (`src/services/TerminalService.ts`)
 
-Singleton service for creating SSH terminals in VS Code.
+Singleton service for creating Secure Shell (SSH) terminals in Visual Studio Code (VS Code).
 
 ### Terminal Creation
 
@@ -117,6 +117,13 @@ local listener starts, creation stops that listener and removes its tree row bef
 state before a refresh notification failed. If listener rollback fails, the error omits `Retry` and directs the
 user to stop the active forward first.
 
+The serialized write queue keeps ownership across disposal and reactivation.
+Each queued write captures its extension lifecycle generation and the exact
+extension context that owns the write. A completion from a disposed lifecycle
+cannot replace reactivated in-memory rules, and the next lifecycle write waits
+behind the pending write before persisting its own snapshot. The
+`sshLite.savedPortForwards` schema is unchanged.
+
 ### Data Types
 
 ```typescript
@@ -206,7 +213,7 @@ sshLite.portForwards
             actions: play, delete
 ```
 
-Root groups are the union of port-forward-capable connected servers with active forwards and every server identifier with saved rules. A removed host therefore keeps an orphan group keyed by its original `hostId`; no saved rule disappears from the tree. A same-identifier File Transfer Protocol connection does not make a saved rule startable. Active rows render before inactive saved rows. `getParent()` returns the cached group with stable identifier `port-forward-server:<hostId>` so reveal and expand/collapse operations keep a stable hierarchy. Saved rows use `saved:<JSON tuple>` identifiers, preserving the stored rule identifier while preventing composite-key collisions.
+Root groups are the union of port-forward-capable connected servers with active forwards and every server identifier with saved rules. A removed host therefore keeps an orphan group keyed by its original `hostId`; no saved rule disappears from the tree. A same-identifier File Transfer Protocol (FTP) connection does not make a saved rule startable: activation checks capability before calling `forwardPort()` and shows a Secure Shell recovery message instead of rejecting the command. Active rows render before inactive saved rows. `getParent()` returns the cached group with stable identifier `port-forward-server:<hostId>` so reveal and expand/collapse operations keep a stable hierarchy. Saved rows use `saved:<JSON tuple>` identifiers, preserving the stored rule identifier while preventing composite-key collisions.
 
 Restore batches log one `restore/begin` event and one `restore/complete` event through the SSH Lite output channel. The completion payload includes counts and failed rule reasons without logging inside the per-rule loop.
 

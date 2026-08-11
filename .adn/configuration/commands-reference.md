@@ -1,6 +1,6 @@
 # Commands Reference
 
-All 117 commands registered by SSH Lite (SSH Tools), organized by category.
+All 117 commands registered by Secure Shell (SSH) Lite (SSH Tools), organized by category.
 
 ---
 
@@ -12,8 +12,10 @@ All 117 commands registered by SSH Lite (SSH Tools), organized by category.
 |---------|-------|--------|
 | `sshLite.connect` | Connect to Host | Tree / Palette |
 | `sshLite.disconnect` | Disconnect | Tree / Palette |
+| `sshLite.enableSudoMode` | Enable Sudo Mode | Connected host context |
+| `sshLite.disableSudoMode` | Disable Sudo Mode | Connected host context |
 | `sshLite.connectWithCredential` | Connect with Credential | Tree context |
-| `sshLite.reconnectOrphanedFile` | Reconnect Orphaned File | Editor title / context |
+| `sshLite.reconnectOrphanedFile` | Reconnect to Server | Editor title / context |
 
 ### Connection Portability — Import / Export / Sync (issue #11)
 
@@ -23,10 +25,10 @@ All grouped under the **Import / Export / Sync** submenu (`$(sync)`) on the Host
 |---------|-------|--------|
 | `sshLite.exportConnections` | Export Connections... | Submenu / Palette |
 | `sshLite.importConnections` | Import Connections... | Submenu / Palette |
-| `sshLite.connectGoogleDrive` | Connect Google Drive | Submenu / Palette |
-| `sshLite.disconnectGoogleDrive` | Disconnect Google Drive | Submenu / Palette |
-| `sshLite.syncPushToDrive` | Sync: Push Connections to Google Drive | Submenu / Palette |
-| `sshLite.syncPullFromDrive` | Sync: Pull Connections from Google Drive | Submenu / Palette |
+| `sshLite.connectGoogleDrive` | Connect Google Drive (coming soon) | Submenu / Palette |
+| `sshLite.disconnectGoogleDrive` | Disconnect Google Drive (coming soon) | Submenu / Palette |
+| `sshLite.syncPushToDrive` | Sync: Push Connections to Google Drive (coming soon) | Submenu / Palette |
+| `sshLite.syncPullFromDrive` | Sync: Pull Connections from Google Drive (coming soon) | Submenu / Palette |
 
 ### Host Management
 
@@ -42,25 +44,26 @@ All grouped under the **Import / Export / Sync** submenu (`$(sync)`) on the Host
 | `sshLite.clearHostFilter` | Clear Host Filter | View title |
 | `sshLite.hostsViewAsList` | View Hosts as List | View title (when grouped) |
 | `sshLite.hostsViewAsTree` | View Hosts as Tree (group by protocol) | View title (when flat) |
-| `sshLite.copyHost` | Copy Host Info | Tree context |
+| `sshLite.copyHost` | Copy Host | Tree context |
 
 ### Credential Management
 
 | Command | Title | Source |
 |---------|-------|--------|
 | `sshLite.addCredential` | Add Credential | Palette |
-| `sshLite.deleteCredential` | Delete Credential | Tree context |
+| `sshLite.deleteCredential` | Remove User | Tree context |
 | `sshLite.savePassword` | Save Password | Tree context |
-| `sshLite.clearCredentials` | Clear All Credentials | Tree context |
+| `sshLite.clearCredentials` | Clear Saved Credentials | Tree context |
 
 ### Navigation
 
 | Command | Title | Source |
 |---------|-------|--------|
-| `sshLite.goToPath` | Go to Path | View title / Keybinding |
-| `sshLite.goToParent` | Go to Parent | View title |
-| `sshLite.goToHome` | Go to Home | View title |
-| `sshLite.goToRoot` | Go to Root | View title |
+| `sshLite.goToPath` | Go to Path... | View title / Keybinding |
+| `sshLite.goToParent` | Go to Parent Folder | View title |
+| `sshLite.goToHome` | Go to Home (~) | View title |
+| `sshLite.goToRoot` | Go to Root (/) | View title |
+| `sshLite.showTreeFromRoot` | Show Tree From Root | Parent-folder context |
 
 ### File Operations
 
@@ -71,16 +74,18 @@ All grouped under the **Import / Export / Sync** submenu (`$(sync)`) on the Host
 | `sshLite.uploadFile` | Upload File | Tree context |
 | `sshLite.deleteRemote` | Delete | Tree context / Keybinding (`Delete`, mac `Cmd+Backspace`) |
 | `sshLite.renameRemote` | Rename | Tree context / Keybinding |
-| `sshLite.moveRemote` | Move | Tree context |
-| `sshLite.createFolder` | Create Folder | Tree context |
+| `sshLite.moveRemote` | Move To... | Tree context |
+| `sshLite.createFolder` | New Folder | Tree context |
+| `sshLite.createFile` | New File | Tree context |
 | `sshLite.saveAsRoot` | Save File as Root | Palette |
 | `sshLite.saveAsUser` | Save File as User… | Palette |
 | `sshLite.newFileAsRoot` | New File as Root… | Tree context (folder / connection) / Palette |
 | `sshLite.refreshFiles` | Refresh Files | View title / Keybinding |
-| `sshLite.refreshItem` | Refresh Item | Tree context |
-| `sshLite.clearCache` | Clear Cache | View title |
+| `sshLite.refreshItem` | Refresh | Tree context |
+| `sshLite.clearCache` | Clear Cache (Factory Reset) | View title |
 | `sshLite.copyPath` | Copy Path | Tree context |
-| `sshLite.revealInTree` | Reveal in Tree | View title / Editor title |
+| `sshLite.revealInTree` | Reveal in File Tree | View title / Editor title |
+| `sshLite.showProperties` | Properties | File / folder context for Secure Shell connections |
 
 ### Remote Clipboard (SSH Tools)
 
@@ -91,7 +96,7 @@ All grouped under the **Import / Export / Sync** submenu (`$(sync)`) on the Host
 | `sshLite.pasteRemoteItem` | Paste | Tree context on folder or connection root / `Ctrl+V` (gated on `sshLite.hasClipboard`) |
 | `sshLite.clearRemoteClipboard` | Clear SSH Clipboard | Palette |
 
-Backed by `RemoteClipboardService` (in-memory singleton). Paste handles same-host (`cp -r`) and cross-host (SFTP stream, recursive for folders); auto-renames conflicts as `name (copy).ext`, cancellable via progress notification.
+Backed by `RemoteClipboardService` (in-memory singleton). Paste handles same-host (`cp -r`) and cross-host (Secure File Transfer Protocol (SFTP) stream, recursive for folders); auto-renames conflicts as `name (copy).ext`, cancellable via progress notification.
 
 ### SSH Tools Utilities (v0.7.0)
 
@@ -117,9 +122,9 @@ Backing services: `SystemToolsService` (processes + systemctl), `SnippetService`
 
 | Command | Title | Source |
 |---------|-------|--------|
-| `sshLite.pinFolder` | Pin Folder | Tree context |
-| `sshLite.connectToPinnedFolder` | Connect to Pinned | Tree context |
-| `sshLite.deletePinnedFolder` | Delete Pinned Folder | Tree context |
+| `sshLite.pinFolder` | Pin Folder to Credential | Tree context |
+| `sshLite.connectToPinnedFolder` | Connect to Pinned Folder | Tree context |
+| `sshLite.deletePinnedFolder` | Remove Pinned Folder | Tree context |
 | `sshLite.renamePinnedFolder` | Rename Pinned Folder | Tree context |
 
 ### Terminal & Port Forward
@@ -128,45 +133,45 @@ Backing services: `SystemToolsService` (processes + systemctl), `SnippetService`
 |---------|-------|--------|
 | `sshLite.openTerminal` | Open Terminal | Tree context / Keybinding |
 | `sshLite.openTerminalHere` | Open Terminal Here | Tree context |
-| `sshLite.forwardPort` | Forward Port | View title |
-| `sshLite.stopForward` | Stop Forward | Tree context (active forward) |
+| `sshLite.forwardPort` | Create Port Forward — Automatically Save Rule | View title |
+| `sshLite.stopForward` | Stop Port Forward — Keep Saved Rule | Tree context (active forward) |
 | `sshLite.activateSavedForward` | Start Saved Forward | Tree context (saved forward) |
-| `sshLite.deleteSavedForward` | Delete Saved Forward | Tree context (saved forward); confirms persistence-only deletion |
+| `sshLite.deleteSavedForward` | Delete Saved Rule Permanently | Tree context (saved forward); confirms persistence-only deletion |
 
 ### Search & Filter
 
 | Command | Title | Source |
 |---------|-------|--------|
-| `sshLite.showSearch` | Show Search Panel | View title / Keybinding |
-| `sshLite.searchInScope` | Search in Scope | Tree context |
+| `sshLite.showSearch` | Advanced Search — Content, Filenames, Scopes, and Servers | View title / Keybinding |
+| `sshLite.searchInScope` | Search Here | Tree context |
 | `sshLite.cancelSearch` | Cancel Search | Palette |
-| `sshLite.filterFiles` | Filter Files (content) | View title / Keybinding |
+| `sshLite.filterFiles` | Filter Loaded Files by Name | View title / Keybinding |
 | `sshLite.clearFilter` | Clear Filter | View title |
-| `sshLite.filterFileNames` | Filter by Filename | Tree context (connection + folder) |
+| `sshLite.filterFileNames` | Filter by Name | Tree context (connection + folder) |
 | `sshLite.clearFilenameFilter` | Clear Filename Filter | View title / Tree context |
 | `sshLite.indexFolder` | Index Folder for Fast Filename Search | Tree context (connection + folder) |
-| `sshLite.searchServerForFilter` | Search Server for Filter | View title |
-| `sshLite.revealSearchResultInTree` | Reveal Search Result | Context |
+| `sshLite.searchServerForFilter` | Deep Scan Current Filter — Add Matches to Remote Files | View title |
+| `sshLite.revealSearchResultInTree` | Reveal Search Result in File Tree | Context |
 
 ### Change Tracking & Backups
 
 | Command | Title | Source |
 |---------|-------|--------|
-| `sshLite.revertFile` | Revert File | Palette |
-| `sshLite.showFileBackups` | Show File Backups | Tree context |
+| `sshLite.revertFile` | Revert File to Previous Version | Palette |
+| `sshLite.showFileBackups` | Show File Backup History | Tree context |
 | `sshLite.showServerBackups` | Show Server Backups | Tree context |
-| `sshLite.showChanges` | Show Changes (diff) | Tree context |
+| `sshLite.showChanges` | Show Changes | Tree context |
 | `sshLite.clearServerBackups` | Clear Server Backups | Palette |
 | `sshLite.showBackupLogs` | Show Backup Logs | Tree context |
-| `sshLite.openServerBackupFolder` | Open Backup Folder | Tree context |
-| `sshLite.showAllBackups` | Show All Backups | Tree context |
+| `sshLite.openServerBackupFolder` | Open Server Backup Folder | Tree context |
+| `sshLite.showAllBackups` | View All Backups | Tree context |
 
 ### Server Monitoring
 
 | Command | Title | Source |
 |---------|-------|--------|
-| `sshLite.monitor` | Server Monitor | Tree context |
-| `sshLite.quickStatus` | Quick Status | Palette |
+| `sshLite.monitor` | Monitor Server | Tree context |
+| `sshLite.quickStatus` | Quick Status (runs 10+ server commands) | Palette |
 | `sshLite.diagnoseSlowness` | Diagnose Slowness | Palette |
 
 ### Audit
@@ -184,23 +189,23 @@ Backing services: `SystemToolsService` (processes + systemctl), `SnippetService`
 | `sshLite.cancelActivity` | Cancel Activity | Tree context |
 | `sshLite.cancelAllActivities` | Cancel All Activities | View title |
 | `sshLite.cancelServerActivities` | Cancel Server Activities | Tree context |
-| `sshLite.clearActivities` | Clear Activities | View title; confirms when running operations would leave the list |
-| `sshLite.toggleActivityGrouping` | Toggle Grouping | View title |
+| `sshLite.clearActivities` | Clear Activity List — Running Operations Continue | View title; confirms when running operations would leave the list |
+| `sshLite.toggleActivityGrouping` | Toggle Grouping (Server/Type) | View title |
 
 ### Temp Files
 
 | Command | Title | Source |
 |---------|-------|--------|
 | `sshLite.clearAllTempFiles` | Clear All Temp Files | View title |
-| `sshLite.clearTempFilesForConnection` | Clear Temp Files (server) | Tree context |
-| `sshLite.openTempFolder` | Open Temp Folder | View title |
+| `sshLite.clearTempFilesForConnection` | Clear Temp Files for Server | Tree context |
+| `sshLite.openTempFolder` | Open Temp Files Folder | View title |
 
 ### Tree Expand/Collapse
 
 | Command | Title | Source |
 |---------|-------|--------|
 | `sshLite.expandAll` | Expand All | View title |
-| `sshLite.expandFirstLevel` | Expand First Level | View title |
+| `sshLite.expandFirstLevel` | Expand to First Level | View title |
 | `sshLite.collapseAll` | Collapse All | View title |
 | `sshLite.cancelPreloading` | Cancel Preloading | Status bar |
 
@@ -211,7 +216,7 @@ Surfaced as buttons in the `sshLite.support` WebviewView (and via the Command Pa
 | Command | Title | Source |
 |---------|-------|--------|
 | `sshLite.reportIssue` | Report a Bug or Suggest a Feature | Support view / palette |
-| `sshLite.donate` | Donate (Keep This Project Independent) → opens Bánh Mì panel | Support view / palette |
+| `sshLite.donate` | Donate (Keep This Project Independent) | Support view / palette; opens Bánh Mì panel |
 | `sshLite.starGithub` | Star on GitHub | Support view / palette |
 | `sshLite.rateMarketplace` | Rate on Marketplace | Support view / palette |
 | `sshLite.shareExtension` | Share Extension | Support view / palette |

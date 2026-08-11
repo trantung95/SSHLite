@@ -7,7 +7,7 @@
  * File system and SSH config parsing are mocked.
  */
 
-import { setMockConfig, clearMockConfig, workspace } from '../__mocks__/vscode';
+import { EventEmitter, setMockConfig, clearMockConfig, workspace } from '../__mocks__/vscode';
 
 // Mock fs and ssh-config
 var mockWriteFileSync = jest.fn();
@@ -32,6 +32,8 @@ jest.mock('ssh-config', () => ({
 
 import { HostService, effectiveHostPort } from './HostService';
 
+var mockConfigurationChangeEmitter: EventEmitter<{ affectsConfiguration: (section: string) => boolean }>;
+
 describe('effectiveHostPort', () => {
   it('defaults to 22 for SSH / unspecified type', () => {
     expect(effectiveHostPort({})).toBe(22);
@@ -47,6 +49,7 @@ describe('effectiveHostPort', () => {
 });
 
 function resetHostService(): HostService {
+  (HostService as any)._instance?.dispose?.();
   (HostService as any)._instance = undefined;
   return HostService.getInstance();
 }
@@ -59,6 +62,9 @@ function enableConfigPersistence(): void {
       (key: string, value: unknown, _target: unknown) => {
         const fullKey = section ? `${section}.${key}` : key;
         setMockConfig(fullKey, value);
+        mockConfigurationChangeEmitter.fire({
+          affectsConfiguration: (candidate: string) => candidate === fullKey,
+        });
         return Promise.resolve();
       }
     );
@@ -72,6 +78,8 @@ describe('HostService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     clearMockConfig();
+    mockConfigurationChangeEmitter = new EventEmitter();
+    (workspace as any).onDidChangeConfiguration = mockConfigurationChangeEmitter.event;
     enableConfigPersistence();
     service = resetHostService();
   });
@@ -269,6 +277,21 @@ describe('HostService', () => {
   });
 
   describe('onDidChangeHosts', () => {
+    it('fires after sshLite.hosts changes outside HostService', () => {
+      const listener = jest.fn();
+      service.onDidChangeHosts(listener);
+
+      setMockConfig('sshLite.hosts', [
+        { name: 'Synced', host: '10.0.0.8', port: 22, username: 'sync' },
+      ]);
+      mockConfigurationChangeEmitter.fire({
+        affectsConfiguration: (section: string) => section === 'sshLite.hosts',
+      });
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(service.getAllHosts()[0].name).toBe('Synced');
+    });
+
     it('fires after a host is added or updated', async () => {
       const listener = jest.fn();
       service.onDidChangeHosts(listener);
@@ -314,9 +337,12 @@ describe('HostService', () => {
       const imported = [
         { name: 'Imported', host: '10.0.0.2', port: 22, username: 'deploy' },
       ];
+      const replacement = [
+        { name: 'Replacement', host: '10.0.0.3', port: 22, username: 'release' },
+      ];
 
       await service.importSavedHosts(imported, 'merge');
-      await service.importSavedHosts(imported, 'replace');
+      await service.importSavedHosts(replacement, 'replace');
 
       expect(listener).toHaveBeenCalledTimes(2);
     });

@@ -26,15 +26,24 @@ export function effectiveHostPort(h: { port?: number; connectionType?: 'ssh' | '
  * Loads from both ~/.ssh/config and VS Code settings
  */
 export class HostService {
-  private static _instance: HostService;
+  private static _instance: HostService | undefined;
   private readonly _onDidChangeHosts = new vscode.EventEmitter<void>();
   readonly onDidChangeHosts = this._onDidChangeHosts.event;
+  private readonly configurationChangeDisposable: vscode.Disposable;
+  private savedHostsSignature: string;
 
   // Cache for SSH config hosts (parsed once, invalidated manually)
   private sshConfigHostsCache: IHostConfig[] | null = null;
   private sshConfigMtime: number = 0;
 
-  private constructor() {}
+  private constructor() {
+    this.savedHostsSignature = this.getSavedHostsSignature();
+    this.configurationChangeDisposable = vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('sshLite.hosts')) {
+        this.notifySavedHostsConfigurationChanged('saved-hosts-configuration-changed');
+      }
+    });
+  }
 
   /**
    * Get the singleton instance
@@ -44,6 +53,30 @@ export class HostService {
       HostService._instance = new HostService();
     }
     return HostService._instance;
+  }
+
+  private getSavedHostsSignature(): string {
+    const hosts = vscode.workspace.getConfiguration('sshLite').get<unknown[]>('hosts', []);
+    return JSON.stringify(hosts);
+  }
+
+  private async updateSavedHosts(
+    config: vscode.WorkspaceConfiguration,
+    hosts: unknown[],
+    reason: string
+  ): Promise<void> {
+    this.savedHostsSignature = this.getSavedHostsSignature();
+    await config.update('hosts', hosts, vscode.ConfigurationTarget.Global);
+    this.notifySavedHostsConfigurationChanged(reason);
+  }
+
+  private notifySavedHostsConfigurationChanged(reason: string): void {
+    const nextSignature = this.getSavedHostsSignature();
+    if (nextSignature === this.savedHostsSignature) {
+      return;
+    }
+    this.savedHostsSignature = nextSignature;
+    this.notifyHostsChanged(reason);
   }
 
   /**
@@ -234,7 +267,7 @@ export class HostService {
       connectionType?: 'ssh' | 'ftp';
       secure?: boolean;
       anonymous?: boolean;
-    }>>('hosts', []);
+    }>>('hosts', []).map((savedHost) => ({ ...savedHost }));
 
     // Check for duplicate. Normalise username to '' so an endpoint (no username)
     // dedups against another endpoint on the same host:port instead of stacking.
@@ -261,8 +294,11 @@ export class HostService {
       savedHosts.push(newHost);
     }
 
-    await config.update('hosts', savedHosts, vscode.ConfigurationTarget.Global);
-    this.notifyHostsChanged(existingIndex >= 0 ? 'saved-host-updated' : 'saved-host-added');
+    await this.updateSavedHosts(
+      config,
+      savedHosts,
+      existingIndex >= 0 ? 'saved-host-updated' : 'saved-host-added'
+    );
   }
 
   /**
@@ -496,13 +532,13 @@ export class HostService {
     const config = vscode.workspace.getConfiguration('sshLite');
 
     if (mode === 'replace') {
-      await config.update('hosts', sanitized, vscode.ConfigurationTarget.Global);
-      this.notifyHostsChanged('saved-hosts-import-replaced');
+      await this.updateSavedHosts(config, sanitized, 'saved-hosts-import-replaced');
       return { added: sanitized.length, updated: 0 };
     }
 
     // merge: upsert by host:port:username, preserve everything else.
-    const merged = config.get<Array<Record<string, unknown>>>('hosts', []).slice();
+    const merged = config.get<Array<Record<string, unknown>>>('hosts', [])
+      .map((savedHost) => ({ ...savedHost }));
     const keyOf = (h: { host: unknown; port?: unknown; username: unknown; connectionType?: unknown }): string =>
       `${h.host}:${effectiveHostPort({
         port: h.port as number | undefined,
@@ -526,8 +562,7 @@ export class HostService {
       }
     }
 
-    await config.update('hosts', merged, vscode.ConfigurationTarget.Global);
-    this.notifyHostsChanged('saved-hosts-import-merged');
+    await this.updateSavedHosts(config, merged, 'saved-hosts-import-merged');
     return { added, updated };
   }
 
@@ -543,7 +578,7 @@ export class HostService {
       username: string;
       privateKeyPath?: string;
       connectionType?: 'ssh' | 'ftp';
-    }>>('hosts', []);
+    }>>('hosts', []).map((savedHost) => ({ ...savedHost }));
 
     const { host: hostAddr, port, username } = parseHostId(hostId);
 
@@ -551,10 +586,7 @@ export class HostService {
       (h) => !(h.host === hostAddr && effectiveHostPort(h) === port && (h.username ?? '') === username)
     );
 
-    await config.update('hosts', filtered, vscode.ConfigurationTarget.Global);
-    if (filtered.length !== savedHosts.length) {
-      this.notifyHostsChanged('saved-host-removed');
-    }
+    await this.updateSavedHosts(config, filtered, 'saved-host-removed');
   }
 
   /**
@@ -582,7 +614,7 @@ export class HostService {
       privateKeyPath?: string;
       tabLabel?: string;
       connectionType?: 'ssh' | 'ftp';
-    }>>('hosts', []);
+    }>>('hosts', []).map((savedHost) => ({ ...savedHost }));
 
     const { host: hostAddr, port, username } = parseHostId(hostId);
 
@@ -592,8 +624,7 @@ export class HostService {
 
     if (host) {
       host.name = newName;
-      await config.update('hosts', savedHosts, vscode.ConfigurationTarget.Global);
-      this.notifyHostsChanged('saved-host-renamed');
+      await this.updateSavedHosts(config, savedHosts, 'saved-host-renamed');
     }
   }
 
@@ -610,7 +641,7 @@ export class HostService {
       privateKeyPath?: string;
       tabLabel?: string;
       connectionType?: 'ssh' | 'ftp';
-    }>>('hosts', []);
+    }>>('hosts', []).map((savedHost) => ({ ...savedHost }));
 
     const { host: hostAddr, port, username } = parseHostId(hostId);
 
@@ -624,14 +655,21 @@ export class HostService {
       } else {
         delete host.tabLabel;
       }
-      await config.update('hosts', savedHosts, vscode.ConfigurationTarget.Global);
-      this.notifyHostsChanged('saved-host-tab-label-changed');
+      await this.updateSavedHosts(config, savedHosts, 'saved-host-tab-label-changed');
     }
   }
 
   private notifyHostsChanged(reason: string): void {
     diagLog('host-service', 'hosts-changed', { reason });
     this._onDidChangeHosts.fire();
+  }
+
+  dispose(): void {
+    this.configurationChangeDisposable.dispose();
+    this._onDidChangeHosts.dispose();
+    if (HostService._instance === this) {
+      HostService._instance = undefined;
+    }
   }
 
   /**

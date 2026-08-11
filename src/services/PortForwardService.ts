@@ -14,6 +14,11 @@ interface SavedPortForwardIndex {
   [hostId: string]: ISavedPortForwardRule[];
 }
 
+interface SavedRulesWriteLifecycle {
+  generation: number;
+  context: vscode.ExtensionContext | null;
+}
+
 /**
  * Service for managing port forwards with persistence
  */
@@ -23,6 +28,7 @@ export class PortForwardService {
   private context: vscode.ExtensionContext | null = null;
   private savedRules: SavedPortForwardIndex = {};
   private savedRulesWriteQueue: Promise<void> = Promise.resolve();
+  private lifecycleGeneration = 0;
   private readonly restoreFailures = new Map<string, Map<string, string>>();
   private readonly STORAGE_KEY = 'sshLite.savedPortForwards';
 
@@ -42,6 +48,7 @@ export class PortForwardService {
    * Initialize with extension context for persistence
    */
   initialize(context: vscode.ExtensionContext): void {
+    this.lifecycleGeneration++;
     this.context = context;
     this.loadSavedRules();
   }
@@ -70,19 +77,33 @@ export class PortForwardService {
   /**
    * Save rules to globalState
    */
-  private async saveSavedRules(rules: SavedPortForwardIndex = this.savedRules): Promise<void> {
-    if (this.context) {
-      await this.context.globalState.update(this.STORAGE_KEY, rules);
+  private async saveSavedRules(
+    rules: SavedPortForwardIndex,
+    context: vscode.ExtensionContext | null
+  ): Promise<void> {
+    if (context) {
+      await context.globalState.update(this.STORAGE_KEY, rules);
     }
   }
 
-  private enqueueSavedRulesWrite<T>(write: () => Promise<T>): Promise<T> {
-    const result = this.savedRulesWriteQueue.then(write, write);
+  private enqueueSavedRulesWrite<T>(
+    write: (lifecycle: SavedRulesWriteLifecycle) => Promise<T>
+  ): Promise<T> {
+    const lifecycle = {
+      generation: this.lifecycleGeneration,
+      context: this.context,
+    };
+    const run = () => write(lifecycle);
+    const result = this.savedRulesWriteQueue.then(run, run);
     this.savedRulesWriteQueue = result.then(
       () => undefined,
       () => undefined
     );
     return result;
+  }
+
+  private isCurrentLifecycle(lifecycle: SavedRulesWriteLifecycle): boolean {
+    return lifecycle.generation === this.lifecycleGeneration && lifecycle.context === this.context;
   }
 
   /**
@@ -134,7 +155,10 @@ export class PortForwardService {
     remoteHost: string,
     remotePort: number
   ): Promise<ISavedPortForwardRule> {
-    return this.enqueueSavedRulesWrite(async () => {
+    return this.enqueueSavedRulesWrite(async (lifecycle) => {
+      if (!this.isCurrentLifecycle(lifecycle)) {
+        throw new Error('Saved port forward write cancelled because the extension lifecycle changed');
+      }
       const hostRules = this.savedRules[hostId] ?? [];
 
       // Dedup: check if an identical rule already exists
@@ -156,8 +180,10 @@ export class PortForwardService {
         ...this.savedRules,
         [hostId]: [...hostRules, rule],
       };
-      await this.saveSavedRules(nextSavedRules);
-      this.savedRules = nextSavedRules;
+      await this.saveSavedRules(nextSavedRules, lifecycle.context);
+      if (this.isCurrentLifecycle(lifecycle)) {
+        this.savedRules = nextSavedRules;
+      }
       return rule;
     });
   }
@@ -166,7 +192,10 @@ export class PortForwardService {
    * Delete a saved rule
    */
   async deleteSavedRule(hostId: string, ruleId: string): Promise<void> {
-    return this.enqueueSavedRulesWrite(async () => {
+    return this.enqueueSavedRulesWrite(async (lifecycle) => {
+      if (!this.isCurrentLifecycle(lifecycle)) {
+        return;
+      }
       if (!this.savedRules[hostId]) {
         return;
       }
@@ -180,7 +209,10 @@ export class PortForwardService {
         nextSavedRules[hostId] = nextHostRules;
       }
 
-      await this.saveSavedRules(nextSavedRules);
+      await this.saveSavedRules(nextSavedRules, lifecycle.context);
+      if (!this.isCurrentLifecycle(lifecycle)) {
+        return;
+      }
       this.savedRules = nextSavedRules;
       this.clearRestoreFailure(hostId, ruleId);
 
@@ -557,6 +589,13 @@ export class PortForwardService {
       return;
     }
 
+    if (!hasCapability(connection, 'supportsPortForward')) {
+      vscode.window.showWarningMessage(
+        'Port forwarding is unavailable for this connection. Connect using Secure Shell (SSH) to start this saved rule.'
+      );
+      return;
+    }
+
     await this.forwardPort(connection, rule.localPort, rule.remoteHost, rule.remotePort);
   }
 
@@ -564,6 +603,7 @@ export class PortForwardService {
    * Dispose of resources
    */
   dispose(): void {
+    this.lifecycleGeneration++;
     const restoreFailureCount = Array.from(this.restoreFailures.values())
       .reduce((total, failures) => total + failures.size, 0);
     infoLog('port-forward', 'dispose', {
@@ -572,7 +612,6 @@ export class PortForwardService {
     });
     this.restoreFailures.clear();
     this.savedRules = {};
-    this.savedRulesWriteQueue = Promise.resolve();
     this.treeProvider = null;
     this.context = null;
   }

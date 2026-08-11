@@ -4555,6 +4555,7 @@ export function deactivate(): void {
 
   // Clean up services
   const connectionManager = ConnectionManager.getInstance();
+  const hostService = HostService.getInstance();
   const fileService = FileService.getInstance();
   const terminalService = TerminalService.getInstance();
   const credentialService = CredentialService.getInstance();
@@ -4572,6 +4573,7 @@ export function deactivate(): void {
   folderHistory.dispose();
   activityService.dispose();
   portForwardService.dispose();
+  hostService.dispose();
   connectionManager.dispose();
   RemoteDiffService.getInstance().dispose(); // remove any leftover diff temp dirs
 

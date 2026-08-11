@@ -821,3 +821,11 @@ LESSONS:
 1. Trước khi so Codicon với supported set, tách base identifier trước modifier `~`; modifier chỉ thay đổi cách vẽ, không đổi khả năng tương thích của Codicon gốc.
 2. Cổng inline menu phải so chính xác command, điều kiện `when` của row, và group. Kiểm tra slot riêng lẻ không phát hiện được action bị chuyển connection, folder hoặc file mà vẫn giữ cùng `inline@N`.
 3. Chỉ chấp nhận cú pháp Codicon `$(base)` hoặc `$(base~spin)`. Không tách `~` một cách mù quáng, vì `$(base~)`, `$(base~bogus)` và nhiều modifier có thể che giấu manifest sai.
+
+## 2026-08-11 - Không mutate trực tiếp dữ liệu đọc từ Workspace Configuration
+
+`HostService` tạo signature để gộp event cấu hình nội bộ và bên ngoài của Visual Studio Code (VS Code). Khi code sửa trực tiếp array hoặc object trả về từ `WorkspaceConfiguration.get()`, signature “trước” đã mang giá trị mới, làm event rename bị nuốt.
+
+LESSONS:
+1. Coi mọi giá trị từ `WorkspaceConfiguration.get()` là immutable. Clone array và từng object trước khi upsert, rename hoặc xóa field.
+2. Khi gộp event bằng snapshot hoặc signature, phải chụp dữ liệu cũ trước bất kỳ mutation nào; test cả external change và internal write phát đúng một notification.

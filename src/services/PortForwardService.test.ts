@@ -381,6 +381,69 @@ describe('PortForwardService', () => {
   });
 
   describe('persistence', () => {
+    it('keeps a disposed lifecycle write from overwriting reactivated state', async () => {
+      let releaseOldWrite!: () => void;
+      let markOldWriteStarted!: () => void;
+      const oldWriteGate = new Promise<void>((resolve) => {
+        releaseOldWrite = resolve;
+      });
+      const oldWriteStarted = new Promise<void>((resolve) => {
+        markOldWriteStarted = resolve;
+      });
+      const oldStore: Record<string, any> = {};
+      const oldGlobalState = {
+        get: jest.fn((key: string) => oldStore[key]),
+        update: jest.fn(async (key: string, value: any) => {
+          markOldWriteStarted();
+          await oldWriteGate;
+          oldStore[key] = value;
+        }),
+      };
+      const reactivatedStore: Record<string, any> = {
+        'sshLite.savedPortForwards': {
+          'reactivated:22:user': [
+            { id: 'existing', localPort: 4000, remoteHost: 'localhost', remotePort: 4000 },
+          ],
+        },
+      };
+      const reactivatedGlobalState = {
+        get: jest.fn((key: string) => reactivatedStore[key]),
+        update: jest.fn(async (key: string, value: any) => {
+          reactivatedStore[key] = value;
+        }),
+      };
+
+      service.initialize({ globalState: oldGlobalState } as any);
+      const oldWrite = service.saveRule('old:22:user', 3000, 'localhost', 3000);
+      await oldWriteStarted;
+
+      service.dispose();
+      service.initialize({ globalState: reactivatedGlobalState } as any);
+      const reactivatedWrite = service.saveRule('reactivated:22:user', 5000, 'localhost', 5000);
+      await Promise.resolve();
+
+      const reactivatedWritesBeforeRelease = reactivatedGlobalState.update.mock.calls.length;
+
+      releaseOldWrite();
+      await oldWrite;
+      await reactivatedWrite;
+
+      expect(reactivatedWritesBeforeRelease).toBe(0);
+      expect(service.getHostIdsWithSavedRules()).toEqual(['reactivated:22:user']);
+      expect(service.getSavedRules('reactivated:22:user')).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: 'existing', localPort: 4000 }),
+        expect.objectContaining({ localPort: 5000 }),
+      ]));
+      expect(reactivatedStore['sshLite.savedPortForwards']).toEqual(
+        expect.objectContaining({
+          'reactivated:22:user': expect.arrayContaining([
+            expect.objectContaining({ id: 'existing', localPort: 4000 }),
+            expect.objectContaining({ localPort: 5000 }),
+          ]),
+        })
+      );
+    });
+
     it('should initialize and load saved rules from globalState', () => {
       const existingRules = {
         'host1:22:user': [
@@ -684,6 +747,24 @@ describe('PortForwardService', () => {
   });
 
   describe('activateSavedForward', () => {
+    it('warns instead of activating a same-id connection without port forwarding', async () => {
+      service.initialize(mockContext);
+      const unavailableConnection = createMockConnection({ id: 'shared:21:user' });
+      unavailableConnection.capabilities.supportsPortForward = false;
+      mockGetConnection.mockReturnValue(unavailableConnection);
+      const rule = await service.saveRule(unavailableConnection.id, 3000, 'localhost', 3000);
+      jest.clearAllMocks();
+
+      await expect(
+        service.activateSavedForward(unavailableConnection.id, rule.id)
+      ).resolves.toBeUndefined();
+
+      expect(unavailableConnection.forwardPort).not.toHaveBeenCalled();
+      expect(window.showWarningMessage).toHaveBeenCalledWith(
+        'Port forwarding is unavailable for this connection. Connect using Secure Shell (SSH) to start this saved rule.'
+      );
+    });
+
     it('should activate a saved forward on active connection', async () => {
       service.initialize(mockContext);
       const mockConn = createMockConnection();

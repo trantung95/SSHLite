@@ -1,8 +1,8 @@
 # Changelog
 
-## v1.0.6 - Clearer native controls and reliable Remote-SSH activation
+## v1.0.6 - Clearer native Secure Shell (SSH) controls and reliable Remote-SSH activation
 
-Click through the native SSH sidebar with clearer host and remote-file states, distinct search and filename-filter actions, port forwards grouped by host, readable activity progress, and confirmations that make the outcome clear before an operation runs. The visible action density remains unchanged, preserving familiar click targets and keyboard access.
+Click through the native Secure Shell (SSH) sidebar with clearer host and remote-file states, distinct search and filename-filter actions, port forwards grouped by host, readable activity progress, and confirmations that make the outcome clear before an operation runs. The visible action density remains unchanged, preserving familiar click targets and keyboard access.
 
 ### User interface changes
 
