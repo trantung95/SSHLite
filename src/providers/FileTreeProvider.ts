@@ -431,7 +431,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
   private failedLoads: Map<string, string> = new Map();
 
   // Explicit folder refreshes keep the last successful listing visible while a
-  // replacement load runs. The request is consumed by the next getChildren().
+  // replacement load runs. The request stays queued until no load is active.
   private pendingDirectoryRefreshes: Set<string> = new Set();
 
   // Filename filters for tree highlighting (multiple simultaneous filters supported)
@@ -1082,6 +1082,12 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
     if (clearCache) {
       this.directoryCache.clear();
       this.pendingDirectoryRefreshes.clear();
+    } else {
+      for (const loadingKey of this.failedLoads.keys()) {
+        if (this.directoryCache.has(loadingKey)) {
+          this.pendingDirectoryRefreshes.add(loadingKey);
+        }
+      }
     }
     // Full refresh is an explicit user action: retry all failed loads (issue #13).
     this.failedLoads.clear();
@@ -1332,7 +1338,9 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       // Check cache first - if cached, no loading indicator needed
       const cached = this.getCached(element.connection.id, currentPath);
       if (cached) {
-        if (this.pendingDirectoryRefreshes.delete(loadingKey) && !this.loadingItems.has(loadingKey)) {
+        if (this.pendingDirectoryRefreshes.has(loadingKey) && !this.loadingItems.has(loadingKey)) {
+          this.pendingDirectoryRefreshes.delete(loadingKey);
+          this.failedLoads.delete(loadingKey);
           this.loadingItems.add(loadingKey);
           this.loadDirectoryAndRefresh(element.connection, currentPath, element);
         }
@@ -1397,7 +1405,9 @@ export class FileTreeProvider implements vscode.TreeDataProvider<TreeItem>, vsco
       // Check cache first
       const cached = this.getCached(element.connection.id, element.file.path);
       if (cached) {
-        if (this.pendingDirectoryRefreshes.delete(loadingKey) && !this.loadingItems.has(loadingKey)) {
+        if (this.pendingDirectoryRefreshes.has(loadingKey) && !this.loadingItems.has(loadingKey)) {
+          this.pendingDirectoryRefreshes.delete(loadingKey);
+          this.failedLoads.delete(loadingKey);
           this.loadingItems.add(loadingKey);
           this.loadDirectoryAndRefresh(element.connection, element.file.path, element);
         }

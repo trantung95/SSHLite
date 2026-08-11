@@ -13,6 +13,8 @@ LESSONS:
 1. A refresh is not permission to erase known-good user data before replacement data exists.
 2. Track pending forced refreshes separately from cached listings so normal cache reads and explicit reloads retain distinct semantics.
 3. Regression tests must assert the old rows remain visible during both loading and failure, not only that the error stops retrying.
+4. A title-bar refresh that clears a cached failure must also queue its replacement load; otherwise it hides the error without recovering connection-root rows that have no inline refresh action.
+5. Consume a pending refresh only after confirming no load is active. A refresh requested during an active load must remain queued so the older response cannot become the final visible snapshot.
 
 ---
 

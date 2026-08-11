@@ -341,4 +341,108 @@ describe('FileTreeProvider — issue #13: failed directory load must not loop', 
     expect(failed.some((item) => item instanceof FileTreeItem)).toBe(true);
     expect(failed.some((item) => item instanceof LoadErrorTreeItem)).toBe(true);
   });
+
+  it('title refresh retries a cached failed connection root instead of only hiding its error', async () => {
+    mockConn = createMockConnection({ id: 'conn-1' });
+    const oldFile = createMockRemoteFile('old.log', {
+      path: '/old.log',
+      connectionId: 'conn-1',
+    });
+    mockConn.listFiles.mockResolvedValue([oldFile]);
+    mockGetConnection.mockReturnValue(mockConn);
+    mockGetAllConnections.mockReturnValue([mockConn]);
+    mockGetAllConnectionsWithReconnecting.mockReturnValue({ active: [mockConn], reconnecting: [] });
+
+    provider.setCurrentPath('conn-1', '/');
+    await flushAsync();
+    const connItem = (await provider.getChildren())[0] as ConnectionTreeItem;
+    expect((await provider.getChildren(connItem)).some((item) => item instanceof FileTreeItem)).toBe(true);
+
+    mockConn.listFiles.mockRejectedValue(new Error('Permission denied'));
+    provider.refreshFolder('conn-1', '/');
+    await provider.getChildren(connItem);
+    await flushAsync();
+    expect((await provider.getChildren(connItem)).some((item) => item instanceof LoadErrorTreeItem)).toBe(true);
+
+    const newFile = createMockRemoteFile('new.log', {
+      path: '/new.log',
+      connectionId: 'conn-1',
+    });
+    mockConn.listFiles.mockResolvedValue([newFile]);
+    const callsBeforeTitleRefresh = mockConn.listFiles.mock.calls.length;
+
+    provider.refresh();
+    const retrying = await provider.getChildren(connItem);
+
+    expect(retrying.some((item) => item instanceof FileTreeItem)).toBe(true);
+    expect(retrying.some((item) => item instanceof LoadingTreeItem)).toBe(true);
+    await flushAsync();
+
+    const recovered = await provider.getChildren(connItem);
+    expect(mockConn.listFiles.mock.calls.length).toBeGreaterThan(callsBeforeTitleRefresh);
+    expect(recovered.some((item) => item instanceof LoadErrorTreeItem)).toBe(false);
+    expect(recovered.some((item) => item instanceof FileTreeItem && item.file.path === '/new.log')).toBe(true);
+  });
+
+  it('runs a replacement refresh requested while a cached directory load is active', async () => {
+    mockConn = createMockConnection({ id: 'conn-1' });
+    const oldFile = createMockRemoteFile('old.log', {
+      path: '/var/log/old.log',
+      connectionId: 'conn-1',
+    });
+    mockConn.listFiles.mockResolvedValue([oldFile]);
+    mockGetConnection.mockReturnValue(mockConn);
+
+    const folder = createMockRemoteFile('log', {
+      path: '/var/log',
+      isDirectory: true,
+      connectionId: 'conn-1',
+    });
+    const folderItem = new FileTreeItem(folder, mockConn as any);
+
+    expect((await provider.getChildren(folderItem))[0]).toBeInstanceOf(LoadingTreeItem);
+    await flushAsync();
+
+    const staleFile = createMockRemoteFile('stale.log', {
+      path: '/var/log/stale.log',
+      connectionId: 'conn-1',
+    });
+    const freshFile = createMockRemoteFile('fresh.log', {
+      path: '/var/log/fresh.log',
+      connectionId: 'conn-1',
+    });
+    let resolveStale!: (files: ReturnType<typeof createMockRemoteFile>[]) => void;
+    let resolveFresh!: (files: ReturnType<typeof createMockRemoteFile>[]) => void;
+    const staleResult = new Promise<ReturnType<typeof createMockRemoteFile>[]>((resolve) => {
+      resolveStale = resolve;
+    });
+    const freshResult = new Promise<ReturnType<typeof createMockRemoteFile>[]>((resolve) => {
+      resolveFresh = resolve;
+    });
+    mockConn.listFiles
+      .mockImplementationOnce(() => staleResult)
+      .mockImplementationOnce(() => freshResult);
+
+    provider.refreshFolder('conn-1', '/var/log');
+    const firstRefresh = await provider.getChildren(folderItem);
+    expect(firstRefresh.some((item) => item instanceof LoadingTreeItem)).toBe(true);
+
+    provider.refreshFolder('conn-1', '/var/log');
+    const overlappingRefresh = await provider.getChildren(folderItem);
+    expect(overlappingRefresh.some((item) => item instanceof LoadingTreeItem)).toBe(true);
+
+    resolveStale([staleFile]);
+    await flushAsync();
+
+    const replacementRefresh = await provider.getChildren(folderItem);
+    expect(replacementRefresh.some((item) => item instanceof FileTreeItem && item.file.path === '/var/log/stale.log')).toBe(true);
+    expect(replacementRefresh.some((item) => item instanceof LoadingTreeItem)).toBe(true);
+
+    resolveFresh([freshFile]);
+    await flushAsync();
+
+    const finalRows = await provider.getChildren(folderItem);
+    expect(finalRows.some((item) => item instanceof FileTreeItem && item.file.path === '/var/log/fresh.log')).toBe(true);
+    expect(finalRows.some((item) => item instanceof FileTreeItem && item.file.path === '/var/log/stale.log')).toBe(false);
+  });
 });
