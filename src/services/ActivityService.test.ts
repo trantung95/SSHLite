@@ -294,13 +294,15 @@ describe('ActivityService', () => {
 
   describe('cancelAll', () => {
     it('should cancel all running activities', () => {
-      service.startActivity('search', 'conn1', 'S1', 'Search');
+      const onCancel = jest.fn();
+      service.startActivity('search', 'conn1', 'S1', 'Search', { onCancel });
       service.startActivity('download', 'conn2', 'S2', 'Download');
 
       service.cancelAll();
 
       const activities = service.getAllActivities();
       expect(activities.every(a => a.status === 'cancelled')).toBe(true);
+      expect(onCancel).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -311,6 +313,19 @@ describe('ActivityService', () => {
 
       service.clearAll();
       expect(service.getAllActivities()).toHaveLength(0);
+    });
+
+    it('clears tracking without cancelling running operations', () => {
+      const onCancel = jest.fn();
+      service.startActivity('download', 'conn1', 'Server1', 'Download app.log', {
+        cancellable: true,
+        onCancel,
+      });
+
+      service.clearAll();
+
+      expect(service.getAllActivities()).toHaveLength(0);
+      expect(onCancel).not.toHaveBeenCalled();
     });
   });
 

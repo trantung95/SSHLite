@@ -9,6 +9,7 @@
  * - Helper functions (getTypeLabel, formatDuration, etc.)
  */
 
+import * as vscode from 'vscode';
 import {
   ActivityTreeProvider,
   ServerGroupTreeItem,
@@ -17,7 +18,21 @@ import {
   NoActivitiesTreeItem,
   GroupingMode,
 } from './ActivityTreeProvider';
-import { ActivityService } from '../services/ActivityService';
+import { Activity, ActivityService } from '../services/ActivityService';
+
+function createActivity(overrides: Partial<Activity> = {}): Activity {
+  return {
+    id: 'activity-test',
+    type: 'download',
+    connectionId: 'conn1',
+    serverName: 'Server1',
+    description: 'Download app.log',
+    status: 'running',
+    startTime: new Date('2026-08-10T00:00:00Z'),
+    cancellable: true,
+    ...overrides,
+  };
+}
 
 // Reset singletons
 function resetActivityService(): ActivityService {
@@ -49,10 +64,10 @@ describe('ActivityTreeProvider', () => {
       expect(children[0]).toBeInstanceOf(NoActivitiesTreeItem);
     });
 
-    it('should display "No running activities" label', () => {
+    it('should explain where running operations appear', () => {
       const item = new NoActivitiesTreeItem();
-      expect(item.label).toBe('No running activities');
-      expect(item.description).toBe('All done!');
+      expect(item.label).toBe('No activities');
+      expect(item.description).toBe('Running SSH operations will appear here');
       expect(item.contextValue).toBe('noActivities');
     });
   });
@@ -92,6 +107,7 @@ describe('ActivityTreeProvider', () => {
       const item = new ServerGroupTreeItem('conn1', 'Server', 3, 0);
       expect(item.description).toContain('3');
       expect(item.description).toContain('activities');
+      expect(item.description).toContain('0 running');
     });
 
     it('should use singular for 1 activity', () => {
@@ -112,6 +128,12 @@ describe('ActivityTreeProvider', () => {
     it('should generate unique ID based on type', () => {
       const item = new TypeGroupTreeItem('download', 1, 0);
       expect(item.id).toBe('type-download');
+    });
+
+    it('should describe running and total activity counts', () => {
+      const item = new TypeGroupTreeItem('download', 3, 1);
+      expect(item.description).toContain('1 running');
+      expect(item.description).toContain('3 activities');
     });
   });
 
@@ -135,6 +157,31 @@ describe('ActivityTreeProvider', () => {
       const item = new ActivityTreeItem(activity);
 
       expect(item.description).toContain('Running');
+    });
+
+    it('shows progress, detail, duration, server, and status without relying on color', () => {
+      const item = new ActivityTreeItem(createActivity({
+        progress: 62,
+        detail: '18 MB / 29 MB',
+      }));
+
+      expect(item.description).toBe('62% · 18 MB / 29 MB');
+      expect((item.iconPath as vscode.ThemeIcon).id).toBe('sync~spin');
+      const tooltip = (item.tooltip as vscode.MarkdownString).value;
+      expect(tooltip).toContain('Status: Running');
+      expect(tooltip).toContain('Server: Server1');
+      expect(tooltip).toContain('Duration:');
+    });
+
+    it.each([
+      ['completed', 'check', 'Completed'],
+      ['failed', 'error', 'Failed'],
+      ['cancelled', 'circle-slash', 'Cancelled'],
+    ] as const)('renders %s with icon and explicit text', (status, icon, text) => {
+      const item = new ActivityTreeItem(createActivity({ status }));
+
+      expect((item.iconPath as vscode.ThemeIcon).id).toBe(icon);
+      expect(`${item.description} ${item.tooltip}`).toContain(text);
     });
 
     it('should show completed status after completion', () => {

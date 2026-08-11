@@ -36,8 +36,7 @@ export class ServerGroupTreeItem extends vscode.TreeItem {
     this.contextValue = 'serverGroup';
     this.id = `server-${connectionId}`;
 
-    const statusIcon = runningCount > 0 ? '$(sync~spin)' : '$(check)';
-    this.description = `${statusIcon} ${activityCount} ${activityCount === 1 ? 'activity' : 'activities'}`;
+    this.description = `${runningCount} running · ${activityCount} ${activityCount === 1 ? 'activity' : 'activities'}`;
     this.iconPath = new vscode.ThemeIcon('server');
     this.tooltip = new vscode.MarkdownString(
       `**${serverName}**\n\n` +
@@ -60,8 +59,7 @@ export class TypeGroupTreeItem extends vscode.TreeItem {
     this.contextValue = 'typeGroup';
     this.id = `type-${activityType}`;
 
-    const statusIcon = runningCount > 0 ? '$(sync~spin)' : '$(check)';
-    this.description = `${statusIcon} ${activityCount}`;
+    this.description = `${runningCount} running · ${activityCount} ${activityCount === 1 ? 'activity' : 'activities'}`;
     this.iconPath = new vscode.ThemeIcon(getTypeIcon(activityType));
     this.tooltip = new vscode.MarkdownString(
       `**${getTypeLabel(activityType)}**\n\n` +
@@ -88,7 +86,9 @@ export class ActivityTreeItem extends vscode.TreeItem {
     // Set description with progress or status
     if (activity.status === 'running') {
       if (activity.progress !== undefined) {
-        this.description = `${activity.progress}%`;
+        this.description = activity.detail
+          ? `${activity.progress}% · ${activity.detail}`
+          : `${activity.progress}%`;
       } else {
         this.description = activity.detail || 'Running...';
       }
@@ -118,10 +118,10 @@ export class ActivityTreeItem extends vscode.TreeItem {
  */
 export class NoActivitiesTreeItem extends vscode.TreeItem {
   constructor() {
-    super('No running activities', vscode.TreeItemCollapsibleState.None);
+    super('No activities', vscode.TreeItemCollapsibleState.None);
     this.contextValue = 'noActivities';
     this.iconPath = new vscode.ThemeIcon('check-all', new vscode.ThemeColor('charts.green'));
-    this.description = 'All done!';
+    this.description = 'Running SSH operations will appear here';
   }
 }
 

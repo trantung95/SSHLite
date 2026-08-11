@@ -5,6 +5,16 @@ Add new entries as bugs are found, mistakes are made, or better approaches are d
 
 ---
 
+## 2026-08-11 - Assert mocked MarkdownString content through value
+
+The Visual Studio Code (VS Code) `MarkdownString` test mock stores rendered text in `.value` and does not implement a meaningful `toString()`. Tooltip tests that call `toString()` inspect `[object Object]` instead of the user-visible text.
+
+LESSONS:
+1. Cast a tree item tooltip to `vscode.MarkdownString` and assert `.value` when unit tests use `src/__mocks__/vscode.ts`.
+2. Keep production tooltips as `MarkdownString`; changing presentation code to satisfy a mock would weaken the extension contract.
+
+---
+
 ## 2026-08-11 - Folder refresh must preserve the last successful listing until replacement succeeds
 
 Deleting a directory cache entry before starting an explicit refresh made the tree discard valid rows during loading and after a transient listing failure. The safer pattern is stale-while-refresh: keep the last successful rows visible, add a path-specific loading row while the forced request runs, replace the cache only on success, and add an error row beside the cached data on failure.

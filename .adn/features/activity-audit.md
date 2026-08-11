@@ -71,44 +71,54 @@ Tracks in-progress and completed operations for the Activity panel.
 ### Activity Types
 
 ```typescript
-type ActivityType = 'connect' | 'download' | 'upload' | 'terminal' | 'search' | 'delete' | 'other';
+type ActivityType = 'search' | 'download' | 'upload' | 'directory-load' |
+  'file-refresh' | 'preload' | 'monitor' | 'terminal' | 'connect' |
+  'disconnect' | 'reveal';
 ```
 
 ### Activity Lifecycle
 
+`ActivityService` tracks Secure Shell (SSH) operations. It keeps cancellation and
+list clearing as separate user actions:
+
 ```
-startActivity(type, connectionId, hostName, description, options?)
+startActivity(type, connectionId, serverName, description, options?)
   → returns activityId (string)
-  → Activity shows as "in progress" with spinner
+  → Activity shows as "running" with spinner
 
 completeActivity(activityId, resultDetail?)
   → Activity shows as "completed" with checkmark
   → Duration calculated
 
 failActivity(activityId, errorMessage)
-  → Activity shows as "failed" with X icon
+  → Activity shows as "failed" with error icon
   → Error message displayed
 
 cancelActivity(activityId)
   → Calls onCancel callback (if provided)
   → Activity shows as "cancelled"
+
+cancelAll()
+  → Calls each running activity's cancellation callback
+  → Marks those activities as cancelled
+
+clearAll()
+  → Removes activities from the Activity panel only
+  → Does not call cancellation callbacks; running SSH operations continue
 ```
 
 ### Activity Panel Grouping
 
-Two grouping modes (toggle via `sshLite.toggleActivityGrouping`):
+Two grouping modes (toggle via `sshLite.toggleActivityGrouping`): server (the
+default) and activity type. Group descriptions always state both running and
+total counts, for example `1 running · 3 activities`.
 
 ```
-Flat (default):
-  ├─ Download: config.json (server1) ✓ 2.1 KB
-  ├─ Upload: app.ts (server1) ✓ 1.5 KB
-  └─ Search: "TODO" (server2) ✓ 15 results
-
 Grouped by server:
-  └─ server1 (2 activities)
+  └─ server1 — 1 running · 2 activities
        ├─ Download: config.json ✓ 2.1 KB
        └─ Upload: app.ts ✓ 1.5 KB
-  └─ server2 (1 activity)
+  └─ server2 — 0 running · 1 activity
        └─ Search: "TODO" ✓ 15 results
 ```
 
@@ -118,10 +128,16 @@ Displays activities in the Activity panel tree view:
 
 ```
 sshLite.activity
-  ├─ ActivityTreeItem (in-progress: spinner icon)
-  ├─ ServerGroupTreeItem (when grouped)
-  └─ ActivityTreeItem (completed: checkmark)
+  ├─ ServerGroupTreeItem or TypeGroupTreeItem
+  └─ ActivityTreeItem
 ```
+
+- A running activity uses `sync~spin`; when progress exists its description is
+  `progress percentage · detail`, or only the progress percentage when no detail exists.
+- Completed, failed, and cancelled activities use `check`, `error`, and
+  `circle-slash`. Tooltips name status, server, duration, and detail so status
+  does not depend on color alone.
+- An empty panel says `No activities` and `Running SSH operations will appear here`.
 
 ---
 
