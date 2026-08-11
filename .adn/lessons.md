@@ -809,3 +809,4 @@ Codicon có modifier như `$(sync~spin)`, nhưng catalog compatibility lưu base
 LESSONS:
 1. Trước khi so Codicon với supported set, tách base identifier trước modifier `~`; modifier chỉ thay đổi cách vẽ, không đổi khả năng tương thích của Codicon gốc.
 2. Cổng inline menu phải so chính xác command, điều kiện `when` của row, và group. Kiểm tra slot riêng lẻ không phát hiện được action bị chuyển connection, folder hoặc file mà vẫn giữ cùng `inline@N`.
+3. Chỉ chấp nhận cú pháp Codicon `$(base)` hoặc `$(base~spin)`. Không tách `~` một cách mù quáng, vì `$(base~)`, `$(base~bogus)` và nhiều modifier có thể che giấu manifest sai.

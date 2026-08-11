@@ -1,6 +1,6 @@
 import manifest from '../../package.json';
 
-const minimumSupportedIcons = new Set([
+const commandIconBaseIds = new Set([
   'add', 'archive', 'arrow-circle-down', 'arrow-up', 'bug', 'calendar', 'clear-all',
   'clippy', 'close', 'cloud-download', 'cloud-upload', 'collapse-all', 'copy',
   'dashboard', 'database', 'debug-disconnect', 'diff', 'edit', 'expand-all', 'export',
@@ -11,11 +11,13 @@ const minimumSupportedIcons = new Set([
   'search', 'search-stop', 'server-process', 'shield', 'sign-in', 'sign-out', 'star',
   'stop', 'stop-circle', 'symbol-snippet', 'symbol-variable', 'tag', 'target',
   'terminal', 'terminal-bash', 'trash',
-  'sync',
 ]);
 
+// `sync` is only a modifier-syntax fixture; 66 command icon base IDs remain in use.
+const minimumSupportedBaseIcons = new Set([...commandIconBaseIds, 'sync']);
+
 const baseCodiconId = (icon?: string): string | undefined =>
-  icon?.match(/^\$\(([^)]+)\)$/)?.[1].split('~')[0];
+  icon?.match(/^\$\(([a-z][a-z0-9-]*)(?:~spin)?\)$/)?.[1];
 
 const expectedIcons: Record<string, string> = {
   'sshLite.importConnections': '$(arrow-circle-down)',
@@ -93,14 +95,22 @@ describe('UI manifest contract', () => {
     expect(manifest.contributes.commands).toHaveLength(117);
     for (const command of manifest.contributes.commands) {
       const id = baseCodiconId(command.icon);
-      expect(id && minimumSupportedIcons.has(id)).toBe(true);
+      expect(id && minimumSupportedBaseIcons.has(id)).toBe(true);
     }
   });
 
   it('accepts a supported Codicon with a spin modifier', () => {
     const id = baseCodiconId('$(sync~spin)');
     expect(id).toBe('sync');
-    expect(id && minimumSupportedIcons.has(id)).toBe(true);
+    expect(id && minimumSupportedBaseIcons.has(id)).toBe(true);
+  });
+
+  it.each([
+    ['$(sync~)', undefined],
+    ['$(sync~bogus)', undefined],
+    ['$(sync~spin~extra)', undefined],
+  ])('rejects malformed Codicon modifier syntax %s', (icon, expected) => {
+    expect(baseCodiconId(icon)).toBe(expected);
   });
 
   it('keeps adjacent Remote Files actions visually and verbally distinct', () => {

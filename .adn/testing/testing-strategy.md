@@ -27,7 +27,7 @@ Coverage target: 95%+ on new/changed code.
 
 ### Native tree interface regression gate
 
-`src/__tests__/ui-manifest-contract.test.ts` verifies every shipped command icon against the 66 Codicons supported by the minimum Visual Studio Code 1.85.2 version, including the full 117-command manifest rather than only recent icon edits. `src/__tests__/ftp-menu-gating.test.ts` checks File Explorer inline-slot collisions and preserves canonical shared slots: search `inline@1`, filename filter `inline@2`, terminal `inline@3`, refresh `inline@4`. Context-menu overflow groups such as `1_actions@N` are intentionally excluded because they do not render inline icons.
+`src/__tests__/ui-manifest-contract.test.ts` verifies every shipped command icon against base Codicons supported by the minimum Visual Studio Code 1.85.2 version, including the full 117-command manifest rather than only recent icon edits. The manifest uses 66 command icon identifiers; the 67-item base support fixture adds `sync` solely to test the valid `~spin` modifier grammar. Only `$(base)` and `$(base~spin)` are valid. `src/__tests__/ftp-menu-gating.test.ts` checks File Explorer inline-slot collisions and preserves canonical shared slots: search `inline@1`, filename filter `inline@2`, terminal `inline@3`, refresh `inline@4`. Context-menu overflow groups such as `1_actions@N` are intentionally excluded because they do not render inline icons.
 
 ## Mock Architecture
 

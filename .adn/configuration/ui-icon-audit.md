@@ -74,7 +74,7 @@ Danh sách icon còn được đối chiếu với [source Visual Studio Code 1.
 
 ## Cổng chống tái phát
 
-1. `src/__tests__/ui-manifest-contract.test.ts` đọc đủ 117 command và chỉ chấp nhận 66 Codicon đã xác nhận tồn tại trong Visual Studio Code 1.85.2. Test cũng khóa 13 icon đã đổi để tránh thay đổi nghĩa action ngoài ý muốn.
+1. `src/__tests__/ui-manifest-contract.test.ts` đọc đủ 117 command và chỉ chấp nhận Codicon base identifier đã xác nhận tồn tại trong Visual Studio Code 1.85.2. Manifest hiện dùng 66 command icon identifier; supported-base fixture có 67 identifier vì thêm riêng `sync` để kiểm tra cú pháp modifier `~spin`. Parser chỉ nhận `$(base)` hoặc `$(base~spin)` và từ chối modifier khác. Test cũng khóa 13 icon đã đổi để tránh thay đổi nghĩa action ngoài ý muốn.
 2. `src/__tests__/ftp-menu-gating.test.ts` chặn collision `inline@N` trên từng Remote Files row và xác nhận các action dùng chung luôn giữ slot canonical: search `@1`, filter `@2`, terminal `@3`, refresh `@4`.
 3. Các entry context-menu overflow như `1_actions@N` không phải inline slot. Chúng không làm thay đổi số lượng hoặc thứ tự icon hiển thị trên row.
 
