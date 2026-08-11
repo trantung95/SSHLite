@@ -145,11 +145,11 @@
   },
   {
     "id": "sshLite.forwardPort",
-    "title": "Forward Port"
+    "title": "Create Port Forward — Automatically Save Rule"
   },
   {
     "id": "sshLite.stopForward",
-    "title": "Stop Forward"
+    "title": "Stop Port Forward — Keep Saved Rule"
   },
   {
     "id": "sshLite.activateSavedForward",
@@ -157,7 +157,7 @@
   },
   {
     "id": "sshLite.deleteSavedForward",
-    "title": "Delete Saved Forward"
+    "title": "Delete Saved Rule Permanently"
   },
   {
     "id": "sshLite.showAuditLog",
@@ -285,7 +285,7 @@
   },
   {
     "id": "sshLite.filterFiles",
-    "title": "Filter Files"
+    "title": "Filter Loaded Files by Name"
   },
   {
     "id": "sshLite.clearFilter",
@@ -293,11 +293,11 @@
   },
   {
     "id": "sshLite.searchServerForFilter",
-    "title": "Search Server for Filter"
+    "title": "Deep Scan Current Filter — Add Matches to Remote Files"
   },
   {
     "id": "sshLite.showSearch",
-    "title": "Show Search"
+    "title": "Advanced Search — Content, Filenames, Scopes, and Servers"
   },
   {
     "id": "sshLite.searchInScope",
@@ -357,7 +357,7 @@
   },
   {
     "id": "sshLite.clearActivities",
-    "title": "Clear Activities"
+    "title": "Clear Activity List — Running Operations Continue"
   },
   {
     "id": "sshLite.toggleActivityGrouping",

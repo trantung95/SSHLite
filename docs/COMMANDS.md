@@ -55,10 +55,10 @@ Open the Command Palette (**Ctrl+Shift+P** / **Cmd+Shift+P**) and type the comma
 | Properties | `sshLite.showProperties` | — | Tree context menu |
 | Refresh Files | `sshLite.refreshFiles` | `ctrl+shift+r / cmd+shift+r (Mac)` | Keybinding: ctrl+shift+r / cmd+shift+r (Mac), View toolbar |
 | Open Terminal | `sshLite.openTerminal` | `ctrl+shift+t / cmd+shift+t (Mac)` | Keybinding: ctrl+shift+t / cmd+shift+t (Mac), Tree context menu |
-| Forward Port | `sshLite.forwardPort` | — | View toolbar |
-| Stop Forward | `sshLite.stopForward` | — | Tree context menu |
+| Create Port Forward — Automatically Save Rule | `sshLite.forwardPort` | — | View toolbar |
+| Stop Port Forward — Keep Saved Rule | `sshLite.stopForward` | — | Tree context menu |
 | Start Saved Forward | `sshLite.activateSavedForward` | — | Tree context menu |
-| Delete Saved Forward | `sshLite.deleteSavedForward` | — | Tree context menu |
+| Delete Saved Rule Permanently | `sshLite.deleteSavedForward` | — | Tree context menu |
 | Show Audit Log | `sshLite.showAuditLog` | — | Command Palette only |
 | Export Audit Log | `sshLite.exportAuditLog` | — | Command Palette only |
 | Clear Audit Log | `sshLite.clearAuditLog` | — | Command Palette only |
@@ -90,10 +90,10 @@ Open the Command Palette (**Ctrl+Shift+P** / **Cmd+Shift+P**) and type the comma
 | Clear Cache (Factory Reset) | `sshLite.clearCache` | — | View toolbar |
 | Filter Hosts | `sshLite.filterHosts` | — | View toolbar |
 | Clear Host Filter | `sshLite.clearHostFilter` | — | View toolbar |
-| Filter Files | `sshLite.filterFiles` | `ctrl+shift+f / cmd+shift+f (Mac)` | Keybinding: ctrl+shift+f / cmd+shift+f (Mac), View toolbar |
+| Filter Loaded Files by Name | `sshLite.filterFiles` | `ctrl+shift+f / cmd+shift+f (Mac)` | Keybinding: ctrl+shift+f / cmd+shift+f (Mac), View toolbar |
 | Clear Filter | `sshLite.clearFilter` | — | Command Palette only |
-| Search Server for Filter | `sshLite.searchServerForFilter` | — | View toolbar |
-| Show Search | `sshLite.showSearch` | `ctrl+shift+s / cmd+shift+s (Mac)` | Keybinding: ctrl+shift+s / cmd+shift+s (Mac), View toolbar |
+| Deep Scan Current Filter — Add Matches to Remote Files | `sshLite.searchServerForFilter` | — | View toolbar |
+| Advanced Search — Content, Filenames, Scopes, and Servers | `sshLite.showSearch` | `ctrl+shift+s / cmd+shift+s (Mac)` | Keybinding: ctrl+shift+s / cmd+shift+s (Mac), View toolbar |
 | Search Here | `sshLite.searchInScope` | — | Tree context menu |
 | Index Folder for Fast Filename Search | `sshLite.indexFolder` | — | Tree context menu |
 | Filter by Name | `sshLite.filterFileNames` | — | Tree context menu |
@@ -108,7 +108,7 @@ Open the Command Palette (**Ctrl+Shift+P** / **Cmd+Shift+P**) and type the comma
 | Cancel Activity | `sshLite.cancelActivity` | — | Tree context menu |
 | Cancel All Activities | `sshLite.cancelAllActivities` | — | View toolbar |
 | Cancel Server Activities | `sshLite.cancelServerActivities` | — | Tree context menu |
-| Clear Activities | `sshLite.clearActivities` | — | View toolbar |
+| Clear Activity List — Running Operations Continue | `sshLite.clearActivities` | — | View toolbar |
 | Toggle Grouping (Server/Type) | `sshLite.toggleActivityGrouping` | — | View toolbar |
 | Expand All | `sshLite.expandAll` | — | View toolbar |
 | Expand to First Level | `sshLite.expandFirstLevel` | — | View toolbar |

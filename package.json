@@ -184,7 +184,7 @@
         "command": "sshLite.importConnections",
         "title": "Import Connections...",
         "category": "SSH Lite",
-        "icon": "$(import)"
+        "icon": "$(arrow-circle-down)"
       },
       {
         "command": "sshLite.connectGoogleDrive",
@@ -396,13 +396,13 @@
       },
       {
         "command": "sshLite.forwardPort",
-        "title": "Forward Port",
+        "title": "Create Port Forward — Automatically Save Rule",
         "category": "SSH Lite",
-        "icon": "$(arrow-right)"
+        "icon": "$(add)"
       },
       {
         "command": "sshLite.stopForward",
-        "title": "Stop Forward",
+        "title": "Stop Port Forward — Keep Saved Rule",
         "category": "SSH Lite",
         "icon": "$(close)"
       },
@@ -414,7 +414,7 @@
       },
       {
         "command": "sshLite.deleteSavedForward",
-        "title": "Delete Saved Forward",
+        "title": "Delete Saved Rule Permanently",
         "category": "SSH Lite",
         "icon": "$(trash)"
       },
@@ -434,7 +434,7 @@
         "command": "sshLite.clearAuditLog",
         "title": "Clear Audit Log",
         "category": "SSH Lite",
-        "icon": "$(trash)"
+        "icon": "$(clear-all)"
       },
       {
         "command": "sshLite.monitor",
@@ -458,7 +458,7 @@
         "command": "sshLite.diagnoseSlowness",
         "title": "Diagnose Slowness",
         "category": "SSH Lite",
-        "icon": "$(bug)"
+        "icon": "$(pulse)"
       },
       {
         "command": "sshLite.clearCredentials",
@@ -512,7 +512,7 @@
         "command": "sshLite.pinFolder",
         "title": "Pin Folder to Credential",
         "category": "SSH Lite",
-        "icon": "$(pinned)"
+        "icon": "$(pin)"
       },
       {
         "command": "sshLite.connectToPinnedFolder",
@@ -524,7 +524,7 @@
         "command": "sshLite.deletePinnedFolder",
         "title": "Remove Pinned Folder",
         "category": "SSH Lite",
-        "icon": "$(trash)"
+        "icon": "$(close)"
       },
       {
         "command": "sshLite.renamePinnedFolder",
@@ -548,7 +548,7 @@
         "command": "sshLite.showServerBackups",
         "title": "Show Server Backups",
         "category": "SSH Lite",
-        "icon": "$(server)"
+        "icon": "$(archive)"
       },
       {
         "command": "sshLite.showChanges",
@@ -566,7 +566,7 @@
         "command": "sshLite.showBackupLogs",
         "title": "Show Backup Logs",
         "category": "SSH Lite",
-        "icon": "$(list-flat)"
+        "icon": "$(output)"
       },
       {
         "command": "sshLite.openServerBackupFolder",
@@ -606,7 +606,7 @@
       },
       {
         "command": "sshLite.filterFiles",
-        "title": "Filter Files",
+        "title": "Filter Loaded Files by Name",
         "category": "SSH Lite",
         "icon": "$(filter)"
       },
@@ -618,13 +618,13 @@
       },
       {
         "command": "sshLite.searchServerForFilter",
-        "title": "Search Server for Filter",
+        "title": "Deep Scan Current Filter — Add Matches to Remote Files",
         "category": "SSH Lite",
         "icon": "$(remote-explorer)"
       },
       {
         "command": "sshLite.showSearch",
-        "title": "Show Search",
+        "title": "Advanced Search — Content, Filenames, Scopes, and Servers",
         "category": "SSH Lite",
         "icon": "$(search)"
       },
@@ -656,7 +656,7 @@
         "command": "sshLite.cancelSearch",
         "title": "Cancel Search",
         "category": "SSH Lite",
-        "icon": "$(stop)"
+        "icon": "$(search-stop)"
       },
       {
         "command": "sshLite.cancelPreloading",
@@ -714,7 +714,7 @@
       },
       {
         "command": "sshLite.clearActivities",
-        "title": "Clear Activities",
+        "title": "Clear Activity List — Running Operations Continue",
         "category": "SSH Lite",
         "icon": "$(clear-all)"
       },
@@ -758,7 +758,7 @@
         "command": "sshLite.cutRemoteItem",
         "title": "Cut",
         "category": "SSH Lite",
-        "icon": "$(files)"
+        "icon": "$(move)"
       },
       {
         "command": "sshLite.pasteRemoteItem",
@@ -782,7 +782,7 @@
         "command": "sshLite.manageRemoteService",
         "title": "Manage Remote Service",
         "category": "SSH Tools",
-        "icon": "$(server-environment)"
+        "icon": "$(gear)"
       },
       {
         "command": "sshLite.showRemoteEnv",
@@ -818,7 +818,7 @@
         "command": "sshLite.manageSnippets",
         "title": "Manage Snippets",
         "category": "SSH Tools",
-        "icon": "$(list-tree)"
+        "icon": "$(symbol-snippet)"
       },
       {
         "command": "sshLite.batchRun",
@@ -842,7 +842,7 @@
         "command": "sshLite.pushPubKeyToHost",
         "title": "Push Public Key to Host",
         "category": "SSH Tools",
-        "icon": "$(cloud-upload)"
+        "icon": "$(key)"
       },
       {
         "command": "sshLite.diffWithLocal",
