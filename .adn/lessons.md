@@ -5,6 +5,20 @@ Add new entries as bugs are found, mistakes are made, or better approaches are d
 
 ---
 
+## 2026-08-11 - Native dialog steps describe concepts, not prompt count
+
+The Create Port Forward flow uses four native Visual Studio Code controls but
+only three conceptual steps: choose a Secure Shell (SSH) server, enter the
+destination host and service port, then choose the local listening port.
+
+LESSONS:
+1. A multi-prompt native flow may reuse one step title for related fields; do not renumber steps merely because one concept needs two input boxes.
+2. Validate a local listening port against forwards from every active connection because the local bind namespace is shared across servers.
+3. Destructive confirmation copy must name the scope and consequence separately. Deleting a saved forward removes persistence but does not delete server data.
+4. Offer `Retry` for a multi-stage action only after rollback succeeds. Persist a candidate snapshot before replacing in-memory state so durable-write failure cannot leave the interface claiming one state while restart restores another.
+
+---
+
 ## 2026-08-11 - Assert mocked MarkdownString content through value
 
 The Visual Studio Code (VS Code) `MarkdownString` test mock stores rendered text in `.value` and does not implement a meaningful `toString()`. Tooltip tests that call `toString()` inspect `[object Object]` instead of the user-visible text.

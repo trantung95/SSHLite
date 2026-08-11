@@ -89,14 +89,30 @@ Singleton service for SSH port forwarding (local → remote tunnels) with **pers
 
 ```
 sshLite.forwardPort command:
-  1. Prompt for local port
-  2. Prompt for remote host (default: localhost)
-  3. Prompt for remote port
+  1. Select a Secure Shell (SSH) server; only connected servers are available
+  2. Enter the destination service port and destination host (default: localhost)
+  3. Enter the listening port on the user's computer
   4. connection.forwardPort(localPort, remoteHost, remotePort)
   5. Store in active forwards list
   6. Auto-save rule to globalState for persistence
   7. Update PortForwardTreeProvider
 ```
+
+The three native Visual Studio Code steps use consistent titles. Port validation
+accepts integers from 1 through 65535 and rejects local ports already forwarded
+by any active connection. Success feedback states the complete route and that the
+rule was saved. A failed interactive creation explains the reason and gives
+stage-specific recovery: another local port for bind conflicts, storage access
+for persistence failures, or connection recovery for connection failures.
+`Retry` appears only when retrying is safe; saved-rule activation and automatic
+restore keep their existing behavior.
+
+Saved-rule writes use a candidate snapshot: in-memory state changes only after
+`globalState.update()` succeeds. Writes are serialized so simultaneous forward
+creation cannot overwrite another saved rule. If persistence fails after the
+local listener starts, creation stops that listener and removes its tree row before offering
+`Retry`. If listener rollback fails, the error omits `Retry` and directs the
+user to stop the active forward first.
 
 ### Data Types
 
@@ -148,8 +164,12 @@ Forward created → listening on localPort → traffic tunneled → rule auto-sa
   ├─ VSCode restarts → saved rules survive
   │   └─ Next connect restores forwards automatically
   │
-  └─ User deletes rule: sshLite.deleteSavedForward → rule removed permanently
+  └─ User deletes rule: sshLite.deleteSavedForward → modal confirmation → rule removed permanently
 ```
+
+The delete confirmation names the local route, destination, persistence
+consequence, and the boundary that no server data is deleted. A custom
+destination host remains visible instead of being replaced by the SSH server name.
 
 ### Commands
 

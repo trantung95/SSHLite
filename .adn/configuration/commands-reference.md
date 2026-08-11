@@ -131,7 +131,7 @@ Backing services: `SystemToolsService` (processes + systemctl), `SnippetService`
 | `sshLite.forwardPort` | Forward Port | View title |
 | `sshLite.stopForward` | Stop Forward | Tree context (active forward) |
 | `sshLite.activateSavedForward` | Start Saved Forward | Tree context (saved forward) |
-| `sshLite.deleteSavedForward` | Delete Saved Forward | Tree context (saved forward) |
+| `sshLite.deleteSavedForward` | Delete Saved Forward | Tree context (saved forward); confirms persistence-only deletion |
 
 ### Search & Filter
 
@@ -184,7 +184,7 @@ Backing services: `SystemToolsService` (processes + systemctl), `SnippetService`
 | `sshLite.cancelActivity` | Cancel Activity | Tree context |
 | `sshLite.cancelAllActivities` | Cancel All Activities | View title |
 | `sshLite.cancelServerActivities` | Cancel Server Activities | Tree context |
-| `sshLite.clearActivities` | Clear Activities | View title |
+| `sshLite.clearActivities` | Clear Activities | View title; confirms when running operations would leave the list |
 | `sshLite.toggleActivityGrouping` | Toggle Grouping | View title |
 
 ### Temp Files

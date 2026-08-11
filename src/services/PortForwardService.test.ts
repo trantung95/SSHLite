@@ -5,7 +5,7 @@
  */
 
 import { IPortForward } from '../types';
-import { window } from '../__mocks__/vscode';
+import { resetWindowMocks, window } from '../__mocks__/vscode';
 import { createMockConnection, createMockHostConfig, createMockPortForward } from '../__mocks__/testHelpers';
 
 // Mock ConnectionManager - declare mocks before jest.mock so they're initialized
@@ -69,6 +69,7 @@ describe('PortForwardService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    resetWindowMocks();
     service = resetPortForwardService();
   });
 
@@ -128,6 +129,20 @@ describe('PortForwardService', () => {
       expect(mockAddForward).not.toHaveBeenCalled();
     });
 
+    it('uses connection recovery for an interactive connection failure', async () => {
+      const mockConn = createMockConnection();
+      (mockConn.forwardPort as jest.Mock).mockRejectedValue(new Error('Not connected'));
+
+      await service.forwardPort(mockConn as any, 3000, 'localhost', 3000, {
+        interactiveCreate: true,
+      });
+
+      expect(window.showErrorMessage).toHaveBeenCalledWith(
+        'Create port forward failed: Not connected. Check the connection and try again.',
+        'Retry'
+      );
+    });
+
     it('should auto-save rule on success', async () => {
       service.initialize(mockContext);
       const mockConn = createMockConnection();
@@ -150,6 +165,40 @@ describe('PortForwardService', () => {
 
       const rules = service.getSavedRules(mockConn.id);
       expect(rules).toHaveLength(0);
+    });
+
+    it('rolls back an active listener before offering Retry when persistence fails', async () => {
+      service.initialize(mockContext);
+      const mockConn = createMockConnection();
+      mockGlobalState.update.mockRejectedValueOnce(new Error('Storage unavailable'));
+
+      await service.forwardPort(mockConn as any, 3000, 'localhost', 3000, {
+        interactiveCreate: true,
+      });
+
+      expect(mockConn.stopForward).toHaveBeenCalledWith(3000);
+      expect(mockRemoveForward).toHaveBeenCalledWith(3000, mockConn.id);
+      expect(service.getSavedRules(mockConn.id)).toHaveLength(0);
+      expect(window.showErrorMessage).toHaveBeenCalledWith(
+        'Create port forward failed: Storage unavailable. Check storage access and try again.',
+        'Retry'
+      );
+    });
+
+    it('does not offer Retry when a failed save cannot roll back the listener', async () => {
+      service.initialize(mockContext);
+      const mockConn = createMockConnection();
+      (mockConn.stopForward as jest.Mock).mockRejectedValueOnce(new Error('Listener still active'));
+      mockGlobalState.update.mockRejectedValueOnce(new Error('Storage unavailable'));
+
+      await service.forwardPort(mockConn as any, 3000, 'localhost', 3000, {
+        interactiveCreate: true,
+      });
+
+      expect(mockRemoveForward).not.toHaveBeenCalled();
+      expect(window.showErrorMessage).toHaveBeenCalledWith(
+        'Create port forward failed: Storage unavailable. Stop the active port forward before trying again.'
+      );
     });
   });
 
@@ -362,6 +411,21 @@ describe('PortForwardService', () => {
       expect(rules).toHaveLength(2);
     });
 
+    it('preserves concurrent saved-rule writes', async () => {
+      service.initialize(mockContext);
+
+      await Promise.all([
+        service.saveRule('host1:22:user', 3000, 'localhost', 3000),
+        service.saveRule('host1:22:user', 8080, 'database.internal', 5432),
+      ]);
+
+      expect(service.getSavedRules('host1:22:user')).toEqual(expect.arrayContaining([
+        expect.objectContaining({ localPort: 3000, remoteHost: 'localhost', remotePort: 3000 }),
+        expect.objectContaining({ localPort: 8080, remoteHost: 'database.internal', remotePort: 5432 }),
+      ]));
+      expect(service.getSavedRules('host1:22:user')).toHaveLength(2);
+    });
+
     it('should delete saved rule', async () => {
       service.initialize(mockContext);
 
@@ -370,6 +434,20 @@ describe('PortForwardService', () => {
 
       const rules = service.getSavedRules('host1:22:user');
       expect(rules).toHaveLength(0);
+    });
+
+    it('keeps the saved rule when persistence rejects deletion', async () => {
+      service.initialize(mockContext);
+      const rule = await service.saveRule('host1:22:user', 3000, 'localhost', 3000);
+      mockRefresh.mockClear();
+      mockGlobalState.update.mockRejectedValueOnce(new Error('Storage unavailable'));
+
+      await expect(service.deleteSavedRule('host1:22:user', rule.id)).rejects.toThrow(
+        'Storage unavailable'
+      );
+
+      expect(service.getSavedRules('host1:22:user')).toEqual([rule]);
+      expect(mockRefresh).not.toHaveBeenCalled();
     });
 
     it('clears a restore failure when its saved rule is deleted', async () => {
@@ -651,6 +729,27 @@ describe('PortForwardService', () => {
       expect(window.showQuickPick).toHaveBeenCalled();
     });
 
+    it('labels Step 1 and describes each active server', async () => {
+      const connected = createMockConnection({
+        id: 'connected',
+        host: createMockHostConfig({
+          name: 'Connected Server',
+          host: 'connected.example.com',
+          port: 2222,
+          username: 'alice',
+        }),
+      });
+      mockGetAllConnections.mockReturnValue([connected]);
+      (window.showQuickPick as jest.Mock).mockResolvedValue(undefined);
+
+      await service.promptForwardPort();
+
+      const [items, options] = (window.showQuickPick as jest.Mock).mock.calls[0];
+      expect(options.title).toBe('Create Port Forward — Step 1 of 3');
+      expect(items.map((item: any) => item.label)).toEqual(['Connected Server']);
+      expect(items[0].description).toBe('alice@connected.example.com · port 2222');
+    });
+
     it('should cancel if user dismisses connection picker', async () => {
       const mockConn = createMockConnection();
       mockGetAllConnections.mockReturnValue([mockConn]);
@@ -673,6 +772,98 @@ describe('PortForwardService', () => {
       await service.promptForwardPort();
 
       expect(window.showInputBox).toHaveBeenCalled();
+    });
+
+    it('uses destination inputs in Step 2 and local port in Step 3', async () => {
+      const mockConn = createMockConnection();
+      (mockConn as any).getActiveForwards = jest.fn().mockReturnValue([8080]);
+      mockGetAllConnections.mockReturnValue([mockConn]);
+      (window.showQuickPick as jest.Mock).mockResolvedValue({ connection: mockConn });
+      (window.showInputBox as jest.Mock)
+        .mockResolvedValueOnce('3000')
+        .mockResolvedValueOnce('db.internal')
+        .mockResolvedValueOnce('8081');
+
+      await service.promptForwardPort();
+
+      const inputCalls = (window.showInputBox as jest.Mock).mock.calls;
+      expect(inputCalls[0][0]).toEqual(expect.objectContaining({
+        title: 'Create Port Forward — Step 2 of 3',
+        prompt: 'Enter the service port on the destination host',
+      }));
+      expect(inputCalls[1][0]).toEqual(expect.objectContaining({
+        title: 'Create Port Forward — Step 2 of 3',
+        prompt: 'Enter the destination host. localhost means the SSH server itself',
+        value: 'localhost',
+      }));
+      expect(inputCalls[2][0]).toEqual(expect.objectContaining({
+        title: 'Create Port Forward — Step 3 of 3',
+        prompt: 'Enter the listening port on this computer',
+        value: '3000',
+      }));
+      expect(inputCalls[2][0].validateInput('8080')).toBe(
+        'Local port 8080 is already forwarded'
+      );
+      expect(mockConn.forwardPort).toHaveBeenCalledWith(8081, 'db.internal', 3000);
+    });
+
+    it('validates local ports used by another active connection', async () => {
+      const selected = createMockConnection({ id: 'selected' });
+      const other = createMockConnection({ id: 'other' });
+      (selected as any).getActiveForwards = jest.fn().mockReturnValue([]);
+      (other as any).getActiveForwards = jest.fn().mockReturnValue([9000]);
+      mockGetAllConnections.mockReturnValue([selected, other]);
+      (window.showQuickPick as jest.Mock).mockResolvedValue({ connection: selected });
+      (window.showInputBox as jest.Mock)
+        .mockResolvedValueOnce('3000')
+        .mockResolvedValueOnce('localhost')
+        .mockResolvedValueOnce(undefined);
+
+      await service.promptForwardPort();
+
+      const localOptions = (window.showInputBox as jest.Mock).mock.calls[2][0];
+      expect(localOptions.validateInput('9000')).toBe('Local port 9000 is already forwarded');
+    });
+
+    it('shows route and saved-rule confirmation after creation', async () => {
+      const mockConn = createMockConnection();
+      (mockConn as any).getActiveForwards = jest.fn().mockReturnValue([]);
+      mockGetAllConnections.mockReturnValue([mockConn]);
+      (window.showQuickPick as jest.Mock).mockResolvedValue({ connection: mockConn });
+      (window.showInputBox as jest.Mock)
+        .mockResolvedValueOnce('3000')
+        .mockResolvedValueOnce('localhost')
+        .mockResolvedValueOnce('8080');
+
+      await service.promptForwardPort();
+
+      expect(window.setStatusBarMessage).toHaveBeenCalledWith(
+        '$(check) Port forward created and saved: localhost:8080 → localhost:3000',
+        5000
+      );
+    });
+
+    it('explains creation failure and offers a safe retry', async () => {
+      const mockConn = createMockConnection();
+      (mockConn as any).getActiveForwards = jest.fn().mockReturnValue([]);
+      (mockConn.forwardPort as jest.Mock).mockRejectedValueOnce(new Error('Address already in use'));
+      mockGetAllConnections.mockReturnValue([mockConn]);
+      (window.showQuickPick as jest.Mock)
+        .mockResolvedValueOnce({ connection: mockConn })
+        .mockResolvedValueOnce(undefined);
+      (window.showInputBox as jest.Mock)
+        .mockResolvedValueOnce('3000')
+        .mockResolvedValueOnce('localhost')
+        .mockResolvedValueOnce('8080');
+      (window.showErrorMessage as jest.Mock).mockResolvedValue('Retry');
+
+      await service.promptForwardPort();
+
+      expect(window.showErrorMessage).toHaveBeenCalledWith(
+        'Create port forward failed: Address already in use. Choose another local port and try again.',
+        'Retry'
+      );
+      expect(window.showQuickPick).toHaveBeenCalledTimes(2);
     });
   });
 });

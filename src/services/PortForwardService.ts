@@ -3,8 +3,9 @@ import { ConnectionManager } from '../connection/ConnectionManager';
 import { SSHConnection } from '../connection/SSHConnection';
 import { PortForwardTreeProvider } from '../providers/PortForwardTreeProvider';
 import { IPortForward, ISavedPortForwardRule } from '../types';
-import { infoLog } from '../utils/diagnosticLog';
+import { diagLog, infoLog } from '../utils/diagnosticLog';
 import { assertCapability, hasCapability } from '../utils/capabilityGuard';
+import { formatErrorMessage, portForwardStepTitle, validatePort } from '../ui/nativeFeedback';
 
 /**
  * Saved port forward rules indexed by hostId
@@ -21,6 +22,7 @@ export class PortForwardService {
   private treeProvider: PortForwardTreeProvider | null = null;
   private context: vscode.ExtensionContext | null = null;
   private savedRules: SavedPortForwardIndex = {};
+  private savedRulesWriteQueue: Promise<void> = Promise.resolve();
   private readonly restoreFailures = new Map<string, Map<string, string>>();
   private readonly STORAGE_KEY = 'sshLite.savedPortForwards';
 
@@ -68,10 +70,19 @@ export class PortForwardService {
   /**
    * Save rules to globalState
    */
-  private async saveSavedRules(): Promise<void> {
+  private async saveSavedRules(rules: SavedPortForwardIndex = this.savedRules): Promise<void> {
     if (this.context) {
-      await this.context.globalState.update(this.STORAGE_KEY, this.savedRules);
+      await this.context.globalState.update(this.STORAGE_KEY, rules);
     }
+  }
+
+  private enqueueSavedRulesWrite<T>(write: () => Promise<T>): Promise<T> {
+    const result = this.savedRulesWriteQueue.then(write, write);
+    this.savedRulesWriteQueue = result.then(
+      () => undefined,
+      () => undefined
+    );
+    return result;
   }
 
   /**
@@ -123,50 +134,60 @@ export class PortForwardService {
     remoteHost: string,
     remotePort: number
   ): Promise<ISavedPortForwardRule> {
-    if (!this.savedRules[hostId]) {
-      this.savedRules[hostId] = [];
-    }
+    return this.enqueueSavedRulesWrite(async () => {
+      const hostRules = this.savedRules[hostId] ?? [];
 
-    // Dedup: check if an identical rule already exists
-    const existing = this.savedRules[hostId].find(
-      (r) => r.localPort === localPort && r.remoteHost === remoteHost && r.remotePort === remotePort
-    );
-    if (existing) {
-      return existing;
-    }
+      // Dedup: check if an identical rule already exists
+      const existing = hostRules.find(
+        (r) => r.localPort === localPort && r.remoteHost === remoteHost && r.remotePort === remotePort
+      );
+      if (existing) {
+        return existing;
+      }
 
-    const rule: ISavedPortForwardRule = {
-      id: `pf_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
-      localPort,
-      remoteHost,
-      remotePort,
-    };
+      const rule: ISavedPortForwardRule = {
+        id: `pf_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+        localPort,
+        remoteHost,
+        remotePort,
+      };
 
-    this.savedRules[hostId].push(rule);
-    await this.saveSavedRules();
-    return rule;
+      const nextSavedRules: SavedPortForwardIndex = {
+        ...this.savedRules,
+        [hostId]: [...hostRules, rule],
+      };
+      await this.saveSavedRules(nextSavedRules);
+      this.savedRules = nextSavedRules;
+      return rule;
+    });
   }
 
   /**
    * Delete a saved rule
    */
   async deleteSavedRule(hostId: string, ruleId: string): Promise<void> {
-    this.clearRestoreFailure(hostId, ruleId);
-    if (!this.savedRules[hostId]) {
-      return;
-    }
+    return this.enqueueSavedRulesWrite(async () => {
+      if (!this.savedRules[hostId]) {
+        return;
+      }
 
-    this.savedRules[hostId] = this.savedRules[hostId].filter((r) => r.id !== ruleId);
+      const nextHostRules = this.savedRules[hostId].filter((r) => r.id !== ruleId);
+      const nextSavedRules: SavedPortForwardIndex = { ...this.savedRules };
 
-    if (this.savedRules[hostId].length === 0) {
-      delete this.savedRules[hostId];
-    }
+      if (nextHostRules.length === 0) {
+        delete nextSavedRules[hostId];
+      } else {
+        nextSavedRules[hostId] = nextHostRules;
+      }
 
-    await this.saveSavedRules();
+      await this.saveSavedRules(nextSavedRules);
+      this.savedRules = nextSavedRules;
+      this.clearRestoreFailure(hostId, ruleId);
 
-    if (this.treeProvider) {
-      this.treeProvider.refresh();
-    }
+      if (this.treeProvider) {
+        this.treeProvider.refresh();
+      }
+    });
   }
 
   // ==================== FORWARD MANAGEMENT ====================
@@ -177,7 +198,11 @@ export class PortForwardService {
   async promptForwardPort(): Promise<void> {
     const connectionManager = ConnectionManager.getInstance();
     // Port forwarding is SSH-only; never offer an FTP connection in the picker.
-    const connections = connectionManager.getAllConnections().filter((c) => hasCapability(c, 'supportsPortForward'));
+    // getAllConnections() guarantees that every returned connection is active,
+    // so connected hosts are the complete picker population rather than a sort tier.
+    const connections = connectionManager
+      .getAllConnections()
+      .filter((connection) => hasCapability(connection, 'supportsPortForward'));
 
     if (connections.length === 0) {
       vscode.window.showWarningMessage('No active SSH connections. Please connect first.');
@@ -185,79 +210,80 @@ export class PortForwardService {
     }
 
     // Select connection
-    const connectionItems = connections.map((conn) => ({
-      label: conn.host.name,
-      description: `${conn.host.username}@${conn.host.host}`,
-      connection: conn,
+    const connectionItems = connections.map((connection) => ({
+      label: connection.host.name,
+      description: `${connection.host.username}@${connection.host.host} · port ${connection.host.port}`,
+      connection,
     }));
 
     const selectedConnection = await vscode.window.showQuickPick(connectionItems, {
+      title: portForwardStepTitle(1),
       placeHolder: 'Select SSH connection',
       ignoreFocusOut: true,
     });
 
     if (!selectedConnection) {
+      diagLog('port-forward', 'prompt-cancelled', { step: 1 });
       return;
     }
+    diagLog('port-forward', 'prompt-server-selected', {
+      connectionId: selectedConnection.connection.id,
+      hostName: selectedConnection.connection.host.name,
+    });
 
     // Get remote port first — this is the port the user wants to reach
     const remotePortStr = await vscode.window.showInputBox({
-      prompt: 'Server port to forward',
+      title: portForwardStepTitle(2),
+      prompt: 'Enter the service port on the destination host',
       placeHolder: '8080',
       ignoreFocusOut: true,
-      validateInput: (value) => {
-        const port = parseInt(value, 10);
-        if (isNaN(port) || port < 1 || port > 65535) {
-          return 'Please enter a valid port number (1-65535)';
-        }
-        return null;
-      },
+      validateInput: (value) => validatePort(value),
     });
 
     if (!remotePortStr) {
+      diagLog('port-forward', 'prompt-cancelled', { step: 2, field: 'destination-port' });
       return;
     }
 
-    const remotePort = parseInt(remotePortStr, 10);
+    const remotePort = Number(remotePortStr);
 
     // Get destination host — usually the SSH server itself (localhost)
     const remoteHost = await vscode.window.showInputBox({
-      prompt: 'Target host (localhost = SSH server itself)',
+      title: portForwardStepTitle(2),
+      prompt: 'Enter the destination host. localhost means the SSH server itself',
       value: 'localhost',
       ignoreFocusOut: true,
     });
 
     if (!remoteHost) {
+      diagLog('port-forward', 'prompt-cancelled', { step: 2, field: 'destination-host' });
       return;
     }
 
     // Get local port — the port on the user's machine
+    const unavailableLocalPorts = new Set(
+      connections.flatMap((connection) => connection.getActiveForwards())
+    );
+
     const localPortStr = await vscode.window.showInputBox({
-      prompt: 'Listen on local port',
+      title: portForwardStepTitle(3),
+      prompt: 'Enter the listening port on this computer',
       value: remotePortStr, // Default to same as remote
       ignoreFocusOut: true,
-      validateInput: (value) => {
-        const port = parseInt(value, 10);
-        if (isNaN(port) || port < 1 || port > 65535) {
-          return 'Please enter a valid port number (1-65535)';
-        }
-        // Check if port is already in use locally
-        const existingForwards = selectedConnection.connection.getActiveForwards();
-        if (existingForwards.includes(port)) {
-          return 'This local port is already forwarded';
-        }
-        return null;
-      },
+      validateInput: (value) => validatePort(value, unavailableLocalPorts),
     });
 
     if (!localPortStr) {
+      diagLog('port-forward', 'prompt-cancelled', { step: 3 });
       return;
     }
 
-    const localPort = parseInt(localPortStr, 10);
+    const localPort = Number(localPortStr);
 
     // Create the forward
-    await this.forwardPort(selectedConnection.connection, localPort, remoteHost, remotePort);
+    await this.forwardPort(selectedConnection.connection, localPort, remoteHost, remotePort, {
+      interactiveCreate: true,
+    });
   }
 
   /**
@@ -267,7 +293,8 @@ export class PortForwardService {
     connection: SSHConnection,
     localPort: number,
     remoteHost: string,
-    remotePort: number
+    remotePort: number,
+    options: { interactiveCreate?: boolean } = {}
   ): Promise<void> {
     // Backstop: FTP has no port forwarding. Covers promptForwardPort,
     // activateSavedForward, and restoreSavedForwards (all route through here).
@@ -280,16 +307,26 @@ export class PortForwardService {
       remoteHost,
       remotePort,
     });
+    let listenerStarted = false;
+    let treeRowAdded = false;
+    let persistenceCompleted = false;
+    let failureStage: 'listener' | 'tree' | 'persistence' | 'feedback' = 'listener';
     try {
       await connection.forwardPort(localPort, remoteHost, remotePort);
+      listenerStarted = true;
+      failureStage = 'tree';
 
       // Update tree provider
       if (this.treeProvider) {
         this.treeProvider.addForward(connection.id, localPort, remoteHost, remotePort);
+        treeRowAdded = true;
       }
 
       // Auto-save the rule for persistence
+      failureStage = 'persistence';
       const savedRule = await this.saveRule(connection.id, localPort, remoteHost, remotePort);
+      persistenceCompleted = true;
+      failureStage = 'feedback';
       this.clearRestoreFailure(connection.id, savedRule.id);
 
       infoLog('port-forward', 'create/success', {
@@ -299,21 +336,78 @@ export class PortForwardService {
         remotePort,
         durationMs: Date.now() - t0,
       });
-      vscode.window.setStatusBarMessage(
-        `$(check) Port forward: localhost:${localPort} → ${remoteHost}:${remotePort}`, 5000
-      );
+      const status = options.interactiveCreate
+        ? `$(check) Port forward created and saved: localhost:${localPort} → ${remoteHost}:${remotePort}`
+        : `$(check) Port forward: localhost:${localPort} → ${remoteHost}:${remotePort}`;
+      vscode.window.setStatusBarMessage(status, 5000);
     } catch (error) {
       const e = error as Error;
+      let retrySafe = !listenerStarted;
+      if (listenerStarted && !persistenceCompleted) {
+        try {
+          await connection.stopForward(localPort);
+          if (treeRowAdded && this.treeProvider) {
+            this.treeProvider.removeForward(localPort, connection.id);
+          }
+          retrySafe = true;
+          infoLog('port-forward', 'create-rollback-completed', {
+            connectionId: connection.id,
+            localPort,
+          });
+        } catch (rollbackError) {
+          const rollbackReason = rollbackError instanceof Error
+            ? rollbackError.message
+            : String(rollbackError);
+          retrySafe = false;
+          infoLog('port-forward', 'create-rollback-failed', {
+            connectionId: connection.id,
+            localPort,
+            rollbackReason,
+          });
+        }
+      }
       infoLog('port-forward', 'create/failed', {
         connectionId: connection.id,
         localPort,
         remoteHost,
         remotePort,
         durationMs: Date.now() - t0,
+        failureStage,
         errorName: e.name,
         errorMessage: e.message,
       });
-      vscode.window.showErrorMessage(`Failed to create port forward: ${e.message}`);
+      if (options.interactiveCreate) {
+        let recovery: string;
+        if (!retrySafe) {
+          recovery = 'Stop the active port forward before trying again';
+        } else if (failureStage === 'persistence') {
+          recovery = 'Check storage access and try again';
+        } else if (failureStage === 'tree') {
+          recovery = 'Refresh the Port Forwards view and try again';
+        } else if (/address|already forwarded|EADDRINUSE/i.test(e.message)) {
+          recovery = 'Choose another local port and try again';
+        } else {
+          recovery = 'Check the connection and try again';
+        }
+        const message = formatErrorMessage(
+          'Create port forward',
+          e.message,
+          recovery
+        );
+        const action = retrySafe
+          ? await vscode.window.showErrorMessage(message, 'Retry')
+          : await vscode.window.showErrorMessage(message);
+        infoLog('port-forward', 'create-retry-decision', {
+          connectionId: connection.id,
+          offered: retrySafe,
+          selected: action === 'Retry',
+        });
+        if (retrySafe && action === 'Retry') {
+          await this.promptForwardPort();
+        }
+      } else {
+        vscode.window.showErrorMessage(`Failed to create port forward: ${e.message}`);
+      }
     }
   }
 
@@ -478,6 +572,7 @@ export class PortForwardService {
     });
     this.restoreFailures.clear();
     this.savedRules = {};
+    this.savedRulesWriteQueue = Promise.resolve();
     this.treeProvider = null;
     this.context = null;
   }

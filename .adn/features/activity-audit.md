@@ -107,6 +107,11 @@ clearAll()
   → Does not call cancellation callbacks; running SSH operations continue
 ```
 
+`sshLite.clearActivities` clears immediately when nothing is running. When an
+operation is running, a native modal confirmation states that the operation will
+continue while disappearing from Activity. Cancelling that dialog leaves the
+list unchanged.
+
 ### Activity Panel Grouping
 
 Two grouping modes (toggle via `sshLite.toggleActivityGrouping`): server (the

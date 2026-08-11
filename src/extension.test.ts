@@ -11,6 +11,8 @@
 
 import { parseHostInfoFromPath, isInSshTempDir, hasSshPrefix } from './utils/extensionHelpers';
 import { normalizeLocalPath } from './utils/helpers';
+import * as vscode from 'vscode';
+import { handleClearActivities, handleDeleteSavedForward } from './extension';
 
 describe('Extension Helpers - Real Exports', () => {
   describe('parseHostInfoFromPath', () => {
@@ -232,6 +234,146 @@ describe('Extension Helpers - Real Exports', () => {
       const orphaned = detectOrphanedFiles(docs, winTempDir, () => false);
       const normalizedPath = 'c:\\Users\\user\\AppData\\Local\\Temp\\ssh-lite\\abc123\\[SSH] file.ts';
       expect(orphaned.has(normalizedPath)).toBe(true);
+    });
+  });
+});
+
+describe('native command feedback', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('delete saved forward', () => {
+    const item = {
+      hostId: 'example.com:22:alice',
+      hostName: 'Production',
+      rule: {
+        id: 'saved-rule-1',
+        localPort: 8080,
+        remoteHost: 'localhost',
+        remotePort: 3000,
+      },
+    } as any;
+
+    it('requires modal confirmation that states scope and consequence', async () => {
+      const service = { deleteSavedRule: jest.fn().mockResolvedValue(undefined) };
+      (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue('Delete Saved Rule');
+
+      await handleDeleteSavedForward(item, service);
+
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+        'Delete saved rule localhost:8080 → Production:3000? ' +
+          'It will not restore on the next connection. No server data will be deleted.',
+        { modal: true },
+        'Delete Saved Rule'
+      );
+      expect(service.deleteSavedRule).toHaveBeenCalledWith(item.hostId, item.rule.id);
+    });
+
+    it('names a custom destination host in the confirmation', async () => {
+      const service = { deleteSavedRule: jest.fn().mockResolvedValue(undefined) };
+      const customTargetItem = {
+        ...item,
+        rule: { ...item.rule, remoteHost: 'database.internal' },
+      };
+      (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue(undefined);
+
+      await handleDeleteSavedForward(customTargetItem, service);
+
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+        expect.stringContaining('localhost:8080 → database.internal:3000'),
+        { modal: true },
+        'Delete Saved Rule'
+      );
+    });
+
+    it('keeps the saved rule when confirmation is cancelled', async () => {
+      const service = { deleteSavedRule: jest.fn().mockResolvedValue(undefined) };
+      (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue(undefined);
+
+      await handleDeleteSavedForward(item, service);
+
+      expect(service.deleteSavedRule).not.toHaveBeenCalled();
+      expect(vscode.window.setStatusBarMessage).not.toHaveBeenCalled();
+    });
+
+    it('confirms successful deletion in the status bar', async () => {
+      const service = { deleteSavedRule: jest.fn().mockResolvedValue(undefined) };
+      (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue('Delete Saved Rule');
+
+      await handleDeleteSavedForward(item, service);
+
+      expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith(
+        '$(trash) Saved port forward deleted',
+        3000
+      );
+    });
+
+    it('explains deletion failure and recovery', async () => {
+      const service = {
+        deleteSavedRule: jest.fn().mockRejectedValue(new Error('Storage is read-only')),
+      };
+      (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue('Delete Saved Rule');
+
+      await handleDeleteSavedForward(item, service);
+
+      expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
+        'Delete saved rule failed: Storage is read-only. Check storage access and try again.'
+      );
+    });
+  });
+
+  describe('clear activity list', () => {
+    it('clears immediately when no operation is running', async () => {
+      const service = { hasRunningActivities: jest.fn().mockReturnValue(false), clearAll: jest.fn() };
+
+      await handleClearActivities(service);
+
+      expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+      expect(service.clearAll).toHaveBeenCalledTimes(1);
+      expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith(
+        '$(clear-all) Activity list cleared',
+        2000
+      );
+    });
+
+    it('requires confirmation while operations are running', async () => {
+      const service = { hasRunningActivities: jest.fn().mockReturnValue(true), clearAll: jest.fn() };
+      (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue('Clear Activity List');
+
+      await handleClearActivities(service);
+
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+        'Clear the activity list? Running operations will continue but will no longer appear in Activity.',
+        { modal: true },
+        'Clear Activity List'
+      );
+      expect(service.clearAll).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the activity list when confirmation is cancelled', async () => {
+      const service = { hasRunningActivities: jest.fn().mockReturnValue(true), clearAll: jest.fn() };
+      (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue(undefined);
+
+      await handleClearActivities(service);
+
+      expect(service.clearAll).not.toHaveBeenCalled();
+      expect(vscode.window.setStatusBarMessage).not.toHaveBeenCalled();
+    });
+
+    it('explains a clear failure and recovery', async () => {
+      const service = {
+        hasRunningActivities: jest.fn().mockReturnValue(false),
+        clearAll: jest.fn().mockImplementation(() => {
+          throw new Error('Activity store unavailable');
+        }),
+      };
+
+      await handleClearActivities(service);
+
+      expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
+        'Clear activity list failed: Activity store unavailable. Try again.'
+      );
     });
   });
 });

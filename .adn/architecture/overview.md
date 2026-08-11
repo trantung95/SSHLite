@@ -201,7 +201,7 @@ FileTreeProvider
 
 PortForwardTreeProvider
   ├─ uses: ConnectionManager (port-forward-capable connections and lifecycle events)
-  ├─ uses: PortForwardService (active, saved, and runtime restore-failure state)
+  ├─ uses: PortForwardService (three-step native creation, active, saved, and runtime restore-failure state)
   └─ uses: HostService (`onDidChangeHosts` invalidates cached host metadata)
 
 HousekeepingService

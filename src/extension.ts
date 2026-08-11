@@ -49,6 +49,7 @@ import { setTabPrefixMode, TabPrefixMode } from './utils/connectionPrefix';
 import { resolveTreeSelection } from './utils/treeSelection';
 import { ensureCapability, hasCapability, ConnectionCapabilityKey } from './utils/capabilityGuard';
 import { expandAllInViews, expandFirstLevelInViews, ExpandableTreeView } from './utils/treeExpand';
+import { formatErrorMessage } from './ui/nativeFeedback';
 
 let outputChannel: vscode.OutputChannel;
 
@@ -244,6 +245,89 @@ async function resolveFolderTreeTarget(
   }
   vscode.window.showWarningMessage(warnMsg);
   return null;
+}
+
+/** Clear Activity history without conflating list removal with operation cancellation. */
+export async function handleClearActivities(
+  activityService: Pick<ActivityService, 'hasRunningActivities' | 'clearAll'>
+): Promise<boolean> {
+  const hasRunningActivities = activityService.hasRunningActivities();
+  infoLog('activity-list', 'clear-requested', { hasRunningActivities });
+
+  if (hasRunningActivities) {
+    const confirm = await vscode.window.showWarningMessage(
+      'Clear the activity list? Running operations will continue but will no longer appear in Activity.',
+      { modal: true },
+      'Clear Activity List'
+    );
+    if (confirm !== 'Clear Activity List') {
+      infoLog('activity-list', 'clear-cancelled', { hasRunningActivities: true });
+      return false;
+    }
+  }
+
+  try {
+    activityService.clearAll();
+    infoLog('activity-list', 'clear-completed', { hadRunningActivities: hasRunningActivities });
+    vscode.window.setStatusBarMessage('$(clear-all) Activity list cleared', 2000);
+    return true;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    infoLog('activity-list', 'clear-failed', { reason });
+    vscode.window.showErrorMessage(
+      formatErrorMessage('Clear activity list', reason, 'Try again')
+    );
+    return false;
+  }
+}
+
+/** Confirm and delete one persisted port-forward rule without touching server data. */
+export async function handleDeleteSavedForward(
+  item: SavedForwardTreeItem | undefined,
+  portForwardService: Pick<PortForwardService, 'deleteSavedRule'>
+): Promise<boolean> {
+  if (!item) {
+    return false;
+  }
+
+  const remoteTarget = item.rule.remoteHost === 'localhost'
+    ? item.hostName
+    : item.rule.remoteHost;
+  infoLog('port-forward', 'delete-requested', {
+    hostId: item.hostId,
+    ruleId: item.rule.id,
+    localPort: item.rule.localPort,
+    remoteHost: item.rule.remoteHost,
+    remotePort: item.rule.remotePort,
+  });
+  const confirm = await vscode.window.showWarningMessage(
+    `Delete saved rule localhost:${item.rule.localPort} → ${remoteTarget}:${item.rule.remotePort}? ` +
+      'It will not restore on the next connection. No server data will be deleted.',
+    { modal: true },
+    'Delete Saved Rule'
+  );
+  if (confirm !== 'Delete Saved Rule') {
+    infoLog('port-forward', 'delete-cancelled', { hostId: item.hostId, ruleId: item.rule.id });
+    return false;
+  }
+
+  try {
+    await portForwardService.deleteSavedRule(item.hostId, item.rule.id);
+    infoLog('port-forward', 'delete-completed', { hostId: item.hostId, ruleId: item.rule.id });
+    vscode.window.setStatusBarMessage('$(trash) Saved port forward deleted', 3000);
+    return true;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    infoLog('port-forward', 'delete-failed', {
+      hostId: item.hostId,
+      ruleId: item.rule.id,
+      reason,
+    });
+    vscode.window.showErrorMessage(
+      formatErrorMessage('Delete saved rule', reason, 'Check storage access and try again')
+    );
+    return false;
+  }
 }
 
 /**
@@ -2619,9 +2703,8 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
 
-    vscode.commands.registerCommand('sshLite.clearActivities', () => {
-      activityService.clearAll();
-      vscode.window.setStatusBarMessage('$(clear-all) Activities cleared', 2000);
+    vscode.commands.registerCommand('sshLite.clearActivities', async () => {
+      await handleClearActivities(activityService);
     }),
 
     vscode.commands.registerCommand('sshLite.toggleActivityGrouping', () => {
@@ -3093,8 +3176,8 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       logCommand('deleteSavedForward', `rule ${item.rule.id}`);
-      await portForwardService.deleteSavedRule(item.hostId, item.rule.id);
-      logResult('deleteSavedForward', true);
+      const deleted = await handleDeleteSavedForward(item, portForwardService);
+      logResult('deleteSavedForward', deleted);
     }),
 
     // Audit log commands

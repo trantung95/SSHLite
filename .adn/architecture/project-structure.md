@@ -107,6 +107,9 @@ SSHLite/
     types/
       progressive.ts                      # Progressive download types
       progressive.test.ts                 # Progressive type tests
+    ui/
+      nativeFeedback.ts                    # Native dialog titles, port validation, and recovery copy
+      nativeFeedback.test.ts               # Native feedback helper tests
     utils/
       helpers.ts                          # formatFileSize, formatRelativeTime, normalizeLocalPath
       helpers.test.ts                     # Helper tests
