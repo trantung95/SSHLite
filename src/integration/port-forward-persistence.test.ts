@@ -42,7 +42,12 @@ jest.mock('../services/HostService', () => ({
 }));
 
 import { PortForwardService } from '../services/PortForwardService';
-import { PortForwardTreeProvider, PortForwardTreeItem, SavedForwardTreeItem } from '../providers/PortForwardTreeProvider';
+import {
+  PortForwardServerGroupTreeItem,
+  PortForwardTreeProvider,
+  PortForwardTreeItem,
+  SavedForwardTreeItem,
+} from '../providers/PortForwardTreeProvider';
 
 // Mock globalState
 const mockGlobalStateStore: Record<string, any> = {};
@@ -131,7 +136,10 @@ describe('Integration: Port Forward Persistence Flow', () => {
       // Create forward → tree shows active item
       await service.forwardPort(conn as any, 3000, 'localhost', 3000);
 
-      let children = await treeProvider.getChildren();
+      let groups = await treeProvider.getChildren();
+      expect(groups).toHaveLength(1);
+      expect(groups[0]).toBeInstanceOf(PortForwardServerGroupTreeItem);
+      let children = await treeProvider.getChildren(groups[0]);
       expect(children).toHaveLength(1);
       expect(children[0]).toBeInstanceOf(PortForwardTreeItem);
 
@@ -139,7 +147,8 @@ describe('Integration: Port Forward Persistence Flow', () => {
       await service.deactivateAllForwardsForConnection(conn.id);
       mockGetAllConnections.mockReturnValue([]); // No active connections
 
-      children = await treeProvider.getChildren();
+      groups = await treeProvider.getChildren();
+      children = await treeProvider.getChildren(groups[0]);
       expect(children).toHaveLength(1);
       expect(children[0]).toBeInstanceOf(SavedForwardTreeItem);
 
@@ -147,7 +156,8 @@ describe('Integration: Port Forward Persistence Flow', () => {
       mockGetAllConnections.mockReturnValue([conn]);
       await service.restoreForwardsForConnection(conn as any);
 
-      children = await treeProvider.getChildren();
+      groups = await treeProvider.getChildren();
+      children = await treeProvider.getChildren(groups[0]);
       expect(children).toHaveLength(1);
       expect(children[0]).toBeInstanceOf(PortForwardTreeItem);
     });
@@ -228,6 +238,7 @@ describe('Integration: Port Forward Persistence Flow', () => {
     it('should restore successful rules and skip failed ones', async () => {
       const host = createMockHostConfig({ id: '10.0.0.1:22:admin' });
       const conn = createMockConnection({ host: host });
+      mockGetAllConnections.mockReturnValue([conn]);
 
       // Save two rules
       await service.saveRule(conn.id, 3000, 'localhost', 3000);
@@ -247,6 +258,14 @@ describe('Integration: Port Forward Persistence Flow', () => {
 
       // Both rules should still be saved (failure doesn't delete)
       expect(service.getSavedRules(conn.id)).toHaveLength(2);
+
+      // Tree keeps the failed rule under the same server with its reason.
+      const groups = await treeProvider.getChildren();
+      const children = await treeProvider.getChildren(groups[0]);
+      expect(children).toHaveLength(2);
+      expect(children[0]).toBeInstanceOf(PortForwardTreeItem);
+      expect(children[1]).toBeInstanceOf(SavedForwardTreeItem);
+      expect(children[1].description).toBe('Restore failed · EADDRINUSE');
     });
   });
 });

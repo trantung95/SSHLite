@@ -128,6 +128,7 @@ Rules are saved to `context.globalState` under key `sshLite.savedPortForwards`, 
 - **Auto-restore**: On `ConnectionState.Connected` event, saved rules are restored via `restoreForwardsForConnection()`
 - **Deduplication**: Rules are deduped by `localPort + remoteHost + remotePort` within a host
 - **Initialization**: `portForwardService.initialize(context)` loads saved rules on activation
+- **Restore failure state**: A failed auto-restore remains visible with its error reason for the current extension session. The failure registry is memory-only and is never written to `globalState`; the saved-rule format remains backward-compatible.
 
 ### Forward Lifecycle
 
@@ -139,6 +140,7 @@ Forward created → listening on localPort → traffic tunneled → rule auto-sa
   │
   ├─ Connection drops → TCP servers stop, saved rules persist
   │   └─ Auto-reconnect restores connection AND forwards automatically
+  │       └─ Failed rule remains visible as "Restore failed · reason"
   │
   ├─ User disconnects → TCP servers stop, saved rules persist
   │   └─ Next connect restores forwards automatically
@@ -164,18 +166,27 @@ Tree view showing both active forwards and saved-but-inactive rules:
 
 ```
 sshLite.portForwards
-  ├─ PortForwardTreeItem          (active, blue icon)
-  │    label: "host:3000 <-> localhost:3000"
-  │    contextValue: "forward"
-  │    action: stop
-  │
-  └─ SavedForwardTreeItem         (inactive, dimmed icon)
-       label: "host:8080 <-> localhost:8080"
-       contextValue: "savedForward"
-       actions: play, delete
+  └─ PortForwardServerGroupTreeItem (server, expanded by default)
+       description: "1 active · 2 saved"
+       ├─ PortForwardTreeItem        (active, blue icon)
+       │    label: "localhost:3000 → host:3000"
+       │    description: "Active"
+       │    contextValue: "forward"
+       │    action: stop
+       │
+       └─ SavedForwardTreeItem       (inactive)
+            label: "localhost:8080 → host:8080"
+            description: "Saved · stopped", "Host disconnected", or
+                         "Restore failed · reason"
+            contextValue: "savedForward"
+            actions: play, delete
 ```
 
-**Wire-up**: `portForwardService.setTreeProvider(portForwardTreeProvider)` and `portForwardService.initialize(context)` in extension.ts connect the service to the UI and persistence.
+Root groups are the union of connected servers with active forwards and every server identifier with saved rules. A removed host therefore keeps an orphan group keyed by its original `hostId`; no saved rule disappears from the tree. Active rows render before inactive saved rows. `getParent()` returns the cached group with stable identifier `port-forward-server:<hostId>` so reveal and expand/collapse operations keep a stable hierarchy.
+
+Restore batches log one `restore/begin` event and one `restore/complete` event through the SSH Lite output channel. The completion payload includes counts and failed rule reasons without logging inside the per-rule loop.
+
+**Wire-up**: `portForwardService.setTreeProvider(portForwardTreeProvider)` and `portForwardService.initialize(context)` in `extension.ts` connect the service to the user interface and persistence.
 
 ## User Actions
 

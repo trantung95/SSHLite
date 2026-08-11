@@ -119,12 +119,14 @@ Discovers: invariant violations, output anomalies, resource leaks, OS-specific b
 | `forwardPort(conn, local, host, remote)` | [x] success/fail/save/tree | [x] tree+rule reflect | [ ] real tunnel |
 | `stopForward(forward)` | [x] stop/remove/warn/error/keepRule | — | [ ] real stop |
 | `deactivateAllForwardsForConnection(id)` | [x] stop all/noop/keepRules | [x] tree 0 active, rules persist | [ ] real disconnect |
-| `restoreForwardsForConnection(conn)` | [x] restore/multi/partial/empty | [x] full lifecycle, multi-server, partial fail | [ ] real reconnect |
+| `restoreForwardsForConnection(conn)` | [x] restore/multi/partial/empty/failure reason/clear on success/runtime-only state | [x] full lifecycle, multi-server, failed row remains visible | [ ] real reconnect |
 | `saveRule(hostId, ...)` | [x] save/dedup/different/return | [x] survives restart | — |
-| `deleteSavedRule(hostId, ruleId)` | [x] delete/refresh/cleanup | [x] not restored | — |
-| `activateSavedForward(hostId, ruleId)` | [x] activate/warn noRule/warn noConn | [x] manual activate, no-conn warning | — |
+| `deleteSavedRule(hostId, ruleId)` | [x] delete/refresh/cleanup/clear restore failure | [x] not restored | — |
+| `activateSavedForward(hostId, ruleId)` | [x] activate/warn noRule/warn noConn/clear restore failure | [x] manual activate, no-conn warning | — |
 | `getSavedRules(hostId)` | [x] return/empty | — | — |
 | `getHostIdsWithSavedRules()` | [x] returns all | — | — |
+| `getRestoreFailure(hostId, ruleId)` | [x] failed restore reason/success clear/delete clear/new-instance empty | [x] failed row reason | — |
+| `clearRestoreFailure(hostId, ruleId)` | [x] observed through success and delete behavior | [x] failed row removed by lifecycle | — |
 | `promptForwardPort()` | [x] warn/pick/cancel/prompt | — | — |
 
 ### PortForwardTreeProvider
@@ -133,7 +135,8 @@ Discovers: invariant violations, output anomalies, resource leaks, OS-specific b
 |----------|------|-------------|
 | `addForward / removeForward` | [x] add/multi, remove by port+conn | — |
 | `getForwardsForConnection(id)` | [x] empty/filter | — |
-| `getChildren(element?)` | [x] empty/active/skip-disconnected/saved/dedup/both/orphan | [x] active↔dimmed lifecycle |
+| `getChildren(element?)` | [x] empty/host groups/active-first/disconnected/saved/dedup/orphan/restore failure/snapshot reuse | [x] active↔saved↔restored lifecycle and failed reason |
+| `getParent(element)` | [x] active and saved rows return stable server group | [x] grouped lifecycle |
 | `cleanupDisconnectedForwards()` | [x] remove disconnected, keep connected | — |
 
 ### Integration Test Flows

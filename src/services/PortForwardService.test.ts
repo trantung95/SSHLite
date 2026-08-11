@@ -372,6 +372,19 @@ describe('PortForwardService', () => {
       expect(rules).toHaveLength(0);
     });
 
+    it('clears a restore failure when its saved rule is deleted', async () => {
+      service.initialize(mockContext);
+      const mockConn = createMockConnection();
+      const rule = await service.saveRule(mockConn.id, 3000, 'localhost', 3000);
+      (mockConn.forwardPort as jest.Mock).mockRejectedValueOnce(new Error('Address already in use'));
+      await service.restoreForwardsForConnection(mockConn as any);
+      expect(service.getRestoreFailure(mockConn.id, rule.id)).toBe('Address already in use');
+
+      await service.deleteSavedRule(mockConn.id, rule.id);
+
+      expect(service.getRestoreFailure(mockConn.id, rule.id)).toBeUndefined();
+    });
+
     it('should refresh tree after deleting rule', async () => {
       service.initialize(mockContext);
 
@@ -451,6 +464,51 @@ describe('PortForwardService', () => {
       expect(mockAddForward).toHaveBeenCalledWith(mockConn.id, 3000, 'localhost', 3000);
     });
 
+    it('keeps a failed restored rule visible with the reason', async () => {
+      service.initialize(mockContext);
+      const mockConn = createMockConnection();
+      const rule = await service.saveRule(mockConn.id, 8080, 'localhost', 3000);
+      (mockConn.forwardPort as jest.Mock).mockRejectedValueOnce(new Error('Address already in use'));
+      jest.clearAllMocks();
+
+      await service.restoreForwardsForConnection(mockConn as any);
+
+      expect(service.getRestoreFailure(mockConn.id, rule.id)).toBe('Address already in use');
+      expect(mockRefresh).toHaveBeenCalled();
+    });
+
+    it('clears a previous restore failure after the rule restores successfully', async () => {
+      service.initialize(mockContext);
+      const mockConn = createMockConnection();
+      const rule = await service.saveRule(mockConn.id, 8080, 'localhost', 3000);
+      (mockConn.forwardPort as jest.Mock)
+        .mockRejectedValueOnce(new Error('Address already in use'))
+        .mockResolvedValueOnce(undefined);
+
+      await service.restoreForwardsForConnection(mockConn as any);
+      expect(service.getRestoreFailure(mockConn.id, rule.id)).toBe('Address already in use');
+
+      await service.restoreForwardsForConnection(mockConn as any);
+
+      expect(service.getRestoreFailure(mockConn.id, rule.id)).toBeUndefined();
+    });
+
+    it('does not persist restore failures across service instances', async () => {
+      service.initialize(mockContext);
+      const mockConn = createMockConnection();
+      const rule = await service.saveRule(mockConn.id, 8080, 'localhost', 3000);
+      (mockConn.forwardPort as jest.Mock).mockRejectedValueOnce(new Error('Address already in use'));
+      await service.restoreForwardsForConnection(mockConn as any);
+      expect(service.getRestoreFailure(mockConn.id, rule.id)).toBe('Address already in use');
+
+      (PortForwardService as any)._instance = undefined;
+      const freshService = PortForwardService.getInstance();
+      freshService.initialize(mockContext);
+
+      expect(freshService.getSavedRules(mockConn.id)).toHaveLength(1);
+      expect(freshService.getRestoreFailure(mockConn.id, rule.id)).toBeUndefined();
+    });
+
     it('should do nothing when no saved rules', async () => {
       service.initialize(mockContext);
       const mockConn = createMockConnection();
@@ -488,6 +546,22 @@ describe('PortForwardService', () => {
       await service.activateSavedForward(mockConn.id, rule.id);
 
       expect(mockConn.forwardPort).toHaveBeenCalledWith(3000, 'localhost', 3000);
+    });
+
+    it('clears a restore failure after manual activation succeeds', async () => {
+      service.initialize(mockContext);
+      const mockConn = createMockConnection();
+      mockGetConnection.mockReturnValue(mockConn);
+      const rule = await service.saveRule(mockConn.id, 3000, 'localhost', 3000);
+      (mockConn.forwardPort as jest.Mock)
+        .mockRejectedValueOnce(new Error('Address already in use'))
+        .mockResolvedValueOnce(undefined);
+      await service.restoreForwardsForConnection(mockConn as any);
+      expect(service.getRestoreFailure(mockConn.id, rule.id)).toBe('Address already in use');
+
+      await service.activateSavedForward(mockConn.id, rule.id);
+
+      expect(service.getRestoreFailure(mockConn.id, rule.id)).toBeUndefined();
     });
 
     it('should show warning if rule not found', async () => {

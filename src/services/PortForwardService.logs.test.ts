@@ -106,4 +106,32 @@ describe('PortForwardService — diagnostic logs', () => {
     expect(failed).toHaveLength(1);
     expect(failed[0].data.errorMessage).toBe('not listening');
   });
+
+  it('emits one restore summary with failed rule reasons', async () => {
+    const cap = setupLogCapture({ enableDiag: false });
+    const hostId = 'host:22:user';
+    svc.initialize({
+      globalState: {
+        get: jest.fn().mockReturnValue({
+          [hostId]: [
+            { id: 'pf_failed', localPort: 8080, remoteHost: 'localhost', remotePort: 9090 },
+          ],
+        }),
+        update: jest.fn(),
+      },
+    } as any);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const conn = createMockConnection({ id: hostId }) as any;
+    conn.forwardPort = jest.fn().mockRejectedValue(new Error('Address already in use'));
+
+    await svc.restoreForwardsForConnection(conn);
+
+    expect(cap.find('INFO', 'port-forward', 'restore/begin')).toHaveLength(1);
+    const complete = cap.find('INFO', 'port-forward', 'restore/complete');
+    expect(complete).toHaveLength(1);
+    expect(complete[0].data.restored).toBe('0');
+    expect(complete[0].data.failed).toBe('1');
+    expect(complete[0].data.failures).toContain('pf_failed');
+    expect(complete[0].data.failures).toContain('Address already in use');
+  });
 });

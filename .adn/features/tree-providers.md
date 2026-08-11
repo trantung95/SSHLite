@@ -1,6 +1,6 @@
 # Tree Providers
 
-Covers `HostTreeProvider`, `FileTreeProvider`, and `FileDecorationProvider`.
+Covers `HostTreeProvider`, `FileTreeProvider`, `PortForwardTreeProvider`, and `FileDecorationProvider`.
 
 > Note: the `sshLite.support` view (top of the container) is **not** a
 > `TreeDataProvider` — it is a `WebviewViewProvider` (`SupportViewProvider`).
@@ -73,6 +73,14 @@ Host rows keep the `server` icon as their stable identity. Color supplements, ne
 | No hosts | `server` | Default foreground | `No SSH hosts yet` — `Use Add Host to create or import a connection` |
 
 Failed connection stored via `connectionManager.saveLastConnectionAttempt()` in globalState. Cleared on successful reconnect.
+
+---
+
+## PortForwardTreeProvider (`src/providers/PortForwardTreeProvider.ts`)
+
+The root contains one expanded `PortForwardServerGroupTreeItem` per server with an active or saved rule. Active rows appear first, followed by inactive saved rows. Server groups use stable identifiers so the shared expand and collapse controls operate on meaningful structure. One snapshot is shared by root and child reads until `refresh()` invalidates it, avoiding repeated all-host rebuilds while groups are expanded.
+
+Saved orphan rules remain grouped under their original host identifier when the host no longer exists in `HostService`. Saved-row descriptions distinguish `Saved · stopped`, `Host disconnected`, and `Restore failed · reason`; active and saved action counts remain one and two respectively. Full persistence and lifecycle details live in `features/terminal-port-forwarding.md`.
 
 ---
 

@@ -21,6 +21,7 @@ export class PortForwardService {
   private treeProvider: PortForwardTreeProvider | null = null;
   private context: vscode.ExtensionContext | null = null;
   private savedRules: SavedPortForwardIndex = {};
+  private readonly restoreFailures = new Map<string, string>();
   private readonly STORAGE_KEY = 'sshLite.savedPortForwards';
 
   private constructor() {}
@@ -87,6 +88,20 @@ export class PortForwardService {
     return Object.keys(this.savedRules);
   }
 
+  /** Get the current-session restore failure for a saved rule. */
+  getRestoreFailure(hostId: string, ruleId: string): string | undefined {
+    return this.restoreFailures.get(this.restoreFailureKey(hostId, ruleId));
+  }
+
+  /** Clear the current-session restore failure for a saved rule. */
+  clearRestoreFailure(hostId: string, ruleId: string): void {
+    this.restoreFailures.delete(this.restoreFailureKey(hostId, ruleId));
+  }
+
+  private restoreFailureKey(hostId: string, ruleId: string): string {
+    return `${hostId}:${ruleId}`;
+  }
+
   /**
    * Save a port forward rule (dedup by localPort+remoteHost+remotePort)
    */
@@ -124,6 +139,7 @@ export class PortForwardService {
    * Delete a saved rule
    */
   async deleteSavedRule(hostId: string, ruleId: string): Promise<void> {
+    this.clearRestoreFailure(hostId, ruleId);
     if (!this.savedRules[hostId]) {
       return;
     }
@@ -261,7 +277,8 @@ export class PortForwardService {
       }
 
       // Auto-save the rule for persistence
-      await this.saveRule(connection.id, localPort, remoteHost, remotePort);
+      const savedRule = await this.saveRule(connection.id, localPort, remoteHost, remotePort);
+      this.clearRestoreFailure(connection.id, savedRule.id);
 
       infoLog('port-forward', 'create/success', {
         connectionId: connection.id,
@@ -365,22 +382,45 @@ export class PortForwardService {
       return;
     }
 
+    const t0 = Date.now();
     let restored = 0;
     let failed = 0;
+    const failures: Array<{ ruleId: string; localPort: number; errorMessage: string }> = [];
+    infoLog('port-forward', 'restore/begin', {
+      connectionId: connection.id,
+      hostName: connection.host.name,
+      ruleCount: rules.length,
+    });
 
     for (const rule of rules) {
       try {
         await connection.forwardPort(rule.localPort, rule.remoteHost, rule.remotePort);
+        this.clearRestoreFailure(connection.id, rule.id);
 
         if (this.treeProvider) {
           this.treeProvider.addForward(connection.id, rule.localPort, rule.remoteHost, rule.remotePort);
         }
 
         restored++;
-      } catch {
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        this.restoreFailures.set(this.restoreFailureKey(connection.id, rule.id), errorMessage);
+        failures.push({ ruleId: rule.id, localPort: rule.localPort, errorMessage });
         failed++;
       }
     }
+
+    if (failed > 0 && this.treeProvider) {
+      this.treeProvider.refresh();
+    }
+
+    infoLog('port-forward', 'restore/complete', {
+      connectionId: connection.id,
+      restored,
+      failed,
+      durationMs: Date.now() - t0,
+      failures,
+    });
 
     if (restored > 0) {
       const failMsg = failed > 0 ? ` (${failed} failed)` : '';
