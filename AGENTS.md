@@ -105,6 +105,7 @@ src/
 8. **Auto code-review before claiming done.** After any TypeScript + test change set, dispatch the `superpowers:requesting-code-review` skill before reporting complete. Catches async/Promise issues, missing guards, untested edge cases before commit.
 9. **Auto-document after every prompt.** After every response, scan all data that entered context (user message, tool results, error output, file contents): does anything here have generalizable value for future work? If yes, add it to `.adn/lessons.md` (tactical one-offs) or `AGENTS.md` (reusable patterns) in the SAME response. No confirmation needed, no waiting for the user to ask.
 10. **Read ALL related files before forming a plan.** For any change touching ssh2, WebView, extension activation, or tree providers: read the file, its callers, related providers/services, and any `.adn/` doc covering the area. Stopping early to save tokens is the failure mode, not the cost of reading. "I thought I knew the API" is not an excuse.
+11. **Subagent-Driven Development plan headings:** plans executed with `superpowers:subagent-driven-development` must keep headings in the form `### Task N: ...`. The `task-brief` script parses that exact prefix; translate the task title after the colon, not the prefix.
 
 ## Code Quality & Performance
 

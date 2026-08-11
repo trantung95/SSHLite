@@ -47,7 +47,7 @@
 
 ---
 
-### Hạng mục 1: Khóa quy ước icon, tiêu đề, menu và số lượng
+### Task 1: Khóa quy ước icon, tiêu đề, menu và số lượng
 
 **Files:**
 - Create: `src/__tests__/ui-manifest-contract.test.ts`
@@ -181,7 +181,7 @@ git commit -m "feat(ui): standardize native action semantics"
 
 ---
 
-### Hạng mục 2: Tái cấu trúc cách hiển thị SSH Hosts
+### Task 2: Tái cấu trúc cách hiển thị SSH Hosts
 
 **Files:**
 - Modify: `src/providers/HostTreeProvider.ts`
@@ -277,7 +277,7 @@ git commit -m "feat(ui): clarify SSH host states"
 
 ---
 
-### Hạng mục 3: Tái cấu trúc cách hiển thị Remote Files
+### Task 3: Tái cấu trúc cách hiển thị Remote Files
 
 **Files:**
 - Modify: `src/providers/FileTreeProvider.ts`
@@ -363,7 +363,7 @@ git commit -m "feat(ui): clarify remote file states"
 
 ---
 
-### Hạng mục 4: Tái cấu trúc trạng thái Activity và ranh giới xóa/hủy
+### Task 4: Tái cấu trúc trạng thái Activity và ranh giới xóa/hủy
 
 **Files:**
 - Modify: `src/providers/ActivityTreeProvider.ts`
@@ -468,7 +468,7 @@ git commit -m "feat(ui): clarify activity progress and outcomes"
 
 ---
 
-### Hạng mục 5: Nhóm Port Forwards theo máy chủ và giữ lỗi khôi phục
+### Task 5: Nhóm Port Forwards theo máy chủ và giữ lỗi khôi phục
 
 **Files:**
 - Modify: `src/providers/PortForwardTreeProvider.ts`
@@ -581,7 +581,7 @@ git commit -m "feat(ui): group port forwards by host"
 
 ---
 
-### Hạng mục 6: Chuẩn hóa hộp thoại gốc, kiểm tra dữ liệu và phản hồi
+### Task 6: Chuẩn hóa hộp thoại gốc, kiểm tra dữ liệu và phản hồi
 
 **Files:**
 - Create: `src/ui/nativeFeedback.ts`
@@ -701,7 +701,7 @@ git commit -m "feat(ui): clarify native dialogs and feedback"
 
 ---
 
-### Hạng mục 7: Tính nhất quán xuyên màn hình, khả năng tiếp cận và cổng chống tái phát
+### Task 7: Tính nhất quán xuyên màn hình, khả năng tiếp cận và cổng chống tái phát
 
 **Files:**
 - Modify: `src/__tests__/ui-manifest-contract.test.ts`
@@ -780,7 +780,7 @@ git commit -m "test(ui): lock native interface contracts"
 
 ---
 
-### Hạng mục 8: Đóng phiên bản 1.0.6, tài liệu và gói phát hành
+### Task 8: Đóng phiên bản 1.0.6, tài liệu và gói phát hành
 
 **Files:**
 - Modify: `package.json`
