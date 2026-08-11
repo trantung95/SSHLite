@@ -5,6 +5,17 @@ Add new entries as bugs are found, mistakes are made, or better approaches are d
 
 ---
 
+## 2026-08-11 - Diagnose Docker image-build failures separately from chaos scenarios
+
+Quick chaos starts Docker stacks before it executes any scenario. This release attempt reached Docker successfully, but Ubuntu 22.04 `apt-get update` received inconsistent package indexes and failed with `Hash Sum mismatch`, so the multi-operating-system image build stopped before Jest ran a chaos case.
+
+LESSONS:
+1. When `npm run test:chaos` fails during global setup, inspect the underlying `docker compose` command and its build output before attributing the result to extension behavior.
+2. Record the Docker and package-manager exit codes plus the exact failing stage. A repository-index integrity failure is an environment blocker, not passing evidence and not an application regression.
+3. Re-run chaos only after the external package mirror provides consistent indexes; do not bypass the multi-operating-system setup or report chaos as passed.
+
+---
+
 ## 2026-08-11 - Native dialog steps describe concepts, not prompt count
 
 The Create Port Forward flow uses four native Visual Studio Code controls but
