@@ -58,6 +58,12 @@ LESSONS:
 
 ---
 
+## 2026-08-11 - Quote the upstream revision expression in PowerShell
+
+PowerShell can interpret `@{upstream}` as hashtable syntax when it appears unquoted in a Git revision expression, causing Git to receive a corrupted argument. Use an explicit remote branch such as `origin/master`, or quote the complete expression as `'HEAD...@{upstream}'`, when checking branch divergence.
+
+---
+
 ## 2026-08-11 - Chaos setup can fail before tests when an Ubuntu mirror serves inconsistent indexes
 
 `npm run test:chaos` can fail in `Dockerfile.ubuntu` during `apt-get update` with `Hash Sum mismatch` and exit code 100. This is an Advanced Package Tool (APT) mirror or intermediary-cache consistency failure during container build, before Jest or any SSH Lite scenario starts; do not attribute it to the code change under test. Re-run the affected Docker build with plain progress to capture the exact package-index error, then retry after the mirror converges. Report chaos as infrastructure-blocked until an actual scenario runs.
