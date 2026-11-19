@@ -17,6 +17,7 @@ SSHLite/
   .adn/                                   # Deep documentation (this folder)
   src/
     extension.ts                          # Activation, command registration, wiring (~2877 lines)
+    uninstall.ts                          # `vscode:uninstall` (plain Node, no vscode API): purge AI hooks + staged files, leave reinstall tombstone
     types.ts                              # Core interfaces and error types (171 lines)
     connection/
       ConnectionManager.ts                # Multi-connection orchestration, auto-reconnect (~613 lines)

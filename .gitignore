@@ -62,3 +62,6 @@ media/
 
 # Local visual brainstorming sessions.
 .superpowers/
+
+# VS Code uninstall end-to-end test: packaged VSIX staged for the container.
+test-docker/vscode-uninstall/.artifacts/

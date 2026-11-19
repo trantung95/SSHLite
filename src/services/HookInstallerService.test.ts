@@ -1,5 +1,13 @@
 import * as path from 'path';
-import { HookInstallerService, HookFsApi, HookInstallCtx, HOOK_TOOLS } from './HookInstallerService';
+import {
+  HookInstallerService,
+  HookFsApi,
+  HookInstallCtx,
+  HOOK_TOOLS,
+  purgeHooksForUninstall,
+  stagedPathsFromCommand,
+  stagedCtxForStorage,
+} from './HookInstallerService';
 
 jest.mock('../utils/diagnosticLog', () => ({ infoLog: jest.fn(), diagLog: jest.fn() }));
 
@@ -69,7 +77,7 @@ describe('HookInstallerService', () => {
     expect(files.get(CTX.scriptPath)).toBe('// beacon script');
   });
 
-  it('is idempotent — installing twice does not duplicate the entry', () => {
+  it('is idempotent â€” installing twice does not duplicate the entry', () => {
     const { files, fsApi, present } = makeFakeFs();
     present('claude-code');
     const svc = new HookInstallerService(HOME, CTX, fsApi);
@@ -248,5 +256,180 @@ describe('HookInstallerService', () => {
     // ...and the orphaned globalStorage artifacts are gone (housekeeper never sweeps there).
     expect(files.has(CTX.scriptPath)).toBe(false);
     expect(files.has(CTX.beaconPath)).toBe(false);
+  });
+});
+
+// Extension uninstall (issue: hooks left pointing at a removed extension).
+describe('purgeHooksForUninstall (vscode:uninstall cleanup)', () => {
+  const GS = path.join('/data', 'Code', 'User', 'globalStorage', 'hybr8.ssh-lite');
+  const REAL_CTX: HookInstallCtx = {
+    assetScriptPath: CTX.assetScriptPath,
+    scriptPath: path.join(GS, 'hooks', 'npc-beacon.js'),
+    beaconPath: path.join(GS, 'npc-ai-hook-beacon.json'),
+  };
+
+  function seedInstalled() {
+    const env = makeFakeFs();
+    const removedDirs: string[] = [];
+    env.fsApi.rmdirSync = (p) => void removedDirs.push(p);
+    for (const t of HOOK_TOOLS) {
+      env.present(t.id);
+    }
+    // The user's own hook must survive the purge.
+    env.files.set(
+      cfgPath('claude-code'),
+      JSON.stringify({ theme: 'dark', hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'my-own.sh' }] }] } })
+    );
+    new HookInstallerService(HOME, REAL_CTX, env.fsApi).installAll();
+    env.files.set(REAL_CTX.beaconPath, '{}');
+    env.files.set(REAL_CTX.beaconPath + '.tmp', '{}');
+    return { ...env, removedDirs };
+  }
+
+  it('removes our hook from every tool, keeps user hooks + settings, deletes staged files', () => {
+    const { files, fsApi, removedDirs } = seedInstalled();
+    expect(files.has(REAL_CTX.scriptPath)).toBe(true);
+
+    const results = purgeHooksForUninstall(HOME, { fsApi });
+
+    expect(results.map((r) => r.id).sort()).toEqual(HOOK_TOOLS.map((t) => t.id).sort());
+    expect(results.every((r) => r.ok)).toBe(true);
+    for (const t of HOOK_TOOLS) {
+      const txt = files.get(cfgPath(t.id));
+      if (t.ownFile) {
+        expect(txt).toBeUndefined(); // Copilot dedicated file deleted
+      } else {
+        expect(txt ?? '').not.toContain('npc-beacon.js');
+      }
+    }
+    const claude = JSON.parse(files.get(cfgPath('claude-code'))!);
+    expect(claude.theme).toBe('dark');
+    expect(claude.hooks.UserPromptSubmit[0].hooks[0].command).toBe('my-own.sh');
+    expect(files.has(REAL_CTX.scriptPath)).toBe(false);
+    expect(files.has(REAL_CTX.beaconPath)).toBe(false);
+    expect(files.has(REAL_CTX.beaconPath + '.tmp')).toBe(false);
+    expect(removedDirs).toContain(path.dirname(REAL_CTX.scriptPath));
+    // No backup may still carry our (now dead) hook; restoring it would re-break the tool.
+    for (const [p, v] of files) {
+      if (p.endsWith('.sshlite.bak')) {
+        expect(v).not.toContain('npc-beacon.js');
+      }
+    }
+    expect(files.has(cfgPath('github-copilot') + '.sshlite.bak')).toBe(false);
+  });
+
+  it('keeps the staged script when a hook could not be removed (no erroring leftover hook)', () => {
+    const { files, fsApi } = seedInstalled();
+    const realRename = fsApi.renameSync;
+    fsApi.renameSync = (a, b) => {
+      if (b === cfgPath('codex')) {
+        throw new Error('EPERM');
+      }
+      realRename(a, b);
+    };
+
+    const results = purgeHooksForUninstall(HOME, { fsApi });
+
+    expect(results.find((r) => r.id === 'codex')!.ok).toBe(false);
+    expect(files.get(cfgPath('codex'))).toContain('npc-beacon.js');
+    expect(files.has(REAL_CTX.scriptPath)).toBe(true);
+  });
+
+  it('with this editor storage: removes only hooks pointing into it, keeps another editor hooks', () => {
+    const { files, fsApi } = seedInstalled();
+    // Cursor-editor SSH Lite owns the Gemini hook (its script lives in Cursor storage).
+    const otherGs = path.join('/data', 'Cursor', 'User', 'globalStorage', 'hybr8.ssh-lite');
+    const otherScript = path.join(otherGs, 'hooks', 'npc-beacon.js');
+    const foreign = JSON.stringify({
+      hooks: { BeforeAgent: [{ hooks: [{ type: 'command', command: `node "${otherScript}" "${path.join(otherGs, 'npc-ai-hook-beacon.json')}" gemini` }] }] },
+    });
+    files.set(cfgPath('gemini'), foreign);
+    files.set(otherScript, '// other editor');
+
+    const results = purgeHooksForUninstall(HOME, { fsApi, storageDir: GS });
+
+    expect(files.get(cfgPath('gemini'))).toBe(foreign);
+    expect(files.get(otherScript)).toBe('// other editor');
+    expect(results.find((r) => r.id === 'gemini')).toBeUndefined();
+    expect(files.get(cfgPath('codex'))).not.toContain('npc-beacon.js');
+    expect(files.has(REAL_CTX.scriptPath)).toBe(false);
+  });
+
+  it('with this editor storage: deletes the staged script even when no hook is left', () => {
+    const { files, fsApi } = makeFakeFs();
+    const removedDirs: string[] = [];
+    fsApi.rmdirSync = (p) => void removedDirs.push(p);
+    files.set(REAL_CTX.scriptPath, '// staged');
+    files.set(REAL_CTX.beaconPath, '{}');
+
+    expect(purgeHooksForUninstall(HOME, { fsApi, storageDir: GS })).toEqual([]);
+
+    expect(files.has(REAL_CTX.scriptPath)).toBe(false);
+    expect(files.has(REAL_CTX.beaconPath)).toBe(false);
+    expect(removedDirs).toContain(path.dirname(REAL_CTX.scriptPath));
+  });
+
+  it('stagedCtxForStorage matches the layout extension.ts stages into', () => {
+    expect(stagedCtxForStorage(GS)).toEqual({ assetScriptPath: '', scriptPath: REAL_CTX.scriptPath, beaconPath: REAL_CTX.beaconPath });
+  });
+
+  it('keeps a clean user backup', () => {
+    const { files, fsApi } = seedInstalled();
+    files.set(cfgPath('cursor') + '.sshlite.bak', '{"version":1}');
+
+    purgeHooksForUninstall(HOME, { fsApi });
+
+    expect(files.get(cfgPath('cursor') + '.sshlite.bak')).toBe('{"version":1}');
+  });
+
+  it('purges even when the tool home dir is gone (no presence gate)', () => {
+    const { files, dirs, fsApi } = seedInstalled();
+    dirs.delete(homeDir('cursor'));
+
+    purgeHooksForUninstall(HOME, { fsApi });
+
+    expect(files.get(cfgPath('cursor')) ?? '').not.toContain('npc-beacon.js');
+  });
+
+  it('leaves an unparseable config untouched and reports it', () => {
+    const { files, fsApi } = seedInstalled();
+    files.set(cfgPath('gemini'), '{ broken npc-beacon.js');
+
+    const results = purgeHooksForUninstall(HOME, { fsApi });
+
+    expect(files.get(cfgPath('gemini'))).toBe('{ broken npc-beacon.js');
+    expect(results.find((r) => r.id === 'gemini')!.ok).toBe(false);
+  });
+
+  it('is a no-op when nothing was ever installed', () => {
+    const { files, fsApi } = makeFakeFs();
+    const before = new Map(files);
+
+    expect(purgeHooksForUninstall(HOME, { fsApi })).toEqual([]);
+    expect(files).toEqual(before);
+  });
+
+  it('never deletes a file outside the SSH Lite storage folder', () => {
+    const victim = path.join('/home', 'me', 'important', 'npc-beacon.js');
+    const { files, fsApi } = makeFakeFs({
+      [cfgPath('codex')]: JSON.stringify({
+        hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: `node "${victim}" "/x/npc-ai-hook-beacon.json" codex` }] }] },
+      }),
+      [victim]: 'keep me',
+    });
+
+    purgeHooksForUninstall(HOME, { fsApi });
+
+    expect(files.get(victim)).toBe('keep me');
+    expect(files.get(cfgPath('codex'))).not.toContain('npc-beacon.js');
+  });
+
+  it('parses Windows staged paths on any OS', () => {
+    const cmd =
+      'node "C:\\Users\\me\\AppData\\Roaming\\Code\\User\\globalStorage\\hybr8.ssh-lite\\hooks\\npc-beacon.js" ' +
+      '"C:\\Users\\me\\AppData\\Roaming\\Code\\User\\globalStorage\\hybr8.ssh-lite\\npc-ai-hook-beacon.json" claude-code';
+    const r = stagedPathsFromCommand(cmd);
+    expect(r.files).toHaveLength(3);
+    expect(r.dirs).toEqual(['C:\\Users\\me\\AppData\\Roaming\\Code\\User\\globalStorage\\hybr8.ssh-lite\\hooks']);
   });
 });

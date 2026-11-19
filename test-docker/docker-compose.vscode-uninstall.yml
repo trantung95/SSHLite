@@ -1,0 +1,21 @@
+# Real VS Code uninstall / reinstall end-to-end test (Linux leg).
+# Driven by scripts/test-vscode-uninstall.js (npm run test:vscode-uninstall),
+# which packages the VSIX, runs this service once, then tears everything down
+# (`down --volumes --rmi all --remove-orphans`) whether the test passes or not.
+#
+# Manual: docker compose -f test-docker/docker-compose.vscode-uninstall.yml run --rm vscode-linux
+# Cleanup: docker compose -f test-docker/docker-compose.vscode-uninstall.yml down --volumes --rmi all --remove-orphans
+name: sshlite-vscode-uninstall
+
+services:
+  vscode-linux:
+    build:
+      context: ./vscode-uninstall
+      dockerfile: Dockerfile.linux
+    image: sshlite-vscode-uninstall-linux:local
+    # Test scripts + the freshly packaged VSIX (.artifacts/ssh-lite.vsix) are
+    # mounted read-only; nothing is written back to the host.
+    volumes:
+      - ./vscode-uninstall:/e2e:ro
+    shm_size: 512m
+    command: ["bash", "/e2e/run-linux.sh"]

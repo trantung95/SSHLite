@@ -1986,6 +1986,7 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
+    "vscode:uninstall": "node ./out/uninstall.js",
     "compile": "npm run compile:webview && tsc -p ./",
     "compile:webview": "node build/build-webview.js",
     "watch": "tsc -watch -p ./",
@@ -2003,6 +2004,7 @@
     "test:docker:search-tools": "jest --config jest.docker.search-tools.config.js --no-coverage",
     "test:multios": "jest --config jest.multios.config.js --no-coverage",
     "test:windows-client": "jest --config jest.windows-client.config.js --no-coverage",
+    "test:vscode-uninstall": "node scripts/test-vscode-uninstall.js",
     "test:all": "jest --no-coverage && npm run test:docker",
     "test:all:os": "jest --no-coverage && npm run test:docker && npm run test:multios",
     "test:chaos": "node scripts/run-chaos.js quick",

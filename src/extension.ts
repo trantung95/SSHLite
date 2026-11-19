@@ -26,6 +26,7 @@ import { ProgressiveDownloadManager } from './services/ProgressiveDownloadManage
 import { BeaconService } from './services/BeaconService';
 import { AiActivityWatchService } from './services/AiActivityWatchService';
 import { HookInstallerService } from './services/HookInstallerService';
+import { recordInstall } from './services/InstallRegistry';
 import { HookBeaconService } from './services/HookBeaconService';
 import { HousekeepingService } from './services/HousekeepingService';
 import { RemoteDiffService, DIFF_TMP_PREFIX } from './services/RemoteDiffService';
@@ -507,6 +508,20 @@ export function activate(context: vscode.ExtensionContext): void {
     beaconPath: hookBeaconUri.fsPath,
   });
   supportViewProvider.setHookController(hookInstaller);
+
+  // Install registry (`~/.ssh-lite/installs.json`): lets the `vscode:uninstall`
+  // script (plain Node, no VS Code API) find THIS editor's globalStorage to clean
+  // up the staged hook script. Its tombstone tells us the extension was
+  // uninstalled since the last run: VS Code may keep globalState across an
+  // uninstall, so reset the one-time hook auto-setup flag to behave like a fresh
+  // install (hooks get set up again when the NPC panel opens).
+  safeStep('install-registry', () => {
+    const { reinstalled } = recordInstall(os.homedir(), context.extensionPath, context.globalStorageUri.fsPath);
+    if (reinstalled) {
+      void context.globalState.update('npcAutoHooksDone', undefined);
+      infoLog('npc-hooks', 'reinstall-reset', {});
+    }
+  });
 
   // Auto-setup AI hooks (default on via `sshLite.npcAutoSetupHooks`): the first
   // time the user opens the NPC panel, install hooks for the AI tools present on

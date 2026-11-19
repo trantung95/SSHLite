@@ -841,3 +841,18 @@ LESSONS:
 LESSONS:
 1. Coi mọi giá trị từ `WorkspaceConfiguration.get()` là immutable. Clone array và từng object trước khi upsert, rename hoặc xóa field.
 2. Khi gộp event bằng snapshot hoặc signature, phải chụp dữ liệu cũ trước bất kỳ mutation nào; test cả external change và internal write phát đúng một notification.
+
+## 2026-11-19 - Gỡ extension phải dọn mọi thứ đã ghi ra ngoài storage của nó
+
+SSH Lite ghi hook vào config của các công cụ AI (Claude Code, Codex, Gemini, Cursor, Copilot). Gỡ extension không xóa các entry này, nên mỗi prompt chạy `node "<script đã mất>"` và báo lỗi. Script `vscode:uninstall` chạy bằng Node.js thuần, không có module `vscode`.
+
+LESSONS:
+1. Mọi tính năng ghi file ra ngoài globalStorage (config người dùng, thư mục home) phải có đường dọn trong `src/uninstall.ts` (`vscode:uninstall`), kèm test và mục bắt buộc trong `scripts/verify-package.js`.
+2. Code chạy trong uninstall không được import module phụ thuộc `vscode` ở top-level; dùng `require` lười trong `try/catch` (xem logger của `HookInstallerService`).
+3. Khi ghi đè có backup, snapshot backup sạch cũ trước khi ghi lần nữa; nếu không, lần ghi gỡ hook sẽ đè backup gốc bằng bản còn chứa hook. Kiểm chứng end-to-end bằng HOME giả (`USERPROFILE`/`HOME`) và `node out/uninstall.js`.
+4. Script `vscode:uninstall` không có API nên không biết globalStorage nằm đâu. Lúc activate hãy ghi `thư mục extension → globalStorage` ra một file mà Node thuần đọc được (`~/.ssh-lite/installs.json`, `InstallRegistry`), và dùng tombstone trong file đó để lần activate sau biết là cài lại. Không dựa vào `globalState`: Visual Studio Code (VS Code) có thể giữ nó qua lần gỡ, làm cờ "đã làm một lần" chặn hành vi cài mới.
+5. Test gọi `activate()` phải mock mọi module ghi vào home thật (ví dụ `jest.mock('./services/InstallRegistry')` trong `extension.activate.test.ts`).
+6. Hành vi phía VS Code (có gọi `vscode:uninstall` không, gọi lúc nào) chỉ chứng minh được bằng VS Code thật: `npm run test:vscode-uninstall` (Docker Linux + Xvfb) và `node scripts/test-vscode-uninstall.js --windows` (VS Code bản zip chạy portable, `USERPROFILE` giả). Đã thấy: VS Code chạy hook ở lần khởi động **sau** `code --uninstall-extension`. Xem `.adn/testing/vscode-uninstall-e2e.md`.
+7. Windows container không dùng được cho test có giao diện: phải chuyển Docker Desktop khỏi chế độ Linux (các container Linux đang chạy, ví dụ VPN, sẽ không quản lý được), image nặng nhiều GB, và Electron cần desktop mà Server Core không có. Dùng VS Code portable trên host trong thư mục tạm.
+8. Trên Windows, script Node gọi `tar` / `curl` từ Git Bash sẽ trúng GNU tar (hiểu `C:` là máy từ xa: "Cannot connect to C: resolve failed"). Gọi thẳng `%SystemRoot%\System32\tar.exe` / `curl.exe`.
+9. Docker Desktop sau VPN: mỗi request apt treo đúng ~30 s. `Acquire::ForceIPv4 "true"` + `Acquire::http::Pipeline-Depth "0"` trong `/etc/apt/apt.conf.d/` giảm `apt-get update` từ 67 s xuống 9 s.

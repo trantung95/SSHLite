@@ -27,6 +27,10 @@ import { CommandGuard } from './services/CommandGuard';
 import { FolderHistoryService } from './services/FolderHistoryService';
 import { SnippetService } from './services/SnippetService';
 import { ActivityService } from './services/ActivityService';
+import { recordInstall } from './services/InstallRegistry';
+
+// Never write the real ~/.ssh-lite/installs.json from tests.
+jest.mock('./services/InstallRegistry', () => ({ recordInstall: jest.fn(() => ({ reinstalled: false })) }));
 
 /**
  * Reset every singleton the extension touches so each test gets a clean slate.
@@ -98,6 +102,27 @@ describe('extension.activate — regression net for v0.8.10 tree-view-fail-to-re
         'sshLite.portForwards',
       ]);
 
+      expect(__testGetActivateFailures()).toEqual([]);
+    });
+  });
+
+  describe('reinstall after vscode:uninstall', () => {
+    it('records the install with this editor storage and keeps the auto-setup flag on a normal start', () => {
+      const context = makeMockContext();
+
+      activate(context);
+
+      expect(recordInstall).toHaveBeenCalledWith(expect.any(String), '/fake/extension/path', context.globalStorageUri.fsPath);
+      expect(context.globalState.update).not.toHaveBeenCalledWith('npcAutoHooksDone', undefined);
+    });
+
+    it('resets the one-time hook auto-setup flag when the uninstall tombstone is found', () => {
+      (recordInstall as jest.Mock).mockReturnValueOnce({ reinstalled: true });
+      const context = makeMockContext();
+
+      activate(context);
+
+      expect(context.globalState.update).toHaveBeenCalledWith('npcAutoHooksDone', undefined);
       expect(__testGetActivateFailures()).toEqual([]);
     });
   });

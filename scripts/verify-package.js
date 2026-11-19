@@ -34,6 +34,8 @@ const REQUIRED_ENTRIES = [
   'extension/images/donate/sol-qr.png',
   'extension/images/donate/ton-qr.png',
   'extension/out/extension.js',
+  // package.json "vscode:uninstall" runs this; missing it would leave AI hooks behind.
+  'extension/out/uninstall.js',
   'extension/node_modules/ssh2/package.json',
   'extension/node_modules/ssh-config/package.json',
 ];

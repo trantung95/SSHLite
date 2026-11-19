@@ -1,0 +1,28 @@
+# Real VS Code (desktop build) running headless under Xvfb (X virtual framebuffer),
+# used to prove the `vscode:uninstall` hook end to end: install VSIX, activate,
+# uninstall, restart (VS Code runs the hook here), reinstall.
+# Driven by scripts/test-vscode-uninstall.js; never used by the unit suite.
+FROM node:22-bookworm
+
+ARG VSCODE_BUILD=latest
+
+# Docker Desktop networks behind some VPNs stall ~30 s per apt request over IPv6 /
+# pipelined HTTP; IPv4 without pipelining measured 9 s vs 67 s for `apt-get update`.
+RUN printf 'Acquire::ForceIPv4 "true";\nAcquire::http::Pipeline-Depth "0";\n' > /etc/apt/apt.conf.d/99e2e-network \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
+      xvfb xauth procps ca-certificates curl \
+      libnss3 libatk1.0-0 libatk-bridge2.0-0 libgtk-3-0 libgbm1 libasound2 \
+      libxss1 libxkbfile1 libsecret-1-0 libdrm2 libxshmfence1 libx11-xcb1 \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL "https://update.code.visualstudio.com/${VSCODE_BUILD}/linux-x64/stable" -o /tmp/vscode.tgz \
+ && tar -xzf /tmp/vscode.tgz -C /opt \
+ && rm /tmp/vscode.tgz \
+ && /opt/VSCode-linux-x64/bin/code --version --no-sandbox --user-data-dir /tmp/probe || true
+
+# Run as the image's non-root `node` user: its HOME is a throwaway fake home,
+# so the AI tool configs written here never touch the developer's machine.
+USER node
+WORKDIR /home/node
+ENV DONT_PROMPT_WSL_INSTALL=1

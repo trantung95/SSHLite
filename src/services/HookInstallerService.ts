@@ -1,7 +1,26 @@
 // @author hybr8
 import * as fs from 'fs';
 import * as path from 'path';
-import { infoLog, diagLog } from '../utils/diagnosticLog';
+
+// Logging is resolved lazily: `diagnosticLog` imports the `vscode` module, which
+// does NOT exist when this file runs from the `vscode:uninstall` script (plain
+// Node, after the extension is removed). Inside the extension host the real
+// logger loads; in the uninstall process logging silently becomes a no-op.
+type LogFn = (scope: string, event: string, payload?: Record<string, unknown>) => void;
+let logImpl: { infoLog: LogFn; diagLog: LogFn } | null | undefined;
+function logger(): { infoLog: LogFn; diagLog: LogFn } | null {
+  if (logImpl === undefined) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      logImpl = require('../utils/diagnosticLog');
+    } catch {
+      logImpl = null;
+    }
+  }
+  return logImpl ?? null;
+}
+const infoLog: LogFn = (s, e, p) => logger()?.infoLog(s, e, p);
+const diagLog: LogFn = (s, e, p) => logger()?.diagLog(s, e, p);
 
 /**
  * HookInstallerService — opt-in, user-triggered installer that adds a tiny
@@ -43,6 +62,8 @@ export interface HookFsApi {
   mkdirSync(p: string): void;
   copyFileSync(from: string, to: string): void;
   unlinkSync(p: string): void;
+  /** Remove an EMPTY directory (throws when not empty). Optional: cleanup only. */
+  rmdirSync?(p: string): void;
 }
 
 const defaultFs: HookFsApi = {
@@ -53,7 +74,63 @@ const defaultFs: HookFsApi = {
   mkdirSync: (p) => fs.mkdirSync(p, { recursive: true }),
   copyFileSync: (a, b) => fs.copyFileSync(a, b),
   unlinkSync: (p) => fs.unlinkSync(p),
+  rmdirSync: (p) => fs.rmdirSync(p),
 };
+
+/** Extension storage folder name (`<publisher>.<name>`) — staged files live under it. */
+const STORAGE_SEGMENT = 'hybr8.ssh-lite';
+const SCRIPT_BASENAME = 'npc-beacon.js';
+const BEACON_BASENAME = 'npc-ai-hook-beacon.json';
+
+/** Split on both separators: a Windows path must parse correctly on any OS. */
+const pathSegments = (p: string): string[] => p.split(/[\\/]+/).filter(Boolean);
+const parentDir = (p: string): string => p.slice(0, Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\')));
+
+/** Every string in a parsed config that references our beacon script (any schema). */
+function collectMarkerStrings(v: unknown, out: string[], depth = 0): void {
+  if (depth > 32) {
+    return;
+  }
+  if (typeof v === 'string') {
+    if (containsMarker(v)) {
+      out.push(v);
+    }
+  } else if (Array.isArray(v)) {
+    for (const x of v) {
+      collectMarkerStrings(x, out, depth + 1);
+    }
+  } else if (v && typeof v === 'object') {
+    for (const x of Object.values(v)) {
+      collectMarkerStrings(x, out, depth + 1);
+    }
+  }
+}
+
+/**
+ * Staged files referenced by one of our hook commands
+ * (`node "<script>" "<beacon>" <toolId>`). Only paths inside the SSH Lite
+ * storage folder with our exact file names qualify, so a hand-edited command
+ * can never steer the cleanup at an unrelated file.
+ */
+export function stagedPathsFromCommand(cmd: string): { files: string[]; dirs: string[] } {
+  const files: string[] = [];
+  const dirs: string[] = [];
+  for (const m of cmd.matchAll(/"([^"]+)"/g)) {
+    const p = m[1];
+    const segs = pathSegments(p);
+    if (!segs.some((s) => s.toLowerCase() === STORAGE_SEGMENT)) {
+      continue;
+    }
+    const base = segs[segs.length - 1];
+    if (base === SCRIPT_BASENAME) {
+      files.push(p);
+      dirs.push(parentDir(p));
+    } else if (base === BEACON_BASENAME) {
+      files.push(p, p + '.tmp');
+    }
+  }
+  return { files, dirs };
+}
 
 /** Paths/command bits resolved by the extension at runtime. */
 export interface HookInstallCtx {
@@ -450,11 +527,167 @@ export class HookInstallerService {
     }
   }
 
+  /**
+   * A backup that still contains our hook (taken while it was installed, e.g.
+   * by the removal write itself) would re-add a hook pointing at a removed
+   * extension if the user restored it — delete it. Clean backups are kept.
+   */
+  private readQuietly(p: string): string | undefined {
+    try {
+      return this.fsApi.existsSync(p) ? this.fsApi.readFileSync(p) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private removeBackupWithOurHook(bak: string): void {
+    try {
+      if (this.fsApi.existsSync(bak) && containsMarker(this.fsApi.readFileSync(bak))) {
+        this.fsApi.unlinkSync(bak);
+      }
+    } catch (err) {
+      diagLog('npc-hooks', 'cleanup-failed', { path: bak, error: (err as Error).message });
+    }
+  }
+
   /** Delete the staged beacon script + beacon file (and any stale temp sibling). */
   private cleanupStagedArtifacts(): void {
-    this.removeQuietly(this.ctx.scriptPath);
-    this.removeQuietly(this.ctx.beaconPath);
-    this.removeQuietly(this.ctx.beaconPath + '.tmp');
+    if (this.ctx.scriptPath) {
+      this.removeQuietly(this.ctx.scriptPath);
+    }
+    if (this.ctx.beaconPath) {
+      this.removeQuietly(this.ctx.beaconPath);
+      this.removeQuietly(this.ctx.beaconPath + '.tmp');
+    }
     infoLog('npc-hooks', 'cleanup-artifacts', {});
   }
+
+  /**
+   * Extension-uninstall cleanup (`vscode:uninstall`, plain Node, no VS Code API).
+   *
+   * 1. Removes our hook from every known tool config — no presence gate (the
+   *    tool's home dir may be gone while its config is not). With
+   *    `ownStorageDir` (this editor's globalStorage, from InstallRegistry), a
+   *    hook whose staged script lives in ANOTHER editor's storage (Code vs
+   *    Code - Insiders vs Cursor) is left alone: that editor still uses it.
+   * 2. Deletes the staged script / beacon files — both those the removed hooks
+   *    pointed at and the ones in `ctx` (this editor's storage), even when no
+   *    hook is left (e.g. the user removed it by hand earlier).
+   *
+   * Same safety rules as `uninstall()`: unparseable configs are left untouched
+   * and reported; only our marker entry is removed; a `.sshlite.bak` is deleted
+   * only when it still contains our hook, clean backups are kept. If one of our
+   * hooks could not be removed, the staged script is kept so that leftover hook
+   * keeps exiting 0 instead of erroring on every prompt.
+   */
+  purgeAll(opts: { ownStorageDir?: string } = {}): HookOpResult[] {
+    const own = opts.ownStorageDir ? normalizeForCompare(opts.ownStorageDir) : undefined;
+    const isOwn = (p: string): boolean => {
+      const n = normalizeForCompare(p);
+      return own === undefined || n === own || n.startsWith(own + '/');
+    };
+    const stagedFiles = new Set<string>();
+    const stagedDirs = new Set<string>();
+    const results: HookOpResult[] = [];
+    let skippedForeign = 0;
+    for (const tool of this.tools) {
+      const cfgPath = tool.configPath(this.home);
+      // A crash mid-install can leave our temp sibling behind.
+      this.removeQuietly(cfgPath + '.sshlite.tmp');
+      const read = this.safeRead(cfgPath);
+      if (read.status === 'absent') {
+        continue;
+      }
+      if (read.status === 'ok') {
+        if (!tool.has(read.value)) {
+          this.removeBackupWithOurHook(cfgPath + '.sshlite.bak');
+          continue;
+        }
+        const cmds: string[] = [];
+        collectMarkerStrings(read.value, cmds);
+        const files: string[] = [];
+        const dirs: string[] = [];
+        for (const cmd of cmds) {
+          const staged = stagedPathsFromCommand(cmd);
+          files.push(...staged.files);
+          dirs.push(...staged.dirs);
+        }
+        // Hook owned by another editor's SSH Lite (all its staged paths elsewhere).
+        if (files.length > 0 && !files.some(isOwn)) {
+          skippedForeign++;
+          continue;
+        }
+        files.filter(isOwn).forEach((f) => stagedFiles.add(f));
+        dirs.filter(isOwn).forEach((d) => stagedDirs.add(d));
+      }
+      // The removal write backs up the CURRENT (hooked) config over `.sshlite.bak`;
+      // snapshot a clean prior backup first so the user's original survives.
+      const bak = cfgPath + '.sshlite.bak';
+      const priorBak = this.readQuietly(bak);
+      results.push(this.uninstall(tool.id));
+      if (priorBak !== undefined && !containsMarker(priorBak)) {
+        try {
+          this.fsApi.writeFileSync(bak, priorBak);
+        } catch (err) {
+          diagLog('npc-hooks', 'cleanup-failed', { path: bak, error: (err as Error).message });
+        }
+      } else {
+        this.removeBackupWithOurHook(bak);
+      }
+    }
+    // Unparseable configs contribute no staged paths, so they do not block cleanup.
+    const removalFailed = results.some((r) => !r.ok && !/not valid JSON/.test(r.reason ?? ''));
+    if (!removalFailed) {
+      stagedFiles.forEach((f) => this.removeQuietly(f));
+      this.cleanupStagedArtifacts();
+      if (this.ctx.scriptPath) {
+        stagedDirs.add(path.dirname(this.ctx.scriptPath));
+      }
+      for (const d of stagedDirs) {
+        try {
+          this.fsApi.rmdirSync?.(d); // only succeeds when empty — never recursive
+        } catch {
+          /* not empty / already gone */
+        }
+      }
+    }
+    infoLog('npc-hooks', 'purge-all', {
+      tools: results.length,
+      failed: results.filter((r) => !r.ok).map((r) => r.id),
+      skippedForeign,
+      stagedFiles: removalFailed ? 0 : stagedFiles.size,
+    });
+    return results;
+  }
+}
+
+const normalizeForCompare = (p: string): string => {
+  const s = p.replace(/\\/g, '/').replace(/\/+$/, '');
+  return process.platform === 'win32' ? s.toLowerCase() : s;
+};
+
+/** Staged file layout inside an SSH Lite globalStorage folder (matches extension.ts). */
+export function stagedCtxForStorage(storageDir: string): HookInstallCtx {
+  return {
+    assetScriptPath: '',
+    scriptPath: path.join(storageDir, 'hooks', SCRIPT_BASENAME),
+    beaconPath: path.join(storageDir, BEACON_BASENAME),
+  };
+}
+
+/**
+ * Entry point for the `vscode:uninstall` script (plain Node, no VS Code API).
+ * `storageDir` is this editor's globalStorage when InstallRegistry knows it;
+ * without it, every SSH Lite hook is removed (marker match) as a fallback.
+ */
+export function purgeHooksForUninstall(
+  home: string,
+  options: { storageDir?: string; fsApi?: HookFsApi; tools?: HookTool[] } = {}
+): HookOpResult[] {
+  const ctx = options.storageDir
+    ? stagedCtxForStorage(options.storageDir)
+    : { assetScriptPath: '', scriptPath: '', beaconPath: '' };
+  return new HookInstallerService(home, ctx, options.fsApi ?? defaultFs, options.tools ?? HOOK_TOOLS).purgeAll({
+    ownStorageDir: options.storageDir,
+  });
 }

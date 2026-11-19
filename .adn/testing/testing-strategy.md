@@ -97,6 +97,10 @@ The `SERVER_FLAVOR` build arg (`prod-web` | `prod-api` | `prod-db`, default `pro
 
 5 containers: Alpine, Ubuntu 22.04, Debian 12, Fedora 39, Rocky 9. Test files: `multios-auth`, `multios-connection`, `multios-fileops`, `multios-monitor`, `multios-commandguard`, `multios-helpers`.
 
+## Real VS Code Uninstall Test
+
+`npm run test:vscode-uninstall` (Linux, Docker) and `node scripts/test-vscode-uninstall.js --windows` (portable VS Code on the Windows host) install the packaged VSIX into a real VS Code, uninstall it, and check that VS Code ran `vscode:uninstall` (hooks + staged files removed, reinstall resets hook auto-setup). Self-contained fixtures, full teardown. See [`vscode-uninstall-e2e.md`](vscode-uninstall-e2e.md).
+
 ## Jest Configuration
 
 Main config excludes Docker/Multi-OS/Chaos tests. Separate configs (`jest.chaos.config.js`, etc.) include their specific paths. See `jest.config.js` for details.

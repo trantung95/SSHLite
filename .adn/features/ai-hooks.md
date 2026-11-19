@@ -100,3 +100,57 @@ break a live hook. Conversely, because the housekeeper won't reach them, **unins
 cleans up its own artifacts**: once nothing is left installed, `uninstallAll()`
 deletes the staged script + beacon. The per-tool config writes leave a one-time
 `<file>.sshlite.bak` backup in the tool's own config dir (intentional safety net).
+
+**Extension uninstall cleanup + reinstall.** `package.json` `scripts["vscode:uninstall"]`
+runs `out/uninstall.js` (`src/uninstall.ts`) in **plain Node.js** after the extension is
+fully uninstalled and VS Code restarts — the `vscode` module does not exist there.
+
+**Install registry** (`src/services/InstallRegistry.ts`, `~/.ssh-lite/installs.json`):
+`activate()` calls `recordInstall(home, extensionPath, globalStorageUri.fsPath)`, so the
+uninstall script can map its own extension folder (`..` of `out/`) to THIS editor's
+globalStorage. Entries whose extension folder is gone (old version after an update)
+are pruned; the file is written only when something changed.
+
+Uninstall flow (`runUninstallCleanup`):
+
+1. `lookupStorage()` → this editor's storage; `purgeHooksForUninstall(home, { storageDir })`
+   → `HookInstallerService.purgeAll({ ownStorageDir })`:
+   - Removes our marker entry from every known tool config — no presence gate (the
+     tool's home dir may be gone while its config is not). Unparseable configs stay
+     untouched and are reported as failed.
+   - A hook whose staged script lives in **another editor's** storage (Code vs
+     Code - Insiders vs Cursor) is left alone — that editor still uses it.
+   - Deletes the staged script / beacon (`hooks/npc-beacon.js`,
+     `npc-ai-hook-beacon.json` + `.tmp`) and the empty `hooks/` folder
+     (non-recursive) — **even when no hook is left** (user removed it by hand).
+     Paths parsed from hook commands are accepted only under a `hybr8.ssh-lite`
+     path segment with our exact file names.
+   - If a parseable config could not be rewritten (read-only, locked), staged files
+     are **kept** so the leftover hook keeps exiting 0 instead of erroring per prompt.
+   - Backups: the removal write would back up the *hooked* config over
+     `.sshlite.bak`, so a clean prior backup is snapshotted and restored; a backup
+     still containing our marker is deleted (restoring it would re-add a dead hook).
+   - Without a registry entry (never activated with this version) it falls back to
+     removing every SSH Lite hook by marker.
+2. `markUninstalled()` drops the install entry and leaves a **tombstone** (the storage path).
+   If the purge removed a hook, it also tombstones every **other** recorded install
+   (`rearmOthers`): hooks are shared per AI tool (dedup by marker), so SSH Lite in
+   Code - Insiders / Cursor may have relied on the removed hook while its own
+   `npcAutoHooksDone` says "done" — re-arming makes it set its own hook up again.
+
+Registry keys use the **realpath** of the extension folder: the uninstall process's
+`__dirname` is resolved through symlinks / junctions, `context.extensionPath` is not.
+Temp writes use a per-process name (`installs.json.<pid>.tmp`).
+
+Reinstall: VS Code may keep `globalState` across an uninstall, which would keep the
+one-time `npcAutoHooksDone` flag and stop auto-setup. On activation `recordInstall()`
+consumes the tombstone and returns `reinstalled: true`; `activate()` then clears
+`npcAutoHooksDone`, so opening the NPC panel sets hooks up again exactly like a first
+install. Only hook state is reset — connections, credentials, and settings are kept.
+
+- Logging is a lazy `require('../utils/diagnosticLog')` inside `HookInstallerService` —
+  a no-op in the uninstall process. Never import a `vscode`-dependent module
+  (directly or transitively) from `src/uninstall.ts`.
+- `scripts/verify-package.js` requires `extension/out/uninstall.js` in the VSIX.
+- Real VS Code end-to-end test (Docker Linux + portable Windows): [`testing/vscode-uninstall-e2e.md`](../testing/vscode-uninstall-e2e.md).
+- The extension installs **no** AI skills — hooks are its only footprint in AI tool dirs.
