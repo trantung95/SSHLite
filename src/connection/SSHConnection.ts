@@ -186,6 +186,15 @@ export class SSHConnection implements ISSHConnection {
    */
   public static chaosReadFileCount = 0;
 
+  /**
+   * Same counter, for this connection only. The `backgroundIdle` invariant must
+   * use this one: chaos runs sessions on several servers at once, so the global
+   * counter also counted the reads of servers whose chains were still running
+   * and reported false "background read" leaks (0 of 134 single-server sessions
+   * violated, 27 of 63 multi-server sessions did).
+   */
+  public chaosReadFileCount = 0;
+
   public readonly id: string;
   public state: ConnectionState = ConnectionState.Disconnected;
   private _client: Client | null = null;
@@ -1100,6 +1109,7 @@ export class SSHConnection implements ISSHConnection {
    */
   async readFile(remotePath: string): Promise<Buffer> {
     SSHConnection.chaosReadFileCount++;
+    this.chaosReadFileCount++;
     logSFTPOperation(this.host.name, 'READ', remotePath);
     const sftp = await this.getSFTP();
 
@@ -1138,6 +1148,7 @@ export class SSHConnection implements ISSHConnection {
     chunkSize: number = 64 * 1024
   ): Promise<Buffer> {
     SSHConnection.chaosReadFileCount++;
+    this.chaosReadFileCount++;
     const sftp = await this.getSFTP();
 
     // Get file size first for progress calculation
@@ -1697,6 +1708,7 @@ export class SSHConnection implements ISSHConnection {
    */
   async readFileTail(remotePath: string, offset: number): Promise<Buffer> {
     SSHConnection.chaosReadFileCount++;
+    this.chaosReadFileCount++;
     if (!this._client || this.state !== ConnectionState.Connected) {
       throw new ConnectionError('Not connected');
     }

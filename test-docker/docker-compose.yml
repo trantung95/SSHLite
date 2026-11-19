@@ -190,6 +190,16 @@ services:
   ftp:
     image: delfer/alpine-ftp-server
     container_name: sshlite-test-ftp
+    # The image's start script backgrounds vsftpd, then guesses its pid with
+    # `pgrep vsftpd | tail -n 1` for pidproxy. It sometimes picks the short-lived
+    # fork, pidproxy prints "process has died, quitting" and the container exits 0
+    # ~3 s after start: port 2207 refused and 53 FTP tests failed. Passing a command
+    # takes the script's `exec "$@"` branch (users are still created first) and
+    # runs vsftpd in the foreground, so there is no pid to guess.
+    # Config file FIRST: vsftpd applies arguments in order, so a trailing config
+    # file would turn background=YES back on (verified: the container exited 0).
+    command: ["vsftpd", "/etc/vsftpd/vsftpd.conf", "-obackground=NO", "-opasv_min_port=21000", "-opasv_max_port=21010", "-opasv_address=127.0.0.1"]
+    restart: on-failure:3
     ports:
       - "2207:21"
       - "21000-21010:21000-21010"

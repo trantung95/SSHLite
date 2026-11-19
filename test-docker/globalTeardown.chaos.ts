@@ -84,12 +84,12 @@ export default async function globalTeardown(): Promise<void> {
 
   // Stop and remove only sshlite chaos containers by exact name
   console.log('[Chaos Teardown] Stopping chaos containers...');
+  // `rm -f` kills and removes in one step. `docker stop` waits its 10 s grace period,
+  // which hit the 10 s execSync timeout, so `rm` ran on a still-running container,
+  // failed silently, and left Exited (137) containers behind.
   for (const container of CONTAINERS) {
     try {
-      execSync(`docker stop ${container}`, { stdio: 'pipe', timeout: 10000 });
-    } catch { /* not running */ }
-    try {
-      execSync(`docker rm ${container}`, { stdio: 'pipe', timeout: 5000 });
+      execSync(`docker rm -f -v ${container}`, { stdio: 'pipe', timeout: 30000 });
     } catch { /* already removed */ }
   }
 

@@ -10,7 +10,7 @@ import { SSHConnection } from '../../connection/SSHConnection';
  * passively in the background between chain ops — none of the existing
  * invariants (listenerLeak, activityCount, semaphoreFloor, cleanShutdown)
  * watched for that pattern, so chaos missed the bug entirely. This invariant
- * watches the global `readFile` counter on `SSHConnection` and fails if
+ * watches the per-connection `readFile` counter on `SSHConnection` and fails if
  * background reads happen during the settle window.
  *
  * Why count only `readFile`: stat-based polls are cheap and expected (the
@@ -29,10 +29,12 @@ const ALLOWED_READS_IN_SETTLE = 1;
 export const backgroundIdleInvariant: Invariant = {
   name: 'backgroundIdle',
   whenToCheck: 'after-session',
-  async snapshot() {
-    const start = SSHConnection.chaosReadFileCount;
+  async snapshot(conn: SSHConnection) {
+    // Per-connection counter: sessions on other servers run concurrently, and
+    // their reads must not count as this server's background work.
+    const start = conn.chaosReadFileCount;
     await new Promise((r) => setTimeout(r, SETTLE_MS));
-    const end = SSHConnection.chaosReadFileCount;
+    const end = conn.chaosReadFileCount;
     return {
       timestamp: Date.now(),
       data: { settleStart: start, settleEnd: end, settleMs: SETTLE_MS },

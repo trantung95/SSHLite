@@ -307,6 +307,22 @@ describe('SSHConnection - Actual Class', () => {
     });
   });
 
+  describe('chaos readFile counters (backgroundIdle invariant)', () => {
+    it('counts readFile / readFileChunked / readFileTail per connection AND globally', async () => {
+      const other = new SSHConnection(createMockHostConfig({ host: '10.0.0.2', port: 2299, username: 'testuser' }));
+      const globalBefore = SSHConnection.chaosReadFileCount;
+      // Disconnected: every call rejects, but the counters bump on entry.
+      await connection.readFile('/a').catch(() => undefined);
+      await connection.readFileChunked('/a', () => undefined).catch(() => undefined);
+      await connection.readFileTail('/a', 0).catch(() => undefined);
+
+      expect(connection.chaosReadFileCount).toBe(3);
+      expect(other.chaosReadFileCount).toBe(0);
+      expect(SSHConnection.chaosReadFileCount - globalBefore).toBe(3);
+      other.dispose();
+    });
+  });
+
   describe('writeFile (actual method with mocked SFTP)', () => {
     let mockSftp: any;
 

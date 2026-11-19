@@ -57,6 +57,14 @@ Alpine-based SSH servers built from `test-docker/Dockerfile.sshd`. Setup: `docke
 
 Tests: real SSH connection, SFTP upload/download, cross-server grep search, cancellation, permissions, large files.
 
+### Drag-and-drop move over FTP (issue #18)
+
+`src/integration/docker-ftp-dnd-move.test.ts` drives the real `FileTreeProvider.handleDrag` → `handleDrop` path against the FTP servers of the main compose file (vsftpd 2207, pure-ftpd 2208) plus sshd 2201: a file and a folder moved between two sites on the same FTP account (the reporter's layout), a name conflict that keeps both files, FTP → SSH, SSH → FTP folder, vsftpd → pure-ftpd, and a pure-ftpd same-server move that must either move or leave the source intact and show an error. `docker-ssh-dnd-move.test.ts` covers the same feature over SSH only.
+
+Teardown runs `docker compose down --volumes` (`globalTeardown.ts` adds `--remove-orphans`; `globalTeardown.multios.ts` does not, because `docker-compose.ci.yml` shares its `test-docker` project), so fixtures and anonymous volumes never survive a run. The multi-OS globalSetup allows 30 minutes for `up --build`: a cold build of all five distro images behind a VPN measured 21 minutes (cached rebuilds take seconds). Pre-build with `docker compose -f test-docker/docker-compose.multios.yml build` to keep the test run short.
+
+vsftpd (2207) runs in the foreground through a compose `command` (`vsftpd /etc/vsftpd/vsftpd.conf -obackground=NO ...`, config file first): the image's own start script sometimes lost track of the daemonized process and the container exited 0 a few seconds after start. `globalSetup.ts` waits for the `220` greeting on 2207 (restarts the container once, then fails with its logs). pure-ftpd (2208) is left to `connectWithRetry` because it refuses connections for 30-90 s while it generates TLS material.
+
 ### Native search tools suite (isolated)
 
 `src/integration/docker-ssh-search-tools.test.ts` runs against TWO dedicated servers in a SEPARATE compose file (`test-docker/docker-compose.search-tools.yml`, project `sshlite-search-tools`) so a build error there can never break the main docker suite:

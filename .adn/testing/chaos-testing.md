@@ -94,6 +94,9 @@ More faults (`iptablesRst`, `sshdKill`, `maxSessions`, `fdExhaust`, `stressCpu`,
 | `listenerLeak` | after-session | Emitter listener counts return to baseline (threshold 10) |
 | `activityCount` | after-session | `ActivityService.getRunningActivities().length` does not grow across the session |
 | `sessionTeardown` | after-session | Connection is `Disconnected` at session end |
+| `backgroundIdle` | after-session | At most 1 `readFile`-class op on **this** connection during a 1 s settle window (`conn.chaosReadFileCount`, per connection: sessions on other servers run concurrently, so the global `SSHConnection.chaosReadFileCount` gave false positives) |
+
+A chaos run that "passes" in Jest can still log violations: read `invariant_violations` in `logs/chaos-results.jsonl` after every run. Setup starts only the servers in `src/chaos/ChaosConfig.ts` (`web api db` + 5 distros), and teardown removes them with `docker rm -f -v`.
 
 More invariants (`treeConsistency`, `hoverCorrectness`, `decorationConsistency`, `credentialAtomicity`, `commandIdempotence`, `backgroundQuiescence`, `disposalCleanup`, `crossConnectionIsolation`, plus the rich `cleanShutdown`) ship in v0.8.1.
 

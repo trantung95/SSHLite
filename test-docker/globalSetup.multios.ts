@@ -64,7 +64,7 @@ export default async function globalSetup(): Promise<void> {
   try {
     execSync(`docker compose -f "${COMPOSE_FILE}" up -d --build`, {
       stdio: 'pipe',
-      timeout: 300000, // 5 minutes for building all images
+      timeout: 1800000, // 30 minutes: a cold build of every distro image behind a VPN measured 21 min
     });
   } catch (err: any) {
     console.error('[Multi-OS Setup] Failed to start containers:', err.stderr?.toString() || err.message);

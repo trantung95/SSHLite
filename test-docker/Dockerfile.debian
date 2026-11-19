@@ -2,7 +2,9 @@ FROM debian:12-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y \
+# Docker Desktop behind some VPNs stalls ~30 s per apt request over IPv6 / pipelined HTTP.
+RUN printf 'Acquire::ForceIPv4 "true";\nAcquire::http::Pipeline-Depth "0";\n' > /etc/apt/apt.conf.d/99network \
+ && apt-get update && apt-get install -y \
     openssh-server \
     bash \
     coreutils \

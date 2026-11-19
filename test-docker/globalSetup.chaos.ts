@@ -65,12 +65,17 @@ async function waitForSSH(config: typeof ALL_SERVERS[0], maxRetries = 40, delayM
   throw new Error(`SSH not available on ${config.label} (${config.host}:${config.port}) after ${maxRetries} retries`);
 }
 
-function startCompose(composeFile: string, label: string): void {
+/**
+ * Start a compose stack. `only` limits it to the services chaos actually uses:
+ * starting the whole file would leave containers (FTP, keys, sudo, toxiproxy, slow)
+ * that globalTeardown.chaos.ts never stops, because it removes CHAOS_CONTAINERS by name.
+ */
+function startCompose(composeFile: string, label: string, only: string[] = []): void {
   try {
     // Get the services defined in THIS compose file, then check if they're running.
-    // Both compose files share the same project dir ("test-docker"), so a plain
+    // Compose files can share a project (multios + ci are both "test-docker"), so a plain
     // `docker compose ps` returns containers from ALL stacks — we must filter by service.
-    const services = execSync(`docker compose -f "${composeFile}" config --services`, {
+    const services = only.length > 0 ? only : execSync(`docker compose -f "${composeFile}" config --services`, {
       stdio: 'pipe',
       timeout: 10000,
     }).toString().trim().split('\n').filter(Boolean);
@@ -92,9 +97,9 @@ function startCompose(composeFile: string, label: string): void {
     // Containers not running, start them
   }
 
-  execSync(`docker compose -f "${composeFile}" up -d --build`, {
+  execSync(`docker compose -f "${composeFile}" up -d --build ${only.join(' ')}`.trim(), {
     stdio: 'pipe',
-    timeout: 300000,
+    timeout: 1800000, // 30 minutes: a cold build of the distro images behind a VPN measured 21 min
   });
 }
 
@@ -115,12 +120,10 @@ const CHAOS_CONTAINERS = [
 ];
 
 function stopChaosContainers(): void {
+  // `rm -f` in one step: stop + rm raced the 10 s stop grace period (see globalTeardown.chaos.ts).
   for (const name of CHAOS_CONTAINERS) {
     try {
-      execSync(`docker stop ${name}`, { stdio: 'pipe', timeout: 10000 });
-    } catch { /* not running */ }
-    try {
-      execSync(`docker rm ${name}`, { stdio: 'pipe', timeout: 5000 });
+      execSync(`docker rm -f -v ${name}`, { stdio: 'pipe', timeout: 30000 });
     } catch { /* already removed */ }
   }
 }
@@ -159,7 +162,7 @@ export default async function globalSetup(): Promise<void> {
   console.log('[Chaos Setup] Starting basic containers (ports 2201-2203)...');
 
   try {
-    startCompose(BASIC_COMPOSE, 'Basic');
+    startCompose(BASIC_COMPOSE, 'Basic', ['web', 'api', 'db']);
   } catch (err: any) {
     console.error('[Chaos Setup] Failed to start basic containers:', err.stderr?.toString() || err.message);
     throw err;

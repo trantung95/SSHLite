@@ -13,7 +13,7 @@ export default async function globalTeardown(): Promise<void> {
   console.log('\n[Docker Teardown] Stopping SSH test containers...');
 
   try {
-    execSync(`docker compose -f "${COMPOSE_FILE}" down`, {
+    execSync(`docker compose -f "${COMPOSE_FILE}" down --volumes --remove-orphans`, {
       stdio: 'pipe',
       timeout: 30000,
     });

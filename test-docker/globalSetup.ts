@@ -8,6 +8,7 @@
 import { execSync } from 'child_process';
 import { Client } from 'ssh2';
 import * as path from 'path';
+import * as net from 'net';
 
 const COMPOSE_FILE = path.join(__dirname, 'docker-compose.yml');
 
@@ -60,6 +61,52 @@ async function waitForSSH(config: typeof SERVERS[0], maxRetries = 30, delayMs = 
   throw new Error(`SSH not available on ${config.host}:${config.port} after ${maxRetries} retries`);
 }
 
+/** Resolve true once the FTP server on `port` sends its `220` greeting. */
+function ftpGreets(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const sock = net.connect({ host: '127.0.0.1', port });
+    let buf = '';
+    const done = (ok: boolean) => {
+      clearTimeout(timer);
+      sock.destroy();
+      resolve(ok);
+    };
+    const timer = setTimeout(() => done(false), 3000);
+    sock.on('data', (d) => {
+      buf += d.toString();
+      if (buf.startsWith('220')) done(true);
+    });
+    sock.on('error', () => done(false));
+  });
+}
+
+async function waitForFtp(port: number, attempts: number): Promise<boolean> {
+  for (let i = 0; i < attempts; i++) {
+    if (await ftpGreets(port)) return true;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return false;
+}
+
+/**
+ * vsftpd (2207) must greet before the FTP suites run. Setup used to wait for SSH
+ * only, so a vsftpd that died on a cold start made 53 FTP tests fail with
+ * ECONNREFUSED and no clue why. Restart it once; if it still does not greet,
+ * fail here with its logs. pure-ftpd (2208) is left to connectWithRetry: it
+ * refuses connections for 30-90 s while it generates its TLS material.
+ */
+async function ensureVsftpd(): Promise<void> {
+  if (await waitForFtp(2207, 30)) return;
+  console.log('[Docker Setup] vsftpd (2207) not greeting after 30 s, restarting it...');
+  execSync(`docker compose -f "${COMPOSE_FILE}" restart ftp`, { stdio: 'pipe', timeout: 60000 });
+  if (await waitForFtp(2207, 30)) return;
+  let logs = '';
+  try {
+    logs = execSync('docker logs --tail 50 sshlite-test-ftp 2>&1', { stdio: 'pipe', timeout: 15000 }).toString();
+  } catch { /* container gone */ }
+  throw new Error(`vsftpd on 127.0.0.1:2207 never sent its 220 greeting.\n${logs}`);
+}
+
 export default async function globalSetup(): Promise<void> {
   console.log('\n[Docker Setup] Starting SSH test containers...');
 
@@ -83,6 +130,9 @@ export default async function globalSetup(): Promise<void> {
       console.log(`[Docker Setup] Server ${i + 1} (port ${server.port}) ready`);
     })
   );
+
+  await ensureVsftpd();
+  console.log('[Docker Setup] vsftpd (port 2207) ready');
 
   console.log('[Docker Setup] All servers ready.\n');
 }
