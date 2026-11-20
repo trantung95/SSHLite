@@ -598,12 +598,42 @@ describe('FileService - CRUD Operations (Actual)', () => {
     });
 
     it('skips the confirm dialog when opts.skipConfirm is true', async () => {
+      // Backup verification ("test -f ... && echo ok") must succeed, else the
+      // delete stops to ask whether to proceed without the backup.
+      mockExec.mockImplementation(async (cmd: string) => (cmd.startsWith('test -f') ? 'ok' : ''));
       const file = createMockRemoteFile('b.txt', { path: '/home/user/b.txt', isDirectory: false });
 
       const result = await service.deleteRemote(mockConnection as any, file, { skipConfirm: true });
 
       expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
       expect(mockDeleteFile).toHaveBeenCalledWith('/home/user/b.txt');
+      expect(result).toBe(true);
+    });
+
+    it('bulk delete stops when the requested backup fails and the user does not confirm', async () => {
+      mockExec.mockResolvedValue('fail');
+      (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue(undefined);
+      const file = createMockRemoteFile('c.txt', { path: '/home/user/c.txt', isDirectory: false });
+
+      const result = await service.deleteRemote(mockConnection as any, file, { skipConfirm: true });
+
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+        expect.stringContaining('Could not back up'),
+        expect.objectContaining({ modal: true }),
+        'Delete Without Backup'
+      );
+      expect(mockDeleteFile).not.toHaveBeenCalled();
+      expect(result).toBe(false);
+    });
+
+    it('bulk delete proceeds without backup only when the user picks "Delete Without Backup"', async () => {
+      mockExec.mockResolvedValue('fail');
+      (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue('Delete Without Backup');
+      const file = createMockRemoteFile('d.txt', { path: '/home/user/d.txt', isDirectory: false });
+
+      const result = await service.deleteRemote(mockConnection as any, file, { skipConfirm: true });
+
+      expect(mockDeleteFile).toHaveBeenCalledWith('/home/user/d.txt');
       expect(result).toBe(true);
     });
   });

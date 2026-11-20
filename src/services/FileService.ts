@@ -13,10 +13,10 @@ import { PriorityQueueService, PreloadPriority } from './PriorityQueueService';
 import { ActivityService } from './ActivityService';
 import { CommandGuard } from './CommandGuard';
 import { CredentialService } from './CredentialService';
-import { formatFileSize, normalizeLocalPath, decodeUriComponentSafe } from '../utils/helpers';
+import { formatFileSize, normalizeLocalPath } from '../utils/helpers';
 import { isLikelyBinary, isImageFile, DEFAULT_PROGRESSIVE_CONFIG } from '../types/progressive';
 import { registerTabLabel, buildLocalTempPath, buildAuxTempFileName } from '../utils/connectionPrefix';
-import { infoLog } from '../utils/diagnosticLog';
+import { infoLog, diagLog } from '../utils/diagnosticLog';
 import { assertCapability, hasCapability } from '../utils/capabilityGuard';
 
 /**
@@ -1483,7 +1483,18 @@ export class FileService {
 
     if (restorePath === undefined) return; // Cancelled
 
-    const targetPath = restorePath || `~/${originalName}`;
+    // Resolve "~" to the real home folder once: the backup helpers below
+    // single-quote the path, and no shell expands "~" inside quotes, so a
+    // "~/name" target would skip the pre-restore backup and then overwrite.
+    let targetPath = restorePath || `~/${originalName}`;
+    if (targetPath === '~' || targetPath.startsWith('~/')) {
+      try {
+        const home = (await connection.resolveHomePath()).replace(/\/+$/, '');
+        if (home) { targetPath = home + targetPath.slice(1); }
+      } catch (err) {
+        diagLog('file-service', 'restore/home-resolve-failed', { connectionId: connection.id, errorMessage: (err as Error).message });
+      }
+    }
 
     const confirm = await vscode.window.showWarningMessage(
       `Restore "${backup.name}" to "${targetPath}"?\n\nIf the target exists, it will be backed up first.`,
@@ -1495,24 +1506,33 @@ export class FileService {
 
     try {
       // Check if target exists and backup if so
-      const existsResult = await connection.exec(`test -e "${targetPath}" && echo "exists" || echo "not_exists"`);
+      const existsResult = await connection.exec(`test -e ${this.shellPath(targetPath)} && echo "exists" || echo "not_exists"`);
       if (existsResult.trim() === 'exists') {
-        // Create backup of current version before restore
-        if (backup.isDirectory) {
-          await this.createDirectoryBackup(connection, targetPath);
-        } else {
-          await this.createServerBackup(connection, targetPath);
+        // Create backup of current version before restore. The dialog promised
+        // one, so never overwrite when it failed.
+        const preRestoreBackup = backup.isDirectory
+          ? await this.createDirectoryBackup(connection, targetPath)
+          : await this.createServerBackup(connection, targetPath);
+        if (!preRestoreBackup) {
+          infoLog('file-service', 'restore/pre-backup-failed', { connectionId: connection.id, targetPath });
+          const proceed = await vscode.window.showWarningMessage(
+            `Could not back up the current "${targetPath}" before restoring.`,
+            { modal: true, detail: 'Overwrite it anyway, with no backup?' },
+            'Overwrite Without Backup'
+          );
+          if (proceed !== 'Overwrite Without Backup') { return; }
         }
         vscode.window.setStatusBarMessage(`$(archive) Backed up current version`, 2000);
       }
 
-      // Perform restore
+      // Perform restore. Single-quote every path: inside double quotes a name such
+      // as "$(cmd)" or "`cmd`" (folder names come from the server) would run.
+      const q = (p: string) => this.shellPath(p);
+      const parent = path.posix.dirname(targetPath);
       if (backup.isDirectory) {
-        // Extract tar.gz
-        await connection.exec(`mkdir -p "${path.dirname(targetPath)}" && tar -xzf "${backup.path}" -C "${path.dirname(targetPath)}"`);
+        await connection.exec(`mkdir -p -- ${q(parent)} && tar -xzf ${q(backup.path)} -C ${q(parent)}`);
       } else {
-        // Copy file
-        await connection.exec(`mkdir -p "${path.dirname(targetPath)}" && cp "${backup.path}" "${targetPath}"`);
+        await connection.exec(`mkdir -p -- ${q(parent)} && cp -- ${q(backup.path)} ${q(targetPath)}`);
       }
 
       vscode.window.setStatusBarMessage(`$(check) Restored "${originalName}" to ${targetPath}`, 3000);
@@ -1538,7 +1558,7 @@ export class FileService {
     if (confirm !== 'Delete') return;
 
     try {
-      await connection.exec(`rm -f "${backup.path}"`);
+      await connection.exec(`rm -f -- ${this.shellPath(backup.path)}`);
       vscode.window.setStatusBarMessage(`$(check) Deleted backup: ${backup.name}`, 3000);
     } catch (error) {
       vscode.window.showErrorMessage(`Failed to delete backup: ${(error as Error).message}`);
@@ -1553,10 +1573,37 @@ export class FileService {
     try {
       const baseName = path.basename(remotePath, path.extname(remotePath));
       const ext = path.extname(remotePath);
+      const sq = (s: string) => s.replace(/'/g, "'\\''");
 
-      // List files matching the pattern
-      const result = await connection.exec(`ls -1t ${SERVER_BACKUP_FOLDER}/${baseName}_*${ext} 2>/dev/null || true`);
-      const files = result.trim().split('\n').filter((f) => f.length > 0);
+      // One round trip: the candidate backups (quoted, so names with spaces or
+      // quotes list at all) and the index that records which file each backup is of.
+      const marker = '__SSHLITE_INDEX__';
+      const result = await connection.exec(
+        `ls -1t -- '${sq(`${SERVER_BACKUP_FOLDER}/${baseName}_`)}'*'${sq(ext)}' 2>/dev/null || true; ` +
+        `echo '${marker}'; cat '${SERVER_BACKUP_FOLDER}/.ssh-lite-index' 2>/dev/null || true`
+      );
+      const [listing, indexText = ''] = result.split(marker);
+
+      // The glob "a_*.txt" also matches backups of "a_b.txt": keep only exact
+      // "<baseName>_<timestamp><ext>" names.
+      const reEsc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const exact = new RegExp(`^${reEsc(baseName)}_\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-\\d{3}Z${reEsc(ext)}$`);
+
+      // Backup names carry no directory, so /d1/x.txt and /d2/x.txt share names.
+      // The index line "source|backup" says whose backup it is; drop backups the
+      // index assigns to a different file. Backups missing from the index (older
+      // versions, failed append) stay listed, as before.
+      const owner = new Map<string, string>();
+      const sep = `|${SERVER_BACKUP_FOLDER}/`;
+      for (const line of indexText.split('\n')) {
+        const at = line.lastIndexOf(sep);
+        if (at > 0) { owner.set(line.slice(at + 1).trim(), line.slice(0, at)); }
+      }
+
+      const files = listing.split('\n').map((f) => f.trim()).filter((f) =>
+        f.length > 0 && exact.test(path.posix.basename(f)) && (owner.get(f) ?? remotePath) === remotePath
+      );
+      diagLog('file-service', 'list-server-backups', { connectionId: connection.id, remotePath, found: files.length, indexed: owner.size });
 
       return files.map((filePath) => {
         const fileName = path.basename(filePath);
@@ -3597,7 +3644,7 @@ export class FileService {
     assertCapability(connection, 'supportsExec');
     try {
       // Use head command to get first 1000 lines
-      const result = await connection.exec(`head -n 1000 "${remoteFile.path}"`);
+      const result = await connection.exec(`head -n 1000 -- ${this.shellPath(remoteFile.path)}`);
 
       // Create a preview document
       const previewPath = path.join(
@@ -3858,6 +3905,7 @@ export class FileService {
     // schemes (vscode-remote:, vscode-vfs:, custom providers) work — same
     // motivation as writeUserSelectedUri above.
     const targetUri = vscode.Uri.joinPath(folderUri[0], remoteFile.name);
+    const skipped: Array<{ path: string; reason: string }> = [];
 
     try {
       await vscode.window.withProgress(
@@ -3868,12 +3916,23 @@ export class FileService {
         },
         async (progress) => {
           progress.report({ increment: 5, message: 'Scanning folder...' });
-          await this.downloadFolderRecursive(connection, remoteFile.path, targetUri, progress, { count: 0 });
+          await this.downloadFolderRecursive(connection, remoteFile.path, targetUri, progress, { count: 0 }, skipped);
           progress.report({ increment: 5, message: 'Complete!' });
         }
       );
 
-      vscode.window.setStatusBarMessage(`$(check) Downloaded folder ${remoteFile.name}`, 3000);
+      if (skipped.length > 0) {
+        // Never drop entries silently: name every symlink that was not downloaded.
+        infoLog('file-service', 'download-folder/skipped', { connectionId: connection.id, remotePath: remoteFile.path, skipped: skipped.length });
+        const shown = skipped.slice(0, 10).map((e) => `${e.path} (${e.reason})`).join('\n');
+        const more = skipped.length > 10 ? `\n…and ${skipped.length - 10} more` : '';
+        vscode.window.showWarningMessage(
+          `Downloaded folder ${remoteFile.name}, but ${skipped.length} symbolic link(s) were not downloaded.`,
+          { modal: false, detail: shown + more }
+        );
+      } else {
+        vscode.window.setStatusBarMessage(`$(check) Downloaded folder ${remoteFile.name}`, 3000);
+      }
     } catch (error) {
       vscode.window.showErrorMessage(`Failed to download folder: ${(error as Error).message}`);
     }
@@ -3887,7 +3946,8 @@ export class FileService {
     remotePath: string,
     destFolderUri: vscode.Uri,
     progress: vscode.Progress<{ message?: string; increment?: number }>,
-    counter: { count: number }
+    counter: { count: number },
+    skipped: Array<{ path: string; reason: string }> = []
   ): Promise<void> {
     // createDirectory is idempotent — no need for existsSync guard.
     await vscode.workspace.fs.createDirectory(destFolderUri);
@@ -3901,11 +3961,28 @@ export class FileService {
 
       if (file.isDirectory) {
         progress.report({ increment: 1, message: `Folder: ${file.name}` });
-        await this.downloadFolderRecursive(connection, file.path, childUri, progress, counter);
+        await this.downloadFolderRecursive(connection, file.path, childUri, progress, counter, skipped);
       } else {
         const fileSizeStr = formatFileSize(file.size);
         progress.report({ increment: 1, message: `${file.name} (${fileSizeStr})` });
-        const content = await connection.readFile(file.path);
+        let content: Buffer;
+        try {
+          content = await connection.readFile(file.path);
+        } catch (readErr) {
+          // Listings use lstat, so a symlink to a folder looks like a file and a
+          // dangling link cannot be read. Either one used to abort the whole
+          // download and lose every file listed after it. Skip and report those
+          // two (like OpenSSH `sftp get -r`, folder links are not followed, so a
+          // link to an ancestor cannot loop); any other read error still aborts.
+          const reason = await connection.stat(file.path).then(
+            (st) => (st.isDirectory ? 'link to a folder, not followed' : undefined),
+            () => 'broken link'
+          );
+          if (!reason) { throw readErr; }
+          diagLog('file-service', 'download-folder/skip-link', { connectionId: connection.id, path: file.path, reason });
+          skipped.push({ path: file.path, reason });
+          continue;
+        }
         await vscode.workspace.fs.writeFile(childUri, content);
       }
     }
@@ -3938,10 +4015,10 @@ export class FileService {
     // Remember the parent folder as a URI (scheme-preserving) for next time.
     this.lastUploadUri = vscode.Uri.joinPath(selectedUri, '..');
     // Derive the leaf name from the URI path (always '/'-separated, scheme-safe)
-    // rather than fsPath, which mangles non-file: schemes. A parsed URI path may
-    // be percent-encoded (e.g. "my%20file.txt") — decode it, but guard against a
-    // literal '%' in a file: path that isn't valid encoding (e.g. "100%.txt").
-    const fileName = decodeUriComponentSafe(path.posix.basename(selectedUri.path));
+    // rather than fsPath, which mangles non-file: schemes. `Uri.path` is already
+    // decoded (Uri.parse percent-decodes it), so it is used as is: decoding it
+    // again uploaded a local "a%20b.txt" as "a b.txt", overwriting that file.
+    const fileName = path.posix.basename(selectedUri.path);
     const localPath = selectedUri.fsPath; // display/audit only — never fed to raw fs
     const remotePath = `${remoteFolderPath}/${fileName}`;
 
@@ -4041,6 +4118,20 @@ export class FileService {
         } else {
           backupPath = await this.createServerBackup(connection, remoteFile.path);
         }
+        // The user asked for a backup. If the server could make one but did not
+        // (full /tmp, no tar, odd name), never delete silently without it.
+        if (!backupPath && connection.capabilities.supportsServerBackup) {
+          infoLog('file-service', 'delete/backup-failed', { connectionId: connection.id, remotePath: remoteFile.path });
+          const choice = await vscode.window.showWarningMessage(
+            `Could not back up "${remoteFile.name}" to ${SERVER_BACKUP_FOLDER}.`,
+            { modal: true, detail: `Delete this ${typeLabel} anyway, with no backup?` },
+            'Delete Without Backup'
+          );
+          if (choice !== 'Delete Without Backup') {
+            infoLog('file-service', 'delete/cancelled-no-backup', { connectionId: connection.id, remotePath: remoteFile.path });
+            return false;
+          }
+        }
       }
 
       // Perform deletion
@@ -4131,7 +4222,10 @@ export class FileService {
       const escDirName = dirName.replace(/'/g, "'\\''");
       const escDirBackup = backupPath.replace(/'/g, "'\\''");
       await connection.exec(
-        `mkdir -p ${SERVER_BACKUP_FOLDER} 2>/dev/null; cd '${escDirParent}' && tar -czf '${escDirBackup}' '${escDirName}' 2>/dev/null || true`
+        // "./name": a folder named "-dir" would otherwise be read by tar as an option
+        // (BusyBox: "unrecognized option"), the backup silently fails and the delete
+        // went ahead anyway. The archive still holds the entry as "./-dir".
+        `mkdir -p ${SERVER_BACKUP_FOLDER} 2>/dev/null; cd '${escDirParent}' && tar -czf '${escDirBackup}' './${escDirName}' 2>/dev/null || true`
       );
 
       // Verify backup was created
@@ -4532,6 +4626,17 @@ export class FileService {
   }
 
   /**
+   * One shell word for a remote path: single-quoted, so `$(...)`, backticks and
+   * spaces stay literal. A leading "~/" (or a bare "~") becomes "$HOME", because
+   * no shell expands "~" inside quotes: "~/x" quoted meant a folder named "~".
+   */
+  private shellPath(p: string): string {
+    if (p === '~') { return '"$HOME"'; }
+    if (p.startsWith('~/')) { return `"$HOME"/'${this.escapePathForShell(p.slice(2))}'`; }
+    return `'${this.escapePathForShell(p)}'`;
+  }
+
+  /**
    * Resolve the default remote path for a connection, expanding ~ when needed.
    * Falls back to /home/{user} if $HOME lookup fails.
    */
@@ -4577,18 +4682,19 @@ export class FileService {
     destPath: string,
     isDirectory: boolean
   ): Promise<void> {
+    // Refuse copying a folder into its own subtree (e.g. /data → /data/x) on EVERY
+    // protocol, before anything is written. The FTP streaming copy would re-list
+    // the just-created dest and loop forever; GNU `cp -r` does refuse, but only
+    // after it has created and partly filled the destination (debris /data/x/sub).
+    if (isDirectory && (destPath === srcPath || destPath.startsWith(srcPath.replace(/\/?$/, '/')))) {
+      throw new Error('Cannot copy a folder into itself.');
+    }
     if (!connection.capabilities.supportsExec) {
       // FTP has no shell `cp`. Do a client-mediated copy instead: download each
       // file and re-upload it under the new name on the SAME connection (issue
       // #14). Reuse the cross-host helpers with src === dest — FTPConnection
       // serializes every op through its internal queue, so read→write on one
       // connection cannot race. Folders recurse via listFiles + mkdir.
-      // Guard against copying a folder into its own subtree (e.g. /data → /data/x):
-      // the recursive copy would re-list the just-created dest and loop forever.
-      // SSH's `cp -r` refuses this; the FTP streaming path must too.
-      if (isDirectory && (destPath === srcPath || destPath.startsWith(srcPath.replace(/\/?$/, '/')))) {
-        throw new Error('Cannot copy a folder into itself.');
-      }
       try {
         if (isDirectory) {
           await this.copyFolderCrossHost(connection, srcPath, connection, destPath);
@@ -4668,11 +4774,13 @@ export class FileService {
    * Compute a non-conflicting destination name when pasting into a folder that already
    * contains an entry with the same name. Produces "name (copy).ext", "name (copy) 2.ext", etc.
    */
-  nextCopyName(originalName: string, existingNames: Set<string>): string {
+  nextCopyName(originalName: string, existingNames: Set<string>, isDirectory = false): string {
     if (!existingNames.has(originalName)) {
       return originalName;
     }
-    const dotIdx = originalName.lastIndexOf('.');
+    // Folders have no extension: "release-1.0" becomes "release-1.0 (copy)",
+    // not "release-1 (copy).0".
+    const dotIdx = isDirectory ? -1 : originalName.lastIndexOf('.');
     const hasExt = dotIdx > 0;
     const base = hasExt ? originalName.substring(0, dotIdx) : originalName;
     const ext = hasExt ? originalName.substring(dotIdx) : '';

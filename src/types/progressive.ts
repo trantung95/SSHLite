@@ -89,8 +89,10 @@ export function parsePreviewUri(uri: vscode.Uri): { connectionId: string; remote
   }
 
   const connectionId = uri.authority;
-  // Path includes leading slash, decode it
-  const remotePath = decodeURIComponent(uri.path);
+  // `uri.path` is already decoded by VS Code: decoding it again turned a file
+  // named "a%41.txt" into "aA.txt" and threw on a lone "%". URIs built before
+  // this fix encoded the leading "/" too, so their path starts with "//".
+  const remotePath = uri.path.startsWith('//') ? uri.path.slice(1) : uri.path;
 
   // Parse query string for lines parameter with validation
   const queryParams = new URLSearchParams(uri.query);
@@ -103,14 +105,14 @@ export function parsePreviewUri(uri: vscode.Uri): { connectionId: string; remote
 
 /**
  * Create a preview URI for a remote file
- * Format: ssh-lite-preview://connectionId/encoded-path?lines=N
+ * Format: ssh-lite-preview://connectionId/remote/path?lines=N
  */
 export function createPreviewUri(connectionId: string, remotePath: string, lines: number = 1000): vscode.Uri {
   // Ensure path starts with / for proper URI structure
   const normalizedPath = remotePath.startsWith('/') ? remotePath : `/${remotePath}`;
-  const encodedPath = encodeURIComponent(normalizedPath);
-  // Add slash between authority and path for proper URI parsing
-  return vscode.Uri.parse(`${PROGRESSIVE_PREVIEW_SCHEME}://${connectionId}/${encodedPath}?lines=${lines}`);
+  // Uri.from keeps the path verbatim (VS Code encodes it in toString), so
+  // "%", "#", "?" and spaces in file names round-trip through parsePreviewUri.
+  return vscode.Uri.from({ scheme: PROGRESSIVE_PREVIEW_SCHEME, authority: connectionId, path: normalizedPath, query: `lines=${lines}` });
 }
 
 /**

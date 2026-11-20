@@ -26,6 +26,9 @@ module.exports = {
   transformIgnorePatterns: [
     'node_modules/(?!.*)',
   ],
+  // Start the container and prove an SSH login before any test (the tests skip silently without it)
+  globalSetup: '<rootDir>/test/e2e/globalSetup.ts',
+  globalTeardown: '<rootDir>/test/e2e/globalTeardown.ts',
   // E2E tests can be slow (real SSH + Docker) — generous timeout
   testTimeout: 60000,
 };

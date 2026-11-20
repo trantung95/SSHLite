@@ -127,6 +127,33 @@ describe('TerminalService', () => {
       expect(events).toContain('output');
     });
 
+    it('closing the VS Code terminal closes the SSH channel, not just its stdin', async () => {
+      // Real sshd behaviour with a PTY: channel EOF (end()) does NOT end the shell,
+      // so 'close' never fires, the CommandGuard slot is never released and bash
+      // stays alive on the server. Only close() makes sshd hang up the shell.
+      let pty: any;
+      (vscode.window.createTerminal as jest.Mock).mockImplementation((opts: { pty: unknown }) => {
+        pty = opts.pty;
+        return { show: jest.fn(), dispose: jest.fn() };
+      });
+      const shell: any = new EventEmitter();
+      shell.write = jest.fn();
+      shell.setWindow = jest.fn();
+      shell.end = jest.fn(); // PTY: EOF alone keeps the shell running
+      shell.close = jest.fn(() => shell.emit('close'));
+      const connection: any = { id: 'c1', host: { name: 'host' }, shell: jest.fn().mockResolvedValue(shell) };
+
+      const channelClosed = jest.fn();
+      shell.on('close', channelClosed);
+
+      await service.createTerminal(connection);
+      pty.open({ rows: 24, columns: 80 });
+      pty.close();
+
+      expect(channelClosed).toHaveBeenCalledTimes(1);
+      expect(service.getTerminalCount('c1')).toBe(0);
+    });
+
     it('dispose() disposes the activity emitter (no events after)', async () => {
       const events: string[] = [];
       service.onActivity((k) => events.push(k));

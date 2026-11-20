@@ -200,6 +200,8 @@ export class SSHConnection implements ISSHConnection {
   private _client: Client | null = null;
   private _sftp: SFTPWrapper | null = null;
   private _portForwards: Map<number, net.Server> = new Map();
+  /** Established tunnel sockets per forward (local port), destroyed on stop/disconnect. */
+  private _forwardSockets: Map<number, Set<net.Socket>> = new Map();
   private _credential: SavedCredential | undefined;
   private _capabilities: ServerCapabilities | null = null;
   private _activeWatchers: Map<string, ClientChannel> = new Map(); // remotePath -> watcher channel
@@ -684,14 +686,11 @@ export class SSHConnection implements ISSHConnection {
     this.disableSudoMode();
 
     // Close all port forwards with error handling
-    for (const [, server] of this._portForwards) {
-      try {
-        server.close();
-      } catch {
-        // Ignore cleanup errors
-      }
+    for (const [localPort, server] of this._portForwards) {
+      this.closeForward(localPort, server);
     }
     this._portForwards.clear();
+    this._forwardSockets.clear();
     this.setState(ConnectionState.Disconnected);
   }
 
@@ -726,14 +725,11 @@ export class SSHConnection implements ISSHConnection {
     }
 
     // Close all port forwards
-    for (const [, server] of this._portForwards) {
-      try {
-        server.close();
-      } catch (err) {
-        diagLog('ssh-connect', 'disconnect/forward-close-error', { connectionId: this.id, errorMessage: (err as Error).message });
-      }
+    for (const [localPort, server] of this._portForwards) {
+      this.closeForward(localPort, server);
     }
     this._portForwards.clear();
+    this._forwardSockets.clear();
 
     // Clear cached search-tool profile so a reconnect re-probes (the server may
     // have changed). A fresh SSHConnection is created per connect anyway; this
@@ -942,6 +938,42 @@ export class SSHConnection implements ISSHConnection {
         } else {
           resolve(stdout);
         }
+      });
+    });
+  }
+
+  /**
+   * Execute a command and report the exit code instead of throwing on it.
+   * Unlike exec(), a non-zero exit is returned (never swallowed, never thrown) and stderr is
+   * always returned, even when the exit code is 0. Use when the caller must show the outcome.
+   */
+  async execWithExitCode(command: string): Promise<{ stdout: string; stderr: string; code: number }> {
+    if (!this._client || this.state !== ConnectionState.Connected) {
+      throw new ConnectionError('Not connected');
+    }
+    logSSHCommand(this.host.name, command);
+
+    let stream: ClientChannel;
+    try {
+      stream = await this._execChannel(command);
+    } catch (err) {
+      throw new SFTPError(`Failed to execute command: ${(err as Error).message}`, err as Error);
+    }
+
+    return new Promise((resolve) => {
+      const stdoutChunks: Buffer[] = [];
+      const stderrChunks: Buffer[] = [];
+      stream.on('data', (data: Buffer) => { stdoutChunks.push(data); });
+      stream.stderr.on('data', (data: Buffer) => { stderrChunks.push(data); });
+      stream.on('close', (code: number | null, signal?: string) => {
+        // A missing exit code with a signal means the process was killed: that is a failure.
+        const finalCode = code ?? (signal ? 255 : 0);
+        diagLog('ssh-connect', 'execWithExitCode/close', { connectionId: this.id, code: finalCode, signal });
+        resolve({
+          stdout: Buffer.concat(stdoutChunks).toString('utf8'),
+          stderr: Buffer.concat(stderrChunks).toString('utf8'),
+          code: finalCode,
+        });
       });
     });
   }
@@ -1276,10 +1308,21 @@ export class SSHConnection implements ISSHConnection {
    */
   async deleteFile(remotePath: string): Promise<void> {
     const sftp = await this.getSFTP();
-    const stats = await this.stat(remotePath);
+    // lstat, not stat: a symlink must be unlinked itself. stat() follows it, so a
+    // link to a directory got rmdir ("Not a directory") and a dangling link failed
+    // to stat at all, which aborted deleting the folder that held it.
+    const isDirectory = await new Promise<boolean>((resolve, reject) => {
+      sftp.lstat(remotePath, (err, stats) => {
+        if (err) {
+          reject(new SFTPError(`Failed to stat file: ${err.message}`, err));
+          return;
+        }
+        resolve(stats.isDirectory());
+      });
+    });
 
     return new Promise((resolve, reject) => {
-      if (stats.isDirectory) {
+      if (isDirectory) {
         sftp.rmdir(remotePath, (err) => {
           if (err) {
             reject(new SFTPError(`Failed to delete directory: ${err.message}`, err));
@@ -1928,13 +1971,21 @@ export class SSHConnection implements ISSHConnection {
 
     diagLog('ssh-connect', 'forwardPort/begin', { connectionId: this.id, localPort, remoteHost, remotePort });
     return new Promise((resolve, reject) => {
+      let warnedForwardError = false;
+      const sockets = new Set<net.Socket>();
       const server = net.createServer((socket) => {
         diagLog('ssh-connect', 'forwardPort/incoming-connection', {
           connectionId: this.id,
           localPort,
           from: socket.remoteAddress + ':' + socket.remotePort,
         });
-        this._client!.forwardOut(
+        sockets.add(socket);
+        socket.once('close', () => sockets.delete(socket));
+        if (!this._client) {
+          socket.destroy();
+          return;
+        }
+        this._client.forwardOut(
           socket.remoteAddress || '127.0.0.1',
           socket.remotePort || 0,
           remoteHost,
@@ -1948,12 +1999,26 @@ export class SSHConnection implements ISSHConnection {
                 remotePort,
                 errorMessage: err.message,
               });
+              if (!warnedForwardError) {
+                // One warning per forward (not per connection attempt) so a refused tunnel never spams.
+                warnedForwardError = true;
+                Promise.resolve(vscode.window.showWarningMessage(
+                  `Port forward localhost:${localPort} → ${remoteHost}:${remotePort} on ${this.host.name} failed: ${err.message}. ` +
+                  'The server may have AllowTcpForwarding disabled or the destination is unreachable.'
+                )).catch(() => undefined);
+              }
               socket.end();
               return;
             }
             // Handle errors on both sides to prevent unhandled 'error' events crashing the process
             stream.on('error', () => socket.destroy());
             socket.on('error', () => stream.destroy());
+            socket.once('close', () => stream.destroy());
+            if (socket.destroyed) {
+              // Forward was stopped while the channel was opening.
+              stream.destroy();
+              return;
+            }
             socket.pipe(stream).pipe(socket);
           }
         );
@@ -1971,9 +2036,30 @@ export class SSHConnection implements ISSHConnection {
       server.listen(localPort, '127.0.0.1', () => {
         infoLog('ssh-connect', 'forwardPort/listening', { connectionId: this.id, localPort, remoteHost, remotePort });
         this._portForwards.set(localPort, server);
+        this._forwardSockets.set(localPort, sockets);
         resolve();
       });
     });
+  }
+
+  /** Stop listening and destroy every established tunnel socket of one forward. */
+  private closeForward(localPort: number, server: net.Server): void {
+    const sockets = this._forwardSockets.get(localPort);
+    const socketCount = sockets?.size ?? 0;
+    try {
+      server.close();
+    } catch (err) {
+      diagLog('ssh-connect', 'forward-close-error', { connectionId: this.id, localPort, errorMessage: (err as Error).message });
+    }
+    if (sockets) {
+      for (const socket of Array.from(sockets)) {
+        try { socket.destroy(); } catch { /* ignore cleanup errors */ }
+      }
+      sockets.clear();
+    }
+    if (socketCount > 0) {
+      infoLog('ssh-connect', 'forward-sockets-destroyed', { connectionId: this.id, localPort, socketCount });
+    }
   }
 
   /**
@@ -1983,8 +2069,9 @@ export class SSHConnection implements ISSHConnection {
     const server = this._portForwards.get(localPort);
     if (server) {
       diagLog('ssh-connect', 'stopForward', { connectionId: this.id, localPort });
-      server.close();
+      this.closeForward(localPort, server);
       this._portForwards.delete(localPort);
+      this._forwardSockets.delete(localPort);
     } else {
       diagLog('ssh-connect', 'stopForward/not-found', { connectionId: this.id, localPort });
     }

@@ -1,5 +1,20 @@
+import * as vscode from 'vscode';
 import { SSHConnection } from '../connection/SSHConnection';
 import { assertCapability } from '../utils/capabilityGuard';
+import { CredentialService } from './CredentialService';
+import { infoLog } from '../utils/diagnosticLog';
+
+/** Thrown when the user dismisses the sudo password prompt. Callers should treat it as a silent cancel. */
+export class SudoCancelledError extends Error {
+  constructor() {
+    super('Sudo cancelled: no password provided');
+    this.name = 'SudoCancelledError';
+  }
+}
+
+function isSudoAuthFailure(err: unknown): boolean {
+  return /incorrect password/i.test((err as Error)?.message ?? '');
+}
 
 export interface ProcessEntry {
   pid: number;
@@ -130,7 +145,7 @@ export class SystemToolsService {
     }
     const cmd = `kill -${signal} ${pid}`;
     if (useSudo) {
-      await connection.sudoExec(cmd, connection.sudoPassword || '');
+      await this.sudoWithPassword(connection, (pw) => connection.sudoExec(cmd, pw));
     } else {
       await connection.exec(cmd);
     }
@@ -148,8 +163,60 @@ export class SystemToolsService {
     }
     const cmd = `systemctl ${action} ${serviceName}`;
     if (useSudo) {
-      return connection.sudoExec(cmd, connection.sudoPassword || '');
+      return this.sudoWithPassword(connection, (pw) => connection.sudoExec(cmd, pw));
     }
     return connection.exec(cmd);
+  }
+
+  /**
+   * Run a sudo operation, obtaining the password the same way file saves do:
+   * "Sudo All" password, then the per-host cache, else try without a password
+   * first (NOPASSWD / cached sudo timestamp need no prompt), and only prompt
+   * when sudo reports an authentication failure. A wrong password clears the
+   * cache and is re-prompted once. The password is never logged.
+   */
+  private async sudoWithPassword<T>(connection: SSHConnection, op: (password: string) => Promise<T>): Promise<T> {
+    const credService = CredentialService.getInstance();
+    const hostId = connection.host.id;
+    const host = connection.host.name;
+
+    let known: string | null = connection.sudoPassword || credService.getSudoPasswordCached(hostId) || null;
+    let prompted = false;
+    if (!known) {
+      // Probe with `sudo -n` (never reads a password) instead of sending an
+      // empty one: sudo counts an empty password as a failed attempt in
+      // auth.log and pam_faillock, so probing that way could lock the account.
+      const probe = await connection.exec('sudo -n true 2>/dev/null && echo SSHLITE_NOPASSWD || echo SSHLITE_NEEDPW').catch(() => '');
+      if (!probe.includes('SSHLITE_NOPASSWD')) {
+        infoLog('system-tools', 'sudo/auth-needed', { host, hadPassword: false, reason: 'probe' });
+        const entered = await credService.promptSudoPassword(host);
+        if (!entered) { throw new SudoCancelledError(); }
+        prompted = true;
+        known = entered;
+        if (vscode.workspace.getConfiguration('sshLite').get<boolean>('cacheSudoPassword', false)) {
+          credService.cacheSudoPassword(hostId, entered);
+        }
+      }
+    }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const result = await op(known ?? '');
+        infoLog('system-tools', 'sudo/ok', { host, prompted });
+        return result;
+      } catch (err) {
+        if (!isSudoAuthFailure(err)) { throw err; }
+        if (known) { credService.clearSudoPassword(hostId); }
+        if (prompted && attempt >= 2) { throw err; }
+        infoLog('system-tools', 'sudo/auth-needed', { host, hadPassword: !!known });
+        const entered = await credService.promptSudoPassword(host);
+        if (!entered) { throw new SudoCancelledError(); }
+        prompted = true;
+        known = entered;
+        if (vscode.workspace.getConfiguration('sshLite').get<boolean>('cacheSudoPassword', false)) {
+          credService.cacheSudoPassword(hostId, entered);
+        }
+      }
+    }
+    throw new Error('Sudo authentication failed: incorrect password');
   }
 }

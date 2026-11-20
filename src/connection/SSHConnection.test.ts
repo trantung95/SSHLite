@@ -323,6 +323,41 @@ describe('SSHConnection - Actual Class', () => {
     });
   });
 
+  describe('deleteFile uses lstat (symlinks are unlinked, never rmdir-ed)', () => {
+    let mockSftp: any;
+    beforeEach(() => {
+      mockSftp = {
+        stat: jest.fn((_p: string, cb: any) => cb(null, { isDirectory: () => true })), // link -> dir
+        lstat: jest.fn(),
+        unlink: jest.fn((_p: string, cb: any) => cb(null)),
+        rmdir: jest.fn((_p: string, cb: any) => cb(null)),
+      };
+      (connection as any)._sftp = mockSftp;
+      (connection as any).state = ConnectionState.Connected;
+      (connection as any)._client = {};
+    });
+
+    it('unlinks a symlink that points to a directory', async () => {
+      mockSftp.lstat.mockImplementation((_p: string, cb: any) => cb(null, { isDirectory: () => false }));
+      await connection.deleteFile('/w/link-to-dir');
+      expect(mockSftp.unlink).toHaveBeenCalledWith('/w/link-to-dir', expect.any(Function));
+      expect(mockSftp.rmdir).not.toHaveBeenCalled();
+    });
+
+    it('unlinks a dangling symlink (stat would fail on it)', async () => {
+      mockSftp.stat.mockImplementation((_p: string, cb: any) => cb(new Error('No such file')));
+      mockSftp.lstat.mockImplementation((_p: string, cb: any) => cb(null, { isDirectory: () => false }));
+      await expect(connection.deleteFile('/w/dangling')).resolves.toBeUndefined();
+      expect(mockSftp.unlink).toHaveBeenCalled();
+    });
+
+    it('still rmdirs a real directory', async () => {
+      mockSftp.lstat.mockImplementation((_p: string, cb: any) => cb(null, { isDirectory: () => true }));
+      await connection.deleteFile('/w/dir');
+      expect(mockSftp.rmdir).toHaveBeenCalledWith('/w/dir', expect.any(Function));
+    });
+  });
+
   describe('writeFile (actual method with mocked SFTP)', () => {
     let mockSftp: any;
 
@@ -1396,5 +1431,139 @@ describe('SSHConnection - native search tool detection + runtime fallback', () =
       expect(res!.results.map((r) => r.path).sort()).toEqual(['/home/user/app.ts', '/home/user/sub/app.js']);
       expect(typeof res!.dbMTimeMs).toBe('number');
     });
+  });
+});
+
+describe('SSHConnection - execWithExitCode', () => {
+  let connection: SSHConnection;
+  let stream: any;
+
+  beforeEach(() => {
+    connection = new SSHConnection(createMockHostConfig({ host: '10.0.0.1', port: 22, username: 'u' }));
+    const { EventEmitter } = require('events');
+    stream = new EventEmitter();
+    stream.stderr = new EventEmitter();
+    (connection as any).state = ConnectionState.Connected;
+    (connection as any)._client = {};
+    (connection as any)._execChannel = jest.fn().mockResolvedValue(stream);
+  });
+
+  afterEach(() => {
+    (connection as any)._client = null;
+    connection.dispose();
+  });
+
+  it('returns a non-zero exit code with EMPTY stderr instead of resolving as success', async () => {
+    const p = connection.execWithExitCode('exit 3');
+    await new Promise((r) => setImmediate(r));
+    stream.emit('data', Buffer.from('partial\n'));
+    stream.emit('close', 3);
+    await expect(p).resolves.toEqual({ stdout: 'partial\n', stderr: '', code: 3 });
+  });
+
+  it('returns stderr even when the exit code is 0', async () => {
+    const p = connection.execWithExitCode('x');
+    await new Promise((r) => setImmediate(r));
+    stream.stderr.emit('data', Buffer.from('warn'));
+    stream.emit('close', 0);
+    await expect(p).resolves.toEqual({ stdout: '', stderr: 'warn', code: 0 });
+  });
+
+  it('treats a signal kill (null exit code) as a failure', async () => {
+    const p = connection.execWithExitCode('x');
+    await new Promise((r) => setImmediate(r));
+    stream.emit('close', null, 'KILL');
+    expect((await p).code).toBe(255);
+  });
+
+  it('exec() keeps tolerating non-zero exit with empty stderr (unchanged semantics)', async () => {
+    const p = connection.exec('grep nomatch f');
+    await new Promise((r) => setImmediate(r));
+    stream.emit('close', 1);
+    await expect(p).resolves.toBe('');
+  });
+});
+
+describe('SSHConnection - port forward tunnel lifecycle', () => {
+  const net = require('net');
+  const { PassThrough } = require('stream');
+  let connection: SSHConnection;
+  let forwardOut: jest.Mock;
+  let remoteSide: any[];
+  const warn = () => (require('../__mocks__/vscode').window.showWarningMessage as jest.Mock);
+
+  const freePort = (): Promise<number> => new Promise((resolve) => {
+    const s = net.createServer();
+    s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); });
+  });
+  const dial = (port: number): Promise<any> => new Promise((resolve, reject) => {
+    const s = net.connect(port, '127.0.0.1');
+    s.once('connect', () => resolve(s));
+    s.once('error', reject);
+  });
+  const waitFor = async (cond: () => boolean, ms = 2000): Promise<boolean> => {
+    const end = Date.now() + ms;
+    while (Date.now() < end) { if (cond()) { return true; } await new Promise((r) => setTimeout(r, 20)); }
+    return cond();
+  };
+
+  beforeEach(() => {
+    warn().mockClear();
+    remoteSide = [];
+    connection = new SSHConnection(createMockHostConfig({ host: '10.0.0.1', port: 22, username: 'u', name: 'srv' }));
+    forwardOut = jest.fn((_a: string, _b: number, _h: string, _p: number, cb: any) => {
+      const s = new PassThrough();
+      remoteSide.push(s);
+      cb(undefined, s);
+    });
+    (connection as any).state = ConnectionState.Connected;
+    (connection as any)._client = { forwardOut, end: jest.fn(), destroy: jest.fn() };
+  });
+
+  afterEach(async () => {
+    for (const p of connection.getActiveForwards()) { await connection.stopForward(p); }
+    (connection as any)._client = null;
+    connection.dispose();
+  });
+
+  it('stopForward destroys already-established tunnel sockets', async () => {
+    const lp = await freePort();
+    await connection.forwardPort(lp, '127.0.0.1', 80);
+    const s = await dial(lp);
+    s.on('error', () => undefined);
+    let closed = false;
+    s.on('close', () => { closed = true; });
+    await waitFor(() => forwardOut.mock.calls.length === 1);
+    await connection.stopForward(lp);
+    expect(await waitFor(() => closed)).toBe(true);
+    expect(await waitFor(() => remoteSide[0].destroyed)).toBe(true);
+  });
+
+  it('disconnect destroys established tunnel sockets', async () => {
+    const lp = await freePort();
+    await connection.forwardPort(lp, '127.0.0.1', 80);
+    const s = await dial(lp);
+    s.on('error', () => undefined);
+    let closed = false;
+    s.on('close', () => { closed = true; });
+    await waitFor(() => forwardOut.mock.calls.length === 1);
+    await connection.disconnect();
+    expect(await waitFor(() => closed)).toBe(true);
+  });
+
+  it('warns once per forward (not per connection attempt) when the server refuses the tunnel', async () => {
+    forwardOut.mockImplementation((_a: string, _b: number, _h: string, _p: number, cb: any) => {
+      cb(new Error('Administratively prohibited'));
+    });
+    const lp = await freePort();
+    await connection.forwardPort(lp, '127.0.0.1', 80);
+    for (let i = 0; i < 3; i++) {
+      const s = await dial(lp);
+      s.on('error', () => undefined);
+      await new Promise<void>((r) => s.once('close', () => r()));
+    }
+    expect(forwardOut).toHaveBeenCalledTimes(3);
+    expect(warn()).toHaveBeenCalledTimes(1);
+    expect(String(warn().mock.calls[0][0])).toContain('Administratively prohibited');
   });
 });

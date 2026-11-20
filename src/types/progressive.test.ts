@@ -195,12 +195,25 @@ describe('progressive types', () => {
 
     it('should normalize path to start with /', () => {
       const uri = createPreviewUri('conn1', 'relative/path.ts', 500);
-      expect(uri.toString()).toContain(encodeURIComponent('/relative/path.ts'));
+      expect(uri.path).toBe('/relative/path.ts');
     });
 
     it('should not double-slash paths already starting with /', () => {
       const uri = createPreviewUri('conn1', '/absolute/path.ts', 500);
-      expect(uri.toString()).toContain(encodeURIComponent('/absolute/path.ts'));
+      expect(uri.path).toBe('/absolute/path.ts');
+    });
+
+    it('round-trips file names with %, #, ? and spaces without decoding twice', () => {
+      for (const p of ['/srv/a%41.txt', '/srv/100%.log', '/srv/a b#c?d.txt', '/srv/x%2Fy']) {
+        const parsed = parsePreviewUri(createPreviewUri('conn1', p, 500));
+        expect(parsed?.remotePath).toBe(p);
+      }
+    });
+
+    it('still reads URIs in the old format whose leading "/" was encoded', () => {
+      // Old createPreviewUri produced ".../%2Fsrv%2Fapp.log"; VS Code decodes that to "//srv/app.log".
+      const parsed = parsePreviewUri(Uri.parse('ssh-lite-preview://conn1/%2Fsrv%2Fapp.log?lines=10') as any);
+      expect(parsed?.remotePath).toBe('/srv/app.log');
     });
   });
 

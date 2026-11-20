@@ -226,6 +226,16 @@ Revert:
   4. Diff view available (sshLite.showChanges)
 ```
 
+Server backup rules (`FileService`):
+
+- Every remote path in a shell command goes through `shellPath()`: single-quoted, with a leading `~/` mapped to `"$HOME"/'rest'` (no shell expands `~` inside quotes).
+- `listServerBackups` lists `'<folder>/<base>_'*'<ext>'` and keeps only names matching `^<base>_<timestamp><ext>$`, so `app.js` never shows `app.js.map` or `my_app.js` backups. The same exec reads `.ssh-lite-index` (`backupName|/original/path`); a backup owned by another path (same file name in another folder) is hidden, one missing from the index is kept.
+- Directory backups tar `./<name>` so a folder named `-x` is not read as an option; restore runs `mkdir -p -- <parent> && tar -xzf <backup> -C <parent>`.
+- Restore from the backup picker resolves a `~/` target to the real home folder first, and if the promised pre-restore backup fails it asks "Overwrite Without Backup" (default: abort).
+- Delete with backup: if the server supports backups and the backup fails, a modal asks "Delete Without Backup"; anything else aborts the delete. Applies to bulk delete too.
+- `deleteFile` uses `lstat`, so a symlink (also to a folder, also dangling) is unlinked, never `rmdir`-ed.
+- Folder download skips links to folders (like `sftp get -r`) and broken links, then lists them in one warning instead of aborting.
+
 ---
 
 ## Upload File To Server (`uploadFileTo`)

@@ -149,6 +149,10 @@ describe('Cross-server search E2E', () => {
             return;
           }
 
+          // Consume output like SSHConnection.searchFiles does. An unread stream stays
+          // paused, ssh2 never processes the CHANNEL_CLOSE reply and 'close' never fires.
+          stream.on('data', () => { /* discard */ });
+
           // Close stream after 500ms (simulating cancel)
           setTimeout(() => {
             stream.close();
@@ -156,20 +160,25 @@ describe('Cross-server search E2E', () => {
 
           stream.on('close', () => {
             // Verify no zombie grep processes
-            conn.exec('ps aux | grep "[g]rep.*-rnH" | wc -l', (err2, stream2) => {
+            // Match only a process whose command line STARTS with the grep. The old
+            // `ps aux | grep "[g]rep.*-rnH"` also matched the `sh -c` / `bash -c`
+            // running this very check, so it counted 2 with no grep alive.
+            conn.exec('sleep 0.3; ps -eo args | grep -c "^grep -rnH" || true', (err2, stream2) => {
               if (err2) {
                 conn.end();
-                resolve(); // Don't fail on verification error
+                reject(err2);
                 return;
               }
               let output = '';
               stream2.on('data', (data: Buffer) => { output += data.toString(); });
               stream2.on('close', () => {
                 conn.end();
-                const count = parseInt(output.trim(), 10);
-                // Process should be gone or finishing cleanup
-                expect(count).toBeLessThanOrEqual(1);
-                resolve();
+                try {
+                  expect(parseInt(output.trim(), 10)).toBe(0);
+                  resolve();
+                } catch (e) {
+                  reject(e); // a throw here would only surface as a timeout
+                }
               });
             });
           });

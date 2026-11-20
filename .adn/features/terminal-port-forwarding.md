@@ -59,7 +59,9 @@ To match a native session, `TerminalService` requests the PTY with two things (s
 ```
 Terminal created → shell channel active → user interacts
   │
-  ├─ User closes terminal → channel.close()
+  ├─ User closes terminal → channel.end() then channel.close()
+  │   (end() alone only sends EOF; sshd keeps a PTY shell alive, so the
+  │    CommandGuard slot and the remote bash would leak)
   │
   ├─ Connection drops → terminal shows disconnect
   │   └─ Auto-reconnect restores connection but NOT terminal
@@ -179,6 +181,13 @@ Forward created → listening on localPort → traffic tunneled → rule auto-sa
   │
   └─ User deletes rule: sshLite.deleteSavedForward → modal confirmation → rule removed permanently
 ```
+
+Stopping a forward (or disconnecting) also destroys every established tunnel
+socket (`SSHConnection.closeForward`): `server.close()` alone only stops new
+connections, so open clients kept tunnelling. A forward whose `forwardOut` the
+server refuses (for example `AllowTcpForwarding no`, or an unreachable
+destination) shows one warning per forward with the server's error, not one per
+connection attempt.
 
 The delete confirmation names the local route, destination, persistence
 consequence, and the boundary that no server data is deleted. It states that the

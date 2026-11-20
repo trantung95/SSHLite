@@ -110,6 +110,19 @@ describe('showRemoteProcesses', () => {
     expect(mockKillProcess).toHaveBeenCalledWith(conn, 1, true);
   });
 
+  it('sudo prompt cancel is a silent no-op (no error toast)', async () => {
+    const conn = makeConn();
+    mockGetAllConnections.mockReturnValue([conn]);
+    const proc = makeProcess(1, 'init');
+    mockListProcesses.mockResolvedValueOnce([proc]);
+    (vscode.window.showQuickPick as jest.Mock).mockResolvedValueOnce({ proc });
+    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValueOnce('Kill (sudo)');
+    const e = new Error('Sudo cancelled'); e.name = 'SudoCancelledError';
+    mockKillProcess.mockRejectedValueOnce(e);
+    await vscode.commands.executeCommand('sshLite.showRemoteProcesses', conn as any);
+    expect(vscode.window.showErrorMessage).not.toHaveBeenCalled();
+  });
+
   it('shows error when kill throws', async () => {
     const conn = makeConn();
     mockGetAllConnections.mockReturnValue([conn]);

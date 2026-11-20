@@ -192,8 +192,10 @@ describe('Channel semaphore E2E', () => {
       // Shell should have had to wait (> 500 ms — the sleep commands run for 2 s)
       expect(waited).toBeGreaterThan(500);
 
-      // Close the shell channel to release the slot
+      // Close the shell channel to release the slot. end() alone only sends EOF and a
+      // PTY shell keeps running (no 'close', slot leaked); close it as TerminalService does.
       channel.end();
+      channel.close();
 
       // Verify no slot leak (allow time for the channel-close event to propagate)
       await new Promise(r => setTimeout(r, 100));

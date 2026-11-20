@@ -5,6 +5,28 @@ Add new entries as bugs are found, mistakes are made, or better approaches are d
 
 ---
 
+## 2026-11-20 - Old-feature sweep on real servers: shell quoting, PTY close, silent suites
+
+A sweep of long-shipped features against the docker Secure Shell (SSH) servers found 18 bugs that unit tests with mocks never saw.
+
+LESSONS:
+1. A suite that "exits 0" through `| tail` hides failures: the pipe returns tail's exit code. Read the `Tests:` line, or run without the pipe. The end-to-end (e2e) suite also skipped silently when its container was down; it now has its own globalSetup/globalTeardown.
+2. ssh2 `channel.end()` on a pseudo-terminal (PTY) shell only sends end-of-file (EOF). sshd keeps the shell alive, so `close` never fires, the CommandGuard slot leaks and a bash process stays on the server. Call `end()` then `close()`.
+3. An ssh2 exec stream that nobody reads stays paused and never emits `close`. In tests, attach `stream.on('data', () => {})`.
+4. `ps ... | grep -c pattern` counts its own `sh -c` line. Anchor the pattern (`^grep -rnH`) or use `pgrep -f` with a bracket trick.
+5. Real `vscode.Uri.parse` percent-decodes `.path`; the mock must too, or code that decodes `Uri.path` a second time looks correct in unit tests. Fixing the mock exposed the same bug in `createPreviewUri`/`parsePreviewUri` (a preview of `a%41.txt` opened `aA.txt`). Build custom-scheme URIs with `Uri.from({ path })` and never decode `uri.path`.
+6. Never put a remote path in double quotes in a shell command: `$(...)` and backticks still run. Use single quotes with `'\''` escaping (`FileService.shellPath`). No shell expands `~` inside quotes, so map a leading `~/` to `"$HOME"/'rest'`.
+7. A delete the user asked to back up must never proceed when the backup fails. Ask with a modal "Delete Without Backup", default to abort.
+8. Backup globs like `name_*ext` match other files' backups (`app.js` vs `app.js.map`, `my_app.js`). Filter with an exact regex and keep a name-to-original-path index for same-name files in other directories.
+9. `sftp.stat` follows symlinks; use `lstat` before deciding `rmdir` vs `unlink`. Folder download must skip links to folders (like `sftp get -r`) and report them, not abort.
+10. Alpine sshd ships `AllowTcpForwarding no`; a port-forward test needs its own container with forwarding enabled.
+11. Never probe sudo by sending an empty password to `sudo -S`: sudo records it as a failed login (auth.log, pam_faillock) and can lock the account. Probe with `sudo -n true`, prompt first when it fails.
+12. Fixing quoting in one command of a flow is not enough: when a helper later in the same flow quotes the path differently (restore check vs pre-restore backup), the two disagree and a promised backup silently fails. Resolve `~` to the real home path once at the start of the flow, and abort when a promised backup returns nothing.
+13. Heredoc Python edit scripts: `\n` inside a JS/TS string literal becomes a real newline and breaks the file. Use the Edit tool for any replacement containing escapes.
+14. Several agents can share one running docker stack with a jest config that spreads the docker config and sets `globalSetup`/`globalTeardown` to `undefined`. Never run `docker compose down` while another agent uses the stack.
+
+---
+
 ## 2026-08-11 - Diagnose Docker image-build failures separately from chaos scenarios
 
 Quick chaos starts Docker stacks before it executes any scenario. This release attempt reached Docker successfully, but Ubuntu 22.04 `apt-get update` received inconsistent package indexes and failed with `Hash Sum mismatch`, so the multi-operating-system image build stopped before Jest ran a chaos case.

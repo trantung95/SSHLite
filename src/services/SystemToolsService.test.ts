@@ -3,6 +3,20 @@
  */
 
 import { SystemToolsService } from './SystemToolsService';
+import { CredentialService } from './CredentialService';
+import * as vscode from 'vscode';
+
+function mockCreds(over: Record<string, unknown> = {}) {
+  const c = {
+    getSudoPasswordCached: jest.fn().mockReturnValue(null),
+    promptSudoPassword: jest.fn().mockResolvedValue('typed-pw'),
+    cacheSudoPassword: jest.fn(),
+    clearSudoPassword: jest.fn(),
+    ...over,
+  };
+  (CredentialService as any)._instance = c;
+  return c;
+}
 
 function reset(): SystemToolsService {
   (SystemToolsService as any)._instance = undefined;
@@ -12,7 +26,7 @@ function reset(): SystemToolsService {
 function mockConnection() {
   return {
     id: 'test-1',
-    host: { name: 'Test', host: 'test', port: 22, username: 'u' },
+    host: { id: 'h1', name: 'Test', host: 'test', port: 22, username: 'u' },
     state: 'connected',
     sudoMode: false,
     sudoPassword: null,
@@ -170,6 +184,102 @@ describe('SystemToolsService', () => {
       conn.sudoPassword = 'pw';
       await service.runServiceAction(conn, 'nginx.service', 'restart', true);
       expect(conn.sudoExec).toHaveBeenCalledWith('systemctl restart nginx.service', 'pw');
+    });
+  });
+  describe('sudo password acquisition (no Sudo All)', () => {
+    const authErr = () => new Error('Sudo authentication failed: incorrect password');
+
+    it('NOPASSWD: succeeds on first try without prompting', async () => {
+      const creds = mockCreds();
+      const conn = mockConnection();
+      conn.exec.mockResolvedValue('SSHLITE_NOPASSWD');
+      await service.killProcess(conn, 1234, true);
+      expect(conn.exec).toHaveBeenCalledWith(expect.stringContaining('sudo -n true'));
+      expect(conn.sudoExec).toHaveBeenCalledTimes(1);
+      expect(creds.promptSudoPassword).not.toHaveBeenCalled();
+    });
+
+    it('never sends an empty password to sudo -S when a password is required (no failed-login record)', async () => {
+      const creds = mockCreds();
+      const conn = mockConnection();
+      conn.exec.mockResolvedValue('SSHLITE_NEEDPW');
+      await service.killProcess(conn, 1234, true);
+      expect(creds.promptSudoPassword).toHaveBeenCalledTimes(1);
+      expect(conn.sudoExec).toHaveBeenCalledTimes(1);
+      expect(conn.sudoExec).toHaveBeenCalledWith('kill -TERM 1234', 'typed-pw');
+      expect(conn.sudoExec).not.toHaveBeenCalledWith(expect.anything(), '');
+    });
+
+    it('prompts after auth failure and retries with typed password (kill)', async () => {
+      const creds = mockCreds();
+      const conn = mockConnection();
+      conn.sudoExec.mockRejectedValueOnce(authErr()).mockResolvedValueOnce('');
+      await service.killProcess(conn, 1234, true);
+      expect(creds.promptSudoPassword).toHaveBeenCalledWith('Test');
+      expect(conn.sudoExec).toHaveBeenLastCalledWith('kill -TERM 1234', 'typed-pw');
+    });
+
+    it('prompts after auth failure and retries with typed password (service)', async () => {
+      const creds = mockCreds();
+      const conn = mockConnection();
+      conn.sudoExec.mockRejectedValueOnce(authErr()).mockResolvedValueOnce('ok');
+      await expect(service.runServiceAction(conn, 'nginx', 'restart', true)).resolves.toBe('ok');
+      expect(creds.promptSudoPassword).toHaveBeenCalled();
+      expect(conn.sudoExec).toHaveBeenLastCalledWith('systemctl restart nginx', 'typed-pw');
+    });
+
+    it('uses the cached password without prompting', async () => {
+      const creds = mockCreds({ getSudoPasswordCached: jest.fn().mockReturnValue('cached-pw') });
+      const conn = mockConnection();
+      await service.killProcess(conn, 1234, true);
+      expect(conn.sudoExec).toHaveBeenCalledWith('kill -TERM 1234', 'cached-pw');
+      expect(creds.promptSudoPassword).not.toHaveBeenCalled();
+    });
+
+    it('wrong cached password clears cache then prompts', async () => {
+      const creds = mockCreds({ getSudoPasswordCached: jest.fn().mockReturnValue('stale') });
+      const conn = mockConnection();
+      conn.sudoExec.mockRejectedValueOnce(authErr()).mockResolvedValueOnce('');
+      await service.killProcess(conn, 1234, true);
+      expect(creds.clearSudoPassword).toHaveBeenCalledWith('h1');
+      expect(creds.promptSudoPassword).toHaveBeenCalled();
+    });
+
+    it('caches typed password only when cacheSudoPassword is enabled', async () => {
+      const creds = mockCreds();
+      const conn = mockConnection();
+      conn.sudoExec.mockRejectedValueOnce(authErr()).mockResolvedValueOnce('');
+      await service.killProcess(conn, 1234, true);
+      expect(creds.cacheSudoPassword).not.toHaveBeenCalled();
+      const cfg = jest.spyOn(vscode.workspace, 'getConfiguration').mockReturnValue({ get: () => true } as any);
+      conn.sudoExec.mockRejectedValueOnce(authErr()).mockResolvedValueOnce('');
+      await service.killProcess(conn, 1234, true);
+      expect(creds.cacheSudoPassword).toHaveBeenCalledWith('h1', 'typed-pw');
+      cfg.mockRestore();
+    });
+
+    it('prompt cancel throws SudoCancelledError', async () => {
+      mockCreds({ promptSudoPassword: jest.fn().mockResolvedValue(null) });
+      const conn = mockConnection();
+      conn.sudoExec.mockRejectedValue(authErr());
+      await expect(service.killProcess(conn, 1234, true)).rejects.toMatchObject({ name: 'SudoCancelledError' });
+    });
+
+    it('non-auth failures propagate without prompting', async () => {
+      const creds = mockCreds();
+      const conn = mockConnection();
+      conn.exec.mockResolvedValue('SSHLITE_NOPASSWD');
+      conn.sudoExec.mockRejectedValue(new Error('boom'));
+      await expect(service.killProcess(conn, 1234, true)).rejects.toThrow('boom');
+      expect(creds.promptSudoPassword).not.toHaveBeenCalled();
+    });
+
+    it('repeated wrong typed password stops and never logs the password', async () => {
+      mockCreds({ promptSudoPassword: jest.fn().mockResolvedValue('bad-pw') });
+      const conn = mockConnection();
+      conn.sudoExec.mockRejectedValue(authErr());
+      await expect(service.killProcess(conn, 1234, true)).rejects.toThrow('incorrect password');
+      expect(conn.sudoExec.mock.calls.length).toBeLessThanOrEqual(3);
     });
   });
 });

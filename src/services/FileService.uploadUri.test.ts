@@ -248,6 +248,16 @@ describe('FileService upload — URI-scheme-safe reads (v0.8.18 regression net)'
     expect(mockConnection.writeFile.mock.calls[0][0]).toBe('/remote/dir/my report.pdf');
   });
 
+  it('keeps a literal "%20" in a local file name (no second decode, no overwrite of "a b.txt")', async () => {
+    const pickUri = vscode.Uri.file('/home/test/a%20b.txt');
+    (vscode.window.showOpenDialog as jest.Mock).mockResolvedValueOnce([pickUri]);
+
+    await service.uploadFileTo(mockConnection as any, '/remote/dir');
+
+    expect(mockConnection.writeFile).toHaveBeenCalledTimes(1);
+    expect(mockConnection.writeFile.mock.calls[0][0]).toBe('/remote/dir/a%20b.txt');
+  });
+
   it('preserves a literal percent in a file: leaf name (no throw on bad encoding)', async () => {
     const pickUri = vscode.Uri.file('/home/test/100%.txt');
     (vscode.window.showOpenDialog as jest.Mock).mockResolvedValueOnce([pickUri]);

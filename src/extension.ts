@@ -1913,7 +1913,7 @@ export function activate(context: vscode.ExtensionContext): void {
             if (token.isCancellationRequested) { break; }
             const srcConn = sourceConnections.get(entry.connectionId)!;
             const isSameHost = srcConn.id === destConnection.id;
-            const destName = fileService.nextCopyName(entry.name, existingNames);
+            const destName = fileService.nextCopyName(entry.name, existingNames, entry.isDirectory);
             existingNames.add(destName);
             const destPath = destFolder.endsWith('/') ? `${destFolder}${destName}` : `${destFolder}/${destName}`;
 

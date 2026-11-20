@@ -56,7 +56,8 @@ function makeConn(id: string, name: string) {
   return {
     id, state: 'connected',
     host: { name, host: name, port: 22, username: 'u' },
-    exec: jest.fn().mockResolvedValue('output from ' + name),
+    exec: jest.fn().mockResolvedValue(''),
+    execWithExitCode: jest.fn().mockResolvedValue({ stdout: 'output from ' + name, stderr: '', code: 0 }),
     writeFile: jest.fn().mockResolvedValue(undefined),
     deleteFile: jest.fn().mockResolvedValue(undefined),
   };
@@ -104,8 +105,8 @@ describe('batchRun command', () => {
     (vscode.window.showInputBox as jest.Mock).mockResolvedValueOnce('ls -la');
     (vscode.window.showWarningMessage as jest.Mock).mockResolvedValueOnce(undefined);
     await vscode.commands.executeCommand('sshLite.batchRun');
-    expect(c1.exec).not.toHaveBeenCalled();
-    expect(c2.exec).not.toHaveBeenCalled();
+    expect(c1.execWithExitCode).not.toHaveBeenCalled();
+    expect(c2.execWithExitCode).not.toHaveBeenCalled();
   });
 
   it('runs command on all hosts after confirmation and shows output', async () => {
@@ -115,9 +116,22 @@ describe('batchRun command', () => {
     (vscode.window.showInputBox as jest.Mock).mockResolvedValueOnce('uptime');
     (vscode.window.showWarningMessage as jest.Mock).mockResolvedValueOnce('Run');
     await vscode.commands.executeCommand('sshLite.batchRun');
-    expect(c1.exec).toHaveBeenCalledWith('uptime');
-    expect(c2.exec).toHaveBeenCalledWith('uptime');
+    expect(c1.execWithExitCode).toHaveBeenCalledWith('uptime');
+    expect(c2.execWithExitCode).toHaveBeenCalledWith('uptime');
     expect(ctx.outputChannel.show).toHaveBeenCalled();
+  });
+
+  it('reports a non-zero exit with empty stderr as FAILED with the exit code', async () => {
+    const c1 = makeConn('a', 'Alpha'); const c2 = makeConn('b', 'Beta');
+    c1.execWithExitCode.mockResolvedValue({ stdout: '', stderr: '', code: 1 });
+    mockGetAllConnections.mockReturnValue([c1, c2]);
+    (vscode.window.showQuickPick as jest.Mock).mockResolvedValueOnce([{ conn: c1 }, { conn: c2 }]);
+    (vscode.window.showInputBox as jest.Mock).mockResolvedValueOnce('grep x f');
+    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValueOnce('Run');
+    await vscode.commands.executeCommand('sshLite.batchRun');
+    const lines = (ctx.outputChannel.appendLine as jest.Mock).mock.calls.map((c) => String(c[0]));
+    expect(lines.some((l) => l.includes('[Alpha]') && l.includes('FAILED') && l.includes('exit code 1'))).toBe(true);
+    expect(lines.some((l) => l.includes('[Beta]') && !l.includes('FAILED'))).toBe(true);
   });
 
   it('confirmation dialog includes command + host names + count', async () => {
@@ -177,8 +191,51 @@ describe('runLocalScriptRemote command', () => {
     (fs.readFileSync as jest.Mock).mockReturnValue(Buffer.from('#!/bin/bash\necho hello'));
     await vscode.commands.executeCommand('sshLite.runLocalScriptRemote');
     expect(conn.writeFile).toHaveBeenCalled();
-    expect(conn.exec).toHaveBeenCalledTimes(2); // chmod + run
+    expect(conn.exec).toHaveBeenCalledTimes(1); // chmod
+    expect(conn.execWithExitCode).toHaveBeenCalledTimes(1); // run
     expect(conn.deleteFile).toHaveBeenCalled();
     expect(ctx.outputChannel.show).toHaveBeenCalled();
+  });
+
+  function setupScript(bytes: Buffer, run: { stdout: string; stderr: string; code: number }) {
+    const conn = makeConn('a', 'A');
+    conn.execWithExitCode.mockResolvedValue(run);
+    mockGetAllConnections.mockReturnValue([conn]);
+    (vscode.window.showOpenDialog as jest.Mock).mockResolvedValueOnce([{ fsPath: '/local/test.sh' }]);
+    (fs.existsSync as jest.Mock).mockReturnValue(true);
+    (fs.readFileSync as jest.Mock).mockReturnValue(bytes);
+    return conn;
+  }
+  const outLines = () => (ctx.outputChannel.appendLine as jest.Mock).mock.calls.map((c) => String(c[0]));
+
+  it('reports a non-zero exit code with empty stderr as a failure and still deletes the temp file', async () => {
+    const conn = setupScript(Buffer.from('#!/bin/sh\nexit 3\n'), { stdout: 'partial\n', stderr: '', code: 3 });
+    await vscode.commands.executeCommand('sshLite.runLocalScriptRemote');
+    expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(expect.stringContaining('exit code 3'));
+    expect(ctx.logResult).toHaveBeenCalledWith('runLocalScriptRemote', false, expect.stringContaining('3'));
+    expect(conn.deleteFile).toHaveBeenCalled();
+  });
+
+  it('shows stderr in the output channel when the script exits 0', async () => {
+    setupScript(Buffer.from('#!/bin/sh\n'), { stdout: 'to-stdout\n', stderr: 'to-stderr\n', code: 0 });
+    await vscode.commands.executeCommand('sshLite.runLocalScriptRemote');
+    const text = outLines().join('\n');
+    expect(text).toContain('to-stdout');
+    expect(text).toContain('to-stderr');
+    expect(vscode.window.showErrorMessage).not.toHaveBeenCalled();
+  });
+
+  it('normalizes CRLF to LF before upload for text scripts', async () => {
+    const conn = setupScript(Buffer.from('#!/bin/sh\r\necho hi\r\n'), { stdout: 'hi\n', stderr: '', code: 0 });
+    await vscode.commands.executeCommand('sshLite.runLocalScriptRemote');
+    const uploaded = conn.writeFile.mock.calls[0][1] as Buffer;
+    expect(uploaded.toString()).toBe('#!/bin/sh\necho hi\n');
+  });
+
+  it('does not touch binary content (NUL byte) containing CRLF', async () => {
+    const bin = Buffer.from([0x7f, 0x45, 0x00, 0x0d, 0x0a, 0x01]);
+    const conn = setupScript(bin, { stdout: '', stderr: '', code: 0 });
+    await vscode.commands.executeCommand('sshLite.runLocalScriptRemote');
+    expect((conn.writeFile.mock.calls[0][1] as Buffer).equals(bin)).toBe(true);
   });
 });

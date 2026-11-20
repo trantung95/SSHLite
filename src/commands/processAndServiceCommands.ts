@@ -38,6 +38,7 @@ export function registerProcessAndServiceCommands(ctx: ToolsContext): vscode.Dis
       vscode.window.setStatusBarMessage(`$(check) Sent SIGTERM to PID ${pick.proc.pid}`, 3000);
       logResult('showRemoteProcesses', true, `killed ${pick.proc.pid}`);
     } catch (err) {
+      if ((err as Error).name === 'SudoCancelledError') { logResult('showRemoteProcesses', false, 'sudo cancelled'); return; }
       logResult('showRemoteProcesses', false, (err as Error).message);
       vscode.window.showErrorMessage(`Process viewer failed: ${(err as Error).message}`);
     }
@@ -82,6 +83,7 @@ export function registerProcessAndServiceCommands(ctx: ToolsContext): vscode.Dis
       outputChannel.show(true);
       logResult('manageRemoteService', true, `${action.value} ${pickedService.svc.name}`);
     } catch (err) {
+      if ((err as Error).name === 'SudoCancelledError') { logResult('manageRemoteService', false, 'sudo cancelled'); return; }
       logResult('manageRemoteService', false, (err as Error).message);
       vscode.window.showErrorMessage(`Service manager failed: ${(err as Error).message}`);
     }

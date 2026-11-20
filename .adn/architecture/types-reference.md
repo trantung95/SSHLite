@@ -100,7 +100,8 @@ interface IConnection {
 
 interface ISSHConnection extends IConnection {
   readonly client: Client | null;  // ssh2 Client (SSH only)
-  exec(command: string): Promise<string>;
+  exec(command: string): Promise<string>;  // rejects only on non-zero exit WITH stderr
+  execWithExitCode(command: string): Promise<{ stdout: string; stderr: string; code: number }>; // SSHConnection: never throws on exit code
   shell(): Promise<ClientChannel>;
   forwardPort(localPort: number, remoteHost: string, remotePort: number): Promise<void>;
   stopForward(localPort: number): Promise<void>;

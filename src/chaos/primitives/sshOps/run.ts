@@ -52,7 +52,15 @@ export const runPrimitives: PrimitiveOp[] = [
     generateParams: () => ({}),
     async execute(conn) {
       const ch = await conn.shell();
+      // Same close as TerminalService: end() alone never closes a PTY shell, and a
+      // primitive that leaks channels hides the very leak chaos should catch.
+      const closed = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('shell channel did not close within 5 s')), 5000);
+        ch.once('close', () => { clearTimeout(timer); resolve(); });
+      });
       ch.end();
+      ch.close();
+      await closed;
     },
   },
 ];

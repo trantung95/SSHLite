@@ -230,7 +230,12 @@ export class TerminalService {
       },
 
       close: () => {
+        // end() only sends EOF. With a PTY, sshd keeps the shell running, so the
+        // channel never closes: the CommandGuard slot leaks and bash stays alive on
+        // the server. close() makes sshd hang up the shell (SIGHUP) and emit 'close'.
+        diagLog('terminal', 'pty-close', { connectionId: connection.id, terminalId });
         shell.end();
+        shell.close();
         cleanup();
       },
 

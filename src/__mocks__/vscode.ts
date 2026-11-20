@@ -30,9 +30,16 @@ export class Uri {
     // Parse scheme://authority/path?query#fragment
     const match = value.match(/^([a-zA-Z][a-zA-Z0-9+\-.]*):\/\/([^/?#]*)([^?#]*)(?:\?([^#]*))?(?:#(.*))?$/);
     if (match) {
-      return new Uri(match[1], match[2], match[3] || '/', match[4] || '', match[5] || '');
+      // Real vscode.Uri.parse percent-decodes the path, so `.path` is always the
+      // DECODED path. Without this the mock let product code decode twice.
+      const decode = (s: string) => { try { return decodeURIComponent(s); } catch { return s; } };
+      return new Uri(match[1], match[2], decode(match[3] || '/'), match[4] || '', match[5] || '');
     }
     return new Uri('file', '', value, '', '');
+  }
+
+  static from(c: { scheme: string; authority?: string; path?: string; query?: string; fragment?: string }): Uri {
+    return new Uri(c.scheme, c.authority ?? '', c.path ?? '', c.query ?? '', c.fragment ?? '');
   }
 
   static joinPath(base: Uri, ...segments: string[]): Uri {
